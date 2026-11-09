@@ -327,7 +327,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateLaunching)
 	first := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
-	second := mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, time.Now())
+	second := mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now())
 	third := mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now())
 	for _, row := range []record.OutboxRow{first, second, third} {
 		enqueueOutbox(t, pool, records, row)
@@ -390,7 +390,7 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 	architectClaim(t, sup, "LEGION-1", supervise.StateLaunching)
 	architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now()))
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, time.Now()))
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
 	publisher := &holderPublisher{}
 	publisher.setAbsent(architectTopic(t, "LEGION-1"))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
@@ -486,7 +486,7 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, time.Now()))
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
 	var logged bytes.Buffer
 	clock := time.Now()
 	publisher := &holderPublisher{}
@@ -713,7 +713,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	catchUp := func(generation uint64) record.Notice {
 		return record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: fmt.Sprintf("generation %d", generation),
-			CatchUp: &record.CatchUp{Generation: generation, Gate: record.CatchUpGate{Policy: "root-issues"}, Issues: []record.CatchUpIssue{}}}
+			CatchUp: &record.CatchUp{Generation: generation, Gates: []record.CatchUpGate{{Step: record.DesignStepSpec, Gated: true, Unregistered: true}}, Issues: []record.CatchUpIssue{}}}
 	}
 	clock := time.Now()
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", catchUp(1), clock))

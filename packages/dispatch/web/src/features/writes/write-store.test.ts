@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import { keptTab, memoryFiles } from "../../__tests__/kept-sends-harness";
+import { onFakeClock, settle } from "../../__tests__/fake-clock";
+import {
+  type KeptTab,
+  keptTab,
+  keyMinted,
+  type MemoryFiles,
+  memoryFiles,
+  UnloadTarget,
+} from "../../__tests__/kept-sends-harness";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
 import {
   ApiError,
@@ -16,11 +25,12 @@ import {
   KEYED_SEND_ATTEMPT_MS,
   OneRequestPerWriteError,
   SEND_DEADLINE_MS,
+  SendExpiredError,
   SendInterruptedError,
   SendStoppedError,
   WriteDiscardedError,
 } from "./keyed-write";
-import { KEPT_SEND_RESUME_MS } from "./write-storage";
+import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
 import { defineWriteKind, plainWrite, type Write, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
@@ -29,23 +39,6 @@ function signedIn(login = "alice"): QueryClient {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login });
   return client;
-}
-
-/** Lets every promise the store chained run as far as it goes without the clock moving. */
-async function settle(): Promise<void> {
-  for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
-}
-
-/** Runs `body` on the fake clock, which moves a millisecond before the real one comes back: a
- *  timer left at zero delay would otherwise hang a later test's `waitFor`. */
-async function onFakeClock(body: () => Promise<void>): Promise<void> {
-  jest.useFakeTimers();
-  try {
-    await body();
-  } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
-  }
 }
 
 /** Moves the clock `ms` on, letting each timer's continuation run as it fires. */
@@ -78,6 +71,14 @@ const patch: WriteRequest = {
   path: "/api/v1/issues/CORE-1",
 };
 
+/** A pin of CORE-1: a `PUT` sends no `Idempotency-Key`, since making it again is the same
+ *  change. */
+const put: WriteRequest = {
+  body: { dismissed: [], seq: 2 },
+  method: "PUT",
+  path: "/api/v1/me/state/CORE-1",
+};
+
 /** The answers of this file's writes made from their request alone: a test's own spy on
  *  `api.send` takes over from it for that test. */
 let sends: SendAnswers;
@@ -104,6 +105,57 @@ function statusWrite(
     : writes.run({ ...press, request: sends.answer({ ...patch }, answer), target: fields.target });
 }
 
+/** An upload of `file` to CORE-1, as the Artifacts tab presses one. */
+function uploadOf(file: File): WriteRequest {
+  const body = new FormData();
+  body.set("name", file.name);
+  body.set("file", file);
+  return { body, method: "POST", path: "/api/v1/issues/CORE-1/artifacts" };
+}
+
+/** Presses an upload of `file` in `writes`, its attempts answered by `answer`. */
+function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>): Promise<unknown> {
+  return writes.run({
+    detail: null,
+    file,
+    kind: plainWrite,
+    label: `Upload of ${file.name}`,
+    presentation: "indicator",
+    write: attemptOf(uploadOf(file), answer),
+  });
+}
+
+/** A browser's kept files whose `put` answers only when the test releases it, with the answer
+ *  the test chooses: the window in which the page holds a file it has not kept yet. */
+function heldFiles(): MemoryFiles & {
+  /** The keys whose put is still unanswered. */
+  pending: () => string[];
+  /** Answers the put under `key`: `kept` false is a browser that kept nothing of it. */
+  release: (key: string, kept?: boolean) => Promise<void>;
+} {
+  const files = memoryFiles();
+  const held = new Map<string, { file: File; login: string; answer: (kept: boolean) => void }>();
+  return {
+    ...files,
+    pending: () => [...held.keys()],
+    put: (key, login, file) => {
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      held.set(key, { answer: resolve, file, login });
+      return promise;
+    },
+    release: async (key, kept = true) => {
+      const pending = held.get(key);
+      if (pending === undefined) return;
+      held.delete(key);
+      if (kept) await files.put(key, pending.login, pending.file);
+      pending.answer(kept);
+    },
+  };
+}
+
+const spec = new File(["spec body"], "spec.md", { type: "text/markdown" });
+const once = new File(["spec body"], "once.bin", { type: "application/octet-stream" });
+
 const unavailable = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
 
@@ -119,6 +171,37 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
 
 /** The write `writes` holds now, at `index` in press order. */
 const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[index];
+
+/** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
+ *  (`state`) when the page that pressed it went away, as the request it last went out as: a
+ *  status pick unless a row names another. */
+function resuming(
+  tab: KeptTab,
+  key: string,
+  state: KeptState,
+  request: WriteRequest = patch
+): Writes {
+  tab.storage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      detail: null,
+      key,
+      kind: "write",
+      label: "CORE-1 set to done",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request,
+      sent: true,
+      state,
+      target: null,
+      version: 1,
+    })
+  );
+  const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+  writes.resume("alice");
+  return writes;
+}
 
 // One press is one key, and every attempt of that press carries it, so however many attempts
 // reach Dispatch it is one write there. Only an attempt that ended short of Dispatch's verdict is
@@ -315,31 +398,13 @@ test("an upload's file survives a reload and the upload resumes with it", async 
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = memoryFiles();
-    const file = new File(["spec body"], "spec.md", { type: "text/markdown" });
-    const form = new FormData();
-    form.set("name", "spec.md");
-    form.set("file", file);
-    const upload: WriteRequest = {
-      body: form,
-      method: "POST",
-      path: "/api/v1/issues/CORE-1/artifacts",
-    };
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
     const before = new Writes(signedIn(), tab.page(), files);
     try {
-      void before
-        .run({
-          detail: null,
-          file,
-          kind: plainWrite,
-          label: "Upload of spec.md",
-          presentation: "indicator",
-          write: attemptOf(upload, () => Promise.withResolvers<never>().promise),
-        })
-        .catch(() => {});
+      void uploadWrite(before, spec, () => Promise.withResolvers<never>().promise).catch(() => {});
       await settle();
       const key = row(before)?.key ?? "";
-      expect(files.rows.get(key)).toBe(file);
+      expect(files.rows.get(key)).toBe(spec);
       expect(tab.kept(key)).toMatchObject({
         request: {
           form: [
@@ -363,6 +428,236 @@ test("an upload's file survives a reload and the upload resumes with it", async 
       expect(files.rows.has(key)).toBe(false);
     } finally {
       send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// W24. A Retry Dispatch's refusal sends under a new key takes the upload's file with it: the file
+// is kept under the key its attempt carries, so one row is left, under the new key, and a reload
+// makes the upload again from it.
+test("a retried upload's file moves to its new key, and a reload resumes it there", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = memoryFiles();
+    const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
+    const before = new Writes(signedIn(), tab.page(), files);
+    try {
+      let answer: () => Promise<unknown> = () => Promise.reject(verdict);
+      void uploadWrite(before, spec, () => answer()).catch(() => {});
+      await settle();
+      const refused = row(before);
+      expect(refused?.status).toBe("refused");
+
+      answer = () => Promise.withResolvers<never>().promise;
+      before.retry(refused?.id ?? 0);
+      await settle();
+      const key = row(before)?.key ?? "";
+      expect(key).not.toBe(refused?.key);
+      expect([...files.rows.keys()]).toEqual([key]);
+
+      // With no file under the new key the resumed upload has no request to make (`requestFrom`)
+      // and no attempt: that this one goes out under that key is the file found there.
+      const after = new Writes(signedIn(), tab.page(), files);
+      after.resume("alice");
+      await settle();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(key);
+      expect(after.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// W25. The page never keeps, and never sends, anything that points at an upload's file before
+// that file is kept: a record naming a key IndexedDB holds no file under is a write a reload
+// drops with nothing shown and nothing sent. The press still joins at once - the indicator
+// reads `Saving 1 change…` from it, and a sign-out still reaches it - and its deadline starts
+// with its attempt, so a slow keep never makes it late before it has been sent.
+test("an upload is neither kept nor sent until its file is kept", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const writes = new Writes(signedIn(), tab.page(), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.withResolvers<never>().promise;
+      }).catch(() => {});
+      await settle();
+      const key = row(writes)?.key ?? "";
+      expect(row(writes)?.status).toBe("sending");
+      await tick(SEND_DEADLINE_MS + 1_000);
+      expect(attempts).toBe(0);
+      expect(row(writes)?.status).toBe("sending");
+      expect(tab.kept(key)).toBeUndefined();
+
+      await files.release(key);
+      await settle();
+      expect(attempts).toBe(1);
+      expect(files.rows.get(key)).toBe(once);
+      expect(tab.kept(key)).toMatchObject({ key, sent: true, state: { status: "sending" } });
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. A Retry Dispatch's verdict sends under a new key waits the same way: the file is put
+// under the new key first, and until it is there the write stands refused under its old key
+// with its old file, so a reload inside that window brings it back for the reader to retry
+// again. Nothing names the new key before the file is under it, and the old row goes only
+// once it does.
+test("a retried upload keeps its old key and file until the new key's file is kept", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const writes = new Writes(signedIn(), tab.page(), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.reject(verdict);
+      }).catch(() => {});
+      await settle();
+      const old = row(writes)?.key ?? "";
+      await files.release(old);
+      await settle();
+      const refused = row(writes);
+      expect(refused?.status).toBe("refused");
+      expect(attempts).toBe(1);
+
+      writes.retry(refused?.id ?? 0);
+      await settle();
+      expect(row(writes)?.status).toBe("refused");
+      expect(row(writes)?.key).toBe(old);
+      expect(tab.kept(old)).toMatchObject({ state: { status: "refused" } });
+      expect([...files.rows.keys()]).toEqual([old]);
+      expect(attempts).toBe(1);
+
+      // Nothing but the put itself knows the new key while the write stands under its old one.
+      const next = files.pending()[0] ?? "";
+      expect(next).not.toBe(old);
+      expect(tab.kept(next)).toBeUndefined();
+
+      // The key moves, the old record and the old file go, and the attempt follows, all in the
+      // tick the put answers in.
+      await files.release(next);
+      await settle();
+      expect(row(writes)?.key).toBe(next);
+      expect(attempts).toBe(2);
+      expect(tab.kept(old)).toBeUndefined();
+      expect(tab.kept(next)).toMatchObject({ key: next });
+      expect([...files.rows.keys()]).toEqual([next]);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. A reload inside that window loses nothing: the page the reader comes back to reads the
+// refused write under its old key, with its file, and offers Retry again. Before this ordering
+// the record named the new key while no file was under it yet, so the page after the reload had
+// nothing to make the upload from and dropped it with nothing shown and nothing sent.
+test("a reload inside a Retry's keep brings the refused upload back with its file", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const before = new Writes(signedIn(), tab.page(), files);
+    try {
+      void uploadWrite(before, once, () => Promise.reject(verdict)).catch(() => {});
+      await settle();
+      const old = row(before)?.key ?? "";
+      await files.release(old);
+      await settle();
+      before.retry(row(before)?.id ?? 0);
+      await settle();
+
+      const after = new Writes(signedIn(), tab.page(), files);
+      after.resume("alice");
+      await settle();
+      const back = row(after);
+      expect(back?.status).toBe("refused");
+      expect(back?.key).toBe(old);
+      expect(files.rows.get(old)).toBe(once);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. A browser that keeps nothing - one with no IndexedDB, or one that refuses to open it for
+// a quota or a storage policy - says so, and the page then keeps no record of the upload at all
+// rather than one naming a file that is not there: the upload goes out and lands as it always
+// did, leaving is still confirmed while it is out, and a reload finds nothing to resume. That
+// last is the one loss this leaves, and it is the loss a browser with no IndexedDB always had.
+test("an upload whose file is not kept is sent, kept nowhere, and still confirmed on leaving", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const unload = new UnloadTarget();
+    const writes = new Writes(signedIn(), tab.page(unload), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.withResolvers<never>().promise;
+      }).catch(() => {});
+      await settle();
+      const key = row(writes)?.key ?? "";
+
+      await files.release(key, false);
+      await settle();
+      expect(attempts).toBe(1);
+      expect(row(writes)?.status).toBe("sending");
+      expect(tab.kept(key)).toBeUndefined();
+      expect(files.rows.has(key)).toBe(false);
+      expect(unload.asks()).toBe(true);
+
+      const after = new Writes(signedIn(), tab.page(), files);
+      after.resume("alice");
+      await settle();
+      expect(after.rows()).toEqual([]);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. The same answer at a Retry: the key moves and the old record and old file go, as they do
+// when the file is kept, and no record is written under the new key, so nothing of the page ever
+// names a file this browser did not keep.
+test("a retried upload whose file is not kept moves its key and is kept nowhere", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const writes = new Writes(signedIn(), tab.page(), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.reject(verdict);
+      }).catch(() => {});
+      await settle();
+      const old = row(writes)?.key ?? "";
+      await files.release(old);
+      await settle();
+      writes.retry(row(writes)?.id ?? 0);
+      await settle();
+
+      const next = files.pending()[0] ?? "";
+      await files.release(next, false);
+      await settle();
+      expect(row(writes)?.key).toBe(next);
+      expect(attempts).toBe(2);
+      expect(tab.kept(old)).toBeUndefined();
+      expect(tab.kept(next)).toBeUndefined();
+      expect(files.rows.has(old)).toBe(false);
+      expect(files.rows.has(next)).toBe(false);
+    } finally {
       tab.close();
     }
   });
@@ -1281,5 +1576,279 @@ test("a plain write on a line goes out as the very request it is kept as", async
     });
     await tick(1_500);
     expect(await other.catch((error: unknown) => error)).toBeInstanceOf(OneRequestPerWriteError);
+  });
+});
+
+// A tab that slept longer than Dispatch keeps a key wakes holding a write under a key Dispatch
+// has forgotten: making it again would write the person's comment, message or upload a second
+// time, so nothing goes out and it comes back for the reader to Retry as a new write.
+test("a resumed write whose key Dispatch has forgotten makes no attempt", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      const writes = resuming(tab, spent, { status: "sending" });
+      await tick(60_000);
+      expect(send).not.toHaveBeenCalled();
+      const resumed = row(writes);
+      expect(resumed?.status === "refused" && resumed.refusal).toBeInstanceOf(SendExpiredError);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+/** A tab holding one write of alice's that never left the page: it is kept with the request it
+ *  was planned as, as every write waiting its turn is, and `sent` says nothing has gone out
+ *  under its key. */
+function neverSent(tab: KeptTab, key: string, pressedAt: number): Writes {
+  tab.storage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      detail: null,
+      key,
+      kind: "write",
+      label: "CORE-1 set to done",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt,
+      request: patch,
+      sent: false,
+      state: { status: "queued" },
+      target: null,
+      version: 1,
+    })
+  );
+  const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+  writes.resume("alice");
+  return writes;
+}
+
+// What a key has carried is what `sent` says, not what the kept request says: a write kept while
+// it waited its turn holds the request it would go out as, and nothing of it has left the page.
+// So a tab that slept past the key's lifetime holding one makes it, under that same key, as the
+// same write in a page that never reloaded would be made.
+test("a resumed write that never left the page goes out under a key older than the lifetime", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      const writes = neverSent(tab, spent, Date.now());
+      await tick(60_000);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The same write, pressed longer ago than a page makes one again on its own: it comes back
+// interrupted rather than expired, and its Retry goes out under that same key, since the key has
+// carried nothing for its age to spend.
+test("a resumed write that never left the page comes back interrupted, not expired", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      const writes = neverSent(tab, spent, Date.now() - KEPT_SEND_RESUME_MS - 1);
+      await settle();
+      const resumed = row(writes);
+      expect(resumed?.status === "refused" && resumed.refusal).toBeInstanceOf(SendInterruptedError);
+      expect(send).not.toHaveBeenCalled();
+
+      writes.retry(resumed?.id ?? 0);
+      await settle();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+/** A write that builds its own request at each attempt, as a composer's send does: a reload
+ *  takes it up whether or not a request ever went out under its key. */
+let composedAttempts = 0;
+const composedWrite = defineWriteKind<null>({
+  kept: (value): value is null => value === null,
+  name: "test-composed",
+  resume: () => (bounds) => {
+    composedAttempts += 1;
+    bounds.sent?.(patch);
+    return Promise.resolve({ key: "CORE-1" });
+  },
+});
+
+// The key stops only a write something has already gone out under. One kept with no request sent
+// nothing - a write's request is kept as its first attempt goes out - so Dispatch has never seen
+// its key, however old the key is. Pressed longer ago than a page makes a write again on its own,
+// it comes back interrupted, and its first Retry makes the attempt, under that same key: it is
+// not refused as expired first, for the reader to press Retry a second time under a new key.
+test("a resumed write that sent nothing makes its attempt on the first Retry", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      composedAttempts = 0;
+      tab.storage.setItem(
+        `dispatch.write:${spent}`,
+        JSON.stringify({
+          detail: null,
+          key: spent,
+          kind: composedWrite.name,
+          label: "A message",
+          login: "alice",
+          presentation: "composer",
+          pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1,
+          request: null,
+          sent: false,
+          state: { status: "sending" },
+          target: null,
+          version: 1,
+        })
+      );
+      const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+      writes.resume("alice");
+      await settle();
+      const resumed = row(writes);
+      expect(resumed?.status === "refused" && resumed.refusal).toBeInstanceOf(SendInterruptedError);
+      expect(composedAttempts).toBe(0);
+
+      writes.retry(resumed?.id ?? 0);
+      await settle();
+      expect(composedAttempts).toBe(1);
+      expect(row(writes)).toBeUndefined();
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// A `PUT` sends no key: Dispatch keeps nothing under one for it, and making it again is the same
+// change. So a tab that slept past the key's lifetime makes that write again rather than ending
+// it and telling the reader a Retry may save it a second time.
+test("a resumed write that sends no key goes out under a key older than the lifetime", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ seq: 2 } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      const writes = resuming(tab, spent, { status: "sending" }, put);
+      await tick(60_000);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]?.[0]).toEqual(put);
+      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// A lapsed sign-in puts a write that was out back in its line, to go again under its key once its
+// person signs in. One whose key Dispatch has forgotten has nothing to go back for: it is refused
+// there and then, rather than waiting in the line under a key no attempt may use.
+test("a held write whose key is spent is refused rather than put back in its line", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      const writes = resuming(tab, spent, { status: "sending" });
+      // The session lapses while the resumed write is out, which holds it.
+      writes.signedIn(undefined);
+      await tick(60_000);
+      const held = row(writes);
+      expect(held?.status === "refused" && held.refusal).toBeInstanceOf(SendExpiredError);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// Retry of a write whose key is spent is a new write: it goes out under a new key, which Dispatch
+// knows, and the page stops keeping the write under the old one.
+test("a Retry of a write whose key is spent goes out under a new key", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      const writes = resuming(tab, spent, { status: "sending" });
+      await settle();
+      writes.retry(row(writes)?.id ?? 0);
+      await settle();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((send.mock.calls[0]?.[1] as WriteBounds).key).not.toBe(spent);
+      expect(writes.rows()).toEqual([]);
+      expect(tab.kept(spent)).toBeUndefined();
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The deadline a write stops at is its key's own, so a Retry under that key is not another day of
+// trying: one retried two seconds before Dispatch forgets its key is tried for those two seconds,
+// under that same key, and then ends expired.
+test("a Retry under the write's own key stops when that key runs out", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockRejectedValue(unavailable);
+    try {
+      const nearlySpent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS + 2_000);
+      const writes = resuming(tab, nearlySpent, {
+        refusal: { kind: "stopped" },
+        status: "refused",
+      });
+      await settle();
+      writes.retry(row(writes)?.id ?? 0);
+      await tick(10_000);
+      const ended = row(writes);
+      expect(ended?.key).toBe(nearlySpent);
+      expect(ended?.status === "refused" && ended.refusal).toBeInstanceOf(SendExpiredError);
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The release before this one kept no record of what a key had carried (`KeptWrite.carried`), so
+// an entry it wrote holds none. The format's version stands and the field is the only one left
+// out, so that entry still loads - none of the person's unresumed writes is dropped - and it is
+// read as the release that wrote it read it: `sent` says whether a request went out under the
+// key, and the request it holds says what that was. A day-old key a `PATCH` went out under comes
+// back expired, and the entry this page keeps in its place holds the record from now on.
+test("an entry kept with no carried loads, and reads as what it sent", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
+      // `resuming` writes the entry as that release wrote it, `carried` and all its kin absent.
+      const writes = resuming(tab, spent, { refusal: { kind: "stopped" }, status: "refused" });
+      await settle();
+      const resumed = row(writes);
+      expect(resumed?.status === "refused" && resumed.refusal).toBeInstanceOf(SendExpiredError);
+      expect(send).not.toHaveBeenCalled();
+      expect(tab.kept(spent)).toMatchObject({ carried: "PATCH", sent: true, version: 1 });
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
   });
 });

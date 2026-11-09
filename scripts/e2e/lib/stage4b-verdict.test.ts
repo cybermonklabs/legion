@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
 // Stage 4b's own blocked, fail, pass, until_reached, cleanup, audit_verdict and audit_failure,
@@ -14,15 +15,18 @@ import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./s
 const script = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(script);
 const rigFn = scriptFunctions(join(import.meta.dir, "rig.sh"));
+// The teardown's last check, which the script takes from lib/github-apps.sh rather than writing
+// itself: that library's own function, by name, as the functions above are the script's own.
+const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
 const helperGuard = nameMissingHelpers(script, join(import.meta.dir, "rig.sh"));
-const dir = mkdtempSync(join(tmpdir(), "stage4b-verdict-test."));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const dir = temporaryDirectory("stage4b-verdict-test");
 const bin = join(dir, "bin");
-mkdirSync(bin);
-writeFileSync(join(bin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-writeFileSync(
-  join(bin, "kubectl"),
-  `#!/bin/bash
+beforeAll(() => {
+  mkdirSync(bin);
+  writeFileSync(join(bin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(
+    join(bin, "kubectl"),
+    `#!/bin/bash
 selector=
 args=("$@")
 for ((i = 0; i < \${#args[@]}; i++)); do [ "\${args[i]}" = -l ] && selector=\${args[i + 1]}; done
@@ -32,8 +36,9 @@ case " $* " in
   *) exit 1 ;;
 esac
 `,
-  { mode: 0o755 }
-);
+    { mode: 0o755 }
+  );
+});
 
 // pendingPod is a pod of tree TREE (run label x), its own root issue, Pending and Unschedulable
 // since SINCE.
@@ -221,6 +226,7 @@ ${fn("limit_pending_blocked")}
 ${rigFn("until_true")}
 ${fn("remove_negative_config")}
 ${fn("remove_run_container")}
+${appsFn("app_key_left")}
 ${fn("cleanup")}
 trap cleanup EXIT
 ${tail}

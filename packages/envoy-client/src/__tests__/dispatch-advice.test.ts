@@ -1,13 +1,27 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import type { SearchAsk, Suggestions, WriteAdvice, WriteSuggestion } from "@legion/contracts";
+import type {
+  DocumentWriteAdvice,
+  SearchAsk,
+  Suggestions,
+  WriteAdvice,
+  WriteSuggestion,
+} from "@legion/contracts";
+import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 
-type AdviceFixture = WriteAdvice;
+/** A write's advice as the route table states it: an issue write answers `WriteAdvice`, a
+ *  project document's write the decision-block half alone. */
+type AdviceFixture = WriteAdvice | DocumentWriteAdvice;
 
-const config = { enabled: true, url: "http://dispatch.test", token: "secret", error: null };
+const config = {
+  enabled: true,
+  url: "http://dispatch.test",
+  credential: bearerCredential("secret"),
+  error: null,
+};
 const issueSuffix =
   "(not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP-42.> for every event on it)";
 
@@ -221,8 +235,10 @@ async function executeWrite(tool: string, args: Record<string, unknown>, advice?
   });
 }
 
-function advice(overrides: Partial<AdviceFixture> = {}): AdviceFixture {
+function advice(overrides: Partial<WriteAdvice> = {}): WriteAdvice {
   return {
+    decision_blocks: 0,
+    decision_blocks_added: 0,
     issue_status: "in_progress",
     session_writes_since_human: 0,
     your_open_asks: [],
@@ -248,7 +264,7 @@ describe("Dispatch write advice", () => {
   });
 
   test("renders only decision-block advice for a project document", async () => {
-    const rawAdvice: WriteAdvice = { decision_blocks: 0 };
+    const rawAdvice: DocumentWriteAdvice = { decision_blocks: 0, decision_blocks_added: 0 };
     const result = await executeWrite(
       "dispatch_artifact",
       { project: "DSP", name: "spec.md", content: "# Spec\n" },
@@ -318,7 +334,7 @@ describe("Dispatch write advice", () => {
   });
   test("handles decision-only advice on a project-document ask reply", async () => {
     const ask = "01234567-0000-4000-8000-000000000042";
-    const rawAdvice: WriteAdvice = { decision_blocks: 0 };
+    const rawAdvice: DocumentWriteAdvice = { decision_blocks: 0, decision_blocks_added: 0 };
     const result = await executeWrite(
       "dispatch_comment",
       {
@@ -910,7 +926,7 @@ describe("the related-item check", () => {
       [
         createdLine,
         "No related-item check was made: the search behind it failed. Search before you rely on this being new: dispatch search --project DSP --query 'Created issue'",
-        "Title overlaps you forced past: DSP-3 [todo] Created issue → http://dispatch.test/issues/DSP-3",
+        "Near copy you forced past: DSP-3 [todo] Created issue → http://dispatch.test/issues/DSP-3",
       ].join("\n")
     );
   });
@@ -928,8 +944,9 @@ describe("the related-item check", () => {
   test("advice that cannot be shown leaves the created line and the form, and says so", async () => {
     const result = await createIssue(
       { outcome: "none", search: "meaning_and_keywords", related: [] },
-      // A malformed field makes the advice renderer throw.
-      { unparsed_openers: { count: 2, examples: null as unknown as string[] } }
+      // A malformed field makes the advice renderer throw. The route table states `examples` as
+      // a list or null, so neither is malformed now; a string in its place is.
+      { unparsed_openers: { count: 2, examples: "two" as unknown as string[] } }
     );
     const lines = result.text.split("\n");
 
@@ -1021,7 +1038,11 @@ describe("the related-item check", () => {
       { issue: "DSP-42", question: "Should the billing service retry?" },
       advice({
         session_writes_since_human: 3,
-        suggestions: { related: [], missing: "the search behind it did not answer within 300ms" },
+        suggestions: {
+          outcome: "not_made",
+          related: [],
+          missing: "the search behind it did not answer within 300ms",
+        },
       })
     );
     const lines = result.text.split("\n");
@@ -1203,7 +1224,7 @@ describe("dispatch_related", () => {
         project: "DSP",
         title: "Retry failed webhook deliveries",
         text: "Back off exponentially.",
-        exclude_issue: "DSP-9",
+        exclude_issues: ["DSP-9"],
         keywords_only: true,
       },
       answer
@@ -1216,7 +1237,7 @@ describe("dispatch_related", () => {
         body: {
           title: "Retry failed webhook deliveries",
           text: "Back off exponentially.",
-          exclude_issue: "DSP-9",
+          exclude_issues: ["DSP-9"],
           keywords_only: true,
         },
       },

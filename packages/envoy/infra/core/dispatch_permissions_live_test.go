@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
 )
@@ -63,7 +64,7 @@ func TestDispatchPermissionsOnRealServers(t *testing.T) {
 				requireIssueEventPublished(t, live.process, live.conn, live.port)
 				requireCommentQuietPublished(t, live.process, live.conn, live.port)
 				requireAgentStreamRelayed(t, live.conn, live.port)
-				requireWebhookRedeliveryBucket(t, live.js, live.process, live.github)
+				requireWebhookRedeliveryBucket(t, live.conn, live.js, live.process, live.github)
 
 				// Dispatch's grant, built on the listener's, publishes every notification topic: an ad-hoc
 				// topic outside every stream subject reaches its subscriber, with no violation.
@@ -420,20 +421,29 @@ func requireAgentFrame(t *testing.T, socket *websocket.Conn, event, data string)
 	}
 }
 
-func requireWebhookRedeliveryBucket(t *testing.T, js natsgo.JetStreamContext, process *cmdtest.Process, github *dispatchGitHub) {
+// requireWebhookRedeliveryBucket checks the redelivery bucket Dispatch opened takes a write, a read
+// and a watch through the jetstream handle, the watch Dispatch's sweep scans its records with.
+func requireWebhookRedeliveryBucket(t *testing.T, conn *natsgo.Conn, js natsgo.JetStreamContext, process *cmdtest.Process, github *dispatchGitHub) {
 	t.Helper()
 	process.WaitForOutput(t, "dispatch: redelivering the GitHub App webhook's failed deliveries")
 	github.requireCalled(t, "GET /app/hook/deliveries")
-	kv, err := bus.OpenKeyValue(js, bus.WebhookRedeliveryBucket)
+	kv, err := bus.OpenKeyValue(conn, js, bus.WebhookRedeliveryBucket)
 	require.NoError(t, err)
 	_, err = kv.Put("test", []byte("value"))
 	require.NoError(t, err)
 	entry, err := kv.Get("test")
 	require.NoError(t, err)
 	require.Equal(t, []byte("value"), entry.Value())
-	watch, err := kv.Watch("test")
+	ctx, cancel := context.WithCancel(context.Background())
+	watch, err := kv.WatchKeys(ctx, "test")
+	if err != nil {
+		cancel()
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = watch.Stop() })
+	t.Cleanup(func() {
+		_ = watch.Stop()
+		cancel()
+	})
 	select {
 	case update := <-watch.Updates():
 		require.NotNil(t, update)
@@ -474,35 +484,38 @@ type dispatchGitHub struct {
 func newDispatchGitHub(t *testing.T) *dispatchGitHub {
 	t.Helper()
 	fake := &dispatchGitHub{}
-	fake.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		path := request.Method + " " + request.URL.Path
-		fake.mu.Lock()
-		fake.paths = append(fake.paths, path)
-		fake.mu.Unlock()
-		switch {
-		case path == "GET /app":
-			_, _ = fmt.Fprint(w, `{"id":1,"slug":"example","name":"Example"}`)
-		case path == "GET /app/installations":
-			_, _ = fmt.Fprint(w, `[{"id":1,"app_slug":"example","account":{"login":"example"},"permissions":{"actions":"read","pull_requests":"read"}}]`)
-		case path == "GET /repos/acme/widgets/installation":
-			_, _ = fmt.Fprint(w, `{"id":1,"app_slug":"example","permissions":{"actions":"read","pull_requests":"read"}}`)
-		case path == "POST /app/installations/1/access_tokens":
-			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprintf(w, `{"token":"example-installation-token","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
-		case path == "GET /installation/repositories":
-			_, _ = fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
-		case path == "POST /graphql":
-			_, _ = fmt.Fprint(w, `{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
-		case strings.HasPrefix(path, "GET /repos/acme/widgets/actions/workflows/"):
-			_, _ = fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
-		case path == "GET /app/hook/deliveries":
-			_, _ = fmt.Fprint(w, "[]")
-		default:
-			t.Errorf("unexpected GitHub App request %s", path)
-			http.NotFound(w, request)
-		}
-	}))
-	t.Cleanup(fake.server.Close)
+	fake.server = githubtest.Serve(t, githubtest.Spec{
+		Record: func(request *http.Request) {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			fake.paths = append(fake.paths, request.Method+" "+request.URL.Path)
+		},
+		Handle: func(w http.ResponseWriter, request *http.Request) {
+			path := request.Method + " " + request.URL.Path
+			switch {
+			case path == "GET /app":
+				_, _ = fmt.Fprint(w, `{"id":1,"slug":"example","name":"Example"}`)
+			case path == "GET /app/installations":
+				_, _ = fmt.Fprint(w, `[{"id":1,"app_slug":"example","account":{"login":"example"},"permissions":{"actions":"read","pull_requests":"read"}}]`)
+			case path == "GET /repos/acme/widgets/installation":
+				_, _ = fmt.Fprint(w, `{"id":1,"app_slug":"example","permissions":{"actions":"read","pull_requests":"read"}}`)
+			case path == "POST /app/installations/1/access_tokens":
+				w.WriteHeader(http.StatusCreated)
+				_, _ = fmt.Fprintf(w, `{"token":"example-installation-token","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+			case path == "GET /installation/repositories":
+				_, _ = fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
+			case path == "POST /graphql":
+				_, _ = fmt.Fprint(w, `{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
+			case strings.HasPrefix(path, "GET /repos/acme/widgets/actions/workflows/"):
+				_, _ = fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
+			case path == "GET /app/hook/deliveries":
+				_, _ = fmt.Fprint(w, "[]")
+			default:
+				t.Errorf("unexpected GitHub App request %s", path)
+				http.NotFound(w, request)
+			}
+		},
+	})
 	return fake
 }
 

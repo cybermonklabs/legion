@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
@@ -14,6 +15,14 @@ const bob = "bob@example.com";
 const carol = "carol@example.com";
 const people: DispatchUser[] = [{ login: viewer }, { login: bob }];
 
+/** How many rows each value holds, as the Inbox's bar counts them for this field. */
+const counts = new Map([
+  [viewer, 3],
+  [bob, 1],
+  [carol, 0],
+  ["unassigned", 2],
+]);
+
 /** The host the Inbox is: it owns the popover's open state, the filter only reports it. */
 function Host({
   onChange,
@@ -25,6 +34,7 @@ function Host({
   const [open, setOpen] = useState(false);
   return (
     <AssigneeFilter
+      counts={counts}
       onChange={onChange}
       onOpenChange={setOpen}
       open={open}
@@ -93,17 +103,18 @@ test("the trigger names the selection in the reader's own words", () => {
 });
 
 test("the people are read on the first open and then kept, never on a render", async () => {
+  const user = userEvent.setup();
   const { listUsers, unmount } = renderFilter();
   try {
     // An Inbox nobody filters costs no read of who has signed in.
     expect(listUsers).not.toHaveBeenCalled();
 
-    fireEvent.click(trigger());
+    await user.click(trigger());
     await screen.findByRole("option", { name: new RegExp(bob) });
     expect(listUsers).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(trigger());
-    fireEvent.click(trigger());
+    await user.click(trigger());
+    await user.click(trigger());
     await screen.findByRole("option", { name: new RegExp(bob) });
     expect(listUsers).toHaveBeenCalledTimes(1);
   } finally {
@@ -112,31 +123,40 @@ test("the people are read on the first open and then kept, never on a render", a
 });
 
 test("the options list Unassigned first, then the logins, and detail the reader's own row", async () => {
+  const user = userEvent.setup();
   const { unmount } = renderFilter({ selected: [] });
   try {
-    fireEvent.click(trigger());
+    await user.click(trigger());
     await screen.findByRole("option", { name: new RegExp(bob) });
-    // The detail runs into the label in `textContent`: `you` sits at the end of the reader's row.
-    expect(optionTexts()).toEqual(["Unassigned", `${viewer}you`, bob]);
+    // The detail runs into the label in `textContent`: each row ends with how many rows that
+    // value holds, and the reader's own says so first.
+    expect(optionTexts()).toEqual(["Unassigned2", `${viewer}you · 3`, `${bob}1`]);
   } finally {
     unmount();
   }
 });
 
 test("the search narrows the people and says so when it matches nobody", async () => {
+  const user = userEvent.setup();
   const { unmount } = renderFilter({ selected: [] });
   try {
-    fireEvent.click(trigger());
+    await user.click(trigger());
     await screen.findByRole("option", { name: new RegExp(bob) });
     const search = screen.getByRole("combobox", { name: "Search people" });
 
-    fireEvent.change(search, { target: { value: "bob" } });
-    expect(optionTexts()).toEqual([bob]);
+    await user.clear(search);
+    await user.click(search);
+    await user.paste("bob");
+    expect(optionTexts()).toEqual([`${bob}1`]);
 
-    fireEvent.change(search, { target: { value: "unas" } });
-    expect(optionTexts()).toEqual(["Unassigned"]);
+    await user.clear(search);
+    await user.click(search);
+    await user.paste("unas");
+    expect(optionTexts()).toEqual(["Unassigned2"]);
 
-    fireEvent.change(search, { target: { value: "nobody" } });
+    await user.clear(search);
+    await user.click(search);
+    await user.paste("nobody");
     expect(screen.queryAllByRole("option")).toEqual([]);
     expect(screen.getByText("No matching person.")).toBeDefined();
   } finally {
@@ -145,6 +165,7 @@ test("the search narrows the people and says so when it matches nobody", async (
 });
 
 test("a failed read says so and leaves the filter working from the address", async () => {
+  const user = userEvent.setup();
   const changes: (readonly string[])[] = [];
   const { unmount } = renderFilter({
     onChange: (selected) => changes.push(selected),
@@ -152,13 +173,13 @@ test("a failed read says so and leaves the filter working from the address", asy
     users: new Error("users unreachable"),
   });
   try {
-    fireEvent.click(trigger());
+    await user.click(trigger());
     await screen.findByText("Could not load the people list.");
     // What the address filters by is still there to see and to switch off.
-    expect(optionTexts()).toEqual(["Unassigned", `✓${carol}`]);
+    expect(optionTexts()).toEqual(["Unassigned2", `✓${carol}0`]);
 
-    fireEvent.click(screen.getByRole("option", { name: new RegExp(carol) }));
-    fireEvent.click(screen.getByRole("option", { name: /Unassigned/ }));
+    await user.click(screen.getByRole("option", { name: new RegExp(carol) }));
+    await user.click(screen.getByRole("option", { name: /Unassigned/ }));
     expect(changes).toEqual([[], [carol, UNASSIGNED_FILTER_VALUE]]);
   } finally {
     unmount();
@@ -166,11 +187,12 @@ test("a failed read says so and leaves the filter working from the address", asy
 });
 
 test("a selected person the people list does not hold is still a row", async () => {
+  const user = userEvent.setup();
   const { unmount } = renderFilter({ selected: [carol] });
   try {
-    fireEvent.click(trigger());
+    await user.click(trigger());
     await screen.findByRole("option", { name: new RegExp(bob) });
-    expect(optionTexts()).toEqual(["Unassigned", `${viewer}you`, bob, `✓${carol}`]);
+    expect(optionTexts()).toEqual(["Unassigned2", `${viewer}you · 3`, `${bob}1`, `✓${carol}0`]);
   } finally {
     unmount();
   }

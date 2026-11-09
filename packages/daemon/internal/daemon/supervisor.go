@@ -39,7 +39,9 @@ type supervisor struct {
 	// waits for a worker to reach the daemon may run before it closes: the boot's relaunches run after
 	// it (supervision.start), since a relaunched worker's hello would wait for the relaunch itself.
 	restored chan struct{}
-	terminal func(supervise.Claim, supervise.ClaimState)
+	// durableState is the one callback every machine of this supervisor reports its durable
+	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
+	durableState func(supervise.Claim, supervise.ClaimState)
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -77,13 +79,13 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 	return m.machine, true
 }
 
-// OnTerminal applies one durable-state callback to every current and future machine.
-func (s *supervisor) OnTerminal(callback func(supervise.Claim, supervise.ClaimState)) {
+// OnDurableState applies one durable-state callback to every current and future machine.
+func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.ClaimState)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.terminal = callback
+	s.durableState = callback
 	for _, member := range s.machines {
-		member.machine.OnTerminal(callback)
+		member.machine.OnDurableState(callback)
 	}
 }
 
@@ -129,6 +131,13 @@ func (s *supervisor) Claims(ctx context.Context) ([]supervise.Claim, error) {
 		return nil, err
 	}
 	return ofProject(claims, s.project), nil
+}
+
+// Step is one claim's step record as the store holds it, for the operator routes that answer one
+// claim (api.Supervisor): no machine carries it, since the daemon writes every step through a
+// narrow call of its own (supervise's putStep).
+func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	return s.store.ClaimStep(ctx, token)
 }
 
 // restore builds the machine of every claim the store held at boot, and reports the claims whose
@@ -180,7 +189,7 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 
 // add supervises m, starting the goroutine that feeds it. The caller holds mu.
 func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
-	m.OnTerminal(s.terminal)
+	m.OnDurableState(s.durableState)
 	queue := newInbox()
 	s.machines[token] = &member{machine: m, inbox: queue, issue: m.Claim().Issue}
 	all := append(slices.Clip(s.supervised()), m)
@@ -350,9 +359,13 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		return supervise.StreamTurnStart{Claim: ev.Claim, DeliveryID: ev.DeliveryID}, nil
 	case stream.TurnEnd:
 		return supervise.StreamTurnEnd{Claim: ev.Claim}, nil
+	case stream.ToolStep:
+		return supervise.StreamToolStep{Claim: ev.Claim, Tool: ev.Tool, CallID: ev.CallID,
+			ArgsBytes: ev.ArgsBytes, ArgsHash: ev.ArgsHash, End: ev.End, ConnSequence: ev.ConnSequence}, nil
 	case stream.PromptResult:
 		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
-			AgentInvoked: ev.AgentInvoked, Error: ev.Error}, nil
+			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
+			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model}, nil
 	case stream.LateRefusal:
 		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Replayed: ev.Replayed,
 			ConnSequence: ev.ConnSequence}, nil
@@ -370,6 +383,8 @@ func claimOf(ev supervise.Event) claim.Token {
 	case supervise.StreamTurnStart:
 		return ev.Claim
 	case supervise.StreamTurnEnd:
+		return ev.Claim
+	case supervise.StreamToolStep:
 		return ev.Claim
 	case supervise.StreamPromptResult:
 		return ev.Claim

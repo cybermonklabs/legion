@@ -20,8 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -105,6 +108,14 @@ func (s *memoryClaims) Claims(context.Context) ([]supervise.Claim, error) {
 	return claims, nil
 }
 
+// Step is the step record the rows hold, as the store's own narrow read answers it
+// (store.Store.ClaimStep): what the operator routes serve for one claim.
+func (s *memoryClaims) Step(_ context.Context, token legionclaim.Token) (supervise.StepRecord, error) {
+	s.rowsMu.Lock()
+	defer s.rowsMu.Unlock()
+	return s.rows[token].Step, nil
+}
+
 func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()
@@ -129,6 +140,20 @@ func (s *memoryClaims) PutClaimAndDelivery(context.Context, supervise.Claim, sup
 
 func (s *memoryClaims) RetireDelivery(context.Context, supervise.Claim, string) error { return nil }
 
+// PutClaimStep records the step columns on the row alone, as the store's own narrow write does;
+// these tests read none of them.
+func (s *memoryClaims) PutClaimStep(_ context.Context, token legionclaim.Token, step supervise.StepRecord) (bool, error) {
+	s.rowsMu.Lock()
+	defer s.rowsMu.Unlock()
+	row, known := s.rows[token]
+	if !known {
+		return false, nil
+	}
+	row.Step = step
+	s.rows[token] = row
+	return true, nil
+}
+
 func (s *memoryClaims) ClaimByBootTokenHash(_ context.Context, hash []byte) (supervise.Claim, bool, error) {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()
@@ -141,9 +166,12 @@ func (s *memoryClaims) ClaimByBootTokenHash(_ context.Context, hash []byte) (sup
 }
 
 // The tree barrier is the store's, held to its own tests: here every tree is open at epoch 1, and
-// a close's cleanup releases the tree through the runtime at once.
-func (s *memoryClaims) OpenTreeLifecycle(_ context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
-	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: authority}, nil
+// a close's cleanup releases the tree through the runtime at once. No tree is ever created here
+// (treelifecycle.Lifecycle.Created), so the open runs its created for none of them: this fake
+// holds no transaction for one to write in.
+func (s *memoryClaims) OpenOperatorTreeLifecycle(_ context.Context, project, tree string,
+	_ func(context.Context, pgx.Tx) error) (treelifecycle.Lifecycle, error) {
+	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityOperator}, nil
 }
 
 func (s *memoryClaims) ReserveOperatorTreeCleanup(_ context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
@@ -168,6 +196,7 @@ type seenRequest struct {
 type operatorDaemon struct {
 	t               *testing.T
 	runtime         *fake.Runtime
+	conns           *fake.Conns
 	claimSupervisor *memoryClaims
 	url             string
 	port            int
@@ -181,12 +210,12 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	rt := fake.NewRuntime()
+	rt, conns := fake.NewRuntime(), fake.NewConns()
 	claims := &memoryClaims{ctx: ctx, machines: map[legionclaim.Token]*supervise.Machine{}, rows: map[legionclaim.Token]supervise.Claim{}}
 	tokens := api.NewBootTokens(claims)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	claims.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
+		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
@@ -194,10 +223,11 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		PluginContract: api.DaemonAPIVersion,
 	}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
 	}).Handler
 
-	d := &operatorDaemon{t: t, runtime: rt, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
+	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -401,7 +431,7 @@ func TestClaimsSpawnPostsTheClaimWithTheOperatorBearer(t *testing.T) {
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.Claim != architectClaim {
 		t.Fatalf("spawns = %+v, want one launch of %s", spawns, architectClaim)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - - -\n"; out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
 }
@@ -454,7 +484,7 @@ func TestClaimsDeliverPostsTheTask(t *testing.T) {
 	if answered.Pending == nil || answered.Pending.Task != "Review the plan." {
 		t.Fatalf("the daemon answered pending %+v, want the task queued", answered.Pending)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - - -\n"; out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
 }
@@ -474,9 +504,9 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 		action, method, want string
 		claim                legionclaim.Token
 	}{
-		{"suspend", "Suspend", "legion-legion-legion-208-architect architect LEGION-208 suspended 1 " + thisBinarysContract + " - -\n", architectClaim},
-		{"resume", "Resume", "legion-legion-legion-208-architect architect LEGION-208 launching 2 " + thisBinarysContract + " - -\n", architectClaim},
-		{"stop", "Release", "legion-legion-legion-209-implementer implementer LEGION-209 retired 1 0 - -\n", workerClaim},
+		{"suspend", "Suspend", "legion-legion-legion-208-architect architect LEGION-208 suspended 1 " + thisBinarysContract + " - - -\n", architectClaim},
+		{"resume", "Resume", "legion-legion-legion-208-architect architect LEGION-208 launching 2 " + thisBinarysContract + " - - -\n", architectClaim},
+		{"stop", "Release", "legion-legion-legion-209-implementer implementer LEGION-209 retired 1 0 - - -\n", workerClaim},
 	} {
 		out := d.succeed(append(append([]string{step.action}, d.reach()...), "--claim", string(step.claim))...)
 
@@ -528,7 +558,7 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if len(seen.body) != 0 {
 		t.Fatalf("retry sent a body %q, want none", seen.body)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
@@ -567,7 +597,7 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 	if sent.Session != session {
 		t.Fatalf("forget-session sent %+v, want %s", sent, session)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 failed 3 " + thisBinarysContract + " - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 failed 3 " + thisBinarysContract + " - - -\n"; out != want {
 		t.Fatalf("forget-session stdout = %q, want %q", out, want)
 	}
 }
@@ -597,7 +627,7 @@ func TestClaimsRetryFailedRetriesEveryFailedClaim(t *testing.T) {
 	if want := []string{"GET /legion/v1/operator/claims", "POST /legion/v1/operator/claims/" + string(architectClaim) + "/retry"}; !slices.Equal(asked, want) {
 		t.Fatalf("retry --failed asked %q, want %q", asked, want)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - - -\n"; out != want {
 		t.Fatalf("retry --failed stdout = %q, want %q", out, want)
 	}
 
@@ -617,9 +647,14 @@ func TestClaimsRetryFailedRetriesEveryFailedClaim(t *testing.T) {
 	}
 }
 
+// podUpdateNotSwept is the pod-update line of a daemon whose first sweep has not run, which every
+// listing these tests take from a daemon that sweeps nothing ends with.
+const podUpdateNotSwept = "pod update rounds: the daemon has not swept yet"
+
 // list prints one line per claim — token, role, issue, state, generation, plugin contract, the
 // update round the claim is in and the head its worker reported when it answered, each `-` when
-// there is none — in the daemon's token order, and --json prints the daemon's answer byte for byte.
+// there is none — in the daemon's token order, then the one line of what the last pod-update
+// sweep decided, and --json prints the daemon's answer byte for byte.
 func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
@@ -631,8 +666,9 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 	out := d.succeed(append([]string{"list"}, d.reach()...)...)
 
 	wantOperatorRequest(t, d.lastOperatorRequest(), http.MethodGet, "/legion/v1/operator/claims")
-	want := "legion-legion-legion-208-architect architect LEGION-208 ready 1 " + thisBinarysContract + " - -\n" +
-		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 0 - -\n"
+	want := "legion-legion-legion-208-architect architect LEGION-208 ready 1 " + thisBinarysContract + " - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 0 - - -\n" +
+		podUpdateNotSwept + "\n"
 	if out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
@@ -643,12 +679,97 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 	}
 }
 
+// The listing ends with one line for what the daemon's last pod-update sweep decided
+// (api.PodUpdateRounds): the project's two limits, the issues holding a round under them, and the
+// issues each limit held back. No claim row says either half — an issue a limit held back is
+// drifted and was posted nothing at all, so nothing of it is in the listing above — and this line
+// is what tells the operator whether a fleet-wide roll is being paced or is stuck.
+//
+// A limit the file does not set prints `no limit` rather than a number, since 0 would read as a
+// project that opens no round at all. A fleet-wide roll leaves a fleet's worth of issues waiting,
+// so a list is cut to its first twenty keys with the count of the rest: the whole count is in
+// front of them either way, and the claims themselves stay on the operator's screen. A daemon
+// whose first sweep has not run says so, where every list empty would read as a sweep that found
+// nothing to do.
+//
+// A daemon of a release before this record serves a body with no `pod_update_rounds` member at
+// all. decodeAnswer takes such a body — it refuses a member this binary does not know, never a
+// member it does not find — so the line says what that daemon is rather than printing the
+// not-swept sentence, which would be false of a daemon sweeping every minute.
+func TestClaimsListPodUpdateLine(t *testing.T) {
+	waiting := make([]string, 25)
+	for i := range waiting {
+		waiting[i] = fmt.Sprintf("INFRA-%d", 100+i)
+	}
+	for _, testCase := range []struct {
+		name string
+		// rounds is the record the daemon's answer carries; nil is an answer that carries no
+		// `pod_update_rounds` member at all.
+		rounds *api.PodUpdateRounds
+		want   string
+	}{
+		{
+			name: "both limits set",
+			rounds: &api.PodUpdateRounds{
+				Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
+				InRound: []string{"INFRA-10", "INFRA-1000"}, WaitingOnMaxOpenRounds: []string{"INFRA-2"},
+			},
+			want: "pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; " +
+				"waiting on the open-round limit: 1 — INFRA-2; waiting on the limit a minute: none",
+		},
+		{
+			name:   "neither key set",
+			rounds: &api.PodUpdateRounds{Swept: true, InRound: []string{"INFRA-10"}},
+			want: "pod update rounds: max open no limit, no limit a minute; in a round: 1 — INFRA-10; " +
+				"waiting on the open-round limit: none; waiting on the limit a minute: none",
+		},
+		{
+			name: "more issues waiting than the line names",
+			rounds: &api.PodUpdateRounds{
+				Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
+				InRound: []string{"INFRA-10", "INFRA-1000"}, WaitingOnMaxOpenRounds: waiting,
+			},
+			want: "pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; " +
+				"waiting on the open-round limit: 25 — " + strings.Join(waiting[:20], ", ") + ", and 5 more; " +
+				"waiting on the limit a minute: none",
+		},
+		{
+			name:   "a daemon that has not swept",
+			rounds: &api.PodUpdateRounds{},
+			want:   podUpdateNotSwept,
+		},
+		{
+			name:   "a daemon that does not report the rounds",
+			rounds: nil,
+			want:   "pod update rounds: this daemon does not report them; it is older than this binary",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			answer := []byte(`{"claims":[]}`)
+			if testCase.rounds != nil {
+				encoded, err := json.Marshal(api.OperatorClaims{PodUpdateRounds: testCase.rounds})
+				if err != nil {
+					t.Fatalf("encode the daemon's answer: %v", err)
+				}
+				answer = encoded
+			}
+			var out bytes.Buffer
+			if err := printClaims(&out, answer); err != nil {
+				t.Fatalf("print the listing: %v", err)
+			}
+			if out.String() != testCase.want+"\n" {
+				t.Fatalf("the listing is %q, want %q", out.String(), testCase.want+"\n")
+			}
+		})
+	}
+}
+
 // The head a worker reports when it answers an update round is an agent's own string, which
 // nothing verifies (api.OperatorClaim.UpdateHead), and two listings print it: one row per claim in
 // `legion claims list`, and the open-rounds line of `legion state`. A newline in it would forge a
 // row of either — a claim that is not there, a round nobody opened — so each prints it quoted.
 func TestAWorkerReportedHeadIsPrintedQuoted(t *testing.T) {
-	const forged = "c0ffee\nlegion-legion-legion-299-tester tester LEGION-299 ready 1 0 - -"
+	const forged = "c0ffee\nlegion-legion-legion-299-tester tester LEGION-299 ready 1 0 - - -"
 	const round = "pod:0f3c8d21-5b47-4e90-9a16-2c7d5e8b40af"
 
 	var line bytes.Buffer
@@ -675,14 +796,20 @@ func TestAWorkerReportedHeadIsPrintedQuoted(t *testing.T) {
 	}
 }
 
-func TestClaimsListOfNoClaimsPrintsNothing(t *testing.T) {
+// A daemon that supervises no claim prints the pod-update line and nothing else: what the sweep
+// decided is a fact of the project rather than of any claim, and an operator served no line at all
+// could not tell a daemon that holds no issue back from a binary too old to know the limits.
+// --json stays the daemon's own answer, the empty claim list with that record beside it.
+func TestClaimsListOfNoClaimsPrintsThePodUpdateLineAlone(t *testing.T) {
 	d := newOperatorDaemon(t)
 
-	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != "" {
-		t.Fatalf("stdout = %q, want nothing", out)
+	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != podUpdateNotSwept+"\n" {
+		t.Fatalf("stdout = %q, want %q", out, podUpdateNotSwept+"\n")
 	}
-	if out := d.succeed(append([]string{"list", "--json"}, d.reach()...)...); out != "{\"claims\":[]}\n" {
-		t.Fatalf("list --json = %q, want the daemon's empty list", out)
+	const empty = `{"claims":[],"pod_update_rounds":{"swept":false,"max_open_rounds":null,` +
+		`"rounds_per_minute":null,"in_round":[],"waiting_on_max_open_rounds":[],"waiting_on_rounds_per_minute":[]}}` + "\n"
+	if out := d.succeed(append([]string{"list", "--json"}, d.reach()...)...); out != empty {
+		t.Fatalf("list --json = %q, want the daemon's empty list %q", out, empty)
 	}
 }
 
@@ -959,4 +1086,92 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 		t.Fatalf("forget-session without --session: exit %d, stdout %q, stderr %q; want usage failure naming --session", code, out, errb)
 	}
 	d.wantNothingReached()
+}
+
+// INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
+// operator reading `legion claims list` does not read it as a suspension someone must lift. Every
+// other claim prints the state it is in, suspended by an operator among them. None of the three
+// is in an update round or in a tool call, so each line ends in the round, head and call
+// columns' `-`.
+func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		claim api.OperatorClaim
+		want  string
+	}{
+		{
+			name: "released",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
+				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion},
+			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released 3 " + thisBinarysContract + " - - -\n",
+		},
+		{
+			name: "suspended by the operator",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
+				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion},
+			want: "legion-legion-legion-209-tester tester LEGION-209 suspended 1 " + thisBinarysContract + " - - -\n",
+		},
+		{
+			name: "failed",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion},
+			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed 2 " + thisBinarysContract + " - - -\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			writeClaimLine(&out, tc.claim)
+			if out.String() != tc.want {
+				t.Fatalf("claim line = %q, want %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// dispatch://INFRA-1274: the claim line's last column names the tool call the claim's agent is
+// in — the tool, the call id its stream's frames pair by, and when the daemon received the start
+// — so an operator reading `legion claims list` sees what a worker that has shown as working for
+// hours is stuck in. This is the only listing that carries a controller's, since the state puts
+// the controller's claim on no issue. A call whose end the daemon received is over and the claim
+// is in none, which the column prints as `-`; the arguments are in no column at all, because a
+// shell command routinely holds a credential.
+func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
+	startedAt := time.Date(2026, 11, 7, 4, 15, 9, 0, time.UTC)
+	endedAt := startedAt.Add(3 * time.Second)
+	controller := api.OperatorClaim{
+		Token: "legion-legion-controller", Role: "controller", Issue: "", State: "working", Generation: 2,
+		Step: &api.StepView{
+			At: &startedAt, TurnStartedAt: &startedAt, Tool: "bash", CallID: "toolu_ctl_4",
+			ArgsBytes: 64, ArgsHash: "1f05c8a3b6e2497d", StartedAt: &startedAt,
+		},
+	}
+
+	var out bytes.Buffer
+	writeClaimLine(&out, controller)
+	want := "legion-legion-controller controller  working 2 0 - - \"bash toolu_ctl_4 since 2026-11-07T04:15:09Z\"\n"
+	if out.String() != want {
+		t.Fatalf("claim line = %q, want %q", out.String(), want)
+	}
+
+	ended := controller
+	step := *controller.Step
+	step.EndedAt = &endedAt
+	ended.Step = &step
+	out.Reset()
+	writeClaimLine(&out, ended)
+	if !strings.HasSuffix(out.String(), " - - -\n") {
+		t.Fatalf("claim line of a claim whose call ended = %q, want the call column `-`", out.String())
+	}
+
+	// The tool and the call id are the agent's own word, as the head a worker reports is: a
+	// newline in either would forge a row of this listing, so the column is Go-quoted.
+	forged := controller
+	forgedStep := *controller.Step
+	forgedStep.Tool = "bash\nlegion-legion-legion-299-tester tester LEGION-299 ready 1 0 - - -"
+	forged.Step = &forgedStep
+	out.Reset()
+	writeClaimLine(&out, forged)
+	if rows := strings.Count(out.String(), "\n"); rows != 1 {
+		t.Fatalf("one claim printed %d rows: %q", rows, out.String())
+	}
 }

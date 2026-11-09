@@ -37,6 +37,16 @@ legion start --config legion.yaml --check-config
 | `role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | Under Kubernetes a role's overlay must be a file the operator's mounts carry: mount the ConfigMap holding it, or add the item. |
 | `role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
 | `role_config_files.<role> …` (another refusal) | The message names the entry: a role that is not Legion's, an empty list, a relative path, a path named twice or already every role's, the controller without `controller: daemon`, or a role on `claude`. |
+| `worker_stall_backstop_hours.<role> (<bound>) is below the whole stall ladder the <role>'s own plugin runs (<longest call> + <grace> + 2 × <step> = <ladder>, where the first number is …): …` | Raise that role's bound to the ladder the message names, or set `0` to switch the backstop off for that role. The daemon's backstop is there for a worker whose own stall watch is itself broken, and the daemon cannot see that watch running, so a bound below the ladder would end a turn the plugin it backs up is still recovering. The ladder is the longest one call of that worker can legitimately run, plus the grace over a deadline a call declared for itself (`LEGION_STALL_CALL_GRACE_MS`, 5 minutes), plus the two gaps between the recovery steps (`LEGION_STALL_STEP_MS`, 2 minutes each). The longest call is the larger of two numbers, and the message says which one it took: the bound a tool call no deadline judges gets (`LEGION_STALL_CALL_BOUND_MS`, by default 4 hours for an implementer and a reviewer and 1 hour for every other role and the controller, and that default again where the deployment sets `0`, which switches the worker's watch off rather than bounding its calls at zero), and the hour the host clamps a deadline a call declares for itself to ([legion.yaml](/legion/legion/running-legion/#legionyaml)). |
+| `projects.<KEY>.memory.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a project with no `memory` block gets), `on`, or `random`. |
+| `projects.<KEY>.memory is <mode> and names no config_files: …` | A mode other than `off` draws new trees into the memory group, and those trees read their overlays from that key: name at least one, or set `mode: off`. |
+| `projects.<KEY>.memory names config_files, and worker_backends.<role> is claude, which reads no PI_CONFIG_FILES: …` | A block that names overlays hands them to every memory-group tree's roles whatever the mode is, and Claude Code reads no `PI_CONFIG_FILES`: put every issue role on Oh My Pi, or take the overlays out of the block. |
+| `projects.<KEY>.memory.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes a memory overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a tree already drawn into the memory group still names it. |
+| `projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
+| `projects.<KEY>.memory.config_files …` or `projects.<KEY>.memory.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, or a path named twice. |
+| `memory instructions file <path> could not be read: …` or `memory instructions file <path> is empty` | Boot reads that file from the daemon's own disk and puts its text in every memory-group role's prompt, so give it a readable file with text in it, or take `instructions` out, which appends nothing. Boot reads it whatever the mode is, since a tree already drawn into the memory group is given it. |
+| `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
+| `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
 | `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), and `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
 
@@ -57,6 +67,13 @@ cluster and the image:
   recovers it from Dispatch's listing once GitHub answers, with nothing to move. A
   `child-release-stalled` notice that names such a repository says which parent to release first:
   the recovery records no child under a parent that is not `todo`.
+- **A stamped repository the project does not serve.** `workflow: commit_issue_trailer_repos names
+  a repository this project does not serve, so no pane stamps a commit with the issue key for it`,
+  with the repository and the project: `projects.<KEY>.commit_issue_trailer_repos` only selects
+  among the repositories Dispatch maps to the project, so this name selects nothing. It is a
+  warning, not a refusal — the boot's check reads no Dispatch, and a repository mapped the day
+  after the file is written is no fault of the file. Map the repository to the project in
+  Dispatch, or take the name out.
 - **Records with no repository.** `<n> issue records have no repository and Dispatch resolves none
   for them (<KEY>, …): set the project's default repository in Dispatch …`: the first boot of this
   release records each issue it already runs on the repository Dispatch resolves for it, and these
@@ -253,7 +270,10 @@ Check, in order:
    legion state --config legion.yaml --json | jq .admission
    ```
 
-   `active` lists the running roots, `waiting` the ones in line, `cap` the slots (`admission_cap`).
+   `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
+   line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
+   counts issues at work, not trees). A parent whose own first phase waits for its open children
+   is in `blocked`, with each child it waits for.
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
    branch, as the implement App, and again before each tree member's planner starts, so no agent's
@@ -282,7 +302,7 @@ read the person's comments and replies. Read the wait:
 
 ```sh
 legion state --config legion.yaml --json |
-  jq '.issues["<KEY>"] | {phase, waitingOn, designGate}'
+  jq '.issues["<KEY>"] | {phase, waitingOn, designGate, gatedSteps}'
 ```
 
 `waitingOn.kind` is `ask` for a wait on a question, with `waitingOn.ask` the question, or `gate`
@@ -293,8 +313,16 @@ names how — not always by a person: `ask` or `reply` (a person's act on an ask
 the approval request is on the architect's turn), `closed` (a session or anyone else who is not a
 person closed the question), `turn` (a session handed it back to the agent's turn), `retracted`
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
-approval under `gates.design: off`, or when the gate was switched off while the root waited on it. The root is
-at the front of `admission.waiting` and resumes itself at the next free slot. Do not park it or
+approval on a deployment that gates no step, or when the last gated step was taken out of
+`gates.design` while the root waited on it. The root stands in `admission.waiting`
+among the issues whose work came back, oldest first, and resumes itself there: at once, holding
+no slot, once its design gate has opened at every gated step, and at the next free slot while its
+architect is still writing the first design. While it waits for that slot, `waitingLine` on the
+issue gives its place in the line and the line's length, and its architect, while its session is
+live and holds its Envoy role, is sent one `waiting-for-slot` notice saying where the root stands
+and that the daemon starts it again by itself; neither is anything to act on, and a root whose
+architect the daemon released while it waited carries the place with no notice beside it.
+Do not park it or
 start it by hand. Without `answeredAt`, check, in order:
 
 1. **The question is still with the person.** `dispatch read <KEY>` shows the root's asks. A
@@ -325,7 +353,7 @@ start it by hand. Without `answeredAt`, check, in order:
    turn with the agent: that new act wakes the root on its own event.
 
 A root whose architect registered its spec while the approval request waits on the person is in
-`awaiting_person` with `waitingOn.kind` `gate`, once nothing else holds its slot; one still
+`awaiting_person` with `waitingOn.kind` `gate`, once nothing else of its tree is at work; one still
 `admitted` waiting on its design gate keeps its slot for one of the reasons above, or because
 Dispatch shows the request on the architect's turn (a reply or a newer version since the request),
 when the architect has nothing handed to the person. A root waiting on its gate at a daemon's deploy
@@ -333,6 +361,10 @@ gives its slot back at that daemon's first boot. The gate stays closed until a p
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
 earlier version does not count: the spec changed since. The merger's `READY` waits on the same approval.
+Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
+its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
+`approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
+`designGate` beside it is the `spec` step's record alone.
 
 ## A parked tree did not come back after a decision
 
@@ -344,8 +376,8 @@ the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
-- `outbox parked decision not relayed: it names no person`: the gate opened under
-  `gates.design: off`, so no person made the decision.
+- `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
+  gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
   lingering root someone moved back into the workflow is not relayed`: someone moved the
   lingering root back to a status of the workflow (`in_progress` and the like), so it is nobody's
@@ -390,6 +422,47 @@ its next start walks the parked roots. That walk reads only the last 10 events o
 
 ## An issue is held
 
+**A provider's failure almost never holds the issue.** A turn that ends in an error the model's
+provider returned keeps its task: the daemon sends the same task to the same session again after 30
+seconds, then 60, then 120, doubling to at most 10 minutes between sends, with no attempt limit and
+no new session. Each such turn logs the warning `supervise: the turn this task's prompt ran ended
+in a provider error; the task is kept and sent again`, which names the model, the HTTP status and
+whether the provider marked the error retryable, and the send that follows it logs `supervise: this
+provider error can clear; the task goes to the same session again after a wait`, with the attempt
+and the wait. The re-sent prompt tells the agent the turn stopped, names the HTTP status the
+provider answered when it answered one, and carries none of the provider's own words. A content
+filter is sent again because the session has already stepped down to the next model of its
+fallback chain, so the next prompt goes to another model
+([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
+a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are sent again
+too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
+any other and the controller's notice at six is what tells a person. A newer
+task for that claim replaces the one the error took back and is sent at once, so it does not wait
+out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
+waits for the compaction's end instead, as everything the claim is owed does. An update round's
+question waits behind the owed task, as any other task does: the question needs a turn of the
+worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
+turn of the owed task ends with no provider error.
+
+**One provider error does hold the issue**, for its architect: one whose HTTP status is a client
+error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
+the case it exists for. The claim fails with `why` reading `a provider error that cannot clear
+ended this claim's turn: <cause>`, where the cause names that status, and the hold is the
+architect's to retry or escalate as any held phase is.
+
+**After six turns of one claim in a row have ended in a provider error**, the project's controller
+is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
+(`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
+held and nothing is stopped by that count: the task is still kept and still sent again. The run
+goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
+compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
+Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
+recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
+`fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
+go. The notice is the claim's own — the issue and the role that names it — so
+two claims of one issue each get a notice of their own, and in a provider outage every claim that
+reaches six is told.
+
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON
 lines; the one to look for is the error whose `msg` is `supervise: claim failed`, and its `why`
@@ -419,7 +492,7 @@ architect that failed (`architect.state` is `failed`) leaves its tree with nobod
 and the controller is woken to re-admit the tree. What brings the architect back depends on where
 its tree stands:
 
-- **Its root holds its admission slot and does not linger:** `legion state`'s `claims nothing will
+- **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
   [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
   relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
@@ -436,16 +509,55 @@ its tree stands:
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
 budgets, and retries a failed phase worker whose issue is held for that worker's own role by
-applying the held phase's retry, as its architect's `retry_or_escalate` would. It refuses a claim
-in any other state, naming the state, a failed phase worker whose issue is not held or is held for
-another role, and a failed controller, naming who retries it; a retry that leaves the issue held,
-as a lingering tree's does, is refused naming the issue. `legion claims retry --failed` asks the
-same of every failed claim the daemon holds, in turn, prints each one it retried, and exits 1
-naming each it refused: run it once the cause of a run of failed launches is gone (a host moved
-onto tmux, a broken key replaced).
+applying the held phase's retry, as its architect's `retry_or_escalate` would. It reaches a claim an
+operator stopped as well as a failed one, since `legion claims stop` retires the claim it stops: a
+stopped phase worker is started again on the task of the phase its issue stands in now. Every other
+state is refused and named: a queued claim is spawned rather than retried, a suspended claim is
+resumed, and the daemon's own controller is its keeper's to retry, which the refusal says. A retry
+that leaves the issue held, as a lingering tree's does, is refused naming the issue.
+`legion claims retry --failed` asks the same of every failed claim the daemon holds, in turn,
+prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
+failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
+claim, which is retired rather than failed, so name that one with `--claim`.
 
-When a failed architect's session was lost with its volume or wedged by a provider refusal, clear
-the stopped claim's matching record before retrying:
+`legion claims compact --claim <token>` is the first recovery for a claim whose session a
+provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
+sends the claim whatever task it owed again, so the session, its workspace and everything the
+worker knows of its issue stay, and only the transcript the provider is asked to read gets shorter.
+It reaches a claim whose agent is ready or idle, a root architect included, and refuses a
+suspended, failed or retired claim naming what starts it again: `--fresh-session` for a workflow
+role, and the daemon's controller keeper for the project's own controller claim, which only
+`--claim` can name and which `--fresh-session` refuses in every state, a keeper whose resume an
+operator's own suspension holds.
+It also refuses a claim the daemon records as working, which may be in a turn, a claim a
+suspension is held over, a claim whose launch is in flight, a claim whose agent has registered
+and is not ready yet, which `--fresh-session` reaches, a claim left working under a relaunch the
+wake pacing parked, a claim left working over a process the daemon's last report of it found
+gone, and a claim whose role runs on Claude Code, which has no Oh My Pi session.
+A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
+printed with its reason, and whatever task the claim owed has gone again all the same.
+
+`legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
+left refused: it forgets the session that claim recorded and starts the claim
+in a new session with its phase's task, so no `legion claims forget-session` comes before it. It
+reaches a claim whose agent is registered, ready or idle as well as one that is suspended,
+failed or retired, with no suspension held over it, so it is what starts a claim the
+compaction could not reach, and a new session loses everything the old one held. It
+forgets that session before it starts the phase, because the start runs the moment the restart
+commits and would otherwise resume the very session you are dropping. A retry the daemon then
+refuses has forgotten the session all the same: the claim keeps its state and its task, the
+daemon's log names the session it dropped, and the same command works once the refusal's cause
+is gone. What a refusal does on its own, before any of this, is in the paragraphs above and in
+[Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
+When the workflow refused that phase's restart — a lingering tree, whose members stay where they
+stood, is the usual cause — the command prints a second line under the claim's own, saying the
+claim is back in a new session owing no task and why nothing restarted its phase, and the
+controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
+empty answer: the claim is running with no work, so clear what the line names and run the
+command again to hand the claim its phase's task.
+
+When a failed architect's session was lost with its volume, clear the stopped claim's matching
+record before retrying:
 
 ```sh
 legion claims forget-session --config legion.yaml --operator-token-file operator-token --claim <token> --session <recorded session id>
@@ -468,6 +580,28 @@ kubectl -n legion describe pod <pod>     # scheduling, image pulls, mounts
 
 ## A tree does not move after a restart
 
+A restart's wakes go out at the pace the operator set (`worker_wakes_per_minute`, 8 a minute by
+default, with `worker_wake_burst` 1), so a tree whose process has not come back yet may simply be
+waiting its turn. One wake has its session read its whole context again, which the provider charges
+as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
+1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
+about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
+twenty minutes. Read what the pacing still holds before you act on anything below:
+
+```sh
+legion state --config legion.yaml --json | jq '.wakesWaiting'
+```
+
+`legion state` prints the same as a `wakes waiting:` line, and prints no such line when nothing
+waits. Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
+process about to start; `plugin-task`, the update task a stale-plugin round queues to a session
+that already runs; `catch-up`, the notice a start writes to an architect that is already running)
+and `dueAt`, the moment the pacing gave it, which is when it runs. An empty array says the wave has
+gone out; the last `dueAt` in it says when the last of the wave goes. A claim on that list needs
+nothing from you: its wake is reserved and it runs at the moment named. Your own requests are what
+drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
+back, so nothing you ask for waits for a turn.
+
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, and a tree's
 architect by its admission; a notice to an architect with no process waits for it rather than
@@ -475,7 +609,8 @@ starting it. A suspended worker of its issue's current phase that the daemon sus
 by the daemon at boot. One an operator suspended (`legion claims suspend`, one claim at a time or a
 whole fleet before a restart), or whose suspension predates the release that records who suspended
 it (`suspendedBy: unknown`), is not; neither is an operator-suspended or failed tree architect, nor
-a claim whose launches ran out. Each of those is woken by nothing: the daemon looks healthy and the
+a claim whose launches ran out, nor a claim a close or a stop retired while its tree runs, whatever
+its role. Each of those is woken by nothing: the daemon looks healthy and the
 state shows the tree active, but the tree stops for good at the worker's phase, or at the first
 decision that needs its architect. Once a boot has re-adopted its claims, the daemon names every
 such claim in one error line, under the move that brings it back:
@@ -551,15 +686,21 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   When a tree's architect and its workers failed together, retry the architect first: the held
   workers are its to retry once it runs.
 
-- **`needsWorkflowStart`** (a failed phase worker): its issue is held
+- **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
+  tree runs, whatever its role): a failed worker's issue is held
   ([An issue is held](#an-issue-is-held)), and its tree's architect retries the phase or escalates
   it to the controller; `legion claims retry` applies the same retry when the architect cannot. A
   failed claim ignores `legion claims resume` and `legion claims deliver`.
+  A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
+  not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
+  architect's `retry_or_escalate` of a held phase, a transition into that phase, or a tree close
+  and re-admission — and, for a retired tree architect, its tree's admission.
 
-The list names only claims of trees that hold an admission slot, and leaves out claims that
+The list names only claims of trees that run — the trees `admission.trees` names, whether or not
+an issue of them holds a slot — and leaves out claims that
 something will still start: a worker whose phase is not its own is started again when its phase
-comes, a parked tree's claims wait for its re-admission, and the architect of a tree re-admitted
-while every slot was taken waits for admission to start it once one frees. A root in
+comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
+slot has that start queued already. A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
 and the answer's task is delivered once the root takes a slot. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
@@ -574,7 +715,8 @@ is queued for it, since the next phase start or re-admission resumes it as befor
   an issue pod at the defaults) and lands wherever the pool has room, so a pool at its limits leaves
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
-  reason. Keep `admission_cap`, and the children a tree runs at once, within what the pool's limits
+  reason. `admission_cap` counts the issues at work, and an issue that only waits keeps its pod,
+  so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
   deleted with it, so a replacement brings a disk of its own. The image probe pod,
@@ -645,6 +787,59 @@ is queued for it, since the next phase start or re-admission resumes it as befor
   go. The process is stopped and nothing is started; the claim waits `launching` with no process,
   keeps its task, and the same launch is tried again every `probe_interval_seconds` until the write
   lands. If the line keeps coming, look at the database.
+- **`supervise: a claim write the database did not take`** at Warn, with `store=` (the store
+  method whose call failed) and `owed=`, means the daemon decided something about a claim and its
+  Postgres did not take the write. With `owed=true` the write is kept and made again at that
+  claim's next write that lands, which is the repair at the head of its next decision or a later
+  write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
+  the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
+  that write and the reports it carried, as a stop between a decision and its write always has.
+  The line comes again with `owed=true` at each decision whose repair fails again. With
+  `owed=false` a repair's write reached the server, which judged the statement and would judge it
+  the same way again, so the owed write and the reports it carried are dropped and the row stays
+  as it was; that line also carries `droppedReports=`, how many reports went with it, and it is
+  the only record that they were lost — that one is a defect to look at, not an outage. A
+  decision's own write that fails drops the event that decision was handling, as it always has:
+  one the server judged writes no such line and is the `supervise: an event failed` error with
+  the store's message, and one it did not judge writes this line with `owed=true` beside that
+  error. A repair that fails drops nothing, and the decision goes on.
+- **`supervise: the store holds no such delivery; the refusal is of a retirement it has already
+  made`** at Warn, with `delivery=`, means the daemon retired a task and the store answered that
+  the claim's row holds no delivery at all: the retirement this daemon already made, whose answer
+  an earlier broken connection lost. The line is written for that refusal and for no other. Memory
+  drops the delivery to match the row and the claim goes on deciding, and the line is followed by
+  the one above with `store=RetireDelivery` and `owed=true`, since that transaction rolled the
+  claim write back with the delete and it is made again at the claim's next decision. The store's
+  other refusal of the same delete — `the claim's row holds another delivery`, naming both the
+  delivery asked for and the one the row holds — is not this one and writes no line of its own. It
+  means a write that rotated the delivery's id, an interruption or a take-back, committed after
+  its answer was cut off, so the store holds one delivery where the daemon's memory holds another.
+  That refusal fails the decision as any other store failure does, reaching the log as `supervise:
+  an event failed` with the store's message, and owes no write: read as a retirement already made
+  it would drop the delivery memory holds and leave the stored one pending and retired by nobody.
+  The decision that met it is the one event lost. The daemon marks the delivery its memory holds
+  unwritten, so it writes that delivery over the row the rotation left, at the latest at the
+  claim's next decision, and the retirement that follows it, once the task's turn is over, finds
+  it under the id memory holds; the claim decides every event after the one the refusal cost, and
+  no restart is needed to bring the row and memory together. A person's decision the rotated row
+  held is not lost: the tree's next start or catch-up names it again, at worst a second time.
+- **`supervise: a claim write the database did not take was made`** at Info, with `store=` (the
+  store method that landed), is the close of that story: the owed write landed, and the row says
+  what the daemon holds again. The reports that write carried — a turn that started, a claim that
+  went ready or failed — are made right behind it, oldest first and before the report of the
+  decision whose write landed, except one of a generation the claim has left (`supervise: an owed
+  report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
+  and `generation=`). A claim whose last `owed=true` line has no such line after it is still
+  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
+  the write, and nothing tries it again.
+- **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
+  and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
+  turn that started from one the daemon never saw, and a turn that ended from one still running.
+  A start with no end means the turn is running, or that it ended another way: look for
+  `supervise: process died`, `supervise: the agent's turn has not ended; suspending it mid-turn`,
+  `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
+  speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
+  update round is over for this claim`, each of which says what became of the turn instead.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -660,18 +855,19 @@ is queued for it, since the next phase start or re-admission resumes it as befor
 
 These arrive as messages on the Dispatch issue, and the architect is told:
 
-- **`Issue reached review_round_cap=3.`** The implementer's round count reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)). The work goes on, and the
+- **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
+  implementer's counted rounds reached three
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
+  phase raises the count, and a move made while the head conflicts with its base is a conflict
+  round, which the cap leaves out and the message's second number names. The work goes on, and the
   architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
   let rounds that are converging run, and posts that decision on the issue; it asks you only for a
   decision that needs your authority.
-- **`Pull request #<n> reached max_fix_attempts=3.`** A check or workflow the base branch requires
-  stayed red through three fix attempts. Red CI within the attempt that ran the count out (the
-  counted head and every head pushed on top of it until a push lands on a head CI judged green, or
-  on a settled head whose base branch requires no check and no workflow; such a push raises no
-  count) no longer sends the work back by itself, so the issue waits in testing, review, acceptance,
-  retro or merging for the architect, or for a worker's own decision such as a reviewer's request
-  for changes. A `READY` is still withdrawn on red CI.
+- **No message for red CI.** A pull request is never blocked for a count of failed fixes: a check
+  or workflow the base branch requires that stands red sends the work back to the implementer every
+  time, however many reds came before, and reaches the architect as a `checks-red` notice rather
+  than as a message on the issue. The architect decides when to stop, and `review_round_cap` is the
+  one reason a `pr-blocked` notice has left. A `READY` is still withdrawn on red CI.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
@@ -702,9 +898,9 @@ These arrive as messages on the Dispatch issue, and the architect is told:
   round.
 - **`READY` refused.** The merger's `READY` is refused while the pull request's head carries
   anything above the reviewer's approved head but a commit under `docs/solutions/`, which retro
-  no longer writes, and the
-  removal of files under `.legion/` that `legion handoffs import` commits
-  (`READY_UNREVIEWED_CHANGE`, naming the paths; also when the head
+  no longer writes, and a change whose every path is under `.legion/`, where handoffs were
+  committed before they moved to the Dispatch issue and which nothing writes or reads now, so that
+  nobody reviews one (`READY_UNREVIEWED_CHANGE`, naming the paths; also when the head
   is not built on the approved one, GitHub does not know the approved head, or GitHub's compare
   gives no file list or lists 300 files, the most it lists), or
   the review round recorded no approval (`READY_NOT_APPROVED`): either way the issue goes back to
@@ -759,9 +955,11 @@ assignment retro handed it while the phase holds the implementing one, so it is 
 and completes that work with a handoff of its own, never retro's commit; the merger's row
 still names the assignment merging gave it, so a completion it sends for the phase it lost is
 refused (`HANDOFF_NOT_CURRENT_PHASE`). One back in `in_progress` after its `READY`,
-while it awaited its merge, had a required check or workflow turn red on the head itself, or its
+while it awaited its merge, had a required check or workflow turn red on the head itself, its
 head conflicts with its base (GitHub computes no merge ref for a conflicting head and runs no
-checks on it at all): the daemon sent it back to the implementer, told the architect which checks
+checks on it at all), or GitHub's merge queue reported its entry for the head unmergeable while
+the queue had built that entry on the base branch's own tip, where nothing queued ahead of it can
+be the cause: the daemon sent it back to the implementer, told the architect which checks
 or that the head conflicts, and posted on the issue, and told the project's `merge_queue_role` when
 one is set, that the `READY` is withdrawn: the merge the daemon had submitted names a commit about
 to be replaced, so it takes its own submission back. The work comes back through testing, review
@@ -801,6 +999,11 @@ The daemon owns a running tree's status. A status an agent session writes on a r
 back, and the tree's architect is told who wrote it. A person's move in the Dispatch dashboard, the
 controller's `set_status`, or `legion status` from an operator's shell, is what takes a tree out.
 
+A person's move between the workflow's own statuses on a running issue does not stick either. The
+daemon's status repair runs at each boot and then every `controller_wake_interval_seconds` (an
+hour by default), and writes back the status of the phase the issue stands in. `backlog` or
+`icebox` takes the tree out of the workflow, and the repair leaves it there.
+
 When the daemon's own status writes to Dispatch are failing, `legion state` says so on its
 `pending Dispatch status writes` line:
 
@@ -833,7 +1036,7 @@ it, then look at what the row `waitsOn` names is doing.
 
 A pull request's opened, push, review or CI settlement, or a Dispatch status change, reaches the
 daemon as a message on the `ENVOY_NOTIFICATIONS` stream and waits there until the daemon's durable
-consumer for it gets to it. `legion state` shows how far behind each of the three consumers is on
+consumer for it gets to it. `legion state` shows how far behind each consumer is on
 its `consumer` lines ([Running Legion](/legion/legion/running-legion/#observe)), and `--json`
 under `consumers`:
 
@@ -857,10 +1060,15 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
   out of reach, say), or the message in hand does not finish. Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails. A consumer that stops is not a stall: it stops the
-  daemon (`workflow intake stopped: …`).
+  consumer, whose `error` says what fails. A handler that does not finish writes none of those
+  while it holds: intake reports its message in progress, and the stall is all that shows until
+  the handler passes the intake handler limit and the daemon writes `an intake handler outran
+  its limit and was cut`, so search for that line too
+  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
+  says the limit this deployment runs with and where the daemon prints it. A consumer that
+  stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
-  served all the same. The three consumers are read at the same time, each within two seconds,
+  served all the same. Every consumer is read at the same time, each within two seconds,
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
   info: …` leaves `waiting` 0 and `stalled` false, since neither is known: check that the daemon
   reaches NATS and that the consumer exists (`nats consumer info ENVOY_NOTIFICATIONS <name>`).
@@ -917,6 +1125,58 @@ notice comes once per handoff commit, from whichever pass finds it first.
   still records each open pull request GitHub lists, applies a lost close, merge or push, settles a
   head's CI from its check runs and tells an architect `pull-request-missing`, so none of those
   waits for the backlog to drain.
+- **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
+  `fact` and `limit`). One message's handling ran past `limit`, the handler limit
+  `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
+  handling's context and naked the message: nothing of that event was applied. Intake reports
+  the message in progress only until the limit, and the handler returns once the step that is
+  running honours the cancelled context, which every step does at once today; only then is
+  this warning written and the message naked. This consumer asks for one message at a time and
+  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
+  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
+  at the consumer's next pull where the step held the handler past about one acknowledgement
+  window after the limit, whichever the server takes first. A step that ignored the cancelled
+  context would hold the message, and this warning, for the whole of its own run. Between this
+  warning and the nak the daemon writes one more line under the same `event_id`, naming the
+  step that was running, with the error `context deadline exceeded`; this warning is the one
+  that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
+  a cancelled context, so the wait for the return is short, and each read is cut on its own at
+  the acknowledgement window, so a handling that reaches the limit is most often waiting on the
+  database. One Postgres advisory lock is what
+  it most often waits on,
+  `pg_advisory_xact_lock(hashtext('legion.apply_fact'))`, which every fact takes for the length of
+  its transaction and the daemon's other lifecycle writes take too, so the holder is as often one
+  of those as another fact. Ask the daemon's database who holds it rather than guessing:
+
+  ```sql
+  select a.pid, a.state, a.xact_start, a.query
+    from pg_locks l
+    join pg_stat_activity a on a.pid = l.pid
+   where l.locktype = 'advisory'
+     and l.classid = (hashtext('legion.apply_fact')::bigint >> 32 & 4294967295)::oid
+     and l.objid = (hashtext('legion.apply_fact')::bigint & 4294967295)::oid
+     and l.objsubid = 1
+   order by l.granted desc, a.xact_start;
+  ```
+
+  The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
+  held. The next delivery of the same event takes the same path and is cut the same way.
+
+  The limit this deployment runs with is in the daemon's log at every boot, in a line beginning
+  `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
+  where the cut comes too late to return a wedged handler's message while an operator is still
+  looking. At the ten-minute floor that line names the floor as what decided the limit; above
+  it, `legion start --check-config` prints the same sentence, which an operator can read before
+  a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
+  and one more for the fact's transaction and its wait on the apply lock, never below ten
+  minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
+- **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
+  (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
+  than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the
+  delivery for `took` rather than let JetStream deliver the event a second time. The fact was
+  applied: this is a fact that is slow, not one that failed, and this is the only line that says
+  how long a fact took. One of them asks nothing of an operator; a `took` creeping towards the
+  handler limit, or many at once, names where to look for the slow read behind them.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not

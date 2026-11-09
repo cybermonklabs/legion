@@ -10,8 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -110,7 +112,10 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			if err := tx.QueryRow(ctx, `select now()`).Scan(&answeredAt); err != nil {
 				return model.Ask{}, err
 			}
-			answer := model.AskAnswer{User: actor.ID, Selected: selected, Text: text, At: answeredAt.UTC()}
+			// Act comes from the actor actingPerson handed the handler: the answer is the
+			// person's, and the agent that made it for them is named beside it. A browser's
+			// actor carries none, and so does a write of docs' own (the carry's answer).
+			answer := model.AskAnswer{User: actor.ID, Selected: selected, Text: text, At: answeredAt.UTC(), Act: actor.Act}
 			if options.WriteBlock != nil {
 				if err := options.WriteBlock(ctx, tx, ask, answer); err != nil {
 					return model.Ask{}, err
@@ -167,24 +172,44 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 	return &value, nil
 }
 
+// answerAskInput is the body of POST /api/v1/asks/{id}/answer.
+type answerAskInput struct {
+	Selected []string `json:"selected"`
+	Text     *string  `json:"text"`
+	// ExpectedEditedAt is required: an answer names the wording it answers, and a body without
+	// the field is refused (400 ASK_REVISION_REQUIRED, answerAsk below). Null is the
+	// precondition that the ask has never been edited, so the field is required and nullable
+	// both, which is why the handler holds the bytes unparsed (rawFieldSchemas).
+	ExpectedEditedAt json.RawMessage `json:"expected_edited_at" required:"true"`
+	ExpectedAnswerAt json.RawMessage `json:"expected_answer_at"`
+	Actor            *model.Actor    `json:"actor"`
+}
+
 func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
 	if !requireUUIDPath(w, r, "ask") {
 		return
 	}
-	var input struct {
-		Selected         []string        `json:"selected"`
-		Text             *string         `json:"text"`
-		ExpectedEditedAt json.RawMessage `json:"expected_edited_at"`
-		ExpectedAnswerAt json.RawMessage `json:"expected_answer_at"`
-		Actor            *model.Actor    `json:"actor"`
-	}
+	var input answerAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The acting session the body names, where the caller's credential proved none: this route
+	// has always decoded an actor, and a personal token names its session nowhere else.
+	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+		return
+	}
+	// Before the transition opens its own transaction: an answer's text rides the ask.answered
+	// event beside the ask's wording, so it takes the same bound.
+	if input.Text != nil {
+		if length := itemblocks.Units16(*input.Text); length > contracts.DispatchEventBodyMax {
+			capExceeded(w, "text", length, contracts.DispatchEventBodyMax)
+			return
+		}
 	}
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
@@ -231,6 +256,21 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, attributes, actor)
 		},
 	})
+	// Answering an approval request approves its document, so it needs the approve scope beside
+	// the person scope the table declares for this route. The check cannot sit at the gate: an
+	// ask's kind is known only once its row is read, and reading it before the transaction would
+	// decide on a row another writer could still move. It sits here instead, inside Apply, under
+	// the row lock the answer is written beneath, so the kind checked is the kind answered; the
+	// refusal is the gate's own (missingScopeError), which writeHandlerError gives the challenge
+	// header.
+	recordAnswer := transition.Apply
+	transition.Apply = func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
+			return model.Ask{}, missingScopeError(model.ScopeApprove,
+				"this request's credential does not hold the approve scope, which answering an approval request requires")
+		}
+		return recordAnswer(ctx, tx, ask)
+	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
 	// request to, and the one the human reviewed (revision). A request naming a spec and its
@@ -261,6 +301,13 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, ask)
 }
 
+// resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.
+type resolveAskInput struct {
+	Kind   string       `json:"kind" required:"true"`
+	Reason string       `json:"reason" required:"true"`
+	Actor  *model.Actor `json:"actor"`
+}
+
 func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -268,11 +315,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "ask") {
 		return
 	}
-	var input struct {
-		Kind   string       `json:"kind"`
-		Reason string       `json:"reason"`
-		Actor  *model.Actor `json:"actor"`
-	}
+	var input resolveAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -290,6 +333,12 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	if reason == "" {
 		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest, "resolution requires a kind and reason")
+		return
+	}
+	// A resolution's reason rides the ask.resolved event, so it takes the event's bound; before
+	// the transition opens its transaction, so nothing is written.
+	if length := itemblocks.Units16(reason); length > contracts.DispatchEventBodyMax {
+		capExceeded(w, "reason", length, contracts.DispatchEventBodyMax)
 		return
 	}
 	// Settlement's own retraction reason is how a resolution written before this rule is

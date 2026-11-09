@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -45,11 +46,13 @@ import (
 // readable, and nothing planted outlives the pod whose disk it is on.
 //
 // What the boundary protects is identity, not a repository-write token kept off the issue's disk:
-// an implement role now holds the implement App's token — the same lease as the
-// provisioning token — read-only in its own gh directory (GHConfigDir), and a review role the
-// review App's. What the fetch container's boundary still keeps is that no review role ever holds
-// the implement App's token, which is what lets the daemon's fix-attempt counting read a push's App
-// from the App that made it. A plant that
+// an implement role now holds the implement App's token — for the issue's owner the App's own
+// installation token, which writes, where the provisioning token is that same App narrowed to
+// reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
+// (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
+// keeps is that no review role ever holds the implement App's token, which is what lets the
+// daemon read a push's App from the App that made it, and so tell the review App's red tests
+// from the implementer's code. A plant that
 // an agent's own git triggers after provisioning runs under that agent's role: its clone's
 // helper is `legion git-credential` (workspace.GitHubCredentialHelper), which answers from the gh
 // files of the process running it (its LEGION_GH_OWNERS_DIR and GH_CONFIG_DIR), and here, with
@@ -527,15 +530,13 @@ func (rig *initRig) jj(dir string, args ...string) string {
 
 func (rig *initRig) tool(dir, name string, args ...string) string {
 	rig.t.Helper()
-	command := exec.Command(filepath.Join(rig.bin, name), args...)
-	command.Dir = dir
-	command.Env = append([]string{
+	runner := fixturegit.Runner{TB: rig.t, Env: append([]string{
 		"PATH=" + rig.bin + ":" + os.Getenv("PATH"), "HOME=" + filepath.Join(rig.root, "home"),
 		"XDG_CONFIG_HOME=" + filepath.Join(rig.root, "config"), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-	}, rig.network...)
-	output, _ := command.CombinedOutput()
-	return string(output)
+	}, rig.network...)}
+	output, _ := runner.Try(dir, append([]string{filepath.Join(rig.bin, name)}, args...)...)
+	return output
 }
 
 // holdsNoCanary fails when a file under dir, what names, holds the provisioning token in any of
@@ -688,11 +689,19 @@ func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *t
 		},
 		// A clean filter of the agent's, in the clone's legacy workspace config, and a changed file
 		// it filters. The restart's jj meets both in the retained clone; the next pod's has neither.
+		// The live check gives the clone's working copy the whole tree before it snapshots, with the
+		// `jj sparse reset` provisioning runs on a workspace (workspace.Provision's checkout): a
+		// pod's shared clone holds no working tree and no sparse pattern, since workspace.feedClone
+		// clones it with `git clone --no-checkout` and then clears its patterns, so no jj command of
+		// Legion's snapshots a file there. An agent's filter in the clone becomes live only once the
+		// agent gives that working copy a pattern itself, which is an agent's own command like any
+		// other: what the empty patterns take from the plant is reach, not a way in.
 		{
 			name:  "a working-copy filter in the clone",
 			plant: func(rig *initRig, pod *rigPod) { rig.plantFilter(pod.clone(), "clone filter") },
 			live: func(rig *initRig, pod *rigPod) {
 				rig.plantFilter(pod.clone(), "clone filter")
+				rig.jj(pod.clone(), "sparse", "reset", "-R", pod.clone())
 				rig.jj(pod.clone(), "status", "-R", pod.clone())
 			},
 		},
@@ -851,17 +860,12 @@ func newGitHubStandIn(t *testing.T, root string) *gitHubStandIn {
 		t.Fatal(err)
 	}
 	for _, argv := range [][]string{
-		{"init", "--quiet", "--bare", "--initial-branch=main", remote},
-		{"init", "--quiet", "--initial-branch=main", seed},
-		{"-C", seed, "-c", "user.name=Legion test", "-c", "user.email=legion-test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "seed"},
+		fixturegit.InitBare(remote, "main")[1:],
+		fixturegit.InitWorkTree(seed, "main")[1:],
+		{"-C", seed, "commit", "--quiet", "--allow-empty", "-m", "seed"},
 		{"-C", seed, "push", "--quiet", remote, "HEAD:main"},
 	} {
-		command := exec.Command(git, argv...)
-		command.Dir = root
-		command.Env = fixtureenv.Isolated(t.TempDir())
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(argv, " "), err, output)
-		}
+		fixturegit.Isolated(t, t.TempDir()).Run(root, append([]string{git}, argv...)...)
 	}
 	ca, caKey, caPEM := newCertificateAuthority(t)
 	caFile := filepath.Join(root, "github-ca.pem")

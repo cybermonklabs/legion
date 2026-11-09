@@ -36,10 +36,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 var (
@@ -48,12 +51,20 @@ var (
 	standinErr  error
 )
 
-func TestMain(m *testing.M) {
-	code := m.Run()
-	if standinDir != "" {
-		os.RemoveAll(standinDir)
-	}
-	os.Exit(code)
+func TestMain(m *testing.M) { os.Exit(runRemovingTheStandins(m)) }
+
+// runRemovingTheStandins runs the package's tests and removes the stand-in binaries' directory
+// afterwards. standins makes that directory during a test, not here, so the deferred call reads
+// standinDir when it runs rather than taking its value now, when it is still empty. Being
+// deferred, the removal also runs when setup here panics. A run killed by a signal still keeps
+// the directory, which nothing here can help.
+func runRemovingTheStandins(m *testing.M) int {
+	defer func() {
+		if standinDir != "" {
+			os.RemoveAll(standinDir)
+		}
+	}()
+	return m.Run()
 }
 
 func requireTmux(t *testing.T) {
@@ -403,6 +414,14 @@ func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.D
 	return errors.New("the stream stub does not adopt working copies")
 }
 
+func (c *stubConn) Compact(context.Context, string, time.Duration) error {
+	return errors.New("the stream stub does not compact sessions")
+}
+
+func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
+	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
+}
+
 func (c *stubConn) RescueUnpushed(context.Context, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 	return nil, errors.New("the stream stub does not run push checks")
 }
@@ -452,13 +471,11 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	requireTmux(t)
 	r := &rig{t: t}
 	r.legion, r.omp = standins(t)
+	r.project = "t" + randomHex(t, 4)
 	// The directory is the server's TMUX_TMPDIR itself, with no subdirectory: tmux binds
-	// <TMUX_TMPDIR>/tmux-<uid>/legion-<project>, and a unix socket path holds at most 107 bytes,
-	// so every byte above that socket counts against a long TMPDIR.
-	dir, err := os.MkdirTemp("", "lgt")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// <TMUX_TMPDIR>/tmux-<uid>/legion-<project>, the longest path put under the directory and
+	// the one a unix socket path's 107 bytes have to hold, so that is the room asked for here.
+	dir := testtmp.Dir(t, filepath.Join("tmux-"+strconv.Itoa(os.Getuid()), "legion-"+r.project))
 	r.dir = dir
 	r.stateDir = filepath.Join(dir, "state")
 	for _, d := range []string{r.stateDir, filepath.Join(dir, "roles")} {
@@ -480,7 +497,6 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 		}
 	}
 	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
-	r.project = "t" + randomHex(t, 4)
 	watchdog := armOrphanWatchdog(t, "legion-"+r.project, r.environ)
 	r.daemon = newFakeDaemon()
 	r.stream = newStreamStub(t, filepath.Join(dir, "stream.sock"), r.daemon)
@@ -490,7 +506,6 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 		_ = watchdog.Process.Kill()
 		r.stream.listener.Close()
 		r.daemon.server.Close()
-		os.RemoveAll(dir)
 	})
 	return r
 }
@@ -500,23 +515,24 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 	r.t.Helper()
 	opts := Options{
-		Project:          r.project,
-		StateDir:         r.stateDir,
-		StreamAddress:    "unix://" + filepath.Join(r.dir, "stream.sock"),
-		DaemonURL:        r.daemon.server.URL,
-		EnvoyURL:         "http://127.0.0.1:9020",
-		NatsURLs:         []string{"nats://127.0.0.1:4222"},
-		Launchers:        ompOnly(shellprefix.Word(r.omp)),
-		StopGrace:        5 * time.Second,
-		ProbeInterval:    100 * time.Millisecond,
-		AdoptTimeout:     5 * time.Second,
-		CommandTimeout:   10 * time.Second,
-		Conns:            r.stream,
-		Environ:          r.environ,
-		Executable:       func() (string, error) { return r.legion, nil },
-		GitHubCredential: staticCredential,
-		GH:               fakeGH,
-		RepositoryOwner:  acmeOwner,
+		Project:              r.project,
+		StateDir:             r.stateDir,
+		StreamAddress:        "unix://" + filepath.Join(r.dir, "stream.sock"),
+		DaemonURL:            r.daemon.server.URL,
+		EnvoyURL:             "http://127.0.0.1:9020",
+		NatsURLs:             []string{"nats://127.0.0.1:4222"},
+		Launchers:            ompOnly(shellprefix.Word(r.omp)),
+		StopGrace:            5 * time.Second,
+		ProbeInterval:        100 * time.Millisecond,
+		AdoptTimeout:         5 * time.Second,
+		CommandTimeout:       10 * time.Second,
+		Conns:                r.stream,
+		Environ:              r.environ,
+		Executable:           func() (string, error) { return r.legion, nil },
+		GitHubCredential:     staticCredential,
+		ControllerCredential: staticControllerCredential,
+		GH:                   fakeGH,
+		ClaimRepository:      acmeWidgets,
 	}
 	for _, f := range adjust {
 		f(&opts)
@@ -602,12 +618,8 @@ func (r *rig) workspace(issue string) string {
 
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for %s", within, what)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatalf("timed out after %s waiting for %s", within, what)
 	}
 }
 
@@ -627,18 +639,15 @@ func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 // exiting under the probe's own list-panes. Both converge on Gone.
 func awaitGone(t *testing.T, rt *Runtime, loc runtime.Locator, after string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		obs := probe(t, rt, loc)
-		switch {
-		case obs.Kind == runtime.Gone:
-			return
-		case obs.Kind == runtime.Alive:
+	var obs runtime.Observation
+	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+		obs = probe(t, rt, loc)
+		if obs.Kind == runtime.Alive {
 			t.Fatalf("Probe after %s = %+v: the stopped process is running", after, obs)
-		case time.Now().After(deadline):
-			t.Fatalf("Probe after %s = %+v, want gone within 10s", after, obs)
 		}
-		time.Sleep(20 * time.Millisecond)
+		return obs.Kind == runtime.Gone
+	}) {
+		t.Fatalf("Probe after %s = %+v, want gone within 10s", after, obs)
 	}
 }
 
@@ -717,24 +726,22 @@ func descendant(t *testing.T, root int, name string) int {
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
-	deadline := time.Now().Add(30 * time.Second)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-time.Second)
+	// The read's own answer is the failure text, so err is the wait's verdict: it holds the last
+	// "no such file" when the bound passes, and any other error the moment the read returns it.
+	var raw []byte
+	var err error
+	testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		raw, err = os.ReadFile(path)
+		return err == nil || !errors.Is(err, os.ErrNotExist)
+	})
+	if err != nil {
+		t.Fatalf("read the stand-in's report at %s: %v", path, err)
 	}
-	for {
-		raw, err := os.ReadFile(path)
-		if err == nil {
-			var report map[string]any
-			if err := json.Unmarshal(raw, &report); err != nil {
-				t.Fatalf("the stand-in's report at %s: %v", path, err)
-			}
-			return report
-		}
-		if !errors.Is(err, os.ErrNotExist) || time.Now().After(deadline) {
-			t.Fatalf("read the stand-in's report at %s: %v", path, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("the stand-in's report at %s: %v", path, err)
 	}
+	return report
 }
 
 func hasKillPane(argvs [][]string) bool {
@@ -1112,14 +1119,14 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 	// wrote its credential would change the live pane's gh files.
 	var mintMu sync.Mutex
 	mints := 0
-	minting := func(ctx context.Context, role claim.Role, owner string) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, owner)
+	minting := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, role, repo)
 		mintMu.Lock()
 		mints++
 		token := fmt.Sprintf("ghs_mint_%d", mints)
 		mintMu.Unlock()
-		written := bundle.Owners[bundle.Default]
-		bundle.Owners[bundle.Default] = ghconfig.Render(token, written.App, staticCredentialExpiry)
+		written := bundle.Dirs[bundle.Default]
+		bundle.Dirs[bundle.Default] = ghconfig.Render(token, written.App, staticCredentialExpiry)
 		return bundle, err
 	}
 	withMinting := func(o *Options) { o.GitHubCredential = minting }

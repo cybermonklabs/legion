@@ -1,27 +1,45 @@
 package secrets
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // MintRequest is one release's input to a minter: the secret's stored value, its name and
 // whether the policy snapshot checked for this release holds it as human tier. The Azure
 // minter requires that name to match its configured secret and HumanTier to be true.
 // GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
 // kind leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
-// owner-wide tokens; only the github-app minter reads it.
+// owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
+// google-service-account secret's scopes tag as the whole OAuth scope URLs
+// policy.Secret.ScopeURLs answers, and nil both for such a secret that names no scopes and for
+// every other kind; the service-account minter then asks Google for the cloud-platform scope
+// alone, which is what it asked for before the tag existed.
 type MintRequest struct {
 	Name            string
 	HumanTier       bool
 	Value           string
 	GitHubOwners    []string
+	GoogleScopes    []string
 	GitHubNarrowing *GitHubNarrowing
+}
+
+// Minted is one minted token: the value a release hands over, and when it stops working, zero
+// when the kind's upstream does not say. The airlock's proxy mints again five minutes before
+// Expires, so no call starts on a token about to end.
+type Minted struct {
+	Value   string
+	Expires time.Time
 }
 
 // GitHubNarrowing narrows one github-app release to the installation of one account and, within
 // it, to named repositories of that account, to read access, or to both: GitHub's
 // POST /app/installations/{id}/access_tokens body. It can only narrow what the release would give
 // without it: Owner must be an account the secret's github-owners lists, and the only permissions
-// it names are contents: read, metadata: read and pull_requests: read, which GitHub refuses past what the installation
-// holds. policy.ParseGitHubNarrowing builds it from a caller's input.
+// it names are contents: read, metadata: read, pull_requests: read and actions: read, which
+// GitHub refuses past what the installation holds; an installation that does not hold actions
+// gets the other three (githubapp.go's optionalReadOnlyPermission).
+// policy.ParseGitHubNarrowing builds it from a caller's input.
 type GitHubNarrowing struct {
 	// Owner is the lowercase login of the one account whose installation the release mints for.
 	Owner string
@@ -31,8 +49,9 @@ type GitHubNarrowing struct {
 	// whose body names no permissions all of the App's. Empty leaves the token every repository
 	// the installation reaches.
 	Repositories []string
-	// ReadOnly limits the token to contents: read, metadata: read and pull_requests: read. A machine that must only read
-	// needs it, with or without Repositories.
+	// ReadOnly limits the token to contents: read, metadata: read, pull_requests: read and
+	// actions: read, less the Actions grant an installation does not hold. A machine that must
+	// only read needs it, with or without Repositories.
 	ReadOnly bool
 }
 
@@ -68,10 +87,17 @@ var (
 	// or the broker's Azure projected token is unreadable, malformed or expired.
 	// The broker's operator looks at the projected volume, egress and the upstream's status.
 	ErrMintUpstream = errors.New("the upstream could not be asked")
+	// ErrMintNotBound: the google-service-account secret this release names is not bound to the
+	// account its stored value holds — the deployment's BROKER_SERVICE_ACCOUNT_SECRETS names
+	// another account for this secret, or names the secret not at all. Unlike ErrMintStoredValue,
+	// which the secret's owner fixes by storing a new value, this one is the deployment
+	// operator's to fix in that setting, which is why it is a class of its own; the mint is
+	// refused before any credential is resolved and before any call reaches Google.
+	ErrMintNotBound = errors.New("the deployment binds no such account to this secret")
 )
 
 // MintErrorClass names the class err wraps, for the broker's log line: "stored-value",
-// "refused", "narrowing", "upstream", or "unknown" for an error that wraps none.
+// "refused", "narrowing", "binding", "upstream", or "unknown" for an error that wraps none.
 func MintErrorClass(err error) string {
 	switch {
 	case errors.Is(err, ErrMintStoredValue):
@@ -82,6 +108,8 @@ func MintErrorClass(err error) string {
 		return "refused"
 	case errors.Is(err, ErrMintUpstream):
 		return "upstream"
+	case errors.Is(err, ErrMintNotBound):
+		return "binding"
 	default:
 		return "unknown"
 	}

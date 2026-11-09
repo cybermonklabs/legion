@@ -1,5 +1,6 @@
 export type {
   Actor,
+  ActorAct,
   ActorOrigin,
   Agent,
   AgentLiveView,
@@ -7,6 +8,8 @@ export type {
   Anchor,
   AnchorInput,
   AnswerAskInput,
+  ApproverGrantResp,
+  ApproverGrantsResponse,
   ArchitectureSource,
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -18,13 +21,10 @@ export type {
   Artifact,
   ArtifactApproval,
   ArtifactBlock,
-  ArtifactRebuildReport,
   ArtifactReview,
   ArtifactReviewEventPayload,
-  ArtifactReviewState,
   ArtifactText,
   ArtifactUploadResponse,
-  ArtifactVersionBlob,
   ArtifactVersionContent,
   ArtifactVersionText,
   Ask,
@@ -51,7 +51,6 @@ export type {
   BlockPin,
   BlockSchema,
   BlockTypeSchema,
-  Broadcast,
   BroadcastCreated,
   BroadcastExclusion,
   BroadcastRead,
@@ -62,6 +61,8 @@ export type {
   CheckResult,
   CheckResultCurrency,
   ChildStatusEventPayload,
+  ClaimHolderLiveness,
+  CollaboratorReason,
   Comment,
   CommentDelivery,
   CommentDeliveryEventPayload,
@@ -70,18 +71,18 @@ export type {
   CommentRead,
   CreateAgentMessageInput,
   CreateArtifactInput,
-  CreateAskInput,
   CreateBroadcastInput,
   CreateCommentInput,
-  CreateDeliverySessionGroupInput,
   CreatedAgentToken,
   CreateIssueInput,
-  CreateMessageInput,
   CreateProjectInput,
-  CreateVersionInput,
+  CredentialPendingResponse,
+  CredentialPendingRow,
+  CredentialSession,
   Decision,
   DecisionKeep,
   DecisionLink,
+  DecisionResponse,
   DeliveryCapability,
   DeliveryColorFacet,
   DeliveryComponent,
@@ -91,7 +92,6 @@ export type {
   DeliveryFacet,
   DeliveryFailingJob,
   DeliveryFlagCounts,
-  DeliveryJobConclusion,
   DeliveryJobTiming,
   DeliveryKpiStatus,
   DeliveryLeadTimeCell,
@@ -109,7 +109,6 @@ export type {
   DeliveryLiveSnapshot,
   DeliveryLiveView,
   DeliveryLiveWindow,
-  DeliveryMeasures,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryPR,
@@ -123,20 +122,19 @@ export type {
   DeliverySettingsInput,
   DeliverySpread,
   DeliveryTargets,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   DeliveryTiming,
   DeliveryTimingCell,
   DeliveryTimingDay,
   DeliveryUnownedIssue,
   DeliveryWaitingPR,
   DispatchEvent,
+  DispatchScope,
   DispatchUser,
-  DocEditOp,
   DocumentRead,
   DocumentReferenceSummary,
   DocumentRole,
   DuplicateCandidate,
-  EditAskInput,
   EditCommentInput,
   EditOp,
   Event,
@@ -144,19 +142,30 @@ export type {
   EventsLiveView,
   EventType,
   ExternalLink,
+  GatedStep,
   GraphEdge,
   GraphReferences,
   Handoff,
   HandoffSummary,
+  IDCandidate,
+  InboxDismissRequest,
+  InboxDismissResponse,
+  InboxDismissSeen,
   InboxDocument,
+  InboxListState,
+  InboxReadRequest,
+  InboxReadResponse,
   InboxRow,
   Issue,
   IssueAskRow,
   IssueAskThreadRow,
-  IssueCheckResults,
   IssueChild,
   IssueClaim,
   IssueClaimEventPayload,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+  IssueCollaboratorPerson,
+  IssueCollaborators,
   IssueComponents,
   IssueComponentsInput,
   IssueCoverage,
@@ -165,15 +174,13 @@ export type {
   IssuePriority,
   IssueProgress,
   IssueRankInput,
-  IssueRead,
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
   IssueReferences,
-  IssueRouteReach,
   IssueSummary,
   ItemBlock,
   ItemBlocks,
-  ListUsersResponse,
+  LauncherCredentialResp,
   LiveAgentFrame,
   LiveClientFrame,
   LiveEnded,
@@ -185,6 +192,7 @@ export type {
   LiveSubscribe,
   LiveUnsubscribe,
   LiveView,
+  MarkInboxReadPriority,
   Message,
   MessageDelivery,
   MessageDeliveryEventPayload,
@@ -194,12 +202,18 @@ export type {
   MyAnswerRow,
   MyAnswersResponse,
   MyRepliesResponse,
+  MyReplyAgentRow,
   MyReplyRow,
+  MyReplyThreadRow,
   OpenAskOwner,
+  PersonSignInResp,
+  PersonSignInsResponse,
   ProgressCount,
   Project,
   ProjectDefaultAssignee,
-  ProjectDefaultAssigneeInput,
+  RecordResponse,
+  ReferenceQuestion,
+  ReferenceQuestions,
   RepoProject,
   RequirementCoverage,
   SearchArtifactRef,
@@ -209,12 +223,13 @@ export type {
   SearchResult,
   SearchResultKind,
   SearchResultsPage,
+  StateResponse,
   Subscriber,
   SubscriptionRemovedEventPayload,
   Suggestion,
   Suggestions,
   TargetCandidate,
-  UpdateDeliverySessionGroupInput,
+  TmuxPlace,
   UpdateIssueInput,
   UserAgentState,
   UserAgentStateInput,
@@ -225,141 +240,12 @@ export type {
   WriteSuggestion,
 } from "@legion/contracts";
 
-// Dispatch-UI-only DTOs mirroring the credential broker's JSON verbatim (its UI routes, in the
-// broker's HTTP API reference: https://sjawhar.github.io/legion/broker/reference/api/). These have
-// no reason to live in the shared @legion/contracts package, which is for Envoy event contracts.
-export type CredentialRequestKind = "agent_secret" | "launcher_credential";
-export type CredentialRequestState =
-  | "pending"
-  | "approved"
-  | "denied"
-  | "expired"
-  | "cancelled"
-  | "revoked";
+import type { IssueCollaboratorAgent, IssueCollaboratorLegion } from "@legion/contracts";
 
-/** A credential request's two possibly-differing session ids, read independently by the broker:
- *  `request` is the id the request itself stated (an unsigned override in its body at create
- *  time), `enrollment` is the id its requesting enrollment stated when it enrolled. Either is
- *  null when that id was never set; a machine login (`launcher_credential`, which has no request
- *  row and no requesting enrollment) always answers both null. Optional so an older broker's
- *  response, with no `session` field at all, resolves the same as a request that names neither
- *  id. */
-export interface CredentialSession {
-  request: string | null;
-  enrollment: string | null;
-}
-
-export interface CredentialPendingRow {
-  record_id: string;
-  kind: CredentialRequestKind;
-  identifiers: string[]; // secret rule keys, or [hostname] for a launcher_credential
-  requested_at: string; // RFC3339
-  session?: CredentialSession;
-  /** An `agent_secret` row's page on the secrets broker, where a person signed in to the broker
-   *  decides it (`<BROKER_PUBLIC_URL>/approve/<record>`). Absent on a machine login's row, and on
-   *  every row from a broker older than that page. */
-  approve_url?: string;
-}
-export interface CredentialPendingResponse {
-  pending: CredentialPendingRow[];
-}
-
-export interface CredentialEnrollment {
-  kind: string;
-  runtime_id: string;
-  operator: string | null;
-  /** A pod enrollment's slot: one of several independent identities in one pod, chosen by the
-   *  launcher that enrolled it. Null for every enrollment without one. */
-  slot: string | null;
-}
-export interface CredentialDecisionEvent {
-  event: string; // "approved" | "denied" | "expired" | "cancelled" | "revoked"
-  at: string;
-  credential_id: string | null;
-}
-export interface CredentialRecord {
-  record_id: string;
-  kind: CredentialRequestKind;
-  state: CredentialRequestState;
-  approver: string;
-  enrollment: CredentialEnrollment | null;
-  identifiers: string[];
-  service: string | null;
-  reason: string;
-  /** How many seconds the grant or credential lasts once approved; null for a grant that lasts
-   *  until its session ends. */
-  lifetime_seconds: number | null;
-  rules_version: string;
-  expires_at: string;
-  requested_at: string;
-  decided: CredentialDecisionEvent | null;
-  session?: CredentialSession;
-}
-
-export interface CredentialApproval {
-  state: "approved";
-  credential_id: string | null;
-}
-export interface CredentialDenial {
-  state: "denied";
-}
-/** What a machine login's approve and deny answer, relayed verbatim from the broker: an approval
- *  names the launcher credential it made, and a denial is `{state: "denied"}` alone. */
-export type CredentialDecisionResponse = CredentialApproval | CredentialDenial;
-
-interface CredentialGrantFields {
-  grant_id: string;
-  enrollment: CredentialEnrollment;
-  names: string[];
-  /** When it expires; null for a grant that lasts until its session ends. */
-  expires_at: string | null;
-  created_at: string;
-}
-/** A grant the policy gave a session the viewer operates without asking: no one approved it, so it
- *  has no approver and rests on no record. */
-export interface AutomaticCredentialGrant extends CredentialGrantFields {
-  granted: "automatic";
-  approver: null;
-  record_id: null;
-}
-/** A grant someone approved: `approver` names the login that did (another person's, on a session
- *  the viewer operates), and `record_id` the record the approval rests on. */
-export interface ApprovedCredentialGrant extends CredentialGrantFields {
-  granted: "approval";
-  approver: string;
-  record_id: string;
-}
-/** A live grant on `GET /api/v1/credential-grants?approver=me`: one on a session the viewer
- *  operates, given automatically or approved by anyone, or one the viewer approved on anyone's
- *  session. */
-export type CredentialGrant = AutomaticCredentialGrant | ApprovedCredentialGrant;
-export interface CredentialGrantsResponse {
-  grants: CredentialGrant[];
-}
-
-/** One of the machine logins the viewer may revoke on `GET /api/v1/machine-logins`: the launcher
- *  credential it minted, for one of the viewer's machines or for a service, whoever approved a
- *  service's, not revoked, and either unexpired or expired with a session it started still
- *  running. */
-export interface MachineLogin {
-  credential_id: string;
-  host: string;
-  /** The service a service's login is for (`legion-daemon`), whose sessions are its worker pods;
-   *  null for the viewer's own machine. */
-  service: string | null;
-  /** The Kubernetes ServiceAccount a service's token login proved
-   *  (`system:serviceaccount:<namespace>:<name>`); null for every login a person approved, and
-   *  absent from a broker older than token logins. */
-  subject?: string | null;
-  /** The login of the person who approved it; empty for a service's token login, which no person
-   *  approves. */
-  approved_by: string;
-  issued_at: string;
-  expires_at: string;
-  /** True once `expires_at` has passed: the login starts no more sessions, but sessions it
-   *  started renew with their own keys and still run until they end or it is revoked. */
-  expired: boolean;
-}
-export interface MachineLoginsResponse {
-  credentials: MachineLogin[];
-}
+/** A collaborator session the Legion registry knows: its `legion` entry is never null. Both
+ *  readers that keep such sessions apart from the rest - the Collaborators tab's Legion sections
+ *  and the composer's "Not running" options - narrow to this with a type guard of their own, so
+ *  the narrowed shape is named once here. */
+export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
+  readonly legion: IssueCollaboratorLegion;
+};

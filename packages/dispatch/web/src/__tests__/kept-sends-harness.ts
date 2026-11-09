@@ -1,8 +1,13 @@
 import type { KeptFiles } from "../features/writes/kept-files";
 import { WriteStorage } from "../features/writes/write-storage";
 
-/** A browser's kept upload files, in memory: what IndexedDB holds for the page across a reload. */
-export function memoryFiles(): KeptFiles & { readonly rows: Map<string, File> } {
+/** A browser's kept upload files, in memory: what IndexedDB holds for the page across a reload,
+ *  with `rows` the files it holds now. */
+export interface MemoryFiles extends KeptFiles {
+  readonly rows: Map<string, File>;
+}
+
+export function memoryFiles(): MemoryFiles {
   const rows = new Map<string, { login: string; file: File }>();
   const files = new Map<string, File>();
   return {
@@ -22,6 +27,7 @@ export function memoryFiles(): KeptFiles & { readonly rows: Map<string, File> } 
     put: async (key, login, file) => {
       rows.set(key, { file, login });
       files.set(key, file);
+      return true;
     },
     rows: files,
   };
@@ -102,4 +108,11 @@ export function keptTab(): KeptTab {
     },
     storage,
   };
+}
+
+/** A v7 key minted at `at`, as `newSendKey` mints one: its first twelve hex digits are that
+ *  millisecond, which `keyExpired` reads back. */
+export function keyMinted(at: number): string {
+  const hex = at.toString(16).padStart(12, "0");
+  return `${hex.slice(0, 8)}-${hex.slice(8)}-7abc-9def-0123456789ab`;
 }

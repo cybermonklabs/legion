@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -29,22 +32,25 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},
 		ControllerNotice{Kind: TickNotice, OpenCapabilities: []string{"secrets", "resource-limits"}},
 		ControllerNotice{Kind: UpdateStalledNotice, Reason: "the round has waited 4h0m0s", Update: &UpdateStalled{
-			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/sjawhar/legion-worker:v1, now ghcr.io/sjawhar/legion-worker:v2",
+			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "failed"}},
 		}},
+		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
+			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
 		MergeQueuePublish{Role: "merge-queue", Packet: "READY #42 at head (approved at head) for LEGION-208 (https://github.com/sjawhar/legion/pull/42)"},
+		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		AutoMergeDisable{Number: 42},
 		ReadyMerge{Number: 42, Head: "c0de"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
-		CheckCompare{Look: 2, Cause: "daemon boot", Build: "b00f", OpenedAt: now},
-		CheckCompare{Look: 3, Cause: "deploy run", Deploy: &DeployRun{Run: 40203304600, Attempt: 2, Workflow: ".github/workflows/envoy.yaml", Step: "Apply", Branch: "main"}, OpenedAt: now},
+		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
+		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},
 		CheckBound{},
@@ -160,9 +166,10 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindMergeQueuePublish, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge,
-		OutboxKindCheckCompare, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindPhaseEnded}
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindPhaseEnded, OutboxKindIssueBundle, OutboxKindIssueRelease,
+		OutboxKindGatedStepsPublish, OutboxKindClaimRelease}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage} {
+	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -227,24 +234,17 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "start without role", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208"}, reason: "start requires role"},
 		{name: "a merge queue publish without a role", payload: MergeQueuePublish{Packet: "READY #42"}, reason: "merge queue publish requires role"},
 		{name: "a merge queue publish without a packet", payload: MergeQueuePublish{Role: "merge-queue"}, reason: "merge queue publish requires packet"},
+		{name: "a gated-steps publish without a project", payload: GatedStepsPublish{Steps: []DesignStep{DesignStepSpec}}, reason: "requires the project whose row it writes"},
+		{name: "a gated-steps publish naming no step of the gate", payload: GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{"verification"}}, reason: `names "verification", which is no design-gate step`},
 		{name: "a READY merge without a pull request", payload: ReadyMerge{Head: "c0de"}, reason: "READY merge requires its pull request number and head"},
 		{name: "a READY merge without a head", payload: ReadyMerge{Number: 42}, reason: "READY merge requires its pull request number and head"},
-		{name: "a check look on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: 1}, reason: "a supervise check look names a start of the implementer with no phase"},
-		{name: "a check look on a phase start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Phase: phase.Implementing, CheckLook: 1}, reason: "a supervise check look names a start of the implementer with no phase"},
-		{name: "a check look on another role's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: 1}, reason: "a supervise check look names a start of the implementer with no phase"},
-		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: "a supervise check look names a start of the implementer with no phase"},
-		{name: "a check compare without a look", payload: CheckCompare{Cause: "daemon boot", Build: "b00f"}, reason: "check compare requires the look it starts"},
-		{name: "a check compare without a build", payload: CheckCompare{Look: 1, Cause: "daemon boot"}, reason: "check compare requires the build commit and what asked for it"},
-		{name: "a check compare without a cause", payload: CheckCompare{Look: 1, Build: "b00f"}, reason: "check compare requires the build commit and what asked for it"},
-		{name: "a check compare with both a build and a deploy run", payload: CheckCompare{Look: 1, Cause: "deploy run", Build: "b00f", Deploy: &validDeployRun}, reason: "check compare carries both a build commit and a deploy run; it compares exactly one"},
-		{name: "a check compare with neither a build nor a deploy run", payload: CheckCompare{Look: 1, Cause: "deploy run"}, reason: "or a deploy run in place of the build commit"},
-		{name: "a deploy run check compare without a cause", payload: CheckCompare{Look: 1, Deploy: &validDeployRun}, reason: "or a deploy run in place of the build commit"},
-		{name: "a deploy run without a run", payload: CheckCompare{Look: 1, Cause: "deploy run", Deploy: deployRunWith(func(d *DeployRun) { d.Run = 0 })}, reason: deployRunRefusal},
-		{name: "a deploy run with a negative run", payload: CheckCompare{Look: 1, Cause: "deploy run", Deploy: deployRunWith(func(d *DeployRun) { d.Run = -1 })}, reason: deployRunRefusal},
-		{name: "a deploy run without an attempt", payload: CheckCompare{Look: 1, Cause: "deploy run", Deploy: deployRunWith(func(d *DeployRun) { d.Attempt = 0 })}, reason: deployRunRefusal},
-		{name: "a deploy run without a workflow", payload: CheckCompare{Look: 1, Cause: "deploy run", Deploy: deployRunWith(func(d *DeployRun) { d.Workflow = "" })}, reason: deployRunRefusal},
-		{name: "a deploy run without a step", payload: CheckCompare{Look: 1, Cause: "deploy run", Deploy: deployRunWith(func(d *DeployRun) { d.Step = "" })}, reason: deployRunRefusal},
-		{name: "a deploy run without a branch", payload: CheckCompare{Look: 1, Cause: "deploy run", Deploy: deployRunWith(func(d *DeployRun) { d.Branch = "" })}, reason: deployRunRefusal},
+		{name: "a check look on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
+		{name: "a check look on a phase start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Phase: phase.Implementing, CheckLook: 1}, reason: checkLookRefusal},
+		{name: "a check look on an architect's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
+		{name: "a check look on a reviewer's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
+		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
+		{name: "a check wake without a look", payload: CheckWakeDue{Reason: "the tester's own wake"}, reason: "check wake requires the look it was named at"},
+		{name: "a check wake without a reason", payload: CheckWakeDue{Look: 1}, reason: "check wake requires the reason it wakes the check"},
 		{name: "a phase-ended message to an architect", payload: PhaseEnded{Role: claim.RoleArchitect, From: phase.Accepting, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
 		{name: "a phase-ended message to no role", payload: PhaseEnded{From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
 		{name: "a phase-ended message without the phase that ended", payload: PhaseEnded{Role: claim.RoleTester, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
@@ -278,14 +278,13 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "unknown supervise operation", row: OutboxRow{ID: 37, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"unknown","tree":"LEGION-208","role":"architect"}`)}, reason: "unknown supervise operation"},
 		{name: "start without tree", row: OutboxRow{ID: 38, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"start","role":"architect"}`)}, reason: "start requires tree"},
 		{name: "start without role", row: OutboxRow{ID: 39, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208"}`)}, reason: "start requires role"},
-		{name: "a check compare without a look", row: OutboxRow{ID: 40, Kind: OutboxKindCheckCompare, Payload: json.RawMessage(`{"cause":"daemon boot","build":"b00f"}`)}, reason: "check compare requires the look it starts"},
-		{name: "a check compare with both a build and a deploy run", row: OutboxRow{ID: 42, Kind: OutboxKindCheckCompare, Payload: json.RawMessage(`{"look":1,"cause":"deploy run","build":"b00f","deploy":{"run":7,"attempt":1,"workflow":".github/workflows/envoy.yaml","step":"Apply","branch":"main"}}`)}, reason: "it compares exactly one"},
-		{name: "a check compare with neither a build nor a deploy run", row: OutboxRow{ID: 43, Kind: OutboxKindCheckCompare, Payload: json.RawMessage(`{"look":1,"cause":"deploy run"}`)}, reason: "or a deploy run in place of the build commit"},
-		{name: "a deploy run without a step", row: OutboxRow{ID: 44, Kind: OutboxKindCheckCompare, Payload: json.RawMessage(`{"look":1,"cause":"deploy run","deploy":{"run":7,"attempt":1,"workflow":".github/workflows/envoy.yaml","branch":"main"}}`)}, reason: deployRunRefusal},
-		{name: "a deploy run with an unknown field", row: OutboxRow{ID: 45, Kind: OutboxKindCheckCompare, Payload: json.RawMessage(`{"look":1,"cause":"deploy run","deploy":{"run":7,"attempt":1,"workflow":".github/workflows/envoy.yaml","step":"Apply","branch":"main","job":3}}`)}, reason: "unknown field"},
+		{name: "a check wake without a look", row: OutboxRow{ID: 40, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"reason":"the tester's own wake"}`)}, reason: "check wake requires the look it was named at"},
+		{name: "a check wake without a reason", row: OutboxRow{ID: 42, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1}`)}, reason: "check wake requires the reason it wakes the check"},
+		{name: "a check wake with an unknown field", row: OutboxRow{ID: 43, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1,"reason":"the tester's own wake","build":"b00f"}`)}, reason: "unknown field"},
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a phase-ended message to an architect", row: OutboxRow{ID: 46, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"architect","from":"accepting","to":"implementing","reason":"CI is red at head: pytest"}`)}, reason: "never to an architect"},
 		{name: "a phase-ended message with an unknown field", row: OutboxRow{ID: 47, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"implementing","reason":"CI is red at head: pytest","quiesce":"tester"}`)}, reason: "unknown field"},
+		{name: "a claim release with a field", row: OutboxRow{ID: 48, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
@@ -296,41 +295,9 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 	}
 }
 
-// validDeployRun is a deploy run CheckCompare accepts, which deployRunWith changes one field of.
-var validDeployRun = DeployRun{Run: 40203304600, Attempt: 1, Workflow: ".github/workflows/envoy.yaml", Step: "Apply", Branch: "main"}
-
-// deployRunRefusal is the validation's words for a deploy run missing one of its fields.
-const deployRunRefusal = "check compare's deploy run requires a positive run and attempt and its workflow, step and branch"
-
-// deployRunWith is a copy of validDeployRun that change has altered.
-func deployRunWith(change func(*DeployRun)) *DeployRun {
-	deploy := validDeployRun
-	change(&deploy)
-	return &deploy
-}
-
-// A check_compare row a daemon queued before deploy runs existed carries a build and no deploy:
-// it decodes to the build compare it was, and a build compare encodes no deploy field, so a daemon
-// rolled back past this change still reads the build rows this one writes.
-func TestABuildCheckCompareRowReadsAsItDidBeforeDeployRuns(t *testing.T) {
-	opened := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
-	row := OutboxRow{ID: 46, Kind: OutboxKindCheckCompare, Payload: json.RawMessage(`{"look":2,"cause":"daemon boot","build":"b00f","openedAt":"2026-09-23T01:00:00Z"}`)}
-	got, err := DecodeOutboxPayload(row)
-	if err != nil {
-		t.Fatalf("DecodeOutboxPayload: %v", err)
-	}
-	want := CheckCompare{Look: 2, Cause: "daemon boot", Build: "b00f", OpenedAt: opened}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("payload = %#v, want %#v", got, want)
-	}
-	encoded, err := NewOutboxRow("LEGION-208", want, opened)
-	if err != nil {
-		t.Fatalf("NewOutboxRow: %v", err)
-	}
-	if string(encoded.Payload) != string(row.Payload) {
-		t.Fatalf("a build compare encodes %s, want %s with no deploy field", encoded.Payload, row.Payload)
-	}
-}
+// checkLookRefusal is the validation's words for a supervise row whose check look is not a start
+// of the implementer or the tester with no phase.
+const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
 
 // The release field is gone: an issue's close deletes its Sandbox in every case, so a suspension
 // carries nothing to say which. A row the previous release queued with the field is stripped of
@@ -433,5 +400,287 @@ func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) 
 		if got := PersonActor(actor); got != want {
 			t.Errorf("PersonActor(%q) = %t, want %t", actor, got, want)
 		}
+	}
+}
+
+// The boot's publish of the deployment's design-gate steps is one outbox row addressed to the
+// bare project key rather than to an issue. The record's part is three things: the row is due to
+// the daemon of that project and to no other, which the same split_part scope answers for a key
+// with no hyphen; a boot writes the project's one row of the kind, replacing what a pending row
+// carries, so the list waiting for Dispatch is always the list the booting daemon holds; and a
+// finished row leaves nothing behind, so the boot after it queues its own.
+func TestGatedStepsPublishAtBoot(t *testing.T) {
+	now := time.Date(2026, 11, 6, 4, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	// boot is what openWorkflow does with the list it was configured with: write the project's
+	// one publish.
+	boot := func(project string, steps []DesignStep) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, records.EnqueueGatedSteps(ctx, tx, GatedStepsPublish{Project: project, Steps: steps}, now))
+		})
+	}
+	// queued is the one publish the outbox holds for project, by row id and by what it carries.
+	queued := func(project string) (int64, GatedStepsPublish) {
+		t.Helper()
+		var held []OutboxRow
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			held, err = records.DueRows(ctx, tx, project, "", nil, now)
+			must(t, err)
+		})
+		if len(held) != 1 || held[0].Issue != project {
+			t.Fatalf("DueRows of %s = %#v, want the one publish addressed to the project key", project, held)
+		}
+		payload, err := DecodeOutboxPayload(held[0])
+		must(t, err)
+		publish, ok := payload.(GatedStepsPublish)
+		if !ok {
+			t.Fatalf("the row of %s decodes as %#v, want a gated-steps publish", project, payload)
+		}
+		return held[0].ID, publish
+	}
+
+	boot("LEGION", []DesignStep{DesignStepCriteria, DesignStepSpec})
+	first, publish := queued("LEGION")
+	want := GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}}
+	if !reflect.DeepEqual(publish, want) {
+		t.Fatalf("the publish carries %#v, want %#v, the configured list in the configured order", publish, want)
+	}
+
+	// A second boot on the same list leaves the row it finds where it is, so a restart loop
+	// writes no second publish and takes nothing off the backoff the lane has set on this one.
+	boot("LEGION", []DesignStep{DesignStepCriteria, DesignStepSpec})
+	if id, again := queued("LEGION"); id != first || !reflect.DeepEqual(again, publish) {
+		t.Fatalf("a boot on the unchanged list left row %d carrying %#v, want row %d carrying %#v untouched", id, again, first, publish)
+	}
+
+	// A boot on a changed list while that row is still pending replaces what it carries: an
+	// operator who changes gates.design and restarts while Dispatch has yet to take the publish
+	// gets the list this daemon booted on, not the one the boot before it held.
+	boot("LEGION", []DesignStep{DesignStepSpec})
+	changedRow, changed := queued("LEGION")
+	if changedRow != first {
+		t.Fatalf("the boot on the changed list wrote row %d beside %d, want the pending row carrying the new list", changedRow, first)
+	}
+	if want := (GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepSpec}}); !reflect.DeepEqual(changed, want) {
+		t.Fatalf("the pending publish carries %#v after the boot on a changed list, want %#v", changed, want)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := records.DueRows(ctx, tx, "INFRA", "", nil, now)
+		must(t, err)
+		if len(rows) != 0 {
+			t.Fatalf("DueRows of INFRA = %#v, want nothing: LEGION's publish is LEGION's daemon's", rows)
+		}
+	})
+
+	var claimed OutboxRow
+	inTx(t, st, func(tx pgx.Tx) {
+		var ok bool
+		var err error
+		claimed, ok, err = records.ClaimRow(ctx, tx, changedRow, now, time.Minute)
+		must(t, err)
+		if !ok {
+			t.Fatal("ClaimRow of the publish claimed nothing")
+		}
+		must(t, records.FinishOutbox(ctx, tx, claimed.ID, claimed.LeaseToken))
+	})
+
+	// The run deleted the row, so the next boot publishes whatever it is configured with now: a
+	// deployment that gates nothing publishes the empty list rather than nothing at all.
+	boot("LEGION", []DesignStep{})
+	ran, published := queued("LEGION")
+	if ran == changedRow {
+		t.Fatalf("the boot after the publish ran reused row %d, want a row of its own", ran)
+	}
+	if want := (GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{}}); !reflect.DeepEqual(published, want) {
+		t.Fatalf("the next boot published %#v, want the empty list of a deployment that gates nothing", published)
+	}
+}
+
+// LongestPost is what a caller checks before a message is recorded, and Posted is what the runner
+// posts, so no row's post may pass a bound the text its caller checked clears: the post of the
+// smallest row id and of the largest are the same text but for the marker's digits, and the
+// marker of math.MaxInt64 is the longest there is. Each body here stands on a bound — the body
+// one block or one unit longer makes a post Dispatch refuses, which the case asserts — so a post
+// of some row that measured above LongestPost is refused below rather than passing unnoticed.
+// The shapes are the ones where the marker changes the measure: a body ending in a paragraph,
+// where the marker is a block of its own, and one ending in an open code fence, where it is code
+// inside the last block.
+func TestNoRowsPostMeasuresAboveLongestPost(t *testing.T) {
+	// The blank line and the longest marker LongestPost puts after a body, which the fenced body
+	// below leaves room for inside its last block.
+	marker := len(LongestPost(""))
+	const fence = "see log\n\n```\n"
+	for _, tc := range []struct{ name, body, longer string }{
+		{"a body of paragraphs one block short of the bound on blocks",
+			strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks-1), "\n\n"),
+			strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n")},
+		{"a last paragraph on the bound on units, which the marker stands beside",
+			strings.Repeat("y", dispatchbody.BlockUnits),
+			strings.Repeat("y", dispatchbody.BlockUnits+1)},
+		{"an open code fence the marker falls inside, on the bound on units with it",
+			fence + strings.Repeat("y", dispatchbody.BlockUnits-len("```\n")-marker),
+			fence + strings.Repeat("y", dispatchbody.BlockUnits-len("```\n")-marker+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if over := dispatchbody.Check(LongestPost(tc.body)); over != nil {
+				t.Fatalf("the longest post of this body = %v, want one Dispatch takes", over)
+			}
+			if dispatchbody.Check(LongestPost(tc.longer)) == nil {
+				t.Fatalf("the longest post of this body one block or one unit longer is taken too, so the body is not on the bound and no post below could measure above it")
+			}
+			for _, id := range []int64{1, 9, 10, 99, 100, 1_000_000, math.MaxInt64 - 1, math.MaxInt64} {
+				if over := dispatchbody.Check((MessagePost{Body: tc.body}).Posted(id)); over != nil {
+					t.Errorf("the post of row %d = %v while the text its caller checked passes, so a body checked here is refused at the post", id, over)
+				}
+			}
+		})
+	}
+}
+
+// A published notice of every kind the validation takes is still a payload NewOutboxRow accepts,
+// so every kind can be re-held. The daemon builds a re-held copy out of the payload the publish
+// carried — the listener's report decoded back into a notice (the daemon's exceptionNotice,
+// reholdNotice), with the two paced moments put back by hand on the one path that keeps them
+// (noticeAnswered) — and validates that copy before queueing it, so a field Published drops that
+// the kind's own validation requires makes every re-hold of that kind refused and its architect
+// never told, with nothing else to say so.
+//
+// The table holds one notice of each kind, and the coverage assertion holds it against the
+// validation's own list (validNoticeKinds), in both directions, so a kind added to that list
+// tomorrow is a row missing here rather than a kind nobody checked, and a kind the table names
+// that the validation refuses is named too. Each row is judged by the validation itself rather
+// than against a list of field names, so a field a kind comes to require is covered the day it
+// is required: Published dropping it fails this test without anybody remembering to name it here.
+// Each row then holds the publish to being the notice the daemon wrote, field for field and kind
+// by kind, rather than to validating: the validation refuses a field that is missing, and a field
+// the publish changes instead of dropping is one it takes.
+func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
+	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	paced := answered.Add(time.Minute)
+	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
+	// account of the tree, a waiting-for-slot the wait it was written for, the three spec
+	// decisions the person who decided and the reference, and no other kind carries any of those.
+	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
+	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
+	//
+	// A field every row leaves at zero is compared zero to zero, and proves nothing of the field:
+	// the comparison below would pass on a publish that dropped it. So the pr-blocked row carries
+	// a Resends of 1, since any non-zero value puts the field in the comparison, and it stays
+	// there rather than beside the three set aside. The daemon reads this count off the published
+	// payload and nowhere else: it is what stops the
+	// re-holds at the cap, and what picks the next copy's delay (the daemon's reholdNotice,
+	// notice_exceptions.go). A Published that zeroed it would re-hold every architect notice for
+	// ever, and every check above would stay green.
+	every := []Notice{
+		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
+		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing},
+		{Kind: "worker-stalled", Role: claim.RoleImplementer,
+			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
+		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
+		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head", Resends: 1},
+		{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged at c0de"},
+		{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect, Reason: "pull request #42 was closed without a merge"},
+		{Kind: "pull-request-missing", Role: claim.RoleArchitect, Reason: "the record holds no pull request for LEGION-208"},
+		{Kind: "message-refused", Role: claim.RoleArchitect, Reason: "Dispatch refused the message Legion was posting on LEGION-208"},
+		{Kind: "merge-refused", Role: claim.RoleArchitect, Reason: "GitHub refused the merge of pull request #42"},
+		{Kind: "merge-stalled", Role: claim.RoleArchitect, Reason: "GitHub has shown pull request #42 open at another head since 2026-11-08T09:00:00Z"},
+		{Kind: "merge-removed", Role: claim.RoleArchitect, Reason: "pull request #42 left the merge queue"},
+		{Kind: "merge-waiting", Role: claim.RoleArchitect, Reason: "Legion submitted the merge of pull request #42 an hour ago and GitHub has not completed it"},
+		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},
+		{Kind: "design-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "name the rollback path"},
+		{Kind: "carried-gate-opened", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "the gate came with the hand-over"},
+		{Kind: "ready-refused", Role: claim.RoleArchitect, Version: 3, Reason: "the spec a person approved is version 2, and READY names version 3"},
+		{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-209 is done"},
+		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
+		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
+		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
+		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: its repository is not one Legion serves"},
+		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
+			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
+			CatchUp: &CatchUp{Generation: 3, Launch: 2,
+				Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
+		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},
+		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
+			Topic: "notifications.role.legion-LEGION-208-reviewer"},
+		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "waiting-for-slot", Role: claim.RoleArchitect, Reason: "a person answered the root's ask, and the admission cap has no free slot now",
+			WaitingForSlot: &WaitingForSlot{AnsweredAt: answered}},
+	}
+
+	byKind := make(map[NoticeKind]Notice, len(every))
+	for _, notice := range every {
+		if _, twice := byKind[notice.Kind]; twice {
+			t.Fatalf("the table holds two %s notices, want one of each kind", notice.Kind)
+		}
+		byKind[notice.Kind] = notice
+	}
+	for _, kind := range validNoticeKinds {
+		if _, named := byKind[kind]; !named {
+			t.Errorf("the validation takes a %s notice and the table holds none: add one, or a publish that drops what that kind requires passes here unseen", kind)
+		}
+	}
+	for kind := range byKind {
+		if !validNoticeKind(kind) {
+			t.Errorf("the table holds a %s notice, which is no kind the validation takes", kind)
+		}
+	}
+
+	for _, notice := range every {
+		t.Run(string(notice.Kind), func(t *testing.T) {
+			if _, err := NewOutboxRow("LEGION-208", notice, paced); err != nil {
+				t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)
+			}
+			published, _ := notice.Published(41)
+			// The copy the re-hold builds is this payload, with the two paced moments put back by
+			// hand at the site that builds it; what Published dropped of the kind's own fields is
+			// not put back anywhere, so the copy is refused for want of it.
+			copied := published
+			copied.PacedAt, copied.PacedFrom = notice.PacedAt, notice.PacedFrom
+			if _, err := NewOutboxRow("LEGION-208", copied, paced); err != nil {
+				t.Fatalf("the re-held copy of a published %s notice is refused, so its architect is never told: %v", notice.Kind, err)
+			}
+
+			// Valid is not the same as unchanged. The validation refuses a field a kind requires
+			// and does not hold — a wait with no moment at all — while the daemon compares what
+			// the published row carries against the record exactly (the daemon's
+			// stillWaitsForSlot), so a publish that moved the moment rather than dropping it
+			// would pass every check above and leave the copy unpublishable all the same. The
+			// comparison runs over the wire form the re-hold reads the copy back from, decoded
+			// the way the daemon's exceptionNotice decodes the listener's report, with unknown
+			// fields refused, so a field the publish renames or invents is caught here too.
+			wire, err := json.Marshal(published)
+			if err != nil {
+				t.Fatalf("the published %s notice does not marshal, so no listener could carry it: %v", notice.Kind, err)
+			}
+			var back Notice
+			decoder := json.NewDecoder(strings.NewReader(string(wire)))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&back); err != nil {
+				t.Fatalf("the published %s notice does not read back as a notice, so no re-hold of it can be built: %v", notice.Kind, err)
+			}
+			// Set aside on both sides are the three the publish is meant to change, the daemon's
+			// own bookkeeping of the row, and nothing else: everything a kind carries is the
+			// architect's and must cross the publish untouched. Resends is bookkeeping too and is
+			// not among them, because the re-hold reads it back off the publish: the pr-blocked
+			// row above carries one, so the publish is held to carrying it on.
+			want := notice
+			want.PacedAt, want.PacedFrom, want.ResendOf = time.Time{}, time.Time{}, 0
+			back.PacedAt, back.PacedFrom, back.ResendOf = time.Time{}, time.Time{}, 0
+			if !reflect.DeepEqual(back, want) {
+				// Both are printed as the wire carries them: %#v prints a pointer field's
+				// address rather than the wait or the account behind it, which is where the
+				// kinds that carry one differ. Neither Marshal can fail, the one above having
+				// just marshalled these very fields.
+				gotWire, _ := json.Marshal(back)
+				wantWire, _ := json.Marshal(want)
+				t.Fatalf("the published %s notice is %s, want %s: a published notice that is not the notice the daemon wrote means the re-held copy is not the one its architect was owed", notice.Kind, gotWire, wantWire)
+			}
+		})
 	}
 }

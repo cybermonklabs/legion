@@ -19,6 +19,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/envoy/migrationid"
 )
 
 // Migration is one forward migration, identified by the version its file name carries.
@@ -26,6 +28,10 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
+	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.
+	// Runners without that execution mode must refuse it before applying anything.
+	NonTransactional bool
 	// Census is the text of <version>_<name>.census.sql when the migration declares one: one
 	// select answering one integer, the number of existing rows the migration would refuse or
 	// rewrite, which a deployment reads with Census before it applies the migration. Empty when
@@ -41,14 +47,16 @@ type Migration struct {
 // rollback script an operator runs by hand and no runner applies, or <version>_<name>.census.sql,
 // the migration's census (Migration.Census), which a deployment reads with Census and no runner
 // runs. <version> is decimal digits naming a positive number the runners' bigint version column
-// holds: either one of the numbers the sets grew up with, or, for every migration added since,
-// the UTC moment its author created it, 14 digits YYYYMMDDHHMMSS. Load refuses the whole set,
-// naming the files, when:
+// holds: a number throughout the broker's set; in Dispatch's set, one of the numbers it grew up
+// with or, for every migration added since its numbered series closed, the UTC moment its author
+// created it, 14 digits YYYYMMDDHHMMSS. Load refuses the whole set, naming the files, when:
 //
 //   - two forward migrations share a version: a runner records a migration by its version, so it
 //     would apply the first, pass over the rest as already applied, and report success;
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
+//   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
+//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
@@ -122,7 +130,15 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 			problems = append(problems, fmt.Errorf("read migration %s: %w", name, err))
 			continue
 		}
-		migrations = append(migrations, Migration{Version: version, Name: name, SQL: string(sql)})
+		migration := Migration{Version: version, Name: name, SQL: string(sql)}
+		migration.NonTransactional = nonTransactionalHeader(migration.SQL)
+		if migration.NonTransactional {
+			if _, err := concurrentIndex(migration.SQL); err != nil {
+				problems = append(problems, fmt.Errorf("migration %s: %w", name, err))
+				continue
+			}
+		}
+		migrations = append(migrations, migration)
 	}
 	for i := range migrations {
 		stem := strings.TrimSuffix(migrations[i].Name, ".up.sql")
@@ -133,15 +149,19 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 	}
 	// Stable, so files that share a version stay in name order for the refusal that names them.
 	slices.SortStableFunc(migrations, func(a, b Migration) int { return cmp.Compare(a.Version, b.Version) })
+	var remedy string
 	for start := 0; start < len(migrations); {
 		end := start + 1
 		for end < len(migrations) && migrations[end].Version == migrations[start].Version {
 			end++
 		}
 		if end-start > 1 {
+			if remedy == "" {
+				remedy = collisionRemedy(migrations)
+			}
 			problems = append(problems, fmt.Errorf(
-				"migrations %s share version %d: a runner records a migration by its version, so it would apply the first and skip the rest as already applied; keep the version on the file that merged to main first, since a database may already have applied it, and give each of the rest the UTC moment it was created, 14 digits YYYYMMDDHHMMSS (date -u +%%Y%%m%%d%%H%%M%%S)",
-				joinNames(migrations[start:end]), migrations[start].Version))
+				"migrations %s share version %d: a runner records a migration by its version, so it would apply the first and skip the rest as already applied; keep the version on the file that merged to main first, since a database may already have applied it, and give each of the rest %s",
+				joinNames(migrations[start:end]), migrations[start].Version, remedy))
 		}
 		start = end
 	}
@@ -151,9 +171,45 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 	return migrations, nil
 }
 
-// parseVersion reads the version a forward migration's stem begins with: a number for the
-// migrations the sets grew up with, a 14-digit UTC timestamp for every one added since, which is
-// why it reads 64 bits and the version columns are bigint.
+// collisionRemedy reads the naming rule from the sorted set rather than a caller's directory or
+// a second list of runners. A recorded closing file is authoritative even before that set has a
+// timestamp; check each file alone so another name for its version cannot hide it. Otherwise a
+// timestamp identifies a mixed set, and consecutive numbers from 1 identify a numbered set. A gap
+// with neither kind of evidence leaves the rule uncertain, so name both guards instead of giving
+// advice that one of them refuses. This changes no caller and enforces neither guard in Load.
+// It runs only for a collision, once for the whole set.
+func collisionRemedy(migrations []Migration) string {
+	const timestamp = "the UTC moment it was created, 14 digits YYYYMMDDHHMMSS (date -u +%Y%m%d%H%M%S)"
+	// A timestamp has 14 digits, as migrationid's identifier rule requires
+	// (migrationid.NarrowerThanATimestamp is where that rule writes the threshold).
+	if migrations[len(migrations)-1].Version >= migrationid.NarrowerThanATimestamp {
+		return timestamp
+	}
+	version := make(map[int]string, 1)
+	previous, next := 0, 1
+	numbered := true
+	for _, migration := range migrations {
+		clear(version)
+		version[migration.Version] = migration.Name
+		if _, err := migrationid.ClosedAt(version); err == nil {
+			return timestamp
+		}
+		if migration.Version != previous {
+			if migration.Version != next {
+				numbered = false
+			}
+			previous, next = migration.Version, migration.Version+1
+		}
+	}
+	if numbered {
+		return fmt.Sprintf("the next number in this set, starting at %d, so the versions stay numbered 1 to N with no gap (pgmigratetest.CheckNumberedOneToN)", next)
+	}
+	return "a version under this set's naming guard: pgmigratetest.CheckNumberedOneToN requires the next free number on main, keeping 1 to N with no gap; migrationid.Check requires " + timestamp
+}
+
+// parseVersion reads the version a forward migration's stem begins with: a number, or a 14-digit
+// UTC timestamp in a set whose numbered series closed, which is why it reads 64 bits and the
+// version columns are bigint.
 func parseVersion(stem string) (int, error) {
 	digits, _, ok := strings.Cut(stem, "_")
 	if !ok || digits == "" || strings.Trim(digits, "0123456789") != "" {

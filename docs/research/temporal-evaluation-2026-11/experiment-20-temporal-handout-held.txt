@@ -1,0 +1,83 @@
+Experiment 20, Temporal: the same handout held open for five minutes with no worker alive.
+Recorded 2026-11-08T02:36:34Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+mechanism: Temporal Asynchronous Activity Completion: an activity body that returns activity.ErrResultPending, completed later by whoever holds the task token
+sdk-completion-call: client.CompleteActivity(ctx, taskToken, result, nil)
+case: the handout held open for minutes: the worker that took the activity is killed with SIGKILL, the activity is then left for 5m0s of real time with no worker alive and nothing touching it, and only then does a process holding its task token complete it
+workflow-and-activity: experiment 19's, imported rather than repeated: the same handout workflow, the same activity, the same worker and completer processes
+activity-task-queue: exp20-activity-1794104936706400020
+workflow-task-queue: exp20-workflow-1794104936706400020
+driver-process-registered-the-handout-activity: false
+handout-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e20/exp20-handout-effects-1794104936706400020
+handout-token-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e20/exp20-handout-tokens-1794104936706400020
+handout-start-to-close-timeout: 10m0s
+handout-heartbeat-timeout: none: the activity is scheduled without one, so no heartbeat of this handout can expire
+handout-maximum-attempts: 1
+[worker1] exp19worker: pid=57762
+worker1-pid: 57762
+handout-workflow-id: exp20-handout-1794104936706400020
+handout-run-id: 01a1b8fc-ca7c-753d-bd49-7680b2aa7f38
+handout-first-body-line: attempt=1 pid=57762 at=2026-11-08T02:28:57.325450075Z
+handout-tokens-written-before-kill: 1
+handout-body-executions-before-kill: 1
+handout-activity-pending-before-kill: true
+handout-activity-state-before-kill: Started
+handout-activity-attempt-before-kill: 1
+handout-workflow-status-before-kill: Running
+kill-sent: true
+killed-pid: 57762
+kill-signal: SIGKILL
+worker1-alive-after-kill: false
+hold-window: 5m0s
+hold-poll-interval: 30s
+workers-polling-the-activity-task-queue-during-the-hold: 0
+processes-touching-the-handout-during-the-hold: none: it is neither heartbeated, nor cancelled, nor completed, and no worker is alive to be offered it
+handout-poll-00: elapsed=0s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-01: elapsed=30s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-02: elapsed=1m0s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-03: elapsed=1m30s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-04: elapsed=2m0s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-05: elapsed=2m30s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-06: elapsed=3m0s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-07: elapsed=3m30s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-08: elapsed=4m0s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-09: elapsed=4m30s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+handout-poll-10: elapsed=5m0s pending=true state=Started attempt=1 activity-task-started-events=0 side-effect-file-lines=1
+timed: handout-held-with-no-worker-alive-for: 5m0s
+handout-polls-taken: 11
+handout-polls-that-differ-from-poll-00: 0
+handout-what-changed-across-the-hold: nothing: all 11 readings report the same pending flag, state, attempt, ActivityTaskStarted count and body-execution count as poll-00
+handout-what-reaped-or-re-dispatched-it-during-the-hold: nothing
+completion-token-bytes: 142
+completion-result-sent: exp20-outside-answer-1794104936706400020
+timed: handout-stayed-handed-out-until-the-completion-call-for: 5m0s
+completion-called-by-pid: 57814
+completion-caller-ran-a-worker: false
+completion-caller-registered-the-activity: false
+completion-accepted-by-the-server: true
+completion-error-type: none
+completion-error-message: none
+handout-workflow-returned: true
+handout-workflow-received-result: exp20-outside-answer-1794104936706400020
+handout-workflow-activity-error-type: none
+handout-workflow-activity-error-is-timeout: false
+handout-workflow-activity-timeout-type: none
+handout-workflow-activity-error: none
+handout-body-executions-total: 1
+handout-tokens-written-total: 1
+handout-activity-task-scheduled-events: 1
+handout-activity-task-started-events-while-it-was-open: 0 at every one of the 11 readings
+handout-activity-task-started-events-total: 1
+handout-activity-task-completed-events: 1
+handout-activity-task-failed-events: 0
+handout-activity-task-timed-out-events: 0
+handout-last-activity-history-event: EVENT_TYPE_ACTIVITY_TASK_COMPLETED
+handout-history-event-count: 11
+handout-workflow-status: Completed
+reasoned: what-a-handout-of-hours-would-need: this run left one handed-out activity for 5m0s with no worker alive and nothing touching it, and across 11 readings the server neither reaped it, nor re-dispatched it, nor ran its body again, inside a 10m0s start-to-close timeout and with no heartbeat timeout set, and the start-to-close timeout is the only bound the server was told to enforce on it, so what a handout of hours needs is a start-to-close timeout of hours rather than anything else: nothing here kept the activity alive and nothing here would have had to be asked for more time
+limit: one dev server on one pod, one handout, 5m0s of real time and a 10m0s bound this run never reached: it shows what this server did with a started activity whose worker was dead for five minutes, not what it does over the hours a prompt into a live session can take, not what happens when a start-to-close timeout of hours expires, not what a restarted or clustered server would hold, and not that Legion's sessions would map onto this mechanism
+experiment 20: PASS
+temporal-evaluation: the dev server is stopped: experiments 1 to 6, 19 and 20 are done, and 7 to 18 measure libraries and a server of their own

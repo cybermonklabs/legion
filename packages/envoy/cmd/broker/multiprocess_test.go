@@ -59,10 +59,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -178,7 +179,7 @@ func newBrokerClient(t *testing.T, publicURL, addr, uiToken string) *brokertest.
 	t.Helper()
 	client := brokertest.NewClient(t, publicURL, addr)
 	client.UIToken = uiToken
-	client.DPoP = helper.NewDPoPTransport
+	client.DPoP = brokerclient.NewDPoPTransport
 	return client
 }
 
@@ -282,6 +283,9 @@ func (f *brokerFleet) launch(t *testing.T, drain time.Duration) *brokerProcess {
 		Binary:             f.binary,
 		NoWaitForListening: true,
 		Env: append(append([]string{
+			// These rows log machines in through the device grant, so the page a person
+			// types the code into is named; it is optional and off by default.
+			"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 			"BROKER_DATABASE_URL=" + f.DatabaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=" + multiprocessPublicURL,
@@ -337,20 +341,20 @@ const rereadRateSettles = 30 * time.Second
 // answers that line, which is this process's own rate and not a figure read off a constant.
 func awaitRereadRate(t *testing.T, process *brokerProcess, replicas int) rereadRateLine {
 	t.Helper()
-	for deadline := time.Now().Add(rereadRateSettles); ; time.Sleep(listeningPoll) {
-		rate, ok := rereadRateIn(process.Log())
-		if ok && rate.Replicas == replicas {
-			return rate
+	var rate rereadRateLine
+	var ok bool
+	if !testwait.Holds(rereadRateSettles, listeningPoll, func() bool {
+		rate, ok = rereadRateIn(process.Log())
+		return ok && rate.Replicas == replicas
+	}) {
+		if !ok {
+			t.Fatalf("the broker at %s logged no reread rate at all within %s; want the one it derives from %d pods:\n%s",
+				process.Addr, rereadRateSettles, replicas, process.Log())
 		}
-		if time.Now().After(deadline) {
-			if !ok {
-				t.Fatalf("the broker at %s logged no reread rate at all within %s; want the one it derives from %d pods:\n%s",
-					process.Addr, rereadRateSettles, replicas, process.Log())
-			}
-			t.Fatalf("%s after the fleet became %d pods the broker at %s was still serving the rate it derived from %d of them, one reread every %s; want it to have counted the whole fleet:\n%s",
-				rereadRateSettles, replicas, process.Addr, rate.Replicas, rate.Every, process.Log())
-		}
+		t.Fatalf("%s after the fleet became %d pods the broker at %s was still serving the rate it derived from %d of them, one reread every %s; want it to have counted the whole fleet:\n%s",
+			rereadRateSettles, replicas, process.Addr, rate.Replicas, rate.Every, process.Log())
 	}
+	return rate
 }
 
 // awaitFleetRereadRate waits for every process of the fleet to count the whole fleet, logs the
@@ -544,6 +548,8 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 		Binary:             binary,
 		NoWaitForListening: true,
 		Env: append([]string{
+			// As the pair's: this row logs a machine in through the device grant.
+			"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 			"BROKER_DATABASE_URL=" + solo.DatabaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
@@ -1632,11 +1638,10 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		requireTakes := func(broker rolloutBroker, want int, from, to string) {
 			t.Helper()
 			var took []string
-			for deadline := time.Now().Add(awaitTimeout); ; time.Sleep(listeningPoll) {
-				if took = linesCarrying(broker.process.Log(), takeoverWarning); len(took) >= want || time.Now().After(deadline) {
-					break
-				}
-			}
+			testwait.Holds(awaitTimeout, listeningPoll, func() bool {
+				took = linesCarrying(broker.process.Log(), takeoverWarning)
+				return len(took) >= want
+			})
 			if len(took) != want || want > 0 &&
 				(!strings.Contains(took[want-1], "from="+from) || !strings.Contains(took[want-1], "to="+to)) {
 				t.Fatalf("%s logged %d takeovers %q; want %d, the last from %s to %s", broker.name, len(took), took, want, from, to)

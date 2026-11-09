@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import * as os from "node:os";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import publicUrlFixture from "../../../contracts/fixtures/dispatch-public-url.json";
-import { activeDispatchSettings, type DispatchEnvironment } from "../dispatch-config";
+import {
+  activeDispatchSettings,
+  type DispatchConfigResolution,
+  type DispatchEnvironment,
+} from "../dispatch-config";
 import type { EnvoyHarness } from "../envoy-config";
 import {
   sessionConfigFile,
@@ -11,9 +15,7 @@ import {
   sessionDispatchUrl,
 } from "../session-settings";
 
-function tempDir(): string {
-  return mkdtempSync(path.join(os.tmpdir(), "dispatch-config-"));
-}
+const tempDir = temporaryDirectories("dispatch-config");
 
 /** Writes the neutral file, `$HOME/.config/legion/envoy.json`, which a command reads when it is
  * handed no file and runs under no harness. Returns its path. */
@@ -27,14 +29,26 @@ function writeUserConfig(home: string, config: unknown): string {
 
 const command = { harness: "command" } as const;
 
-/** Dispatch for a caller running in `harness`, from the file that harness's rule chooses. */
+/** Dispatch as the resolver answers it, for a caller running in `harness`. */
+function resolutionFor(
+  env: DispatchEnvironment,
+  options: { readonly harness: EnvoyHarness; readonly cwd: string }
+): DispatchConfigResolution {
+  return sessionDispatchSettings(sessionConfigFile(options.harness, env), env, {
+    cwd: options.cwd,
+  }).dispatch;
+}
+
+/** The same, with an enabled resolution's credential flattened to the bearer it presents, so
+ * these tests compare the token a request would carry rather than the object that carries it. */
 function dispatchFor(
   env: DispatchEnvironment,
   options: { readonly harness: EnvoyHarness; readonly cwd: string }
 ) {
-  return sessionDispatchSettings(sessionConfigFile(options.harness, env), env, {
-    cwd: options.cwd,
-  }).dispatch;
+  const dispatch = resolutionFor(env, options);
+  if (!dispatch.enabled) return dispatch;
+  const { credential, ...rest } = dispatch;
+  return { ...rest, token: credential.secret() };
 }
 
 describe("Dispatch from a harness's envoy.json", () => {
@@ -599,25 +613,25 @@ describe("Dispatch from a harness's envoy.json", () => {
 });
 
 // The one "is Dispatch configured" check every host shares: a configuration that resolves is
-// returned with its URL and token, none is null, and a broken file throws rather than reading as
-// unconfigured.
+// returned with its URL and credential, none is null, and a broken file throws rather than
+// reading as unconfigured.
 describe("activeDispatchSettings", () => {
-  test("returns the resolved URL and token, null when nothing is configured, and throws on a broken file", () => {
-    expect(
-      activeDispatchSettings(
-        dispatchFor(
-          { HOME: tempDir(), DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN: "env-token" },
-          { ...command, cwd: tempDir() }
-        )
+  test("returns the resolved URL and credential, null when nothing is configured, and throws on a broken file", () => {
+    const resolved = activeDispatchSettings(
+      resolutionFor(
+        { HOME: tempDir(), DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN: "env-token" },
+        { ...command, cwd: tempDir() }
       )
-    ).toEqual({ enabled: true, url: "http://dispatch.test", token: "env-token" });
+    );
+    expect(resolved?.url).toBe("http://dispatch.test");
+    expect(resolved?.credential.secret()).toBe("env-token");
     expect(
-      activeDispatchSettings(dispatchFor({ HOME: tempDir() }, { ...command, cwd: tempDir() }))
+      activeDispatchSettings(resolutionFor({ HOME: tempDir() }, { ...command, cwd: tempDir() }))
     ).toBeNull();
     const home = tempDir();
     writeUserConfig(home, "{not json");
     expect(() =>
-      activeDispatchSettings(dispatchFor({ HOME: home }, { ...command, cwd: tempDir() }))
+      activeDispatchSettings(resolutionFor({ HOME: home }, { ...command, cwd: tempDir() }))
     ).toThrow(/^dispatch config: /);
   });
 });

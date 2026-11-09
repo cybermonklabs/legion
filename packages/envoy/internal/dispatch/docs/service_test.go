@@ -23,6 +23,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -3454,6 +3455,38 @@ func TestSettlementMarksAnAskWithAParagraphAfterItsOptionsInvalid(t *testing.T) 
 	})
 }
 
+// A browser edit reaches a document through the Yjs room and settlement, where no ask route's
+// check runs, so the bound an ask's question and options share (askWordingTooLong) is
+// settlement's too: a decision one unit over is marked invalid, with a block.invalid event
+// naming the bound, and its row is left open as it was. Were that wording stored, the ask
+// would take no PATCH at all - an urgency-only edit included - because every ask route holds
+// the merged ask to the same bound. Shortening the question by one unit repairs it.
+func TestSettlementMarksADecisionOverTheWordingBoundInvalid(t *testing.T) {
+	const blockID = "ask-wording"
+	options := []model.AskOption{{Label: "Ship", Description: "Release it"}, {Label: "Hold", Description: "Wait for review"}}
+	// The options the seed wrote spend their own units of the bound; the question fills the
+	// rest of it and one unit more.
+	question := strings.Repeat("a", contracts.DispatchEventBodyMax+1-AskWordingUnits("", options))
+	service, artifactID := seedIndexedShipAsk(t, blockID)
+	setQuestion := func(text string) {
+		t.Helper()
+		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+			ask := firstAsk(tree)
+			ask.Children[0] = parsedBlock(t, text+"\n")
+			return tree
+		})
+		settleCurrentGeneration(t, service, artifactID)
+	}
+
+	setQuestion(question)
+	reason := fmt.Sprintf("ask block %q is 1 characters over the %d-character limit on its question and options (%d/%d)",
+		blockID, contracts.DispatchEventBodyMax, contracts.DispatchEventBodyMax+1, contracts.DispatchEventBodyMax)
+	assertAskMarkedInvalidAndKept(t, service, artifactID, blockID, reason)
+
+	setQuestion(question[:len(question)-1])
+	assertAskRepaired(t, service, artifactID, blockID, question[:len(question)-1], options)
+}
+
 // seedIndexedShipAsk is a document holding one ask, "Should we ship?" with the options Ship and
 // Hold, which settlement has indexed as an open ask row. Its settlements run only when the test
 // runs them.
@@ -4330,7 +4363,7 @@ func TestBackfillStampsClosedIssueDocument(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 
 	reports, err := service.BackfillBlockIDs(context.Background())
 	if err != nil {
@@ -4364,7 +4397,7 @@ func TestAClosedIssuesDocumentReadsItsBlocksWithoutFailingItsRoom(t *testing.T) 
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 
 	markdown, blocks, err := service.TextWithBlocks(context.Background(), artifactID)
 	if err != nil {
@@ -4391,7 +4424,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -5371,14 +5404,14 @@ func TestIssueReopenRestoresLiveWrites(t *testing.T) {
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 	if _, err := joinedReplaceText(service, artifactID, "closed", model.Actor{Kind: "user", ID: "alice"}); !errors.Is(err, ErrIssueClosed) {
 		t.Fatalf("write to closed issue = %v, want ErrIssueClosed", err)
 	}
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 		t.Fatalf("reopen document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", false)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 	service.events.Publish(model.Event{IssueKey: new("DOC-1"), Type: "issue.closed"})
 	if got := service.events.SubscriberCount(); got != 0 {
 		t.Fatalf("stale issue.closed event gained %d subscriptions, want none", got)
@@ -5551,11 +5584,11 @@ func (s failingVersionedStore) AppendUpdate(ctx context.Context, room string, up
 	return s.VersionedStore.AppendUpdate(ctx, room, update)
 }
 
-func (s failingVersionedStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s failingVersionedStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if s.appendErr != nil {
 		return 0, s.appendErr
 	}
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
 
 func (s failingVersionedStore) AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error) {
@@ -5600,12 +5633,12 @@ func (s *blockingFirstAppendStore) AppendUpdate(ctx context.Context, room string
 	return s.VersionedStore.AppendUpdate(ctx, room, update)
 }
 
-func (s *blockingFirstAppendStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s *blockingFirstAppendStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if s.blocked.CompareAndSwap(false, true) {
 		close(s.entered)
 		<-s.release
 	}
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
 
 func (s *blockingFirstAppendStore) AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error) {
@@ -5625,8 +5658,12 @@ func (s *Service) room(name string) *roomState {
 }
 
 // recordActor makes actor a pending author of room's next version, and its latest editor, as a
-// landed browser edit does: a durable pending author, written under the document's advisory lock
-// (AppendUpdateWithCredit), and the room's latest edit source.
+// landed browser edit does. Under the document's advisory lock (AppendUpdatesWithCredit) it makes
+// the writes such an append makes: a durable pending author, and a pending-settlement row saying
+// the document owes a settlement from that edit and naming actor as its latest edit source
+// (updateOwedStatement). It then names actor on the room's record, where a
+// settlement on this process reads the source while that row stands. A test staging a document
+// that owes no settlement deletes the row after this call (clearPendingSettlementRow).
 func (s *Service) recordActor(t *testing.T, room string, actor model.Actor) {
 	t.Helper()
 	ctx := context.Background()
@@ -5641,8 +5678,17 @@ func (s *Service) recordActor(t *testing.T, room string, actor model.Actor) {
 	if err := upsertPendingAuthors(ctx, tx, room, pendingAuthorsAt(map[string]model.Actor{actorKey(actor): actor}, 0)); err != nil {
 		t.Fatalf("record %s as a pending author: %v", actor.ID, err)
 	}
+	var owed owedUpdates
+	owed.credit(&actor, actor.Kind == "user")
+	statement, err := updateOwedStatement(room, owed)
+	if err != nil {
+		t.Fatalf("the statement recording %s's edit as owed: %v", actor.ID, err)
+	}
+	if err := statement.exec(ctx, tx); err != nil {
+		t.Fatalf("record the document as owing a settlement from %s's edit: %v", actor.ID, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %s as a pending author: %v", actor.ID, err)
+		t.Fatalf("commit %s's recorded edit: %v", actor.ID, err)
 	}
 	state := s.lockState(room)
 	// Every recorder of an edit source moves creditSeq (creditContentChange, Ledger.creditRooms),

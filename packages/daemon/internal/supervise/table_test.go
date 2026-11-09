@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -145,6 +146,7 @@ func samples(t *testing.T) map[string][]Event {
 		"StreamTurnStart":      {StreamTurnStart{}},
 		"StreamTurnEnd":        {StreamTurnEnd{}},
 		"StreamPromptResult":   {StreamPromptResult{}},
+		"StreamToolStep":       {StreamToolStep{}},
 		"StreamClosed":         {StreamClosed{}},
 		"StreamLateRefusal":    {StreamLateRefusal{}},
 		"PromptAcked":          {PromptAcked{}},
@@ -152,7 +154,9 @@ func samples(t *testing.T) map[string][]Event {
 		"PodUpdateOpen":        {PodUpdateOpen{}},
 		"PodUpdateEnded":       {PodUpdateEnded{}},
 		"StalePlugin":          {StalePlugin{}},
+		"StallBackstop":        {StallBackstop{}},
 		"PodUpdateSignalled":   {PodUpdateSignalled{}},
+		"PodUpdateReask":       {PodUpdateReask{}},
 		"RequestSpawn":         {RequestSpawn{}},
 		"RequestRegister":      {RequestRegister{}},
 		"RequestReady":         {RequestReady{}},
@@ -168,6 +172,8 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestForgetSession": {RequestForgetSession{}},
 		"RequestDeliver":       {RequestDeliver{}},
 		"RequestExit":          {RequestExit{}},
+		"RequestCompact":       {RequestCompact{}},
+		"CompactEnded":         {CompactEnded{}},
 	}
 	for _, kind := range timers {
 		byType["Timer"] = append(byType["Timer"], Timer{Kind: kind})
@@ -285,6 +291,9 @@ func fenced(ev Event, c Claim) Event {
 		return StreamPromptResult{Claim: c.Token, DeliveryID: c.Pending.ID, AgentInvoked: true}
 	case StreamClosed:
 		return StreamClosed{Claim: c.Token}
+	case StreamToolStep:
+		return StreamToolStep{Claim: c.Token, Tool: "bash", CallID: "toolu_turn1_0",
+			ArgsBytes: len(toolArgs), ArgsHash: toolArgsHash(toolArgs)}
 	case StreamLateRefusal:
 		return StreamLateRefusal{Claim: c.Token, DeliveryID: c.Pending.ID, Error: "busy"}
 	case PromptAcked:
@@ -295,12 +304,16 @@ func fenced(ev Event, c Claim) Event {
 		return Timer{Claim: c.Token, Kind: ev.Kind, Generation: c.Generation, Seq: 7777, DeliveryID: c.Pending.ID}
 	case StalePlugin:
 		return StalePlugin{Claim: c.Token}
+	case StallBackstop:
+		return StallBackstop{Claim: c.Token, Bound: time.Hour, Deadline: epoch.Add(-time.Hour)}
 	case PodUpdateSignalled:
 		return PodUpdateSignalled{Claim: c.Token, Generation: c.Generation, Session: session, Head: "deadbeef"}
 	case PodUpdateOpen:
 		return PodUpdateOpen{Claim: c.Token, Round: PodRound("a-pod-uid"), Reasons: "image", Task: UpdateTask(PodRound("a-pod-uid"), "image")}
 	case PodUpdateEnded:
 		return PodUpdateEnded{Claim: c.Token}
+	case PodUpdateReask:
+		return PodUpdateReask{Claim: c.Token, Round: PodRound("a-pod-uid")}
 	case RequestSpawn:
 		return RequestSpawn{Claim: c.Token}
 	case RequestRegister:
@@ -325,6 +338,10 @@ func fenced(ev Event, c Claim) Event {
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
+	case RequestCompact:
+		return RequestCompact{Claim: c.Token}
+	case CompactEnded:
+		return CompactEnded{Claim: c.Token, Generation: c.Generation, Compacted: true}
 	}
 	panic("unhandled sample")
 }
@@ -355,6 +372,12 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 					ev := fenced(sample, c)
 					if timer, ok := ev.(Timer); ok {
 						h.m.timers[timer.Kind] = armed{seq: timer.Seq, deliveryID: timer.DeliveryID}
+					}
+					if end, ok := ev.(CompactEnded); ok {
+						// The fence answers an end whose compaction the claim no longer holds
+						// before any row sees it (ownsCompaction), so the compaction it names is
+						// recorded here, as a timer's arming is.
+						h.m.compacting = &compacting{generation: end.Generation, back: c.State}
 					}
 					before := h.claim()
 					puts := len(h.store.history())
@@ -427,7 +450,7 @@ func TestAnEventForAnotherClaimIsAnError(t *testing.T) {
 func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
-		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit,
+		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
 		PodUpdateSignalled:
 		return true
 	}

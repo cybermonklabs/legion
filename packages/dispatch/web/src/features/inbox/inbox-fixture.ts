@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, type Mock, spyOn } from "bun:test";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 
@@ -33,7 +34,7 @@ export function installInboxApiMocks(): InboxApiMocks {
     mocks.getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
     mocks.getReferences = spyOn(api, "getReferences").mockResolvedValue({
       edges: [],
-      node: { id: "", kind: "ask" },
+      node: graphNode({ id: "", kind: "ask" }),
     });
   });
   afterEach(() => {
@@ -51,13 +52,16 @@ export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
   return {
     anchor: null,
     answer: null,
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-11T00:00:00Z",
     edited_at: null,
     id: "ask-a",
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -70,6 +74,7 @@ export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
       route: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
     },
     question: "Which approach?",
     state: "open",
@@ -96,6 +101,7 @@ export function mockAskReads(rows: readonly InboxRow[]) {
       route: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
     };
   });
 }

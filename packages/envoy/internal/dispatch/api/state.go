@@ -21,8 +21,12 @@ type userIssueState struct {
 	Seq         int64    `json:"seq"`
 }
 
+// userState is the body GET /api/v1/me/state answers: the caller's state for each issue it
+// holds one for, by issue key.
+type userState map[string]userIssueState
+
 func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -35,7 +39,7 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	state := map[string]userIssueState{}
+	state := userState{}
 	for rows.Next() {
 		var key string
 		var value userIssueState
@@ -57,24 +61,39 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, state)
 }
 
+// userIssueStateInput is the body of PUT /api/v1/me/issues/{key}/state.
+type userIssueStateInput struct {
+	Pinned      *bool     `json:"pinned"`
+	LastReadSeq *int      `json:"last_read_seq"`
+	Dismissed   *[]string `json:"dismissed"`
+	Seq         *int64    `json:"seq"`
+	// Actor names no writer of this row: the state is the calling person's, keyed on the
+	// login actingPerson resolves, and the row has no column for a session. The session it
+	// names is the acting agent's, which goes on the act of the event this write appends
+	// (actSessionFromBody); a client that has always sent one is not refused for an unknown
+	// key either (decodeJSON).
+	Actor *model.Actor `json:"actor"`
+}
+
+// userStateStaleError is the 409 STATE_STALE body PUT /api/v1/me/issues/{key}/state answers a
+// write whose seq is not newer than the stored row's.
+type userStateStaleError struct {
+	Code  string         `json:"code"`
+	Error string         `json:"error"`
+	State userIssueState `json:"state"`
+}
+
 func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Pinned      *bool        `json:"pinned"`
-		LastReadSeq *int         `json:"last_read_seq"`
-		Dismissed   *[]string    `json:"dismissed"`
-		Seq         *int64       `json:"seq"`
-		Actor       *model.Actor `json:"actor"`
-	}
+	var input userIssueStateInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	if actor.Kind != "user" {
-		writeError(w, "HUMAN_ONLY", http.StatusForbidden, "user state is only available to users")
+	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
 		return
 	}
 	if input.LastReadSeq != nil && *input.LastReadSeq < 0 {
@@ -109,10 +128,10 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Seq != nil && *input.Seq <= value.Seq {
-		WriteJSON(w, http.StatusConflict, map[string]any{
-			"code":  "STATE_STALE",
-			"error": "user state was updated by another write",
-			"state": value,
+		WriteJSON(w, http.StatusConflict, userStateStaleError{
+			Code:  "STATE_STALE",
+			Error: "user state was updated by another write",
+			State: value,
 		})
 		return
 	}
@@ -186,6 +205,10 @@ type userAgentState struct {
 	UnreadReplies int     `json:"unread_replies"`
 }
 
+// userAgentStates is the body GET /api/v1/me/agents/state answers: the caller's state for each
+// agent conversation it holds one for, by session id.
+type userAgentStates map[string]userAgentState
+
 // agentStateCutoffSkew is how far ahead of the server clock a Clear or a read mark may land. The
 // client stamps the cutoff with its own clock, and a browser a few seconds fast must not be
 // refused.
@@ -211,13 +234,13 @@ const userAgentStatesQuery = `
 // not nil. The read mark and the viewer's own direct messages are matched on the canonical
 // login, so one person is one viewer however their identity source spells them; the Clear
 // (user_agent_state, migration 0033) is keyed on the raw actor id.
-func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (map[string]userAgentState, error) {
+func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (userAgentStates, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, userAgentStatesQuery, unreadDirectRepliesArgs(login, sessionID)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	states := map[string]userAgentState{}
+	states := userAgentStates{}
 	for rows.Next() {
 		var session string
 		var clearedBefore, readThrough *time.Time
@@ -233,7 +256,7 @@ func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionI
 }
 
 func (s *server) getUserAgentState(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -261,6 +284,26 @@ func parseAgentStateCutoff(name string, value *string) (*time.Time, error) {
 	return &parsed, nil
 }
 
+// userAgentStateInput is the body of PUT /api/v1/me/agents/{session_id}/state.
+type userAgentStateInput struct {
+	ClearedBefore *string  `json:"cleared_before"`
+	ReadThrough   *string  `json:"read_through"`
+	ReadReplies   []string `json:"read_replies"`
+}
+
+// userAgentStateEvent announces that the viewer's state on one session moved. It is owned by the
+// session, like its messages, so the outbox publishes it nowhere and it reaches only the viewer's
+// other tabs and devices, which refresh their badge from it rather than waiting for a focus or
+// the next message. Both writers of that state build it here: putUserAgentState below, and the
+// Inbox's Mark all read (api/inbox_read.go).
+func userAgentStateEvent(actor model.Actor, sessionID string) model.Event {
+	return model.Event{
+		Type:    "user_agent_state.updated",
+		Actor:   actor,
+		Payload: model.UserAgentStateEventPayload{Login: actor.ID, SessionID: sessionID},
+	}
+}
+
 // putUserAgentState records a Clear (cleared_before, which replaces the previous one), a read
 // mark (read_through, which only ever moves forward, so a tab that read less a moment ago cannot
 // make a reply unread again), and/or replies read one by one (read_replies, the session's own
@@ -269,15 +312,11 @@ func parseAgentStateCutoff(name string, value *string) (*time.Time, error) {
 // replies already read by id or passed by the read mark (one the Clear hides is neither), and
 // answers with the session's whole state.
 func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		ClearedBefore *string  `json:"cleared_before"`
-		ReadThrough   *string  `json:"read_through"`
-		ReadReplies   []string `json:"read_replies"`
-	}
+	var input userAgentStateInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -409,14 +448,13 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		// of them its own replies, and a session answers only what was delivered to it, so its
 		// replies sit under roots targeted at it, where this mark is the one the unread count
 		// reads. A Clear plays no part: it can move back.
-		if _, err := tx.Exec(r.Context(), `
-			delete from user_agent_reply_read
-			using messages, user_agent_read
-			where user_agent_reply_read.login = $1 and user_agent_reply_read.session_id = $2
-			  and user_agent_read.login = $1 and user_agent_read.session_id = $2
-			  and messages.id = user_agent_reply_read.reply_id
-			  and messages.created_at <= user_agent_read.read_through
-		`, model.CanonicalLogin(actor.ID), sessionID); err != nil {
+		//
+		// The dead rows are locked in one order before the delete reaches them, for the reason
+		// written on pruneAgentReplies below, which this route and the Inbox's mark-all share
+		// (markInboxReadThreads names the lock order every writer here takes).
+		if _, err := tx.Exec(r.Context(), pruneAgentReplies,
+			model.CanonicalLogin(actor.ID), []string{sessionID},
+		); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -432,15 +470,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// The viewer's other open tabs and devices refresh their badge from this event rather
-		// than waiting for a focus or the next message. It is owned by the session, like its
-		// messages, so the outbox publishes it nowhere and it reaches only the dashboard's event
-		// stream.
-		event, err := s.appendEvent(r.Context(), tx, model.Event{
-			Type:    "user_agent_state.updated",
-			Actor:   actor,
-			Payload: model.UserAgentStateEventPayload{Login: actor.ID, SessionID: sessionID},
-		})
+		event, err := s.appendEvent(r.Context(), tx, userAgentStateEvent(actor, sessionID))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -458,3 +488,30 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, http.StatusOK, states[sessionID])
 }
+
+// pruneAgentReplies is the one prune of user_agent_reply_read, shared by the two writers that
+// make rows dead: this route, which moves one session's read mark, and the Inbox's mark-all,
+// which writes replies by id across several sessions at once. A reply at or before its session's
+// read mark is read whatever user_agent_reply_read holds, so its row is dead.
+//
+// The locked subquery takes exactly those rows, ascending by reply id, and the delete removes the
+// rows it locked and no others: a delete left to itself locks rows in whatever order its plan
+// finds them, and the plans differ with the session list's size, so two writers that crossed here
+// would each hold a row the other waits on. One statement rather than a lock and a delete of its
+// own, because two statements read two snapshots, and a row that died between them would be
+// deleted without ever being locked in that order (markInboxReadThreads states the whole lock
+// order this file's transactions take).
+const pruneAgentReplies = `
+	with locked as materialized (
+		select user_agent_reply_read.reply_id
+		from user_agent_reply_read, messages, user_agent_read
+		where user_agent_reply_read.login = $1 and user_agent_reply_read.session_id = any($2::text[])
+		  and user_agent_read.login = $1 and user_agent_read.session_id = user_agent_reply_read.session_id
+		  and messages.id = user_agent_reply_read.reply_id
+		  and messages.created_at <= user_agent_read.read_through
+		order by user_agent_reply_read.reply_id
+		for no key update of user_agent_reply_read
+	)
+	delete from user_agent_reply_read
+	using locked
+	where user_agent_reply_read.login = $1 and user_agent_reply_read.reply_id = locked.reply_id`

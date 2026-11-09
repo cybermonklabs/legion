@@ -14,6 +14,9 @@ const session: ChannelSession = {
   unfollow: async () => [],
   rememberRole: async () => undefined,
   onRoleRegained: () => undefined,
+  capabilitiesChanged: () => undefined,
+  observe: () => undefined,
+  messageOf: () => undefined,
   shutdown: async () => undefined,
 }
 
@@ -22,6 +25,7 @@ test("reports the Claude project directory rather than the package launch direct
     identity: new SessionIdentity("ses_claude", "/work/project"),
     client: {} as EnvoyClient,
     session,
+    clientInstanceID: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
   }
 
   const result = await executeEnvoyTool(runtime, "envoy_whoami", {})

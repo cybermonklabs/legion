@@ -7,7 +7,13 @@ itself (`internal/testnats/cmd/natsd`), so it needs no container runtime. It
 posts signed public GitHub fixtures and a three-paragraph direct message,
 checks the one-warning response for a never-seen GitHub repository, reads the
 registered session back by id from `/v1/registry/<session_id>` and an id that
-never registered as `404 {"error":"no live session <id>"}`, rejects an unheld
+never registered as `404 {"error":"no live session <id>; this listener does
+not know when it last registered","state":"gone"}` — dispatch://INFRA-392 puts
+the state the refusal was decided on beside the kept `no live session <id>`
+prefix, with a `last_seen` only when this listener still remembers a
+registration, and, when it remembers none, those words in its place rather
+than a missing field, so a sender can tell a session this listener watched
+reach the gone horizon from one it has never heard of — rejects an unheld
 role publish before claiming it for a stand-in session that takes every
 delivery from its own NATS consumer, refuses a registration naming a port,
 captures the raw notification envelopes, and proves that the shared TypeScript
@@ -16,8 +22,8 @@ repeating its first line.
 
 It also proves the three answers a sender gets when a send cannot be delivered:
 a send to a session the store does not hold is refused `404 {"error":"no live
-session <id>"}`; each send leaves exactly one `listener send` record in
-`listener.log`, INFO when accepted and WARN when refused, carrying
+session <id>","state":"gone"}`; each send leaves exactly one `listener send`
+record in `listener.log`, INFO when accepted and WARN when refused, carrying
 `target_session`, `event_id`, `source`, `source_session`, `payload_summary`,
 `outcome` and `status`; and a send whose bus is gone is refused `503` with
 `{"error":"envoy: the message bus did not answer: …"}` and `Retry-After: 1`
@@ -50,6 +56,272 @@ now refuses above 0, and takes its messages from its own NATS consumer. The
 NATS server is a process of this checkout's own build, stopped on exit with the
 listener and the two fake clients. CI runs it as the `envoy-e2e-local` job of
 `.github/workflows/ci.yaml` on every change its `envoy_e2e_local` filter matches.
+
+## e2e-refill.sh
+
+Proves on the real listener and a NATS server of its own (`internal/testnats/cmd/natsd`, its file
+store under the output directory) that the listener keeps its copy of a bucket while it reads the
+bucket again, and that its two list routes refuse, with no active-sessions sample, while it cannot
+stand behind that copy (INFRA-261). `internal/testnats/cmd/refillrig` does the work a shell cannot
+do quickly: it seeds the session and interest buckets, through the listener's
+`POST /v1/interests/subscribe` and straight into the buckets, deletes and recreates a bucket,
+polls `GET /v1/sessions`, `GET /v1/interests/` and `/metrics` as fast as they answer, and judges
+each scenario from those polls beside the listener's own log lines.
+
+```bash
+packages/envoy/scripts/e2e-refill.sh [--scenario reread|interrupt|refuse|recreate-live|all]
+```
+
+The listener's watcher reads its bucket's stream every 2 s, so it finds a recreated bucket itself
+and starts the read of the new bucket at once. The `reread` and `interrupt` scenarios observe that
+read of a whole bucket, so the rig stops the listener (`SIGSTOP`) while it deletes, creates and
+fills the bucket, and continues it once the bucket is full, just after a tick of the listener's
+30 s self-health monitor, so no tick falls while the listener is stopped.
+
+- `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the session bucket
+  holding `both` with changed titles and 3,000 `new`, the interest bucket the same way with changed
+  topics, and the session bucket again with the very records it holds (only its creation time
+  changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
+  many list answers. Every `old` and `both` row must be listed until the read's completed
+  `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
+  it.
+- `interrupt`: on a 41,000-record session bucket, stops NATS the moment the read of the new bucket
+  begins (its `bucket was recreated; its cache is re-read` line), either with `SIGSTOP` until the
+  scan times out (or the watcher ends) and then `SIGCONT`, or with `SIGKILL` and a restart
+  (`--interrupt-by stop|restart`, both by default). Nothing may be removed until a later read,
+  which the listener starts itself, completes and sweeps; the verdict names which incomplete
+  outcome the log shows.
+- `recreate-live`: recreates the session bucket under a running listener, 26 to 28 s before a
+  self-health tick, so the tick cannot be what reads it, in two shapes: an old stream shorter than
+  the new one, and one longer (the old bucket's records written three times). The old bucket has a
+  60 s `MaxAge` (the listener adopts a bucket's), 1,000 `same` and 1,000 `chg` sessions, and `hb`,
+  whose old record expires 3.5 s after the recreate; the new one holds `same` unchanged, `chg` with
+  changed titles, 1,000 `new` and `hb` renewed. The recreate lands between two of the watcher's
+  stream probes, and NATS is stopped for 4 s from the watcher's `bucket was recreated under its
+  watcher` line, so `hb`'s old record expires after the copy stopped following and before the read
+  delivers its renewal. Each shape passes when the watcher logs that finding and completes the read
+  of the new bucket before the tick, with no self-health failure or rebuild; every `GET
+  /v1/sessions` answer lists every record of the old copy, `hb` included, until the read completes;
+  none answered before a line says the copy stopped following lists records only the new bucket has
+  while lacking others it held (a consumer nats.go moved onto the new stream resumes past the
+  sequences the old one covered); and once the read and the fill are done the list is exactly the
+  new bucket. A listener that finds a recreate only by the self-health tick's `Check` fails both
+  shapes: the longer one shows nothing of the new bucket before the tick, the shorter one part of
+  it. `refillrig recreate -fill-log` records when each record of the fill was acknowledged, so a
+  read that begins before the fill is done is judged against what the bucket held.
+- `refuse`: a start on 40,000-record buckets, where every list answer is the refilling `503` with
+  `Retry-After: 5` or the whole bucket and no gauge has a sample while its list refuses; NATS down
+  past the 2-minute stale bound, where both lists answer the refilling `503` and `/metrics` has
+  neither gauge's sample, then a complete `200` within 30 s of NATS's return with both gauges equal
+  to the lists; and empty buckets, which answer `200 []` and `0` samples. The outage waits out the
+  real bound, which the listener has no setting for, so the scenario takes about four minutes.
+  `--during-refuse <command>` runs while both lists refuse and `--after-refuse <command>` once they
+  are whole again, each with `bash -c`, `ENVOY_URL` and `REFILL_RIG_ROLE`, `REFILL_RIG_HOLDER` (a
+  registered session whose topics make it that role's holder), `REFILL_RIG_SESSIONS` and
+  `REFILL_RIG_DIR` exported, so another client (an MCP host, Dispatch) is checked in the same
+  window; their output is in `refuse/during-refuse.log` and `refuse/after-refuse.log`.
+
+Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, or
+`INVALID <reason>` when the run missed the window it was there to observe (no poll inside the read,
+a scan that finished before the interruption, a read that began before the bucket was filled, a
+self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
+verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
+`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
+scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
+`$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
+ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+
+## dev-airlock.sh
+
+Brings up the whole local surface the airlock's checks run on, with no container
+runtime and no cluster, and prints the exports a check needs. It runs
+`dev-broker.sh` for Postgres, `dev-oidc-issuer`, the five built binaries and that
+script's own broker, and reads what it printed, rather than starting any of that a
+second time; on top it starts `cmd/dev-airlock-stands` (the stand-in services S and
+T, the GitHub, Google and Microsoft endpoints and the AWS service, and the
+certificate authority they are signed by), writes a rules file and a fake Secrets
+Manager naming each other, starts **two** broker processes on a database of their
+own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front over both brokers'
+API ports and one over both proxy ports (`dev-airlock-stands front`, round-robin per
+connection), and enrols one pod session the way the Legion daemon does — a service
+login at `POST /v1/launcher-credentials/token`, then `POST /v1/enrollments` of kind
+`pod` — so `agent-secrets self` answers `kind: pod`.
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
+```
+
+Everything it makes lives under `${TMPDIR:-/tmp}`, as `dev-broker.sh`'s work
+directory now does. Each bound host (`s.airlock.test` and the rest) listens on port
+443 of a loopback address of its own, because the airlock refuses a request whose
+`Host` header is not its CONNECT target and a client writes the port into that
+header for every port but 443. The airlock's secrets are owned by the service the
+enrolled pod runs as, so its requests for them are granted at once; the
+`azure-login` secret is human tier, and the exports name the approver and the
+sign-in URL a check approves it with.
+
+Options: `--keep-values` and `--no-kind`, the two negative controls
+(`BROKER_AIRLOCK_TEST_KEEP_VALUES` and `BROKER_AIRLOCK_TEST_NO_KIND`),
+`--idle-seconds N` (`BROKER_AIRLOCK_IDLE_SECONDS`; check k9's control sets 60),
+`--one-broker`, and `--help`. A usage error exits 2.
+
+`dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
+work directories under `TMPDIR`, two brokers with the whole airlock block on one
+database, one front over each pair of ports, the options reaching the brokers, the
+enrolment written beside the session key, the usage error, and the cleanup stopping
+everything it started — with no real Postgres, no network and no Go build; CI runs
+it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+
+## airlock-check.sh
+
+Runs one `before_merge` check of the airlock's verification document
+(dispatch://INFRA-1352/artifact/verification-md) end to end and says whether it
+passed, so the implementer who records the result and the tester who re-runs it read
+the same evidence. It starts the stack the check needs (`dev-airlock.sh`, with the
+options that check's negative control asks for), runs the check's steps, runs the
+negative control, stops the stack, and prints a result block to paste into `dispatch
+result` — what the check expected, what this run observed and what the control did —
+then one `PASS:` or `FAIL:` line for each property the check's outcome sentence
+names and one for its control, and last `check <id>: passed` or `check <id>: failed
+(<n> of <m>)`.
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k3
+```
+
+`<id>` is `k1`, `k2`, `k3`, `k4`, `k5`, `k6`, `k7`, `k8a`, `k9` or `k15`.
+`--keep-stack` leaves the stack and the run's work directory up to look at a failure
+with, `--help` prints the usage, and a usage error exits 2. `k9` is a long run — ten
+minutes of connections and two stacks, about twenty-five minutes in all; every other
+check takes a few minutes.
+
+No line it prints is a credential: a value is compared by its SHA-256 (the first 16
+hex digits) and its length, and every line that compares one says so, which is a rule
+of the verification document itself.
+
+Four checks need more than the stack. `k1` scans the command's memory, and
+`/proc/sys/kernel/yama/ptrace_scope` is 1 in a Legion pod, so only an ancestor of the
+command may read its `/proc/<pid>/mem`: the scan is a small Python program
+(`scripts/airlock/memscan.py`) that starts `agent-secrets` itself and scans the
+descendant it started. `k6` and `k7` drive real clients and the real consumers:
+`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`, and the
+consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
+`scripts/gcloud-broker` and the tier commands of `gws/accounts.json`) are fetched from
+`sjawhar/dotfiles` at main with `gh api`. `k15` needs no stack: it builds the Lean
+model with `lake`, prints its theorem statements and their axioms, runs the comparison
+fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
+
+The programs the checks drive are files, not text a run writes out. The three Go
+clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-airlock.sh`
+builds: `probe-private` is `k4`'s private-address probe, `probe-bound` is `k7`'s call
+to a bound host, and `load` is `k9`'s load driver and the plain tunnel its baseline
+goes through. CI compiles and vets all three with the rest of that command. The
+others are under `scripts/airlock/`: `memscan.py`, `k6`'s boto3 steps
+(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
+
+Where a check needs a secret the stack does not hold, the run extends the stack's own
+fake Secrets Manager and makes every broker reread it. A control that needs other
+rules or another proxy setting — `k4`'s, which turns the refusal of a loopback address
+off for one host — is a second broker process on the stack's own database, authority
+and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
+it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8a`
+expects to refuse to start — takes its environment from the running stack broker
+(`/proc/<pid>/environ`) with the few variables it must change put in their place, so
+none of them can be missing a setting `dev-airlock.sh` gave the stack's. `k7` goes
+furthest with that device: its names are the consumers' own and its hosts are the real
+services, so its broker has the stack's whole environment with its rules file, its two
+ports and its public URL changed, and both `AGENT_SECRETS_URL` and the grant's proxy
+point at it. `k5`'s control is a second stack under `--keep-values`, `k6`'s a second
+stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
+
+`k6` approves its own human-tier grant the way a person does: a pod session has no
+operator, so the run signs in at the stack's issuer, which signs the approver in with
+no page to fill, reads the request's page and posts the decision back with an `Origin`
+header. `k9` runs each broker with `GOMAXPROCS=1` by exporting it into the environment
+it starts the stack with, since `dev-airlock.sh` has no option for it, and reads each
+broker's CPU time from `utime` and `stime` in `/proc/<pid>/stat` and its peak memory
+from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports as
+`ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
+not the check's.
+
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
+`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
+release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+`wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
+and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
+listens on one loopback address and port 443, so only one stack runs on a machine at a
+time.
+
+## airlock-lean-axioms.sh
+
+Holds the airlock model's theorems to the axioms Lean's own kernel admits, and is the
+one copy of that check: `ci.yaml`'s `airlock-lean` job runs it, and so does `k15` of
+`airlock-check.sh`, so what the model must rest on is written once, in this script.
+How many theorems there are is written nowhere: this script and `k15` both count the
+`#print axioms` lines of `Axioms.lean`, so a theorem added there is one both hold the
+model to.
+
+```bash
+packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+```
+
+It runs `lake env lean Axioms.lean` in that directory and writes what that printed to
+its stdout, so a reader of either log sees the axioms. What is wrong goes to stderr
+and exits 1: an axiom outside `propext`, `Classical.choice` and `Quot.sound`, a
+`sorryAx`, a count of printed theorems other than the number of `#print axioms` lines
+in `Axioms.lean`, or a `lake env lean` that failed. `--axioms-file PATH` keeps a copy
+of the axiom text for a caller that reads it back, which is what `k15` does for its
+result block; `--help` prints the usage, and a usage error exits 2.
+
+## airlock-clients.sh
+
+Installs the clients checks `k6` and `k7` drive and that a Legion issue pod has not
+got — the Azure CLI, the Google Cloud CLI, Pulumi with the Tailscale provider, and
+boto3 — each at a pinned version whose SHA-256 is checked before anything of it runs,
+under `${TMPDIR:-/tmp}`, and prints the exports a check needs on stdout:
+
+```bash
+eval "$(packages/envoy/scripts/airlock-clients.sh)"
+```
+
+Everything it says about itself goes to stderr and every line of stdout is an export
+(`PATH`, `CLOUDSDK_PYTHON`, `PULUMI_HOME`, `UV_CACHE_DIR`, `AIRLOCK_BOTO3_PYTHON`,
+`AIRLOCK_PULUMI_TAILSCALE_VERSION`, `AIRLOCK_CLIENTS_DIR`), so the line above is the
+whole of how a caller uses it; `airlock-check.sh` runs it that way for `k6` and `k7`.
+A second run finds what the first installed and fetches nothing: each client sits
+beside a stamp file holding the version and the digest the script pins, and a stamp
+that matches is the install. `--dir DIR` installs elsewhere, `--force` fetches again,
+`--help` prints the usage, and a usage error exits 2.
+
+Every fetch is a download with a checksum, this repository's one toolchain pattern
+(`.github/actions/install-elan/action.yml`,
+`packages/daemon/docker/worker.Dockerfile`): the bytes are written to a temporary
+name, their SHA-256 is compared with the pinned digest, and only then are they
+unpacked or installed. A digest that does not match leaves nothing behind and ends the
+run. The two Python clients are pinned that way rather than by `uv run --with
+<package>==<version>`, which pins the version but checks no digest: their wheels are
+fetched and checked, then installed with `uv` into an environment of their own, so the
+client itself is the pinned and checked artifact and `uv` resolves its dependencies
+from that wheel's own requirements.
+
+## airlock-mutants.sh
+
+Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
+in the decision code. Each file of `internal/broker/airlock/testdata/mutants` is one
+defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
+directory under `$TMPDIR`, applies that one patch there, and requires the copy to
+fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
+a `lean-*.patch` under `lake build` or, when it still builds, that same comparison
+against the mutated model. A mutant nothing catches fails the run.
+
+```bash
+AIRLOCK_MODEL=<the built airlock-model> packages/envoy/scripts/airlock-mutants.sh [<name>...]
+```
+
+With no name it runs every mutant; a name is a patch's file name with or without
+`.patch`. It prints one `PASS:` or `FAIL:` line per mutant and exits non-zero when
+any was not caught, 2 when the model mutants need `lake` and it is not installed.
+No patch ever touches this repository.
 
 ## listener-deploy-probe.sh
 
@@ -126,6 +398,17 @@ A listener from before LEGION-456 keeps `/v1` closed until its durable binds,
 so during a rolling deploy the replacement answers `/healthz` 200 `starting`
 and `/v1` 503 `service starting` for most of a minute and the run exits 1. A
 listener that opens `/v1` once its caches are warm passes.
+
+The refilling answer is another cause. A listener answers `GET /v1/sessions`
+`503` with `Retry-After: 5` and code `refilling` (`503:envoy: the agent list is
+refilling; try again in a moment` in the summary) while it cannot stand behind
+its copy of the session or interest bucket: before its first complete read of
+the bucket (its closed `/v1` start gate gives this route the same answer, and a
+cache warm-up that timed out opens `/v1` on a copy still being read), or once a
+re-read has not completed for longer than its bound (2 minutes, or half the
+bucket's `MaxAge` when that is shorter). Its `/healthz` answers 200 all the
+while, so the target fails: a client that reached it then was refused the list
+(INFRA-261).
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
@@ -285,3 +568,55 @@ identity. The script writes 50 comments, 50 asks, 50 messages, 100 document vers
 edits for every run, which is what A9 measures: run it after the statement timings, and re-seed
 before anything reads a row count again. `--requests`, `--body-bytes`, `--artifact` and
 `--large-artifact` are the knobs; `--help` lists them.
+
+## going-smoke.sh
+
+Proves, on a booted server, that the real `envoy-dispatch` binary answers a question over HTTP and
+streams it. It builds `./cmd/dispatch`, starts the fake chat-completions model it serves itself,
+boots the binary against `DATABASE_URL` with `DISPATCH_ANSWERER=endpoint` pointed at that model,
+reads `GET /api/v1/going/capability` and refuses anything but `{"model_configured":true}`, seeds a
+project and an issue whose own text is worth citing through the API as the identity header's
+person, asks a question of that issue over `POST /api/v1/going/requests` and prints the run's id
+and `ends_at`, then prints every frame of `GET /api/v1/going/requests/{id}/stream` as
+`<elapsed ms> <event> <data>` as it arrives, so two builds' runs diff, with the first `text`
+frame's arrival on a line of its own. It ends `going-smoke: OK` only when the stream carried at
+least one `text` frame, exactly one `item` frame naming the seeded issue and exactly one terminal
+frame, and the first `text` frame arrived before the stream ended; any refusal names what was
+missing and prints the server's and the model's logs. It needs `curl`, `jq`, `python3`, `openssl`
+and `psql`, and names the one it cannot find.
+
+No cloud model is called: the model is a fake the script starts. It serves TLS, because
+`DISPATCH_CHAT_ENDPOINT` is an absolute https URL with a host and no query or fragment
+(`cmd/dispatch/answerer.go`, `chatEndpoint`), so the run makes a self-signed certificate for
+`127.0.0.1` with the IP in a subject alternative name, serves it from a small `python3` server and
+hands the binary `SSL_CERT_FILE`, which Go's `crypto/x509` reads — no setting of Dispatch's own is
+bent to admit a plain-http endpoint. The fake answers a streamed completion that links the seeded
+issue by the href the server gave it, in several frames with a pause between them, and refuses any
+call that does not present the bearer `DISPATCH_CHAT_TOKEN_FILE` holds, so a run that reports OK is
+one whose token file reached the call. The server runs with a throwaway `HOME`, a made-up agent
+token and a trusted identity header, so it reads no operator configuration and holds no credential,
+and with NATS off. `DATABASE_URL` names the Postgres server rather than one database: the run makes
+a database of its own on it, which the binary migrates as every start does, and drops it at the end.
+
+```bash
+legion-testpg ensure
+cd packages/envoy && DATABASE_URL="$LEGION_TEST_PG_DSN" bash scripts/going-smoke.sh
+```
+
+Options:
+
+- `--binary <envoy-dispatch>` — run this binary instead of building `./cmd/dispatch` from this
+  checkout.
+- `--model-status <code>` — answer every call to the fake model with that status instead of a
+  completion. `--model-status 401` is one negative control: the stream carries
+  `error ANSWER_FAILED` and nothing else, and the run exits 1 naming the frames it did not get.
+- `--no-model` — boot the server with `DISPATCH_ANSWERER` unset and no `DISPATCH_CHAT_*` setting.
+  That is the other negative control: the capability route answers `{"model_configured":false}`
+  and the run exits 1 naming it.
+
+No CI job runs this one, and none should: it builds the binary, boots a server, serves TLS and
+reads an answer as it streams, which takes a machine with a Postgres server and the better part of
+a minute, and what it proves is that a reader gets an answer on a real deployment's own path — a
+thing a person reads rather than a status a job reports. Run it by hand, or as the role proving a
+change to `going/`, to the answerer settings in `cmd/dispatch`, or to the three `going` routes, and
+paste its output: the frame lines are the evidence.

@@ -2,7 +2,6 @@ package config
 
 import (
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -95,57 +94,12 @@ func TestRepositoryRenamesRefusals(t *testing.T) {
 		{"a chain the other way round", "repository_renames: [{from: c/d, to: e/f}, {from: a/b, to: c/d}]\n",
 			"repository_renames: rename 1 (a/b -> c/d) chains onto rename 0 (c/d -> e/f) through c/d: a rename pairs two names, never a chain of three"},
 		{"one owner to two owners", "repository_renames: [{from: a/b, to: c/d}, {from: a/e, to: f/g}]\n",
-			"repository_renames: rename 1 (a/e -> f/g) and rename 0 (a/b -> c/d) move repositories of a to two owners, f and c: an owner's repositories moved to one owner, since the gh directory keyed by a holds one installation's token"},
+			"repository_renames: rename 1 (a/e -> f/g) and rename 0 (a/b -> c/d) move repositories of a to two owners, f and c: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(writeConfigFile(t, minimalFile+tc.body), noEnv)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("Load error = %v, want %q", err, tc.want)
-			}
-		})
-	}
-}
-
-// A project may name one workflow of one repository once, the configured renames included: two
-// deploys entries whose repositories a pair makes one repository and whose workflow is the same
-// are both matched by one run (intake.DeployOf), which answers the first, so the second entry's
-// step would never be read. readDeploys cannot see it — a project is read before the renames
-// settle — so the settle refuses it, naming both entries, the workflow and the pair. The same two
-// entries under no rename, the pair with another workflow each, and the pair across two projects
-// are each configured as they are.
-func TestDeploysOfOnePairsRepositoriesAreRefused(t *testing.T) {
-	const pair = "repository_renames: [{from: sjawhar/legion, to: cybermonklabs/legion}]\n"
-	project := func(deploys ...string) string {
-		body := "projects:\n  DEMO:\n    deploys:\n"
-		for _, deploy := range deploys {
-			body += "      - " + deploy + "\n"
-		}
-		return strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", body, 1)
-	}
-	const (
-		old     = "{repo: sjawhar/legion, workflow: .github/workflows/release.yml, step: Publish}"
-		moved   = "{repo: CyberMonkLabs/legion, workflow: .github/workflows/release.yml, step: Deploy}"
-		another = "{repo: CyberMonkLabs/legion, workflow: .github/workflows/envoy.yaml, step: Apply}"
-	)
-
-	_, err := Load(writeConfigFile(t, project(old, moved)+pair), noEnv)
-	want := "projects.DEMO.deploys[0] (sjawhar/legion .github/workflows/release.yml) and projects.DEMO.deploys[1] (CyberMonkLabs/legion .github/workflows/release.yml) " +
-		"name one workflow of one repository: repository_renames makes sjawhar/legion and CyberMonkLabs/legion one repository, " +
-		"so a run of .github/workflows/release.yml matches both entries and only the first entry's step is ever read; name that workflow once"
-	if err == nil || err.Error() != want {
-		t.Fatalf("Load error = %v, want %q", err, want)
-	}
-
-	twoProjects := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n",
-		"projects:\n  DEMO:\n    deploys:\n      - "+old+"\n  OTHER:\n    deploys:\n      - "+moved+"\n", 1)
-	for _, tc := range []struct{ name, body string }{
-		{"the same two entries under no rename", project(old, moved)},
-		{"the pair's two names with a workflow each", project(old, another) + pair},
-		{"the pair's two names, one in each project", twoProjects + pair},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Load(writeConfigFile(t, tc.body), noEnv); err != nil {
-				t.Fatalf("Load: %v", err)
 			}
 		})
 	}

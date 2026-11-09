@@ -1,9 +1,11 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Subscriber } from "../../api/types";
@@ -13,11 +15,17 @@ import { DocumentPage } from "./DocumentPage";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
-  node: { id: "artifact-1", kind: "artifact" },
+  node: graphNode({ id: "artifact-1", kind: "artifact" }),
 });
+// The document's own blocks and the asks anchored in it: every rendered page reads both, and
+// none of these rows carries either.
+const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
 
 afterAll(() => {
   getReferences.mockRestore();
+  getArtifactBlocks.mockRestore();
+  listArtifactAsks.mockRestore();
 });
 
 const artifact: Artifact = {
@@ -29,6 +37,8 @@ const artifact: Artifact = {
   name: "Design notes",
   primary: false,
   project: "CORE",
+  ref_key: "CORE/design-notes",
+  session_id: null,
   slug: "design-notes",
   versions: [
     {
@@ -79,22 +89,22 @@ test("renders the header, the document, versions, and Referenced by for an unlin
         direction: "in",
         excerpt: { text: "See dispatch://CORE/artifact/design-notes" },
         kind: "mentions",
-        node: {
+        node: graphNode({
           id: "comment-1",
           issue_key: "CORE-1",
           kind: "comment",
           project: "CORE",
           ref: "dispatch://CORE-1/comment/comment-1",
-        },
+        }),
         source_seq: 1,
       },
     ],
-    node: {
+    node: graphNode({
       id: "artifact-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE/artifact/design-notes",
-    },
+    }),
   });
   const { runtime, view } = renderDocumentPage();
 
@@ -104,18 +114,20 @@ test("renders the header, the document, versions, and Referenced by for an unlin
     runtime.sync();
     await screen.findByRole("textbox", { name: "Document editor" });
 
-    expect(screen.getByRole("link", { name: "Project CORE" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Project CORE" })).toHaveAttribute(
+      "href",
       "/projects/CORE/documents"
     );
-    expect(screen.queryByRole("combobox", { name: "Artifact version" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Artifact version" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Version" })).not.toBeNull();
     const referencedBy = screen.getByRole("region", { name: "Referenced by" });
     // Nothing discloses this panel, so it is its own heading and carries the count.
     expect(within(referencedBy).getByRole("heading", { name: "Referenced by (1)" })).toBeTruthy();
-    expect(referencedBy.textContent).toContain("Comment · CORE-1");
-    expect(
-      within(referencedBy).getByRole("link", { name: "Comment · CORE-1" }).getAttribute("href")
-    ).toBe("/issues/CORE-1/comments/comment-1");
+    expect(referencedBy).toHaveTextContent("Comment · CORE-1");
+    expect(within(referencedBy).getByRole("link", { name: "Comment · CORE-1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/comments/comment-1"
+    );
   } finally {
     view.unmount();
     getArtifactText.mockRestore();
@@ -133,7 +145,8 @@ test("shows Document not found with a way back for an unknown slug", async () =>
 
   try {
     await screen.findByRole("heading", { name: "Document not found" });
-    expect(screen.getByRole("link", { name: "Back to CORE documents" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Back to CORE documents" })).toHaveAttribute(
+      "href",
       "/projects/CORE/documents"
     );
   } finally {
@@ -143,6 +156,7 @@ test("shows Document not found with a way back for an unknown slug", async () =>
 });
 
 test("shows Subscribed agents and unsubscribes after confirming the dialog", async () => {
+  const user = userEvent.setup();
   const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
@@ -180,6 +194,7 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
       open_asks: 0,
       roles: [],
       session_id: "0123456789abcdef",
+      state: "live",
       title: "Planner (live)",
     },
   ]);
@@ -192,7 +207,7 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
 
     const subscribed = await screen.findByRole("region", { name: "Subscribed agents" });
     const planner = await within(subscribed).findByRole("link", { name: "Planner (live)" });
-    expect(planner.getAttribute("href")).toBe("/agents/0123456789abcdef/live");
+    expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
     await waitFor(() =>
       expect(
         subscribed
@@ -201,12 +216,12 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
       ).toBe("running")
     );
 
-    fireEvent.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));
+    await user.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));
     const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain(
+    expect(dialog).toHaveTextContent(
       "Unsubscribe Planner (live) from CORE/design-notes? They will be told."
     );
-    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await user.click(within(dialog).getByRole("button", { name: "Confirm" }));
 
     await waitFor(() =>
       expect(unsubscribeArtifactSession).toHaveBeenCalledWith(
@@ -216,7 +231,7 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
       )
     );
     await waitFor(() =>
-      expect(screen.queryByRole("region", { name: "Subscribed agents" })).toBeNull()
+      expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
   } finally {
     view.unmount();

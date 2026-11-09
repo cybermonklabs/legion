@@ -416,7 +416,7 @@ const MOVED_ON = {
     firstBootAt: "2026-10-30T14:03:27Z",
     startedAt: "2026-10-31T09:15:02Z",
   },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
+  admission: { cap: 1, active: [TREE], waiting: [], trees: [TREE], blocked: [] },
   issues: {
     [ISSUE]: {
       key: ISSUE,
@@ -431,6 +431,7 @@ const MOVED_ON = {
   pendingStatusWrites: [],
   heldOutboxRows: [],
   strandedClaims: [],
+  wakesWaiting: [],
   capabilities: [],
   repositories: {
     owners: ["acme"],
@@ -439,7 +440,7 @@ const MOVED_ON = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+  settings: { worker_boot_timeout_seconds: 120 },
   consumers: [],
 };
 

@@ -87,7 +87,12 @@ const replay = {
   v: 1,
 };
 
-function assistantFrame(seq: number, text: string, streaming: boolean, model?: string): object {
+function assistantFrame(
+  seq: number,
+  text: string,
+  streaming: boolean,
+  model?: string
+): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -107,7 +112,12 @@ function assistantFrame(seq: number, text: string, streaming: boolean, model?: s
  *  its place in time, past the replay's last turn, so the thread orders it newest, while `seq`
  *  orders the snapshots of one turn. `assistantFrame` reuses one id and one time, so every call
  *  to it is another snapshot of one turn, dated into the middle of a long replay. */
-function liveTurn(index: number, seq: number, text: string, streaming: boolean): object {
+function liveTurn(
+  index: number,
+  seq: number,
+  text: string,
+  streaming: boolean
+): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -123,7 +133,7 @@ function liveTurn(index: number, seq: number, text: string, streaming: boolean):
 }
 
 /** A replay long enough that the thread must scroll at any viewport: forty turns of prose. */
-function longReplay(sessionID: string): object {
+function longReplay(sessionID: string): Record<string, unknown> {
   const frames = Array.from({ length: 40 }, (_, index) => ({
     kind: "message",
     message: {
@@ -158,8 +168,12 @@ const FOLD_FRAMES = replay.frames.map((frame, index) =>
  *  older ones gone and `extra` frames behind them. The frames keep their own `at`, so the turns
  *  that survive are read where they always were, and a `seq` is last-writer-wins per message, so
  *  `extra` only orders its own snapshots. */
-function rebuiltReplay(sessionID: string, from: number, extra: readonly object[] = []): object {
-  const { frames } = longReplay(sessionID) as { frames: object[] };
+function rebuiltReplay(
+  sessionID: string,
+  from: number,
+  extra: readonly Record<string, unknown>[] = []
+): Record<string, unknown> {
+  const { frames } = longReplay(sessionID) as { frames: Record<string, unknown>[] };
   return { frames: [...frames.slice(from), ...extra], session_id: sessionID, v: 1 };
 }
 
@@ -307,7 +321,10 @@ async function expectNewestTurnAboveComposer(page: Page): Promise<void> {
  * same live socket and asks the session for its replay again. `publishAgentStreamFrame` sets what
  * that next subscription is answered with rather than pushing into the open one, so `next` is in
  * place before the viewer is dropped. */
-async function rebuildThroughResubscribe(sessionID: string, next: object): Promise<void> {
+async function rebuildThroughResubscribe(
+  sessionID: string,
+  next: Record<string, unknown>
+): Promise<void> {
   await publishAgentStreamFrame(sessionID, next, "replay");
   await dropAgentStreamViewers(sessionID);
 }
@@ -428,6 +445,34 @@ test("the conversation view replays what the session held, streams its next turn
         message: "try the other branch",
         payload: expect.objectContaining({ delivery: expect.objectContaining({ mode: "steer" }) }),
       });
+  } finally {
+    await context.close();
+  }
+});
+
+// A turn that calls no tool is still a turn in progress: its tool cards would carry their own
+// `running…`, and prose has none, so the turn itself carries the mark while it streams
+// (INFRA-1026 R3).
+test("a turn that only writes prose is marked while it streams, and the mark goes when it ends", async ({
+  browser,
+}) => {
+  await publishAgentStreamFrame(planner.session_id, replay, "replay");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/agents/${planner.session_id}/live`);
+    const assistant = page.getByTestId("agent-message-assistant");
+    await expect(assistant.first()).toContainText("Checking the notes.");
+    // The replay's turns ended before the reader arrived, so nothing is marked.
+    await expect(page.getByTestId("agent-message-running")).toHaveCount(0);
+
+    await publishAgentStreamFrame(planner.session_id, assistantFrame(4, "There are", true));
+    await expect(assistant.last()).toContainText("There are");
+    await expect(assistant.last().getByTestId("agent-message-running")).toHaveText("writing…");
+
+    await publishAgentStreamFrame(planner.session_id, assistantFrame(5, "There are two.", false));
+    await expect(assistant.last()).toContainText("There are two.");
+    await expect(page.getByTestId("agent-message-running")).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -617,15 +662,21 @@ test("the live view shows an unread reply from outside the fifty most active con
     session
   );
   // Fifty conversations that moved after it, each answered, so the one above is the fifty-first.
-  for (let index = 0; index < 50; index += 1) {
-    const busier = await createAgentMessage(planner.session_id, {
-      body: `Busier question ${index}`,
-      delivery: "aside",
-    });
-    await replyToMessageDelivery(
-      busier.id,
-      { attempt: 1, body: `Busier answer ${index}` },
-      session
+  // Nothing reads the order of the fifty, so they go in bursts of ten.
+  for (let batch = 0; batch < 50; batch += 10) {
+    await Promise.all(
+      Array.from({ length: 10 }, async (_, offset) => {
+        const index = batch + offset;
+        const busier = await createAgentMessage(planner.session_id, {
+          body: `Busier question ${index}`,
+          delivery: "aside",
+        });
+        await replyToMessageDelivery(
+          busier.id,
+          { attempt: 1, body: `Busier answer ${index}` },
+          session
+        );
+      })
     );
   }
   const context = await asUser(browser, "alice");
@@ -634,7 +685,7 @@ test("the live view shows an unread reply from outside the fifty most active con
     await page.goto("/agents");
     await expect(page.getByText("New replies 51").filter({ visible: true }).first()).toBeVisible();
 
-    await page.goto(`/agents/${planner.session_id}/live`);
+    await navigateInApp(page, `/agents/${planner.session_id}/live`);
     await expect(page.getByTestId("agent-thread")).toContainText("Did the migration land?");
     await expect(page.getByText("No - it rolled back, here is why.")).toBeVisible();
     await expect(page.getByText(/^New repl/)).toHaveCount(0);
@@ -741,6 +792,9 @@ test("a session that has published nothing renders as empty, not as a conversati
   }
 });
 
+// SLOW(>=2s): the relay re-asks for a replay only on the server's own watch tick
+// (`agentStreamWatchInterval`, 10 s, `internal/dispatch/api/agent_stream.go`), which no test hook
+// shortens, so the recovery below cannot land sooner.
 test("a session nobody answers for is told so, and recovers when a responder appears", async ({
   browser,
 }) => {
@@ -785,6 +839,115 @@ test("a session nobody answers for is told so, and recovers when a responder app
     );
     await expect(page.getByText("Back on a newer plugin")).toBeVisible({ timeout: 20_000 });
     await expect(empty).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+/** The live view's own text for a session that answers nothing, word for word as a reader meets
+ *  it: `emptyText` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
+const NOT_ANSWERING =
+  "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Nothing appears here until it answers.";
+
+/** What this page said about Claude Code until INFRA-1026, in the empty transcript ("Claude Code
+ *  sessions don't" stream) and beside the composer (a session "takes messages only when it was
+ *  started with its Envoy channel"). A Claude Code session streams its conversation and takes a
+ *  person's message now, so no sentence of this view may send its reader after a client or a
+ *  channel flag. Naming each phrase is what keeps the absence check from being vacuous. */
+const CLIENT_EXCUSES = [/Claude Code/i, /Envoy channel/i, /--channels/];
+
+/** The one sentence the Claude Code plugin publishes in a `reasoning` part where Claude Code sent
+ *  a thinking block with no text: `CLAUDE_THINKING_HIDDEN` in
+ *  `packages/claude-envoy/src/agent-stream-claude.ts`. Spelled out here rather than imported, as
+ *  every frame in this suite is spelled as the wire carries it, so the row holds the text a
+ *  reader gets; whoever edits one of the two must edit the other. */
+const CLAUDE_THINKING_HIDDEN_TEXT =
+  "Claude Code hides what the model thought here: it sends the thinking text only when the terminal session turns on the showThinkingSummaries setting.";
+
+// The reader of a session that answers nothing is told what is true of the session - its plugin
+// does not stream its conversation, or it has ended - and nothing about which client it runs.
+// Before INFRA-1026 the same view named Claude Code twice and sent its reader after an Envoy
+// channel, which is now neither true nor anything they can act on.
+test("a session that answers nothing is told what is true of the session, and the view names no client", async ({
+  browser,
+}) => {
+  // A session in the registry that advertises no delivery mode and answers no replay: both of
+  // the view's client sentences are then on screen at once - the empty transcript's and
+  // `agent-takes-no-messages`'s - so the absence check has both to fail against.
+  const silent: FakeSession = {
+    ...planner,
+    capabilities: [],
+    session_id: "01a0e0c1-0000-7000-8000-000000001026",
+    title: "Quiet",
+  };
+  await setLiveSessions([planner, silent]);
+  await setAgentStreamResponder(silent.session_id, false);
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/agents/${silent.session_id}/live`);
+    await expect(page.getByTestId("agent-thread-empty")).toHaveText(NOT_ANSWERING);
+    await expect(page.getByTestId("agent-takes-no-messages")).toBeVisible();
+
+    // The view's own visible text, not the document's: the shell's navigation, the Agents list
+    // behind it and the page title are no reading of this session.
+    const shown = await page.getByTestId("agent-conversation").innerText();
+    expect(shown).toContain(NOT_ANSWERING);
+    for (const excuse of CLIENT_EXCUSES) {
+      expect(shown).not.toMatch(excuse);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// Claude Code sends a thinking block with no text unless the terminal session turned on its
+// thinking summaries, and the plugin publishes one fixed sentence in a `reasoning` part in its
+// place. The reader meets it where the turn's thinking goes, above the answer, so a step that
+// thought reads as one rather than as a gap nobody can explain.
+test("a turn whose thinking Claude Code hid reads as the turn's thinking, beside its answer", async ({
+  browser,
+}) => {
+  const thinker: FakeSession = {
+    ...planner,
+    session_id: "01a0e0c1-0000-7000-8000-000000001027",
+    title: "Thinker",
+  };
+  await setLiveSessions([planner, thinker]);
+  await publishAgentStreamFrame(
+    thinker.session_id,
+    {
+      frames: [
+        {
+          kind: "message",
+          message: {
+            at: 4_000,
+            id: "a4000",
+            parts: [
+              { text: CLAUDE_THINKING_HIDDEN_TEXT, type: "reasoning" },
+              { text: "The release notes name two changes.", type: "text" },
+            ],
+            role: "assistant",
+            streaming: false,
+          },
+          seq: 1,
+          v: 1,
+        },
+      ],
+      session_id: thinker.session_id,
+      v: 1,
+    },
+    "replay"
+  );
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/agents/${thinker.session_id}/live`);
+    const turn = page.getByTestId("agent-message-assistant");
+    await expect(turn.getByTestId("agent-reasoning")).toHaveText(CLAUDE_THINKING_HIDDEN_TEXT);
+    await expect(turn).toContainText("The release notes name two changes.");
   } finally {
     await context.close();
   }
@@ -855,10 +1018,10 @@ test("on a phone the live view never scrolls the page, keeps its header and comp
   }
 });
 
-// A session's reported model, capped at AGENT_STREAM_LIMITS.modelChars before it ever leaves
-// pi-envoy (packages/pi-envoy/src/agent-stream.ts), is still an unbroken identifier with no
-// spaces: on a 390 px phone it does not fit the header pill or the turn's own label, and without
-// an ellipsis it forced the whole page to scroll sideways rather than wrapping.
+// A session's reported model, capped at AGENT_STREAM_LIMITS.modelChars before it ever leaves the
+// session's own publisher (packages/pi-shared/src/agent-stream.ts), is still an unbroken
+// identifier with no spaces: on a 390 px phone it does not fit the header pill or the turn's own
+// label, and without an ellipsis it forced the whole page to scroll sideways rather than wrapping.
 test("a capped model name ends in an ellipsis on a phone, in the header and on the turn, and never forces the page to scroll sideways @phone", async ({
   browser,
 }, testInfo) => {
@@ -1039,6 +1202,8 @@ test("a document-scrolling route is never capped for the keyboard, at mount or a
 // A reader who goes back into a live session's transcript is reading it, and a turn that arrives
 // while they are back there is news to come back to, not a reason to take the page away from
 // them. The control is how they come back, and what it counts is what they have not seen.
+// SLOW(>=2s): a forty-turn replay rebuilt into the live view, then eight live frames and a
+// message, with the thread's scroll measured after each.
 test("a reader scrolled back into a live session's transcript keeps their place, and Jump to latest carries what arrived @phone", async ({
   browser,
 }, testInfo) => {
@@ -1268,7 +1433,7 @@ test("opening a session, switching to another, and reloading each land the reade
 // The control is something the page puts over the transcript, not a row inside it: on a phone,
 // where the composer is a finger's width below the thread's foot, it covers none of the composer,
 // and it takes nothing from how far the transcript scrolls.
-test("on a phone the live view's Jump to latest covers none of the composer and changes how far the transcript scrolls not at all @phone", async ({
+test("on a phone the live view's Jump to latest covers none of the composer and changes how far the transcript scrolls not at all", async ({
   browser,
 }) => {
   const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a005" };

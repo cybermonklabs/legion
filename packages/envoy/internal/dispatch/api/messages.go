@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -20,7 +20,7 @@ import (
 const maxMessageReplyPreview16 = 160
 
 type createMessageInput struct {
-	Body      string  `json:"body"`
+	Body      string  `json:"body" required:"true"`
 	InReplyTo *string `json:"in_reply_to"`
 	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2").
 	InReplyToBlock *string      `json:"in_reply_to_block"`
@@ -70,20 +70,23 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, withAdvice(message, advice))
 }
 
+// createAgentMessageInput is the body of POST /api/v1/agents/{session_id}/messages.
+type createAgentMessageInput struct {
+	Body           string  `json:"body" required:"true"`
+	Delivery       string  `json:"delivery" required:"true"`
+	InReplyTo      *string `json:"in_reply_to"`
+	InReplyToBlock *string `json:"in_reply_to_block"`
+}
+
 // createAgentMessage is POST /api/v1/agents/{session_id}/messages: a person's send to one session.
 // A send under an Idempotency-Key commits its message as the key's recovery point, and a repeat is
 // answered from it (replayAgentMessage).
 func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		Body           string  `json:"body"`
-		Delivery       string  `json:"delivery"`
-		InReplyTo      *string `json:"in_reply_to"`
-		InReplyToBlock *string `json:"in_reply_to_block"`
-	}
+	var input createAgentMessageInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -190,10 +193,11 @@ func (s *server) sendHeldMessageOn(ctx context.Context, message model.Message, d
 // which only a message an earlier release stored can be, since createStoredMessage writes attempt
 // 1 in the transaction that stores the message - or
 // the message's latest attempt when it is pending and its claim has lapsed, which Postgres judges
-// against the claimed_at it wrote (claimLapsed). A pending attempt whose claim is live is in
-// flight and left to its sender, and a latest attempt that settled owes nothing: an earlier
-// pending one a later retry from the agent card overtook is that retry's to answer. A keyed send's
-// repeat (sendHeldMessageOn) and a broadcast's (sendOwedBroadcastRecipients) both ask it.
+// against the claimed_at it wrote (model.DeliveryClaimFreeSQL). A pending attempt whose claim is
+// live is in flight and left to its sender, and a latest attempt that settled owes nothing: an
+// earlier pending one a later retry from the agent card overtook is that retry's to answer. A
+// keyed send's repeat (sendHeldMessageOn) and a broadcast's (sendOwedBroadcastRecipients) both
+// ask it.
 func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (map[string]int, error) {
 	owed := make(map[string]int, len(messageIDs))
 	if len(messageIDs) == 0 {
@@ -203,7 +207,7 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 		select m.id::text, coalesce(latest.attempt, 1), coalesce(latest.owed, true)
 		from unnest($1::uuid[]) as m(id)
 		left join lateral (
-			select attempt, state = 'pending' and `+claimLapsed+` as owed
+			select attempt, state = 'pending' and `+model.DeliveryClaimFreeSQL+` as owed
 			from message_deliveries where message_id = m.id
 			order by attempt desc
 			limit 1
@@ -242,9 +246,11 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	defer tx.Rollback(ctx)
+	// The issue row is locked first, the order recordPendingMessageDelivery states, without the
+	// closed refusal: a closed issue still takes a message.
 	var status string
 	if issueKey != nil {
-		status, err = s.requireOpenIssue(ctx, tx, *issueKey)
+		status, err = s.lockIssue(ctx, tx, *issueKey)
 		if err != nil {
 			return model.Message{}, nil, err
 		}
@@ -401,8 +407,8 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 	if strings.TrimSpace(input.Body) == "" {
 		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "message body is required")
 	}
-	if length := len16(input.Body); length > contracts.DispatchBodyMax {
-		return "", capExceededError("body", length, contracts.DispatchBodyMax)
+	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
+		return "", err
 	}
 	target, delivery, err := validateMessageDelivery(input.Target, input.Delivery)
 	if err != nil {
@@ -551,12 +557,16 @@ func (t messageReplyThread) payload(
 	message model.Message,
 	changes model.ReferenceChanges,
 ) model.MessageEventPayload {
-	return model.MessageEventPayload{
+	payload := model.MessageEventPayload{
 		Message:                 message,
 		ReferenceChangesPayload: model.NewReferenceChangesPayload(changes),
 		ReplyBody:               t.ReplyBody,
 		ThreadTarget:            t.ThreadTarget,
 	}
+	// A body is bounded block by block, so it can be longer than one event carries: the event
+	// takes its first part and says so, and a reader gets the rest from the message itself.
+	payload.Body, payload.BodyTruncated = model.EventBody(message.Body)
+	return payload
 }
 
 // loadMessageReplyThread derives that for a stored message, for a caller that did not derive
@@ -675,11 +685,12 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 }
 
 // readableMessageThread is the conversation message {id} belongs to, when the caller may read it
-// under getMessageThread's rule: a human reads any, a bearer an issue thread and only a direct
-// conversation its ?session= is in. Every route that reads a message by its id alone (the
-// conversation, the message's blocks) asks it. ok is false once it has written the refusal.
+// under getMessageThread's rule: a person's own credential reads any, and every other reads an
+// issue thread and only a direct conversation its ?session= is in. Every route that reads a
+// message by its id alone (the conversation, the message's blocks) asks it. ok is false once it
+// has written the refusal.
 func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (messageRead, bool) {
-	_, human, err := s.optionalActor(r)
+	_, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return messageRead{}, false
@@ -699,7 +710,10 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
-	if !human && read.Message.IssueKey == nil {
+	// A direct conversation is the person's own, so a credential of theirs reads it whole and
+	// names no session in it, as their browser does. The scope is the request's credential's;
+	// this read records no actor, so there is nothing else to resolve.
+	if !s.callerHoldsScope(r, model.ScopePerson) && read.Message.IssueKey == nil {
 		session := strings.TrimSpace(r.URL.Query().Get("session"))
 		if session == "" {
 			writeError(w, "SESSION_REQUIRED", http.StatusBadRequest,
@@ -820,7 +834,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}

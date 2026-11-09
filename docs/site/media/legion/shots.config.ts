@@ -21,7 +21,7 @@ import {
   PHASE_STATUSES,
   postDailyReport,
   postReady,
-  readyLine,
+  readyLineRendered,
   requestSpecApproval,
   SAVED_CART,
   seedProject,
@@ -81,7 +81,7 @@ async function markRequirements(issue: Tracked, markdown: string, count: number)
     summary: "Mark the requirements",
   });
   await expect
-    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements.length)
+    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
     .toBe(count);
 }
 
@@ -259,7 +259,7 @@ const legion: ShotSet<LegionJourney> = {
       theme: "light",
       prepare: (journey) => postReady(journey, SAVED_CART),
       ready: async (page, journey) => {
-        await expect(turns(page)).toContainText(readyLine(journey, SAVED_CART));
+        await expect(turns(page)).toContainText(readyLineRendered(journey, SAVED_CART));
       },
     },
     {

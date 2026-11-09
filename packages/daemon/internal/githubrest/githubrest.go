@@ -29,11 +29,16 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 }
 
 // Client calls GitHub with an installation token. Its API is either a repository's REST base
-// (RepositoryAPI), which Get, Post, Patch, GetPages and GetListPages take paths under, or GitHub's
+// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under, or GitHub's
 // GraphQL route (GraphQLAPI), which GraphQL posts to; an empty endpoint is api.github.com for both.
 type Client struct {
 	Token string
 	API   string
+	// JobLogTimeout is how long one of this client's JobLog reads takes before it gives up.
+	// Zero, which is what every client in the tree is built with, is DefaultJobLogTimeout, the
+	// production bound; JobLogTimeBound answers the one in force, and a test that would
+	// otherwise wait that bound out sets this field on its own client.
+	JobLogTimeout time.Duration
 }
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
@@ -46,11 +51,6 @@ func (c Client) Get(ctx context.Context, path string, into any) error {
 // when into is not nil. An answer other than 2xx is an *Answer.
 func (c Client) Post(ctx context.Context, path string, body, into any) error {
 	return c.send(ctx, http.MethodPost, path, body, into)
-}
-
-// Patch is Post with PATCH, as GitHub's ref update takes it.
-func (c Client) Patch(ctx context.Context, path string, body, into any) error {
-	return c.send(ctx, http.MethodPatch, path, body, into)
 }
 
 // send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer
@@ -283,17 +283,26 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, ro
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		refused := &Answer{Method: method, Path: c.answerPath(request.URL), Status: response.StatusCode, Body: strings.TrimSpace(string(answer)),
-			RateLimited: RateLimited(response, answer), RetryAfter: retryAfter(response, answer, time.Now())}
-		if refused.RateLimited {
-			refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0", route)
-		}
-		return "", response.Header, refused
+		return "", response.Header, c.refusal(method, request.URL, response, answer, RateLimited(response, answer), route)
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
 	}
 	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+}
+
+// refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
+// caller returns: the status, the body as GitHub sent it, whether the answer is GitHub's rate
+// limit (limited, which the caller has read already where it decides something of its own by it,
+// as JobLog's 403 does) and, when it is, how long to wait and which budget it spent — route's,
+// the called API's own, when GitHub names no other.
+func (c Client) refusal(method string, target *url.URL, response *http.Response, body []byte, limited bool, route Budget) *Answer {
+	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
+		RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now())}
+	if refused.RateLimited {
+		refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0", route)
+	}
+	return refused
 }
 
 // answerPath is the path an Answer names for target, its query left out: the path under the
@@ -315,7 +324,9 @@ var secondaryLimitMessages = []string{"secondary rate limit", "abuse detection m
 
 // RateLimited says whether response, whose body is body, is GitHub's rate limit: a 429, or a 403
 // carrying x-ratelimit-remaining: 0 or a retry-after, or one whose body says it is the secondary
-// limit, which GitHub's REST documentation allows with neither header set.
+// limit, which GitHub's REST documentation allows with neither header set. Those are the statuses
+// GitHub documents a limit on; a caller that reads another status as an answer of its own asks
+// RateLimitSignals before it does.
 func RateLimited(response *http.Response, body []byte) bool {
 	if response.StatusCode == http.StatusTooManyRequests {
 		return true
@@ -323,10 +334,18 @@ func RateLimited(response *http.Response, body []byte) bool {
 	if response.StatusCode != http.StatusForbidden {
 		return false
 	}
-	if response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != "" {
-		return true
-	}
-	return namesSecondaryLimit(string(body))
+	return RateLimitSignals(response, body)
+}
+
+// RateLimitSignals says whether response's headers or its body, body, carry GitHub's rate limit,
+// whatever the status: x-ratelimit-remaining: 0, a retry-after, or a body naming the secondary
+// limit. A status GitHub does not document a limit on still means the limit and not the answer
+// when it carries one of these, so a caller reading such a status as a verdict of its own
+// (appauth's 422 for a permission set) asks this first.
+func RateLimitSignals(response *http.Response, body []byte) bool {
+	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
+		response.Header.Get("Retry-After") != "" ||
+		namesSecondaryLimit(string(body))
 }
 
 // namesSecondaryLimit says whether text, a GitHub answer's body or error message, says it is GitHub's
@@ -403,11 +422,4 @@ type Answer struct {
 
 func (a *Answer) Error() string {
 	return fmt.Sprintf("GitHub answered %s %s with %d: %s", a.Method, a.Path, a.Status, a.Body)
-}
-
-// NotFound says whether err carries GitHub's 404, the answer it gives a ref, a file or a
-// repository it does not have.
-func NotFound(err error) bool {
-	var answer *Answer
-	return errors.As(err, &answer) && answer.Status == http.StatusNotFound
 }

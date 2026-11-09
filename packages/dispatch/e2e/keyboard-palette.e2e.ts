@@ -1,5 +1,8 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { expect, type Page, test } from "@playwright/test";
 
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import {
   createAsk,
@@ -180,6 +183,9 @@ test("a failed palette search keeps its Retry action", async ({ browser }) => {
         });
       }
     );
+    // A failed read is retried twice, `QUERY_RETRY_DELAY_MS` apart, before the alert: page
+    // timers, which the page's own clock fires.
+    await page.clock.install();
     await openIssue(page, issue.key, "Failed palette search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -187,6 +193,16 @@ test("a failed palette search keeps its Retry action", async ({ browser }) => {
     await input.fill("astrolabe");
 
     const failure = dialog.getByRole("alert");
+    // Each refusal arms the next retry, so the jump repeats until the palette gives the read up.
+    await expect
+      .poll(
+        async () => {
+          await page.clock.runFor(QUERY_RETRY_DELAY_MS + 50);
+          return failure.count();
+        },
+        { intervals: [50, 50, 100, 200, 500] }
+      )
+      .toBe(1);
     await expect(failure).toHaveText(/Search failed\./);
     const retry = failure.getByRole("button", { name: "Retry" });
     await expect(retry).toBeVisible();
@@ -392,16 +408,16 @@ test("a focus-dependent row is offered, survives filtering, and runs on the row 
       name: "Actions",
     });
     await expect(
-      actions.getByRole("option", { name: "Open the ask's issue or document" })
+      actions.getByRole("option", { name: "Open the row's issue, document or thread" })
     ).toHaveCount(1);
-    await expect(actions.getByRole("option", { name: "Next ask" })).toHaveCount(0);
-    await expect(actions.getByRole("option", { name: "Previous ask" })).toHaveCount(0);
+    await expect(actions.getByRole("option", { name: "Next row" })).toHaveCount(0);
+    await expect(actions.getByRole("option", { name: "Previous row" })).toHaveCount(0);
 
     // Filtering re-renders the palette; the list is the one the opener's focus produced, so a
     // row a reader can see must still be there once they have typed enough to reach it.
     const input = page.getByRole("combobox", { name: "Search" });
-    await input.fill("open the ask");
-    const open = actions.getByRole("option", { name: "Open the ask's issue or document" });
+    await input.fill("open the row");
+    const open = actions.getByRole("option", { name: "Open the row's issue, document or thread" });
     await expect(open).toHaveCount(1);
 
     // And it runs against that row, not against the palette input that has focus while it is
@@ -736,7 +752,7 @@ test("the Inbox offers the selection's snooze but not the keys that mark and cle
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", ask.id);
     await row.focus();
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected asks" });
+    const bar = page.getByRole("group", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -1029,12 +1045,14 @@ test("a row whose control has gone since the palette opened does nothing", async
       page.locator('[data-testid="issue-header"] button[aria-label="Reopen issue"]')
     ).toHaveCount(0);
 
-    // The row checks its control again when it runs, so it writes nothing.
+    // The row checks its control again when it runs, so it writes nothing. The palette closing
+    // is the run's own signal - a PATCH would have left with the same task - and the read below
+    // is a round trip past it; the margin covers the request's dispatch alone.
     await reopen.click();
     await expect(dialog).toHaveCount(0);
-    await page.waitForTimeout(500);
-    expect(patches).toBe(0);
+    await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
+    expect(patches).toBe(0);
   } finally {
     await context.close();
   }

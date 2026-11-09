@@ -41,6 +41,19 @@ interface StallPane extends LegionPane {
   readonly pushedTip: string;
 }
 
+/** `POST /legion/v1/claims/activity`, the session's own report of what it is doing
+ * (packages/pi-shared/src/session-activity.ts): the plugin sends it after each turn and whenever
+ * the report's content changes, so how many a case sees is the host's timing and no case here is
+ * about it. What those reports hold is asserted in extensions/legion-session-activity-omp.test.ts. */
+const ACTIVITY_ROUTE = "/legion/v1/claims/activity";
+
+/** Every daemon route the pane called, in order, the activity heartbeat left out. */
+function daemonRoutes(pane: LegionPane): string[] {
+  return pane.requests
+    .map((request) => request.path)
+    .filter((requested) => requested.startsWith("/legion/") && requested !== ACTIVITY_ROUTE);
+}
+
 /**
  * The reminder count each phase-stall entry recorded, with a repeat of the value before it
  * dropped: what is left is the count's own climb, one step per reminder the host put in front of
@@ -119,7 +132,7 @@ const STALL_STATE = {
     firstBootAt: "2026-09-18T14:03:27Z",
     startedAt: "2026-09-22T09:15:02Z",
   },
-  admission: { cap: 1, active: ["STALL-1"], waiting: [], blocked: [] },
+  admission: { cap: 1, active: ["STALL-1"], waiting: [], trees: ["STALL-1"], blocked: [] },
   issues: {
     "STALL-2": {
       key: "STALL-2",
@@ -134,6 +147,7 @@ const STALL_STATE = {
   pendingStatusWrites: [],
   heldOutboxRows: [],
   strandedClaims: [],
+  wakesWaiting: [],
   capabilities: [],
   repositories: {
     owners: ["acme"],
@@ -142,7 +156,7 @@ const STALL_STATE = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+  settings: { worker_boot_timeout_seconds: 120 },
   consumers: [],
 };
 
@@ -340,10 +354,10 @@ test.skipIf(omp === undefined && !onActions)(
     // issue's record before it was sent, and the handoff_complete read it again, read the newest
     // implement record from the pane's Dispatch and the pushed tip of legion/STALL-2@origin from
     // the pane's jj, minted a grant in-process and posted the completion with them: no grant file,
-    // no `legion` command, and no handoff file.
-    expect(
-      pane.requests.map((request) => request.path).filter((p) => p.startsWith("/legion/"))
-    ).toEqual([
+    // no `legion` command, and no handoff file. The list is closed: the pane's three model
+    // requests settle one turn, and a settled turn of a claim's session calls no daemon route
+    // of its own beyond the activity report this list leaves out.
+    expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
       "/legion/v1/state",
@@ -483,10 +497,11 @@ test.skipIf(omp === undefined && !onActions)(
     // only once it was over.
     expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
     // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
-    // for the reminder's own record check, and to the listener for its session registration.
-    // The stand-in also serves as Dispatch, which holds the handoff record, so the session reads
-    // its people's answers before every model request (pi-envoy's answers line), the reminder's
-    // included. That read belongs to the reminder's turn, so it comes only once the wait is over.
+    // for the reminder's own record check and for the activity report that settle sends, and to
+    // the listener for its session registration. The stand-in also serves as Dispatch, which
+    // holds the handoff record, so the session reads its people's answers before every model
+    // request (pi-envoy's answers line), the reminder's included. That read belongs to the
+    // reminder's turn, so it comes only once the wait is over.
     const between = seen.filter((request) => request.at > waitingTurn && request.at < reminderTurn);
     const answersRead = /^\/api\/v1\/agents\/[^/]+\/answers$/;
     for (const request of between.filter(({ path }) => answersRead.test(path))) {
@@ -498,6 +513,7 @@ test.skipIf(omp === undefined && !onActions)(
         .filter(
           (path) =>
             path !== "/legion/v1/state" &&
+            path !== ACTIVITY_ROUTE &&
             path !== "/v1/interests/subscribe" &&
             !answersRead.test(path)
         )

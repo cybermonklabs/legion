@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // startNATS runs a NATS server for the test and returns it with the connection
@@ -29,14 +30,9 @@ func startNATS(t *testing.T) (*testnats.Server, string) {
 // waitFor polls a condition with timeout. Returns true if condition was met.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	if !testwait.Holds(timeout, 250*time.Millisecond, cond) {
+		t.Fatalf("timed out waiting for: %s", desc)
 	}
-	t.Fatalf("timed out waiting for: %s", desc)
 }
 
 func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, opts ...natsgo.SubOpt) (*natsgo.Subscription, error) {
@@ -852,6 +848,38 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("reconnect hook did not run")
+	}
+}
+
+// A lost connection runs the disconnect hooks before the reconnect hooks of the reconnect that
+// follows: a KV watcher's subscription survives the outage, so the hook is what tells its cache it
+// stopped following the bucket, and the reconnect hook's read starts after that.
+func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
+	_, uri := startNATS(t)
+	client, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+
+	events := make(chan string, 4)
+	client.AddDisconnectHook(func() { events <- "disconnected" })
+	client.AddReconnectHook(func(*natsgo.Conn) error {
+		events <- "reconnected"
+		return nil
+	})
+	if err := client.Conn.ForceReconnect(); err != nil {
+		t.Fatalf("force reconnect: %v", err)
+	}
+	for _, want := range []string{"disconnected", "reconnected"} {
+		select {
+		case got := <-events:
+			if got != want {
+				t.Fatalf("hook ran %q, want %q next", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the %s hook did not run", want)
+		}
 	}
 }
 

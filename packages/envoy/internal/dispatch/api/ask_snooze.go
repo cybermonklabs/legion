@@ -12,8 +12,8 @@ import (
 
 // Snoozing an Inbox row is a human's own view state, like the Agents page's Clear: the ask
 // stays open, stays listed, and reaches everyone else unchanged, while this viewer's Inbox
-// folds it away until snoozed_until. The routes are human-only because the Inbox is; a
-// session has no inbox to snooze a row out of.
+// folds it away until snoozed_until. The routes need the person scope (routeScopes) because
+// the Inbox does; a session has no inbox to snooze a row out of.
 //
 // No job ever wakes a snoozed row. GET /api/v1/inbox carries snoozed_until on the row and
 // the reader decides from it, so the moment a snooze passes the row is an ordinary row again
@@ -38,9 +38,14 @@ type userAskSnooze struct {
 	SnoozedUntil string `json:"snoozed_until"`
 }
 
+// askSnoozeInput is the body of PUT /api/v1/me/asks/{id}/snooze.
+type askSnoozeInput struct {
+	SnoozedUntil *string `json:"snoozed_until" required:"true"`
+}
+
 // PUT /api/v1/me/asks/{id}/snooze
 func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -49,9 +54,7 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var input struct {
-		SnoozedUntil *string `json:"snoozed_until"`
-	}
+	var input askSnoozeInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -117,7 +120,7 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/me/asks/{id}/snooze
 func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}

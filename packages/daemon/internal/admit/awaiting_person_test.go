@@ -14,31 +14,47 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // awaitingArchitect is the architect claim token of a root of the test project.
 func awaitingArchitect(t *testing.T, issue string) claim.Token {
 	t.Helper()
-	project, err := claim.ProjectToken(testProject)
+	return awaitingArchitectForProject(t, testProject, issue)
+}
+
+// awaitingArchitectForProject is awaitingArchitect under a Dispatch project key of its own, built
+// as workflow.ReconcileAwaiting builds it: the project token, then the token of the issue's
+// architect role.
+func awaitingArchitectForProject(t *testing.T, project, issue string) claim.Token {
+	t.Helper()
+	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	token, err := claim.NewToken(project, issue, claim.RoleArchitect)
+	architect, err := claim.NewToken(token, issue, claim.RoleArchitect)
 	if err != nil {
 		t.Fatalf("architect token of %s: %v", issue, err)
 	}
-	return token
+	return architect
 }
 
 // seedArchitectClaim records the root's architect working a task it has taken, which is the one
 // state in which a root may give its slot back: nothing it was given is still owed to it.
 func seedArchitectClaim(t *testing.T, pool *pgxpool.Pool, issue string, confirmed bool) {
 	t.Helper()
-	token := awaitingArchitect(t, issue)
+	seedArchitectClaimForProject(t, pool, testProject, issue, supervise.StateWorking, confirmed)
+}
+
+// seedArchitectClaimForProject is seedArchitectClaim under a Dispatch project key of its own and
+// in a claim state of its own: the root's architect holding a task it has taken, in state.
+func seedArchitectClaimForProject(t *testing.T, pool *pgxpool.Pool, project, issue string, state supervise.ClaimState, confirmed bool) {
+	t.Helper()
+	token := awaitingArchitectForProject(t, project, issue)
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $3, 'architect', 1, 'ses_architect', '', 'working', 0, 0, 0, 0)`,
-		string(token), testProject, issue); err != nil {
+		values ($1, $2, $3, $3, 'architect', 1, 'ses_architect', '', $4, 0, 0, 0, 0)`,
+		string(token), project, issue, string(state)); err != nil {
 		t.Fatalf("record the architect claim of %s: %v", issue, err)
 	}
 	var confirmedAt *time.Time
@@ -84,14 +100,16 @@ func seedDispatchClaim(t *testing.T, pool *pgxpool.Pool, issue, holder string) {
 }
 
 // awaitingRig is a slotted root whose architect handed question ask-q back, with a second root
-// waiting in line behind it, and the admission that decides them on every fact.
-func awaitingRig(t *testing.T, pool *pgxpool.Pool) *Admission {
+// waiting in line behind it, and the admission that decides them on every fact. cap is that
+// admission's cap, which counts issues at work rather than trees: a test about the root alone
+// takes 1, and one whose tree also starts a child of its own takes one slot per issue.
+func awaitingRig(t *testing.T, pool *pgxpool.Pool, cap int) *Admission {
 	t.Helper()
 	seedSlotted(t, pool, "LEGION-208", "U")
 	seedWaiting(t, pool, "LEGION-300", "V")
 	seedArchitectClaim(t, pool, "LEGION-208", true)
 	seedHandBack(t, pool, "LEGION-208", "ask-q", 5)
-	return newAdmission(t, 1, nil)
+	return newAdmission(t, cap, nil)
 }
 
 // supervise returns every supervise request queued for issue, in order.
@@ -113,7 +131,7 @@ func superviseRequests(t *testing.T, pool *pgxpool.Pool, issue string) []record.
 // slot it gave back goes to the root waiting behind it.
 func TestARootWaitingOnAPersonReturnsItsSlot(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool)
+	admission := awaitingRig(t, pool, 1)
 	tick(t, pool, admission, "tick-1")
 
 	root := issue(t, pool, "LEGION-208")
@@ -149,13 +167,14 @@ func TestARootWaitingOnAPersonReturnsItsSlot(t *testing.T) {
 	}
 }
 
-// A person's answer puts the waiting root at the front of the line, ahead of every root that never
+// A person's answer puts the waiting root in the line,
+// among the issues whose work came back, oldest first, ahead of every root that never
 // ran, and the next free slot hands its architect the task in its live session, told what answered
 // it. The resume is a handout: what it handed back before is cleared, so only its next hand-back
 // starts the next wait.
 func TestAnAnsweredRootTakesTheNextSlotAndResumesItsArchitect(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool)
+	admission := awaitingRig(t, pool, 1)
 	tick(t, pool, admission, "tick-1")
 	if got := issue(t, pool, "LEGION-208").Phase; got != phase.AwaitingPerson {
 		t.Fatalf("phase = %s, want the root waiting", got)
@@ -305,7 +324,7 @@ func TestAHandBackNoLongerWithThePersonIsTakenIn(t *testing.T) {
 // record, so a question it shows may already be answered. The hold's release decides it.
 func TestAHeldRootIsNotDecidedBeforeTheConsumerCatchesUp(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool)
+	admission := awaitingRig(t, pool, 1)
 	admission.pending = map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}
 	admission.target = 100
 	tick(t, pool, admission, "tick-held")
@@ -364,7 +383,7 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			admission := awaitingRig(t, pool)
+			admission := awaitingRig(t, pool, 1)
 			tick(t, pool, admission, "tick-1")
 			if got := issue(t, pool, "LEGION-208").Phase; got != phase.AwaitingPerson {
 				t.Fatalf("phase = %s, want the root waiting", got)
@@ -401,7 +420,7 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 // its architect told, as on a root that holds its slot.
 func TestASessionsStatusWriteOnARootWaitingOnAPersonIsSetBack(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool)
+	admission := awaitingRig(t, pool, 1)
 	engine := admission.engine
 	tick(t, pool, admission, "tick-1")
 	if got := issue(t, pool, "LEGION-208").Phase; got != phase.AwaitingPerson {

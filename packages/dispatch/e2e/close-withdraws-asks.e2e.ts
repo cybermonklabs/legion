@@ -11,8 +11,9 @@ import {
   getIssue,
   patchIssue,
   requestApproval,
+  withOpenedAsk,
 } from "./api";
-import { connectedDot, countDocumentSockets, documentEditor } from "./editor";
+import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -28,6 +29,10 @@ test.beforeEach(async () => {
 
 /** The agent that asks: every seeded ask waits on a person, so each is in alice's Inbox. */
 const asker = { actor: { id: "e2e-seed", kind: "session" } as Actor, as: "agent" as const };
+
+/** Every fact this file polls for lands in milliseconds: Playwright's default 100/250/500/1000
+ *  ladder would first see it a quarter-second late. */
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 const decisionBlock =
   ':::ask{#decision urgency="high" multiple="false" state="open"}\nShip now?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n';
@@ -53,16 +58,24 @@ async function seedIssue(project: string): Promise<Seeded> {
   );
   // The block is an ask once settlement has indexed it.
   await expect
-    .poll(async () =>
-      (await getIssue(issue.key)).open_asks.some((ask) => ask.block_id === "decision")
+    .poll(
+      async () =>
+        ((await getIssue(issue.key)).open_asks ?? []).some((ask) => ask.block_id === "decision"),
+      PROBE
     )
     .toBe(true);
-  const block = (await getIssue(issue.key)).open_asks.find((ask) => ask.block_id === "decision");
+  const block = ((await getIssue(issue.key)).open_asks ?? []).find(
+    (ask) => ask.block_id === "decision"
+  );
   if (block === undefined) {
     throw new Error("the decision block was not indexed");
   }
-  const plain = await createAsk(issue.key, { question: "Which region first?" }, asker);
-  const approval = await requestApproval(issue.primary_artifact_id, {}, asker);
+  // Neither write reads the other, and the ids they return are the only order the row keeps.
+  const [plain, requested] = await Promise.all([
+    createAsk(issue.key, { question: "Which region first?" }, asker),
+    requestApproval(issue.primary_artifact_id, {}, asker),
+  ]);
+  const approval = withOpenedAsk(requested);
   return {
     askIds: [plain.id, block.id, approval.ask.id],
     artifactId: issue.primary_artifact_id,
@@ -81,16 +94,21 @@ interface Opened {
 /** Opens alice's Inbox and the issue page, and waits until both show every ask open. The Inbox
  *  is read as the list it is: from 1280 px each question is a short row and only the selected
  *  one is a card, so the rows are what says the issue's three asks are listed. */
-async function openIssueAndInbox(browser: Browser, seeded: Seeded): Promise<Opened> {
+async function openIssueAndInbox(
+  browser: Browser,
+  seeded: Seeded,
+  { clock = false }: { clock?: boolean } = {}
+): Promise<Opened> {
   const alice = await asUser(browser, "alice");
   const inbox = await alice.newPage();
-  await inbox.goto("/");
+  const page = await alice.newPage();
+  const sockets = countDocumentSockets(page, seeded.artifactId);
+  // Neither page waits on the other, and each keeps its own checks below.
+  if (clock) await page.clock.install();
+  await Promise.all([inbox.goto("/"), page.goto(`/issues/${seeded.key}`)]);
   for (const id of seeded.askIds) {
     await expect(inboxRow(inbox, id)).toBeVisible();
   }
-  const page = await alice.newPage();
-  const sockets = countDocumentSockets(page, seeded.artifactId);
-  await page.goto(`/issues/${seeded.key}`);
   const decision = documentEditor(page).locator('[data-dispatch-ask-block="decision"]');
   await expectOpenDecision(decision);
   await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");
@@ -135,11 +153,13 @@ async function expectWithdrawn(
   }
 }
 
+// SLOW(>=2s): two pages of the issue, one of them the document editor with its own socket, then a
+// close, the version history, a reopen and a reload.
 test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back", async ({
   browser,
 }) => {
   const seeded = await seedIssue("CLOSE");
-  const opened = await openIssueAndInbox(browser, seeded);
+  const opened = await openIssueAndInbox(browser, seeded, { clock: true });
   const { decision, inbox, page, sockets } = opened;
   try {
     await page.getByRole("button", { name: "Close issue" }).click();
@@ -148,7 +168,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     // The newest saved version predates the close: opened from the history, it still shows the
     // decision as it was then, open, and nothing of the withdrawal.
     const { versions } = await getArtifact(seeded.artifactId, { login: "alice" });
-    const latest = Math.max(...versions.map((version) => version.number));
+    const latest = Math.max(...(versions ?? []).map((version) => version.number));
     expect((await getArtifactVersion(seeded.artifactId, latest)).markdown).toContain(
       ":::ask{#decision"
     );
@@ -165,12 +185,12 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await page.getByRole("combobox", { name: "Version" }).selectOption("");
 
     // The close dropped the document's socket, and its reconnect is admitted read-only while the
-    // issue is closed: the page a person who reopens more than 2 s after the close holds, which the
-    // Reopen below must make writable. The document socket's first reconnect is a uniform draw from
-    // [0, 2 s) (#2323), so a row must wait for the state the page settles in and never depend on
-    // which side of the draw a run lands. A reload cannot make a closed issue's document editable,
-    // so the page names none.
-    await expect.poll(sockets).toBe(2);
+    // issue is closed: the page a person who reopens after the draw holds, which the Reopen below
+    // must make writable. The document socket's first reconnect is a uniform draw from [0, 2 s)
+    // (#2323) the page's own clock spends, so a row waits for the state the page settles in and
+    // never depends on which side of the draw a run lands. A reload cannot make a closed issue's
+    // document editable, so the page names none.
+    await reconnectedSockets(page, sockets, 2);
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
@@ -183,7 +203,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     // and no reload.
     await expect(decision.getByTestId("ask-resolution-badge")).toHaveCount(0);
     await expect(decision).not.toContainText("Withdrawn");
-    await expect.poll(sockets).toBe(3);
+    await reconnectedSockets(page, sockets, 3);
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
@@ -193,14 +213,19 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     for (const id of seeded.askIds) {
       await expect(inboxRow(inbox, id)).toBeVisible();
     }
-    // Reloaded, the block still hosts the open, answerable card.
+    // Reloaded, the block still hosts the open, answerable card. The reload opens a document
+    // socket of its own, whose draw the page's clock spends as it did the two before it.
     await page.reload();
+    await reconnectedSockets(page, sockets, 4);
+    await expect(connectedDot(page)).toHaveText("connected");
     await expectOpenDecision(decision);
   } finally {
     await page.context().close();
   }
 });
 
+// SLOW(>=2s): the six-call seed and two pages, one of them the document editor with its own
+// socket, before the close is made.
 test("an agent session's close names the session on the withdrawn decision", async ({
   browser,
 }) => {
@@ -218,6 +243,8 @@ test("an agent session's close names the session on the withdrawn decision", asy
   }
 });
 
+// SLOW(>=2s): the six-call seed and two pages, one of them the document editor with its own
+// socket, before the close is made.
 test("the Legion daemon's close names the daemon whole on the withdrawn decision", async ({
   browser,
 }) => {

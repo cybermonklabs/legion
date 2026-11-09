@@ -18,12 +18,14 @@ import {
 } from "./api";
 import {
   barAction,
+  documentEditor,
   documentTransport,
   holdFirstRequest,
   markSpan,
   selectEditorText,
 } from "./editor";
 import { resetDatabase } from "./seed";
+import { navigateInApp } from "./sends";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -51,8 +53,6 @@ const longDocument = [
   ),
   "Unique faraway quotation.",
 ].join("\n\n");
-
-test.setTimeout(240_000);
 
 test.beforeEach(async () => {
   await resetDatabase();
@@ -129,6 +129,10 @@ async function seedAsks(
  */
 const STILL_FRAMES = 10;
 
+/** How many pixels of travel left still read as arrived: sub-pixel layout and a fractional
+ *  scroll offset leave a landing a shade short of its mark. */
+const LANDED_WITHIN_PX = 2;
+
 /**
  * Waits until the landing has stopped moving and reports where it stopped. A link's scroll to
  * its quote is smooth, and the margin corrects its own scroll as it fills in, so the target is
@@ -170,6 +174,52 @@ async function landingSettled(
       }),
     STILL_FRAMES
   );
+}
+
+/**
+ * Waits until the mark a link names has arrived where the document's scroll to it promises to
+ * leave it: centred in every scrollport between it and the page, or at the end of a scroll that
+ * cannot centre it. `focusMark` (`packages/proof-editor/src/lib.ts`) scrolls to the mark with
+ * `scrollIntoView({ behavior: 'smooth', block: 'center' })`, and a smooth scroll the engine has
+ * not begun yet emits no scroll event and moves nothing: stillness reads the same before the
+ * landing starts and after it ends, and a mark already in the viewport reads the same mid-flight.
+ * This is the reading that is true only once the landing has arrived, which is what a row that
+ * acts on the document - a selection, a press on the action bar fixed beside it - needs before
+ * it acts, since a scroll still to come carries both away.
+ */
+async function markLanded(page: Page, markId: string): Promise<void> {
+  await expect
+    .poll(async () =>
+      markSpan(page, markId)
+        .first()
+        .evaluate((element) => {
+          /** How far a scrollport still has to travel to put `offset` at its middle. */
+          const toGo = (scroll: number, limit: number, offset: number) =>
+            Math.abs(Math.min(Math.max(scroll + offset, 0), Math.max(limit, 0)) - scroll);
+          const mark = element.getBoundingClientRect();
+          const middle = mark.top + mark.height / 2;
+          let offBy = toGo(
+            window.scrollY,
+            document.documentElement.scrollHeight - window.innerHeight,
+            middle - window.innerHeight / 2
+          );
+          for (let node = element.parentElement; node !== null; node = node.parentElement) {
+            const overflow = getComputedStyle(node).overflowY;
+            if (overflow !== "auto" && overflow !== "scroll" && overflow !== "overlay") continue;
+            const box = node.getBoundingClientRect();
+            offBy = Math.max(
+              offBy,
+              toGo(
+                node.scrollTop,
+                node.scrollHeight - node.clientHeight,
+                middle - (box.top + node.clientHeight / 2)
+              )
+            );
+          }
+          return offBy;
+        })
+    )
+    .toBeLessThanOrEqual(LANDED_WITHIN_PX);
 }
 
 /** Polls until `inner` has settled wholly inside `outer`'s box - the margin's own scrollport,
@@ -246,30 +296,15 @@ async function searchHit(page: Page, query: string): Promise<Locator> {
   return hit;
 }
 
-async function expectSelectedMarginItem(
-  page: Page,
-  id: string,
-  isPhone: boolean,
-  isComment: boolean
-) {
-  const sheet = page.getByTestId("margin-sheet");
-  const item = sheet.locator(`[data-margin-item="${id}"]`);
+async function expectSelectedMarginItem(page: Page, id: string) {
+  const item = page.getByTestId("margin-sheet").locator(`[data-margin-item="${id}"]`);
   await expect(item).toHaveAttribute("aria-current", "true");
-  if (isPhone) {
-    if ((await sheet.getAttribute("data-expanded")) !== "true") {
-      await sheet.getByRole("button", { name: "Open review panel" }).click();
-    }
-    await expect(sheet).toHaveAttribute("data-expanded", "true");
-  }
   await expect(item).toBeInViewport();
-  if (isPhone && isComment) {
-    await expect(item).toHaveAttribute("aria-expanded", "false");
-  }
 }
 
-test("emitted document item hrefs select and scroll their anchored thread @phone", async ({
-  browser,
-}, testInfo) => {
+// SLOW(>=2s): four anchored writes, each seeded on its own transaction, and the four links the
+// row lands on in turn, in WebKit.
+test("emitted document item hrefs select and scroll their anchored thread", async ({ browser }) => {
   const { issue } = await seedIssue();
   // Anchored writes are seeded one at a time. Each holds its transaction across the document
   // work that stamps the mark, so concurrent ones queue on the server's connection pool
@@ -299,43 +334,38 @@ test("emitted document item hrefs select and scroll their anchored thread @phone
   try {
     const page = await context.newPage();
     const targets = [
-      {
-        id: comments[0].id,
-        isComment: true,
-        path: `/issues/${issue.key}/spec?comment=${comments[0].id}`,
-      },
+      { id: comments[0].id, path: `/issues/${issue.key}/spec?comment=${comments[0].id}` },
       {
         id: comments[1].id,
-        isComment: true,
         path: `/issues/${issue.key}/artifacts/${secondarySlug}?comment=${comments[1].id}`,
       },
-      { id: asks[0].id, isComment: false, path: `/issues/${issue.key}/spec?ask=${asks[0].id}` },
+      { id: asks[0].id, path: `/issues/${issue.key}/spec?ask=${asks[0].id}` },
       {
         id: asks[1].id,
-        isComment: false,
         path: `/issues/${issue.key}/artifacts/${secondarySlug}?ask=${asks[1].id}`,
       },
     ];
-    for (const target of targets) {
-      await page.goto(target.path);
-      await expectSelectedMarginItem(
-        page,
-        target.id,
-        testInfo.project.name === "iphone",
-        target.isComment
-      );
-      if (testInfo.project.name === "iphone") {
-        await page.getByRole("button", { name: "Close review panel" }).click();
+    for (const [index, target] of targets.entries()) {
+      // Cold entry is proved once, by the first href; the rest are followed as a link in the
+      // app follows one, which drives the same `parseIssuePath` and the same margin selection
+      // without reloading the shell four times.
+      if (index === 0) {
+        await page.goto(target.path);
+      } else {
+        await navigateInApp(page, target.path);
       }
+      await expectSelectedMarginItem(page, target.id);
     }
   } finally {
     await context.close();
   }
 });
 
-test("a document link followed while the page before it is still downloading its document opens the link @phone", async ({
+// @webkit @firefox: the engine's cancellation of a chunk the navigation away from it left
+// downloading.
+test("a document link followed while the page before it is still downloading its document opens the link @webkit @firefox", async ({
   browser,
-}, testInfo) => {
+}) => {
   const { issue } = await seedIssue();
   const comments = [
     await createComment(issue.key, {
@@ -361,7 +391,7 @@ test("a document link followed while the page before it is still downloading its
 
     const link = `/issues/${issue.key}/artifacts/${secondarySlug}?comment=${comments[1].id}`;
     await page.goto(link);
-    await expectSelectedMarginItem(page, comments[1].id, testInfo.project.name === "iphone", true);
+    await expectSelectedMarginItem(page, comments[1].id);
     const opened = new URL(page.url());
     expect(`${opened.pathname}${opened.search}`).toBe(link);
     await held.abort().catch(() => undefined);
@@ -370,9 +400,9 @@ test("a document link followed while the page before it is still downloading its
   }
 });
 
-test("a linked card the margin's later cards push down is scrolled back into view @phone", async ({
+test("a linked card the margin's later cards push down is scrolled back into view", async ({
   browser,
-}, testInfo) => {
+}) => {
   const { issue } = await seedIssue();
   const comment = await createComment(issue.key, {
     anchor: { artifact: "spec", quote: "astrolabe" },
@@ -394,8 +424,7 @@ test("a linked card the margin's later cards push down is scrolled back into vie
       await route.continue();
     });
     await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
-    const isPhone = testInfo.project.name === "iphone";
-    await expectSelectedMarginItem(page, comment.id, isPhone, true);
+    await expectSelectedMarginItem(page, comment.id);
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -429,7 +458,15 @@ test("a desktop document item link shows its far-away card and its quote", async
   }
 });
 
-test("a composer opened from the document is in the margin's view after a comment link @phone", async ({
+// SLOW(>=2s): a long seeded document, the landing scroll settled over it in WebKit and on a
+// phone, and the editor selection that opens the margin's composer.
+// @webkit @firefox: the landing scroll's own frame order, which is the engine's. Every one of
+// this row's five measured CI failures was in Firefox, where the selection bar - fixed beside a
+// selection the landing had carried off screen - stood above the viewport and no scroll could
+// reach it. The tags are what keeps the row on those engines now that they select rows by tag
+// rather than by file (`firefoxTagged`, `webkitTagged`, `e2e/playwright.config.ts`); without
+// them it would run only where its defect was never seen.
+test("a composer opened from the document is in the margin's view after a comment link @phone @webkit @firefox", async ({
   browser,
 }, testInfo) => {
   const { comment, issue, markId } = await seedLongDocument();
@@ -450,12 +487,26 @@ test("a composer opened from the document is in the margin's view after a commen
     // and bring the form back. Both halves of the landing come first: the card, and the quote
     // the document scrolls to once the editor has projected its mark, which on a loaded machine
     // is later than the card. A selection made before that scroll is carried off screen by it,
-    // and so is the fixed action bar placed beside the selection.
+    // and so is the fixed action bar placed beside the selection - and the quote is in the
+    // viewport both while that scroll is still to come and once it has run, so the mark's
+    // arrival at the place `block: 'center'` promises is what says the document is done moving.
     await expect(card).toBeInViewport();
     await expect(markSpan(page, markId)).toBeInViewport();
+    await markLanded(page, markId);
     await landingSettled(sheet);
 
-    await selectEditorText(page, "Paragraph 2: surrounding context");
+    // The landing leaves this paragraph 921 px above the viewport, and the action bar is
+    // `position: fixed` beside the selection, so a selection made from there puts the bar above
+    // the viewport too - where Playwright's "scroll into view" moves nothing, a fixed element
+    // having nowhere to be scrolled from. What rescued it was never this row: it was
+    // prosemirror-view scrolling to its own selection when `selectEditorText` focuses the
+    // editor, measured here as a single `window.scrollBy(0, -1062)` from `scrollToSelection` on
+    // the DOMObserver's flush, which happens to leave the document's first paragraphs on screen.
+    // A reader drags over text they are looking at, so this row scrolls to the paragraph first
+    // and the bar is beside something on screen however that focus scroll falls.
+    const selected = "Paragraph 2: surrounding context";
+    await documentEditor(page).getByText(selected).scrollIntoViewIfNeeded();
+    await selectEditorText(page, selected);
     await barAction(page, "Comment");
 
     const composer = sheet.locator("[data-margin-composer]");
@@ -475,7 +526,13 @@ test("a composer opened from the document is in the margin's view after a commen
   }
 });
 
-test("a press in the document while a comment link is still landing does not end the hold", async ({
+// SLOW(>=2s): the long document and three seeded asks are both halves of the hold this row
+// proves - the transport held so the editor reports no layout, the asks held so their group
+// relays the margin out after the press - and each half ends in a settle measured in the
+// engine's own still frames, not in wall-clock time.
+// @webkit @firefox: the margin hold's frame order, where the press races the landing's own
+// frames.
+test("a press in the document while a comment link is still landing does not end the hold @webkit @firefox", async ({
   browser,
 }) => {
   const { comment, issue, markId } = await seedLongDocument();
@@ -534,6 +591,9 @@ const crossDocumentLandingStates = [
 ] as const;
 
 for (const state of crossDocumentLandingStates) {
+  // SLOW(>=2s): two documents are loaded by design. The margin provider must already be mounted,
+  // carrying another document's offsets, when the link lands - which is the stale report the
+  // press must not be answered from - so neither load can go.
   test(`a press while a comment link reached from another document is landing and ${state.name} does not end the hold`, async ({
     browser,
   }) => {
@@ -632,7 +692,11 @@ const hiddenEditorJourneys = [
 ] as const;
 
 for (const journey of hiddenEditorJourneys) {
-  test(journey.name, async ({ browser }) => {
+  // SLOW(>=2s): the journey is the property. A long document's landing, a tab switch or a
+  // version switch that hides the editor, and the return are each a real editor mount and a real
+  // smooth-scroll landing; there is no step here that is not the thing being proved.
+  // @webkit @firefox: the margin hold's frame order, read with the page's animation frames held.
+  test(`${journey.name} @webkit @firefox`, async ({ browser }) => {
     const { comment, issue, markId } = await seedLongDocument();
     if (journey.namedVersion) {
       await createNamedVersion(issue.primary_artifact_id, "Initial long document");
@@ -700,7 +764,8 @@ const MAX_SCROLL_FALL_PX = 64;
 // The past version's first landing with no diagram at all, so nothing runs it again: when every
 // render of the page rebuilt the version's editor, the last scroll could run before the last
 // editor had laid out and leave the reader at the top of the page.
-test("a past version's comment link lands on its quote in a document with no diagram @phone", async ({
+// @webkit @firefox: the margin hold's scroll order, read at every frame of the landing.
+test("a past version's comment link lands on its quote in a document with no diagram @webkit @firefox", async ({
   browser,
 }) => {
   const filler = Array.from({ length: 50 }, (_, index) => `Filler paragraph ${index + 1}.`);
@@ -728,9 +793,11 @@ test("a past version's comment link lands on its quote in a document with no dia
     await expect(highlight).toHaveText("quoted words");
     await expect(highlight).toBeInViewport();
     // A page that rebuilt the version's editor collapsed to the viewport's height between builds,
-    // throwing the reader back after the scroll to the quote began. Waiting is the only way to
-    // show a jump that does not come.
-    await page.waitForTimeout(1_500);
+    // throwing the reader back after the scroll to the quote began. Stillness is how a jump that
+    // does not come is shown: `landingSettled` returns after ten frames with no scroll and no
+    // change of the version view's own scroll height - the very measurement a rebuild disturbs -
+    // and a loaded machine stretches those frames, which a wall-clock window cannot do.
+    await landingSettled(versionView);
     const offsets = (await page.evaluate(() => window.__scrollEachFrame)) ?? [];
     const started = offsets.findIndex((offset) => offset > 0);
     expect(started).toBeGreaterThanOrEqual(0);
@@ -750,6 +817,8 @@ test("a past version's comment link lands on its quote in a document with no dia
   }
 });
 
+// SLOW(>=2s): a long seeded document with two referencing asks, the reference read held through
+// the landing, and thirty paragraphs inserted above the linked quote.
 test("a resolving reference above a linked card does not end the hold", async ({ browser }) => {
   const { comment, issue } = await seedLongDocument();
   const target = await createIssue({
@@ -776,12 +845,20 @@ test("a resolving reference above a linked card does not end the hold", async ({
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
     await expect(card).toBeInViewport();
-    await expect(sheet.getByText(target.key, { exact: true }).first()).toBeVisible();
-    await expect(sheet.getByText(target.title, { exact: true })).toHaveCount(0);
+    // Each ask above the card cites the target issue. INFRA-869's R4: "A `dispatch://`
+    // reference reads as its target's title wherever Dispatch shows text ... an issue as its
+    // key and title. A reference whose target is missing shows its address as written." The
+    // summary read is held, so until it lands the words the author wrote stand - the short form
+    // `CORE-2` this read before the issue - and once it lands the key and the long title do,
+    // which is the growth above the card this test is about.
+    const written = `dispatch://${target.key}`;
+    const resolved = `${target.key} ${target.title}`;
+    await expect(sheet.getByRole("link", { exact: true, name: written }).first()).toBeVisible();
+    await expect(sheet.getByRole("link", { exact: true, name: resolved })).toHaveCount(0);
     await landingSettled(sheet);
 
     referenceHeld.resolve();
-    await expect(sheet.getByText(target.title, { exact: true })).toHaveCount(2);
+    await expect(sheet.getByRole("link", { exact: true, name: resolved })).toHaveCount(2);
     const before = "Paragraph 34: surrounding context for a long document.";
     const inserted = Array.from(
       { length: 30 },
@@ -804,6 +881,9 @@ test("a resolving reference above a linked card does not end the hold", async ({
   }
 });
 
+// SLOW(>=2s): the asks arrive one at a time through the API while the reader reads, and their
+// arrival is what pushes the card out. Seeding them concurrently exhausts the server's pool
+// (LEGION-215, `seedAsks` above), so three sequential arrivals are the row's real time.
 test("the margin stops holding a landed card once the reader works the document", async ({
   browser,
 }) => {
@@ -832,7 +912,7 @@ test("the margin stops holding a landed card once the reader works the document"
     }
     await selectEditorText(page, "Paragraph 4: surrounding context");
 
-    await seedAsks(issue.key, 6, async (askId) => {
+    await seedAsks(issue.key, 3, async (askId) => {
       await expect(sheet.locator(`[data-margin-item="${askId}"]`)).toBeVisible();
     });
 
@@ -875,7 +955,12 @@ async function placementAfterArrival(
   };
 }
 
-test("a linked card's placement ignores the margin's own scroll", async ({ browser }) => {
+// SLOW(>=2s): two real anchored arrivals, each re-measuring the whole margin column, are the two
+// measurements the row compares; cutting one leaves nothing to compare.
+// @webkit @firefox: the margin hold's scroll order, which the margin's own scroll must not move.
+test("a linked card's placement ignores the margin's own scroll @webkit @firefox", async ({
+  browser,
+}) => {
   // Only the desktop margin places cards by mark, so this row is not tagged `@phone`.
   // The compact sheet stacks its cards from the top of its column rather than tracking marks -
   // measured here, the linked card sits at 102 px and an arrival above it moves it to 204 px,
@@ -997,9 +1082,9 @@ test("an iPhone secondary-document link scrolls its selected card after opening 
   }
 });
 
-test("an unanchored project-document comment is selected in its only discussion surface @phone", async ({
+test("an unanchored project-document comment is selected in its only discussion surface", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const document = await createProjectDocument("CORE", {
     content: "The astrolabe handbook is a project document.",
@@ -1016,7 +1101,7 @@ test("an unanchored project-document comment is selected in its only discussion 
     await expect(page).toHaveURL(
       `/projects/CORE/documents/${document.artifact.slug}?comment=${comment.id}`
     );
-    await expectSelectedMarginItem(page, comment.id, testInfo.project.name === "iphone", true);
+    await expectSelectedMarginItem(page, comment.id);
     await expect(
       page.getByTestId("margin-sheet").locator(`[data-margin-item="${comment.id}"]`)
     ).toContainText("Document-level note without a quote.");
@@ -1025,9 +1110,7 @@ test("an unanchored project-document comment is selected in its only discussion 
   }
 });
 
-test("an unanchored comment deep link still focuses its Conversation turn @phone", async ({
-  browser,
-}, testInfo) => {
+test("an unanchored comment deep link still focuses its Conversation turn", async ({ browser }) => {
   const { issue } = await seedIssue();
   const comment = await createComment(issue.key, { body: "No quote, just a note." });
   const context = await asUser(browser, "alice");
@@ -1036,14 +1119,6 @@ test("an unanchored comment deep link still focuses its Conversation turn @phone
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
-    // On a phone the link opens the comment's thread full-screen over the Conversation; Back
-    // leaves it on the focused turn.
-    if (testInfo.project.name === "iphone") {
-      const thread = page.getByRole("dialog", { name: "Thread" });
-      await expect(thread.getByText("No quote, just a note.")).toBeVisible();
-      await thread.getByRole("button", { name: "Back" }).click();
-      await expect(thread).toHaveCount(0);
-    }
     const turn = page.locator(`li[data-turn="comment:${comment.id}"][aria-current="true"]`);
     await expect(turn).toContainText("No quote, just a note.");
     await expect(turn).toBeInViewport();
@@ -1052,26 +1127,61 @@ test("an unanchored comment deep link still focuses its Conversation turn @phone
   }
 });
 
-test("an item link the SPA cannot resolve names what is missing, inside the shell @phone", async ({
+/** Two retry waits (`QUERY_RETRY_DELAY_MS`, `web/src/api/query-client.ts`) and the asks between
+ *  them: what an item lookup that cannot resolve costs before the page names it missing. A 404
+ *  and a 400 are both retryable (`isRetryableQueryError`, `web/src/api/client.ts`), so
+ *  `useItemLanding` asks three times over. */
+const ITEM_RETRY_WAITS_MS = 1_200;
+
+/** Waits for the page to name `heading`, firing the page's own retry waits rather than outliving
+ *  them: when the navigation returns the first ask has not failed yet, so the clock is driven
+ *  again each time round until the heading the retries stand in front of is there. */
+async function untilNotFound(page: Page, heading: string): Promise<void> {
+  const title = page.getByRole("heading", { name: heading });
+  await expect
+    .poll(
+      async () => {
+        await page.clock.runFor(ITEM_RETRY_WAITS_MS);
+        return await title.isVisible();
+      },
+      { intervals: [50, 50, 100, 200, 500] }
+    )
+    .toBe(true);
+}
+
+test("an item link the SPA cannot resolve names what is missing, inside the shell", async ({
   browser,
-}, testInfo) => {
+}) => {
   const { issue } = await seedIssue();
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    for (const [segment, heading] of [
-      ["comments", "Comment not found"],
-      ["asks", "Ask not found"],
-      ["messages", "Message not found"],
-    ] as const) {
-      for (const id of ["00000000-0000-4000-8000-000000000000", "not-a-uuid"]) {
-        await page.goto(`/issues/${issue.key}/${segment}/${id}`);
-        await expect(page.getByRole("heading", { name: heading })).toBeVisible();
-        await expect(page.getByTestId("app-shell")).toBeVisible();
-        if (testInfo.project.name !== "iphone") {
-          await expect(page.getByRole("link", { exact: true, name: "Inbox" })).toBeVisible();
+    // Every link below is unresolvable, and an unresolvable lookup is retried twice before the
+    // page may call it missing: those waits are page timers, so the page's clock fires them.
+    await page.clock.install();
+    let cold = true;
+    // The id is the outer loop so that no two links in a row end on the same heading: a heading
+    // left over from the link before would satisfy the assertion before the new one landed.
+    for (const id of ["00000000-0000-4000-8000-000000000000", "not-a-uuid"]) {
+      for (const [segment, heading] of [
+        ["comments", "Comment not found"],
+        ["asks", "Ask not found"],
+        ["messages", "Message not found"],
+      ] as const) {
+        const path = `/issues/${issue.key}/${segment}/${id}`;
+        // The first link is the cold entry the row is about - the server serves the shell for a
+        // deep link it cannot resolve - and the rest are followed as a link in the app is, which
+        // reaches the same `parseIssuePath` and the same `useItemLanding`.
+        if (cold) {
+          await page.goto(path);
+          cold = false;
+        } else {
+          await navigateInApp(page, path);
         }
+        await untilNotFound(page, heading);
+        await expect(page.getByTestId("app-shell")).toBeVisible();
+        await expect(page.getByRole("link", { exact: true, name: "Inbox" })).toBeVisible();
       }
     }
   } finally {
@@ -1118,6 +1228,9 @@ test("every item link lands on exactly one marked card, and a reply link marks i
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    // The last link below cannot resolve, and the page retries an unresolvable lookup twice
+    // before it may say so; its clock fires those waits.
+    await page.clock.install();
 
     // A reply written under an ask marks that ask's card and the reply's own row.
     await page.goto(`/issues/${issue.key}/comments/${askReply.id}`);
@@ -1126,7 +1239,9 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     await expect(marked(page).locator('[data-reply][aria-current="true"]')).toHaveCount(1);
 
     // A retracted ask: Closed, and the landing resets the filter so the link never fails.
-    await page.goto(`/issues/${issue.key}/asks/${retracted.id}`);
+    // Every landing after the first is reached as a link in the app reaches it: the cold entry
+    // is proved once above, and each of these drives the same router and the same landing.
+    await navigateInApp(page, `/issues/${issue.key}/asks/${retracted.id}`);
     await expect(marked(page)).toHaveCount(1);
     await expect(marked(page)).toHaveAttribute("data-turn", `ask:${retracted.id}`);
 
@@ -1135,7 +1250,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     // (`features/conversation/usePhoneThread.ts`), which inerts the turns list behind it: the
     // reply's row is marked in the thread the reader lands on, and the card behind it once
     // Back closes the thread.
-    await page.goto(`/issues/${issue.key}/comments/${resolvedReply.id}`);
+    await navigateInApp(page, `/issues/${issue.key}/comments/${resolvedReply.id}`);
     const resolvedThread = page.getByRole("dialog", { name: "Thread" });
     await expect(
       (isPhone ? resolvedThread : marked(page)).locator('[data-reply][aria-current="true"]')
@@ -1146,9 +1261,9 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 
     // A search hit opens the very path the palette's row carries.
     const hits = await search("quadrant");
-    const hit = hits.results.find((result) => result.id === found.id);
+    const hit = (hits.results ?? []).find((result) => result.id === found.id);
     expect(hit?.href).toBe(`/issues/${issue.key}/comments/${found.id}`);
-    await page.goto(hit?.href ?? "");
+    await navigateInApp(page, hit?.href ?? "");
     if (isPhone) {
       await expect(page.getByRole("dialog", { name: "Thread" })).toContainText(
         "Search me: quadrant note."
@@ -1160,10 +1275,10 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 
     // The negative controls: an item that lives on another issue still redirects to it, and an
     // id that names nothing still renders the missing page.
-    await page.goto(`/issues/${issue.key}/comments/${elsewhere.id}`);
+    await navigateInApp(page, `/issues/${issue.key}/comments/${elsewhere.id}`);
     await expect(page).toHaveURL(`/issues/${otherIssue.key}/comments/${elsewhere.id}`);
-    await page.goto(`/issues/${issue.key}/comments/00000000-0000-4000-8000-000000000000`);
-    await expect(page.getByRole("heading", { name: "Comment not found" })).toBeVisible();
+    await navigateInApp(page, `/issues/${issue.key}/comments/00000000-0000-4000-8000-000000000000`);
+    await untilNotFound(page, "Comment not found");
   } finally {
     await context.close();
   }

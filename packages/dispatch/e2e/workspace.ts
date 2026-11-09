@@ -103,7 +103,7 @@ export interface SeededWorkspace {
 async function waitForSpecAsk(issueKey: string): Promise<void> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    if ((await getIssue(issueKey)).open_asks.some((ask) => ask.block_id)) return;
+    if (((await getIssue(issueKey)).open_asks ?? []).some((ask) => ask.block_id)) return;
     if (Date.now() > deadline) {
       throw new Error(`seedWorkspace: ${issueKey}'s spec decision was not indexed within 15 s`);
     }
@@ -128,16 +128,25 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
   const alice = { login: "alice" };
 
   await setLiveSessions(workspaceSessions);
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" });
+  await Promise.all([
+    createProject({ key: "CORE", name: "Core" }),
+    createProject({ key: "OPS", name: "Ops" }),
+  ]);
 
   // A human's issue is assigned to its creator, so every issue here is alice's.
+  //
+  // The issues are created ONE AT A TIME rather than in one round, and those six round trips
+  // are deliberate: the server numbers an issue's key as it inserts it, so a round of seven
+  // races and the child is CORE-2 on one run and CORE-3 on the next. Nothing read that order
+  // until the visual review began comparing rendered pages against committed baselines
+  // (e2e/visual.e2e.ts), and a key printed on a page is a key in a baseline - the first two
+  // container runs of that layer differed on the Children tab, the project's issue list and
+  // the Inbox, in the key's own digits and nowhere else.
   const workflow = await createIssue({
     project: "CORE",
     spec: workflowSpec,
     title: "Local testing workflow for Dispatch",
   });
-  await patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" });
   const child = await createIssue({
     parent: workflow.key,
     project: "CORE",
@@ -147,22 +156,37 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     project: "CORE",
     title: "Broadcast recipients keep their send order",
   });
-  await patchIssue(broadcastOrder.key, { status: "needs_review" });
   const snooze = await createIssue({
     project: "CORE",
     title: "Snooze an Inbox row until tomorrow",
   });
   const folds = await createIssue({ project: "CORE", title: "Agents page freshness folds" });
-  await patchIssue(folds.key, { status: "backlog" });
   const phone = await createIssue({ project: "CORE", title: "Phone layout of the review sheet" });
-  await patchIssue(phone.key, { status: "done" });
   const retracted = await createIssue({
     project: "CORE",
     title: "A retracted ask stays in history",
   });
   const rotate = await createIssue({ project: "OPS", title: "Rotate the agent token" });
-  await patchIssue(rotate.key, { status: "triage" });
+  // Before the patch below, not after the whole seed: the ask the workflow issue's spec
+  // declares is written by the document service on its own, some time after `createIssue`
+  // answered, and the patch writes an event of its own against the same issue. Each lands with
+  // the sequence number of the moment it happened, and the Activity tab is that sequence
+  // newest first, so without this the "asked" and "updated the issue" rows swapped places
+  // between two runs of the drift probe. Waiting here puts the ask before the patch in every
+  // run.
+  await waitForSpecAsk(workflow.key);
+  await Promise.all([
+    patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),
+    patchIssue(broadcastOrder.key, { status: "needs_review" }),
+    patchIssue(folds.key, { status: "backlog" }),
+    patchIssue(phone.key, { status: "done" }),
+    patchIssue(rotate.key, { status: "triage" }),
+  ]);
 
+  // Five asks and the runbook, one at a time for the reason the issues above are: an Inbox row
+  // is ordered by its ask's own creation, so a round of six ties and two rows of equal urgency
+  // swap places between runs. The visual review's baseline of the Inbox is what reads that
+  // order, and the first two container runs differed by exactly those two rows.
   const blocking = await createAsk(
     folds.key,
     { question: "Fold a session unseen for ten minutes under Inactive?", urgency: "blocking" },
@@ -173,21 +197,17 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     { question: "Snooze until tomorrow morning, or for a full day?", urgency: "high" },
     as(sessionIds.tester)
   );
-  await snoozeAsk(snoozed.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), alice);
   const answered = await createAsk(
     broadcastOrder.key,
-    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the recipient-order fix?" },
+    {
+      options: [{ label: "Ship" }, { label: "Hold" }],
+      question: "Ship the recipient-order fix?",
+    },
     as(sessionIds.reviewer)
   );
-  await answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, alice);
   const withdrawn = await createAsk(
     retracted.key,
     { question: "Keep the retracted ask out of the Inbox?" },
-    as(sessionIds.planner)
-  );
-  await resolveAsk(
-    withdrawn.id,
-    { kind: "retracted", reason: "Answered live." },
     as(sessionIds.planner)
   );
   const rotation = await createAsk(
@@ -199,11 +219,20 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
     name: "Runbook",
   });
-  const documentAsk = await createArtifactAsk(
-    runbook.artifact.id,
-    { question: "Keep the runbook in the repository?" },
-    as(sessionIds.tester)
-  );
+  const [documentAsk] = await Promise.all([
+    createArtifactAsk(
+      runbook.artifact.id,
+      { question: "Keep the runbook in the repository?" },
+      as(sessionIds.tester)
+    ),
+    snoozeAsk(snoozed.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), alice),
+    answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, alice),
+    resolveAsk(
+      withdrawn.id,
+      { kind: "retracted", reason: "Answered live." },
+      as(sessionIds.planner)
+    ),
+  ]);
 
   const review = await createComment(
     broadcastOrder.key,
@@ -245,10 +274,10 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     },
     alice
   );
-  if (broadcast.excluded.length > 0) {
+  if ((broadcast.excluded ?? []).length > 0) {
     throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
   }
-  const plannerCopy = broadcast.recipients.find(
+  const plannerCopy = (broadcast.recipients ?? []).find(
     (recipient) => recipient.session_id === sessionIds.planner
   );
   if (plannerCopy === undefined) throw new Error("seedWorkspace: the planner received no copy");
@@ -258,7 +287,6 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     actor(sessionIds.planner)
   );
 
-  await waitForSpecAsk(workflow.key);
   return {
     asks: {
       answered: answered.id,
@@ -270,7 +298,7 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     },
     broadcast: {
       id: broadcast.id,
-      sessionIds: broadcast.recipients.map((recipient) => recipient.session_id),
+      sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
     },
     directMessage: directMessage.id,
     // blocking, snoozed, rotate, the spec's decision block, and the document ask.

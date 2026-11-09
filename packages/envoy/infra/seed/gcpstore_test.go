@@ -529,7 +529,7 @@ func TestGCPRefusesAMalformedNameBeforeOpeningTheStore(t *testing.T) {
 				t.Setenv(key, value)
 			}
 			if _, ok := row.env["GOOGLE_APPLICATION_CREDENTIALS"]; ok {
-				require.NoError(t, os.Unsetenv("GOOGLE_OAUTH_ACCESS_TOKEN"))
+				unsetOAuthToken(t)
 			}
 			code, out, errs := runGCPAs(t, f, pasted, append([]string{"check"}, row.flags...)...)
 			require.Equal(t, 2, code, errs)
@@ -670,7 +670,7 @@ func TestGCPCredentials(t *testing.T) {
 		f.bearer = signedByIt
 		serveGCP(t, f)
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", file)
-		require.NoError(t, os.Unsetenv("GOOGLE_OAUTH_ACCESS_TOKEN"))
+		unsetOAuthToken(t)
 		code, out, errs := runGCP(t, f, "check")
 		require.Equal(t, 0, code, errs)
 		require.Equal(t, gcpSecret+": present; latest: no\n", out)

@@ -2,11 +2,13 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -45,7 +47,15 @@ type podSessionResponse struct {
 //
 // The body's token is verified with the verifier an enrolling pod's token is verified with
 // (Deps.Enroll.Pod), which the serviceAuth class has already proved the broker has: an expired
-// token is 401 POD_TOKEN_EXPIRED and one that does not verify 401 POD_TOKEN_INVALID. The policy
+// token is 401 POD_TOKEN_EXPIRED and one that does not verify 401 POD_TOKEN_INVALID. The pod it
+// names must not be the caller's own: a token naming the account the caller logs in as and the
+// very pod the caller's own token names is 403 POD_CALLER_IS_THE_POD. A registrar records which
+// pod may write under which name, and a pod that wrote its own row would pick the name it
+// writes under, which is the one choice this row takes from it. BROKER_SERVICE_LOGINS may name
+// an account BROKER_SERVICES binds to a service, so every pod of that account logs the service
+// in and reaches this route; without this a session pod would register itself under the name a
+// sibling pod holds. A registrar whose own token names no pod, and one registering any pod but
+// the one it runs in, are untouched. The policy
 // then refuses a token bound to no pod (400 POD_NOT_BOUND), an account BROKER_EXCHANGE_ACCOUNTS
 // does not list (403 POD_ACCOUNT_NOT_LISTED, a code of its own, since the caller's own list
 // refusing is ACCOUNT_NOT_LISTED and the two lists are two facts), an account whose entry fixes a
@@ -53,7 +63,7 @@ type podSessionResponse struct {
 // SESSION_FIXED, since such a pod needs no registration and registering one would say something
 // the configuration already says), and a session name no request could name back (400
 // SESSION_INVALID). Each refusal names the account or the name it refused and repeats no token.
-func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, service string) {
+func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
@@ -65,6 +75,11 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, serv
 		return
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_INVALID", "the pod's ServiceAccount token does not verify")
+		return
+	}
+	if claims.Subject == registrar.Subject && registrar.PodUID != "" && claims.PodUID == registrar.PodUID {
+		writeError(w, http.StatusForbidden, "POD_CALLER_IS_THE_POD",
+			fmt.Sprintf("this is the caller's own pod, %s of %s, and a registrar registers a pod other than the one it runs in", claims.PodUID, claims.Subject))
 		return
 	}
 	expires, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session)
@@ -83,7 +98,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, serv
 		// The one record of who may now write under this name: the registrar is the authority
 		// here, so a write it made and a write it stopped making are both read from this line.
 		slog.Info("broker: registered a pod to write under a session name",
-			"service", service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
+			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
 		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, ExpiresAt: expires})
 	}
 }

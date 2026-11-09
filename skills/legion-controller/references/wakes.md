@@ -19,9 +19,11 @@ the same way and wakes nobody.
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
-The daemon released `<KEY>`'s slot and no waiting root took it: its tree finished or left the
-workflow, or the root returned the slot to wait on a person (`awaiting_person`, which also sends
-its own `awaiting-person` wake). Name the free slots; take nothing.
+The daemon released the slot of `<KEY>` and no waiting issue took it: the work of that issue ended
+or left the workflow — its merge, `accepting`, a blocker, its own children, a person
+(`awaiting_person`, which also sends its own `awaiting-person` wake), or its tree finishing. A
+slot is one issue with work, a root or a child, so the issue it names may be either. Name the free
+slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
 
@@ -46,10 +48,12 @@ because the operator closes or decides a deployment row, and the operator or the
 fixes a live row's session.
 
 `blocked`, when present, is `[{issue, blockedBy}, …]`: every root and child Legion is waiting to
-start behind an unfinished Dispatch issue, each with the issues it waits on. `read_state` shows the
+start, each with what it waits on — the unfinished Dispatch issues of its `blocked_by` links, or,
+for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
 same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
-The wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
-link is taken off (by a person or the tree's architect): name the waits in the day's report and
+A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
+link is taken off (by a person or the tree's architect), and a children-first wait ends when the
+last open child leaves the workflow: name the waits in the day's report and
 take nothing for them.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
@@ -69,8 +73,10 @@ A root whose architect asked a person a question, or handed its spec to a person
 now waits only on them: the daemon returned its slot while the architect stays live to read the
 person's comments and replies. Read `issues.<KEY>.waitingOn`. Do not park it or start anything, and
 take nothing for the slot it returned: it is no reason to label or admit an issue ([Free
-slots](skill://legion-controller/SKILL.md#free-slots)). The person's answer puts it at the front of
-`admission.waiting` by itself, and the next free slot delivers its task. A lost label or a foreign
+slots](skill://legion-controller/SKILL.md#free-slots)). The person's answer puts it among the
+issues at the front of `admission.waiting` by itself, and its promotion gives its architect the
+answer task: at once, holding no slot, when its design gate has already opened, and at the next
+free slot while its architect is still writing the first spec. A lost label or a foreign
 Dispatch claim sends the separate `unslotted` wake.
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
@@ -112,11 +118,87 @@ architect's last message on the root issue. When you find none, or it is gone, r
 fresh budgets). When it stays, park the tree (`set_status` the root to `backlog`) and say why on
 the issue, because a relaunch would fail the same way.
 
+## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", reason}`)
+
+The daemon's stall backstop acted on a stalled turn of the tree's architect: its agent had not
+stepped for longer than the `worker_stall_backstop_hours` the deployment gives that role, and most
+often the daemon ended the turn and brought the same session back on a new process. You get a copy
+only for a tree's own architect, because every other notice of the tree goes to that architect and
+nobody inside the tree is left to read this one; the architect is told on its issue as well. The
+`reason` is the record the daemon read: when the agent last stepped and how long ago that was, the
+bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
+id, when it started and whether it ended — never a call's arguments, whose text the daemon keeps
+in no column. It says what the daemon did as well, which is not always a relaunch: where the
+daemon's wake pacing parked the replacement, the task was taken back and the launch that replaces
+the stalled process is queued, due at the moment the notice names; the daemon made no stop of
+that process and the claim records it still. The launch's turn may start nothing, or not the
+launch the park queued — a suspension waiting for the claim, a refused lifecycle recheck, the
+tree's close, a take-back the store refuses at the turn itself, a launch whose own write or start
+the daemon cannot make, and an
+operator's task that runs the launch early are among the things that can change it; where a
+suspension was already waiting for that turn, the suspension ran instead of a replacement and the
+claim is suspended with nothing queued for it, waiting on a resume; where the launch that replaces
+the process has not started, either its write was refused and the daemon retries it at its probe
+interval, or the daemon's own shutdown cut the launch short and the daemon's next start takes it up;
+and where every try at that
+launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
+second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
+is what says whether that launch is still waiting its turn.
+
+The notice says what became of the stalled process itself, for every end: that the daemon made no
+stop of it and the claim records it still, which is the parked end; that it was stopped; or that
+the runtime did not confirm the stop, in which case that process may be running still and holding
+what it runs on.
+A stop the runtime would not make is a finding to put to a person, with the notice in it, because
+the daemon stops that process again only at its next launch of that claim or at its next restart.
+
+Nothing was charged to the claim for the stall itself, and on every end but the failed one
+nothing failed either: the task that architect was serving is still owed to it, and the notice
+names what its return waits on — the parked launch's turn, the retried launch, or a resume — no
+issue was held, and no status moved.
+Do nothing to the tree — park nothing, re-admit nothing, set no status — and start nothing. A
+notice that names the failed end is the exception: that architect's claim is failed, its
+`worker-died` reaches you as any other does, and you answer that notice as its own section says.
+One copy comes per stall, so an architect that stalls again
+and again sends one each time: that is a finding to put to a person
+([Findings](skill://legion-controller/SKILL.md#findings-and-the-issues-you-file)), with the
+records you were sent in it.
+
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
 An update round over the issue's pod, or over one claim's own process, is not finishing. Handle
 it as `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
+
+## `provider-errors on <KEY>` (`{kind: "provider-errors", role, reason}`)
+
+Six turns of `<KEY>`'s `role` in a row ended in an error the model's provider returned: a content
+filter, a rate limit, an overload, or any other failure of the provider. `reason` names the model
+and the HTTP status the provider answered, when it answered one, and carries no text the provider
+wrote. Nothing is held and nothing is stopped: the daemon keeps the task, prompts the same session
+with it again, and waits at most ten minutes between prompts for as long as the errors last. You
+are told once, and again only once the run has gone back to zero, which it does three ways: at a
+turn of that role that ends with no provider error, at a compaction of its session that ran (one
+Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
+recorded session is forgotten, by `fresh_session` or an operator's `legion claims forget-session`.
+A second notice after you compacted that claim is how you see that it is still refused.
+
+Read the role's claim in `read_state`. Name the run and its model in the day's report. When the
+reason names no status, the turns ended on nothing but a message, which is what a content filter
+leaves: the session has already stepped down its model chain, so a run that long says the whole
+chain refuses the same work. Either way, `envoy_publish` the key, the role and the reason to the
+issue's architect, which is who can narrow the work. Re-admit nothing and park nothing, because
+the task is not lost and the session still runs.
+
+One claim that stays stuck after that is yours to act on, and `compact` is the first thing you
+reach for: it has the daemon shorten that claim's Oh My Pi session to a text summary and send it
+whatever task it owed again, and the claim keeps its session, its workspace and everything it
+knows of its issue. The answer says whether the session was compacted and, when it was not, why;
+the claim is back either way, and whatever task it owed has gone again. Use `fresh_session` only
+when the claim is still refused after a compaction, because a new session loses everything the old
+one held — what the worker learned of its issue, and what it had not yet pushed or written down —
+and cures nothing in a provider outage, where the next session's turns are refused as the last
+one's were.
 
 ## GitHub mentions
 
@@ -126,7 +208,9 @@ Send any other to the owning architect: find its role in `read_state` and `envoy
 mention's URL, its text and the issue key you checked. Never build a role token from a partial
 issue reference, because a wrong token reaches nobody.
 
-A person who asks how to let a root past its design gate approves the root's spec document in
-Dispatch: the `Approve` control in the document's header, or the approval question the architect's
-request opened in the Inbox. No operator command opens a gate; a project that wants no gate sets
-`gates.design: off` in `legion.yaml`.
+A person who asks how to let a root past its design gate approves, in Dispatch, the document of
+each step the deployment gates, which your system prompt's `Design gate steps:` sentence names:
+the `Approve` control in that document's header, or the approval question the architect's request
+opened in the Inbox. The root's work starts when every one of those steps is approved. No
+operator command opens a gate; a project that wants no gate sets `gates.design` to the empty list
+(`design: []`) in `legion.yaml`.

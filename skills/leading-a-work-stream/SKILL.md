@@ -11,6 +11,8 @@ A lead raises the stream's numbers by making its agents faster, and is not a gat
 
 In a Legion tree, the daemon's workflow and your role prompt decide who starts a worker, who accepts the work and how it merges. This skill does not change that sequence. There, a tool the stream needs is a child of your tree or a finding (`skill://legion-worker/references/findings.md`), not an agent you start on your own. Why each rule below works: [sources.md](skill://leading-a-work-stream/references/sources.md).
 
+Once Legion runs a stream, its controller is that stream's lead; there is no separate lead beside it. Hand an idle stream to Legion as one short-lived agent per issue, each with a handoff comment on its issue, and never hand-apply a program taken from a lead's session, because the program's reasons stayed in that session.
+
 ## What a lead does
 
 1. **Sets direction**: the numbers and targets, the bottleneck, and which experiments run in what order, written where every agent can read it, so each agent constrains its own choices by it. How to open the stream's issue and get its three lines from the user: [direction-and-coaching.md](skill://leading-a-work-stream/references/direction-and-coaching.md).
@@ -75,13 +77,13 @@ From records you read yourself (GitHub, Dispatch, the numbers), answer: what is 
 
 ## Before you say something is blocked
 
-**Read the thing itself, not the thing next to it.** Before you write that X is blocked by Y, read X's own state: `gh pr checks` at the head, not the queue's length; the process (`ps -eo pid,etimes,args | grep <session-id>`) and the session's last tool call, not a registry's session list; the job's own start time, not the pool's history. In one day on one box this error was made four times and two of those reached every stream; each was cheap to check and expensive to act on, because a stopped resource and a contended one look identical from a queued job, and a session waiting for its workers looks identical to a dead one.
+**Read the thing itself, not the thing next to it.** Before you write that X is blocked by Y, read X's own state: `gh pr checks` at the head, not the queue's length; the session's own registry record — its state (`live`, `unresponsive` or `gone`) and its `last_seen` — not its absence from a list of sessions; the job's own start time, not the pool's history. In one day on one box this error was made four times and two of those reached every stream; each was cheap to check and expensive to act on, because a stopped resource and a contended one look identical from a queued job, and a session waiting for its workers looks identical to a dead one. `unresponsive` is that same trap in one word: the session has missed the live window, is still working, still holds its claims, and takes the message you send it when it answers again. Only `gone` is a session that ended.
 
 **A blocker you relay to other streams carries the command that shows it.** Without it, each stream spends a check to disprove it after acting on it.
 
 **Ask a fresh reviewer, for each claimed cause, to name the command or record that would show it FALSE, and to run it.** A reviewer that reads only the prose confirms a confident wrong cause. The causes that cost most are the ones nobody could falsify, because nobody looked for what would disprove them.
 
-**Run a watch that names quiet sessions, and let it restart nothing.** A session that dies mid-task stays dead until a person notices: measured at about 7 hours on a day when one credential failure stopped a box, and at 5 minutes or less once a watch existed. A watch reads the session's transcript modification time, its process and, if it can, its pane; it reports, and the owner decides. Two traps: a systemd user service on a dev box may not reach the tmux server at all (it answers `server exited unexpectedly` while the same command works from a pane), and a watch built on an agent-messaging registry reports live sessions as dead under load. Test it by making it report something you know is true.
+**Run a watch that names quiet sessions, and let it restart nothing.** A session that dies mid-task stays dead until a person notices: measured at about 7 hours on a day when one credential failure stopped a box, and at 5 minutes or less once a watch existed. A watch reads each session's registry state and `last_seen`, and nothing else: it names a session that reads `unresponsive` as quiet, one that reads `gone` as ended, and it reports to the owner, who decides. Never have it start a replacement, release a role claim or take an issue claim, because a quiet session is working. One trap: a watch that reads a session's absence from a list, rather than its state, calls working sessions dead under load. Test it by making it report something you know is true.
 
 ## Delegation and tooling
 
@@ -90,6 +92,7 @@ From records you read yourself (GitHub, Dispatch, the numbers), answer: what is 
 - When agents keep losing time to the same chore, start an agent to build the tool that removes it. Do not wait to be asked.
 - Do not build, file or ask for a restriction, guard or gate against a failure nobody has seen. Fix a real failure at its cause, after it happens.
 - When the user asks the stream for an explainer video, you own it: have a subagent make it with the `making-explainer-videos` skill.
+- When a problem is named, fix it now — run the audit, apply the label, change the thing — instead of another round of agents agreeing it is a problem. Routing every change through you for review is a slowdown, not safety; the stream's own peer review and tests stay. When a neighbour names a problem, swarm on it rather than file an issue and wait.
 
 ## Improving this skill
 
