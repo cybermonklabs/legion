@@ -120,6 +120,8 @@ export const realStackReasons: Record<string, string> = {
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
+  "judged-grant.e2e.ts":
+    "the two grants it reads are written into the fake broker and the page is asserted against what the server lists back",
   "keyboard-agents-picker.e2e.ts":
     "each asserts where a send, reply, retry or upload was addressed, and the server's refusals",
   "keyboard-agents-pin.e2e.ts": "sends, uploads and read marks in flight across the pin",

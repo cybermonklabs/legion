@@ -253,6 +253,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
+| `e2e/judged-grant.e2e.ts` | the two grants it reads are written into the fake broker and the page is asserted against what the server lists back |
 | `e2e/keyboard-agents-picker.e2e.ts` | each asserts where a send, reply, retry or upload was addressed, and the server's refusals |
 | `e2e/keyboard-agents-pin.e2e.ts` | sends, uploads and read marks in flight across the pin |
 | `e2e/keyboard-agents.e2e.ts` | the upload's target is the server's record; upload and send against the server; the delivered mention is the assertion |
