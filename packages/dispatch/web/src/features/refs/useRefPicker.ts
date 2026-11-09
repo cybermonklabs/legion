@@ -94,18 +94,22 @@ function oneLine(text: string): string {
 }
 
 /** What a hit's row is called: the thing's own name where it has one, else the words that
- *  matched, which is all an ask, a comment or a message is named by. The server marks the
- *  matched words in a snippet; a row draws the text under those marks. */
+ *  matched, which is all an ask, a comment or a message is named by - and all a hit is named by
+ *  when its owner answered no title or name at all. The server marks the matched words in a
+ *  snippet; a row draws the text under those marks. */
 function hitLabel(hit: SearchResult): string {
-  if (hit.kind === "issue" && hit.owner.kind === "issue") return hit.owner.title;
+  const matched = () =>
+    oneLine(
+      snippetSegments(hit.snippet)
+        .map((segment) => segment.text)
+        .join("")
+    );
+  if (hit.kind === "issue" && hit.owner.kind === "issue") return hit.owner.title ?? matched();
   if (hit.kind === "document") {
-    return hit.artifact?.name ?? (hit.owner.kind === "document" ? hit.owner.name : hit.owner.title);
+    const owned = hit.owner.kind === "document" ? hit.owner.name : hit.owner.title;
+    return hit.artifact?.name ?? owned ?? matched();
   }
-  return oneLine(
-    snippetSegments(hit.snippet)
-      .map((segment) => segment.text)
-      .join("")
-  );
+  return matched();
 }
 
 /** The rows the search answered. A hit whose `href` names no address is left out, which is how
@@ -114,9 +118,13 @@ function hitLabel(hit: SearchResult): string {
 function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
   return hits.flatMap((hit) => {
     const route = nodeRouteFromHref(hit.href);
-    if (route === undefined) return [];
+    // The route table carries a hit's `kind` as a plain string; the five kinds the route ranks
+    // are all the picker asked for, so a hit of any other kind is no row of its.
+    const kind: RefPickerKind | undefined = REF_PICKER_SEARCHED_KINDS.find(
+      (searched) => searched === hit.kind
+    );
+    if (route === undefined || kind === undefined) return [];
     const reference = buildDispatchReference(route);
-    const kind: RefPickerKind = hit.kind;
     return [
       {
         detail: shortForm(route),
@@ -172,7 +180,8 @@ function blockRows(
 ): RefPickerRow[] {
   const route = parseNodeReference(holder);
   if (route === undefined) return [];
-  return references.edges.flatMap((edge) => {
+  // A node nothing points at is answered with `edges` null, which is the empty list: no blocks.
+  return (references.edges ?? []).flatMap((edge) => {
     const blockId = edge.node.block_id;
     if (edge.kind !== "part_of" || edge.node.kind !== "block" || blockId === undefined) return [];
     const blockRoute = withBlock(route, blockId);

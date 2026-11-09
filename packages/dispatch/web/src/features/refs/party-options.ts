@@ -39,7 +39,7 @@ function roleOptions(
 ): MentionOption[] {
   const byRole = new Map<string, Agent>();
   for (const agent of agents) {
-    for (const role of agent.roles) byRole.set(role, agent);
+    for (const role of agent.roles ?? []) byRole.set(role, agent);
   }
   return [...byRole.entries()]
     .sort(([left], [right]) => {
@@ -52,7 +52,7 @@ function roleOptions(
           : 1;
     })
     .map(([role, agent]) => ({
-      capabilities: agent.capabilities,
+      capabilities: agent.capabilities ?? [],
       detail: `${agent.dir} · ${new Date(agent.last_seen).toLocaleString()}`,
       holder: text.sessionText(agent.session_id, agent.title),
       sessionId: agent.session_id,
@@ -73,7 +73,7 @@ export function mentionOptions(
         (left, right) => right.last_seen - left.last_seen || left.title.localeCompare(right.title)
       )
       .map((agent) => ({
-        capabilities: agent.capabilities,
+        capabilities: agent.capabilities ?? [],
         detail: `${agent.dir} · ${new Date(agent.last_seen).toLocaleString()}`,
         holder: text.sessionText(agent.session_id, agent.title),
         sessionId: agent.session_id,
@@ -101,7 +101,7 @@ export function stoppedRoleOptions(
   collaborators: readonly IssueCollaboratorAgent[],
   text: Pick<AgentText, "sessionText">
 ): MentionOption[] {
-  const held = new Set(live.flatMap((agent) => agent.roles));
+  const held = new Set(live.flatMap((agent) => agent.roles ?? []));
   const running = new Set(live.map((agent) => agent.session_id));
   const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null &&

@@ -487,7 +487,7 @@ export function MentionComposer({
       (answer) => {
         if (!current || !answer.indexed || answer.revision === undefined) return;
         const opened = textareaValue(editBody);
-        const spans = spansFromBlocks(editBody, opened, answer.blocks);
+        const spans = spansFromBlocks(editBody, opened, answer.blocks ?? []);
         if (spans === undefined) return;
         // What the reader typed while the read was out, measured from the body it answered.
         followedBlocks.current = followEdit(

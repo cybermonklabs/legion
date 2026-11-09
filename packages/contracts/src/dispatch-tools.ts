@@ -5,8 +5,8 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
-  type SearchResultKind,
 } from "./dispatch-api";
+import type { paths } from "./dispatch-api.generated";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -459,11 +459,19 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  */
 export const SEARCH_KIND_DEPTH = 100;
 
+/** One value of `GET /api/v1/search`'s repeated `kind` parameter, read off the route table
+ *  itself rather than written out a second time: the parameter is optional, so both the
+ *  parameter object and `kind` are unwrapped before the array's element is taken. */
+type SearchKindParameter = NonNullable<
+  NonNullable<paths["/api/v1/search"]["get"]["parameters"]["query"]>["kind"]
+>[number];
+
 /**
  * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
  * search index holds, in the order the answer's fusion lists them. A party, a component or any
  * other node is read from its own route, so the search refuses a kind outside these rather than
- * answering an empty page.
+ * answering an empty page. The `satisfies` is the route table's own vocabulary, so a kind the
+ * CLI offers that the route would refuse does not compile.
  */
 export const SEARCH_KINDS = [
   "issue",
@@ -471,7 +479,7 @@ export const SEARCH_KINDS = [
   "comment",
   "ask",
   "message",
-] as const satisfies readonly SearchResultKind[];
+] as const satisfies readonly SearchKindParameter[];
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
@@ -1429,10 +1437,17 @@ export const dispatchToolSpecs = [
       "Print each check of an issue's Verification document with its latest result and whether " +
       "that result is current. A result is current when it ran at the commit the work stands at " +
       "— the head of an open pull request of the check's issue, the final head of a merged one, " +
-      "or, for an after_merge or default_branch check, a commit on the repository's default " +
-      "branch — and the check's words have not changed since; older otherwise, and unknown when " +
-      "Dispatch cannot read the repository. A push that moves the pull request's head makes a " +
-      "result older with no write of anyone's: record it again at the new head. " +
+      "for an after_merge check a commit on the branch that issue's pull request merged into or " +
+      "on the repository's default branch (which answers alone where Dispatch holds no merge of " +
+      "that issue), or for a default_branch check a commit on the repository's default branch, " +
+      "whatever branch the pull request merged into — and the check's words have not changed " +
+      "since; older otherwise, and unknown when Dispatch cannot read the repository. On an " +
+      "after_merge check's base branch a read GitHub refused — a 403 or 404, which a branch it " +
+      "no longer holds answers with — says the commit is not on that branch and leaves the " +
+      "default branch to decide; every other failure of that read, a rate limit or a 5xx " +
+      "among them, leaves the result unknown and never older. A push that moves the " +
+      "pull request's head makes a result older with no write of anyone's: record it again at " +
+      "the new head. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

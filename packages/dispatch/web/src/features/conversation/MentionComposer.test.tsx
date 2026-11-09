@@ -7,9 +7,18 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
+import { searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
+import type {
+  Agent,
+  Comment,
+  IssueCollaborators,
+  ItemBlock,
+  ItemBlocks,
+  Message,
+} from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
 import { stoppedRoleOptions } from "../refs/party-options";
@@ -37,6 +46,7 @@ const commentRefused = new ApiError(400, { code: "COMMENT_INPUT", error: COMMENT
 
 const planner: Agent = {
   capabilities: ["btw"],
+  state: "live",
   dir: "/workspaces/planner",
   host: "host-a",
   last_activity: null,
@@ -50,6 +60,7 @@ const planner: Agent = {
 
 const worker: Agent = {
   capabilities: [],
+  state: "live",
   dir: "/workspaces/worker",
   host: "host-b",
   last_activity: null,
@@ -67,7 +78,10 @@ const plannerAuthor = { id: "Planner", kind: "user" } as const;
 
 const createdComment: Comment = {
   anchor: null,
+  answers: null,
+  artifact_id: null,
   ask_id: null,
+  reply_block: null,
   author: { id: "alice", kind: "user" },
   body: "sent",
   created_at: "2026-09-18T00:00:00Z",
@@ -186,7 +200,7 @@ beforeEach(() => {
     },
     unassigned: [],
   });
-  searchRead = spyOn(api, "search").mockResolvedValue({ results: [], took_ms: 1 });
+  searchRead = spyOn(api, "search").mockResolvedValue(searchResponse([]));
 });
 afterEach(() => {
   collaboratorsRead.mockRestore();
@@ -808,7 +822,7 @@ test("a mention survives its target going offline before Send", async () => {
  *  agents by role in workflow order and then newest first, then the rest newest first) - the
  *  planner, the reviewer role's newest session and the one it replaced, then a session with no
  *  registry entry. */
-const collaboratorsAnswer = {
+const collaboratorsAnswer: IssueCollaborators = {
   agents: [
     {
       kind: "session",
@@ -864,7 +878,7 @@ const collaboratorsAnswer = {
   issue_key: "CORE-1",
   legion_registry: "ok",
   people: [],
-} as const;
+};
 
 /** The naming the picker does outside React: no stopped session is in the registry cache, so each
  *  name falls back to the title the collaborators read stamped on it. */
@@ -906,7 +920,8 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
 // A live list whose state is unknown offers no stopped role at all, which `useRefPicker` holds
 // to where it builds the picker's party rows.
 test("stopped role options leave out held roles and name each role once", () => {
-  const reviewerOnly = stoppedRoleOptions([planner], collaboratorsAnswer.agents, storedNames);
+  const answerAgents = collaboratorsAnswer.agents ?? [];
+  const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
   expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
     ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
   ]);
@@ -914,18 +929,14 @@ test("stopped role options leave out held roles and name each role once", () => 
   expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
   // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
   expect(
-    stoppedRoleOptions([worker], collaboratorsAnswer.agents, storedNames).map(
-      (option) => option.target
-    )
+    stoppedRoleOptions([worker], answerAgents, storedNames).map((option) => option.target)
   ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
   // A session the live list names is no stopped option, whatever roles it claims: offered here it
   // would draw its own `Running` mark inside the "Not running" group.
   expect(
-    stoppedRoleOptions(
-      [{ ...worker, session_id: "new-reviewer" }],
-      collaboratorsAnswer.agents,
-      storedNames
-    ).map((option) => option.target)
+    stoppedRoleOptions([{ ...worker, session_id: "new-reviewer" }], answerAgents, storedNames).map(
+      (option) => option.target
+    )
   ).toEqual(["role:legion-planner"]);
 });
 
@@ -1046,13 +1057,13 @@ test("editing a comment patches only its body and never creates a delivery", asy
 /** The blocks route's answer for a two-paragraph comment, `Alpha` and `Beta`. */
 function alphaBetaBlocks(indexed: boolean): ItemBlocks {
   const blocks: ItemBlock[] = [
-    { from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
-    { from: 7, id: "b2", text: "Beta", to: 11, type: "paragraph" },
+    { embedding: "embedded", from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
+    { embedding: "embedded", from: 7, id: "b2", text: "Beta", to: 11, type: "paragraph" },
   ];
   return {
     blocks: indexed ? blocks : [],
     indexed,
-    item: { id: "comment-1", issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: "comment-1", issue_key: "CORE-1", kind: "comment" }),
     revision: 3,
   };
 }
@@ -1134,11 +1145,11 @@ test("an unchanged edit of a comment stored with CR LF carries each block's id",
   });
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
     blocks: [
-      { from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
-      { from: 9, id: "b2", text: "Beta", to: 13, type: "paragraph" },
+      { embedding: "embedded", from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
+      { embedding: "embedded", from: 9, id: "b2", text: "Beta", to: 13, type: "paragraph" },
     ],
     indexed: true,
-    item: { id: "comment-1", issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: "comment-1", issue_key: "CORE-1", kind: "comment" }),
     revision: 3,
   });
   const editComment = spyOn(api, "editComment").mockResolvedValue(createdComment);
@@ -1533,6 +1544,8 @@ const workerLink = "[Worker](dispatch://agent/B)";
 const createdMessage: Message = {
   author: { id: "alice", kind: "user" },
   body: "sent",
+  broadcast_id: null,
+  reply_block: null,
   created_at: "2026-09-18T00:00:00Z",
   deliveries: [],
   id: "message-1",

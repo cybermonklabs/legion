@@ -73,7 +73,7 @@ export function AttachmentLists({
       <ListSection
         emptyMessage="Every issue is attached to a component or declared not architectural."
         heading="Unassigned"
-        rows={tree.unassigned}
+        rows={tree.unassigned ?? []}
         testId="unassigned-list"
       >
         {(row, registry) => (
@@ -87,7 +87,7 @@ export function AttachmentLists({
       <ListSection
         emptyMessage="No issue is declared not architectural."
         heading="Not architectural"
-        rows={tree.not_architectural}
+        rows={tree.not_architectural ?? []}
         testId="not-architectural-list"
       >
         {(row, registry) => (
@@ -100,7 +100,7 @@ export function AttachmentLists({
     <ListSection
       emptyMessage="No issue points at a retired component."
       heading="Pointing at retired components"
-      rows={tree.retired_links}
+      rows={tree.retired_links ?? []}
       testId="retired-list"
     >
       {(row, registry) => (
@@ -277,7 +277,7 @@ function UnassignedRow({
         ) : (
           <>
             <ComponentPicker
-              components={tree.components}
+              components={tree.components ?? []}
               onSave={(ids) => void write.submit({ ids, mode: "explicit" })}
               saving={false}
               selected={[]}
@@ -379,9 +379,9 @@ function RetiredRow({
   // The issue's surviving live attachments: its own set's components (`direct`), or the set it
   // inherits from an ancestor (`inherited`). The picker starts from them so a re-attach adds
   // the pick instead of replacing the whole set with it.
-  const live = tree.components
+  const live = (tree.components ?? [])
     .filter((component) =>
-      component.issues.some(
+      (component.issues ?? []).some(
         (row) =>
           row.key === issue.key && (row.attached === "direct" || row.attached === "inherited")
       )
@@ -391,7 +391,7 @@ function RetiredRow({
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <RowHead issue={issue} />
-        {issue.ids.map((id) => (
+        {(issue.ids ?? []).map((id) => (
           <span
             className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
             key={id}
@@ -403,7 +403,7 @@ function RetiredRow({
           <SavingNote />
         ) : (
           <ComponentPicker
-            components={tree.components}
+            components={tree.components ?? []}
             onSave={(ids) => void write.submit({ ids, mode: "explicit" })}
             saving={false}
             selected={live}

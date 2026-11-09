@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
+import { searchResponse } from "../../__tests__/search-fixture";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -12,6 +14,7 @@ import type {
   GraphReferences,
   IssueCollaborators,
   SearchResponse,
+  SearchResult,
 } from "../../api/types";
 import { RefPickerList } from "./RefPickerList";
 import { applyInsertion, REF_PICKER_INSTRUCTION, REF_PICKER_WORDS } from "./ref-picker";
@@ -33,6 +36,7 @@ const planner: Agent = {
   open_asks: 0,
   roles: ["planner"],
   session_id: "planner-session",
+  state: "live",
   title: "Planner",
 };
 
@@ -99,27 +103,25 @@ const architecture = {
   unassigned: [],
 } satisfies ArchitectureTree;
 
-const hits: SearchResponse = {
-  results: [
-    {
-      href: "/issues/CORE-2",
-      id: "CORE-2",
-      kind: "issue",
-      owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
-      rank: 0.1,
-      snippet: "The relay drops a reply",
-    },
-    {
-      href: "/issues/CORE-2/comments/comment-1",
-      id: "comment-1",
-      kind: "comment",
-      owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
-      rank: 0.09,
-      snippet: "I saw the <mark>relay</mark> drop one",
-    },
-  ],
-  took_ms: 2,
-};
+/** What the search answers for a query the fixture's words hold: an issue and a comment of it. */
+const hitRows: SearchResult[] = [
+  {
+    href: "/issues/CORE-2",
+    id: "CORE-2",
+    kind: "issue",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.1,
+    snippet: "The relay drops a reply",
+  },
+  {
+    href: "/issues/CORE-2/comments/comment-1",
+    id: "comment-1",
+    kind: "comment",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.09,
+    snippet: "I saw the <mark>relay</mark> drop one",
+  },
+];
 
 const blocks: GraphReferences = {
   edges: [
@@ -128,11 +130,11 @@ const blocks: GraphReferences = {
       direction: "in",
       excerpt: { text: "The first words of the block" },
       kind: "part_of",
-      node: { block_id: "block-1", id: "comment-1", kind: "block" },
+      node: graphNode({ block_id: "block-1", id: "comment-1", kind: "block" }),
       source_seq: null,
     },
   ],
-  node: { id: "comment-1", kind: "comment" },
+  node: graphNode({ id: "comment-1", kind: "comment" }),
 };
 
 interface Pane {
@@ -187,10 +189,11 @@ function Host({ issueKey }: { issueKey?: string }): ReactNode {
 }
 
 /** The search answers the fixture's hits for a query its words hold, as the route would. */
-const answerSearch = async (query: string): Promise<SearchResponse> => ({
-  results: hits.results.filter((hit) => hit.snippet.toLowerCase().includes(query.toLowerCase())),
-  took_ms: 2,
-});
+const answerSearch = async (query: string): Promise<SearchResponse> =>
+  searchResponse(
+    hitRows.filter((hit) => hit.snippet.toLowerCase().includes(query.toLowerCase())),
+    { took_ms: 2 }
+  );
 
 function renderHost({
   agents = [planner, worker],
@@ -487,7 +490,7 @@ test("the list says it is loading, that nothing matches, and that Dispatch is un
     expect(screen.getByTestId("ref-picker-loading").textContent).toBe(REF_PICKER_WORDS.loading)
   );
 
-  slow.resolve({ results: [], took_ms: 1 });
+  slow.resolve(searchResponse([]));
   await waitFor(() =>
     expect(screen.getByTestId("ref-picker-empty").textContent).toBe(REF_PICKER_WORDS.empty)
   );

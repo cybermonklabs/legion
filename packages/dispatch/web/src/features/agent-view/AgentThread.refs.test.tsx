@@ -11,8 +11,9 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
+import { searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
-import type { Agent, SearchResponse } from "../../api/types";
+import type { Agent, SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
 import { AgentThread } from "./AgentThread";
 
@@ -33,6 +34,7 @@ const planner: Agent = {
   open_asks: 0,
   roles: ["planner"],
   session_id: "planner-session",
+  state: "live",
   title: "Planner",
 };
 
@@ -42,27 +44,24 @@ const COMMANDS: AgentStreamCommand[] = [
 
 /** What the search answers for `relay`: an issue, and a message, which this box must not offer
  *  - though the route is never asked for one. */
-const hits: SearchResponse = {
-  results: [
-    {
-      href: "/issues/CORE-2",
-      id: "CORE-2",
-      kind: "issue",
-      owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
-      rank: 0.1,
-      snippet: "The relay drops a reply",
-    },
-    {
-      href: "/issues/CORE-2/messages/message-1",
-      id: "message-1",
-      kind: "message",
-      owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
-      rank: 0.09,
-      snippet: "I told the <mark>relay</mark> to retry",
-    },
-  ],
-  took_ms: 2,
-};
+const hitRows: SearchResult[] = [
+  {
+    href: "/issues/CORE-2",
+    id: "CORE-2",
+    kind: "issue",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.1,
+    snippet: "The relay drops a reply",
+  },
+  {
+    href: "/issues/CORE-2/messages/message-1",
+    id: "message-1",
+    kind: "message",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.09,
+    snippet: "I told the <mark>relay</mark> to retry",
+  },
+];
 
 interface Pane {
   /** Every message the composer sent, in press order. */
@@ -116,10 +115,12 @@ function Harness({
 function renderThread(commands?: AgentStreamCommand[]): HTMLTextAreaElement {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@theorem.dev" }]);
-  const search = spyOn(api, "search").mockImplementation(async (query: string) => ({
-    results: hits.results.filter((hit) => hit.snippet.toLowerCase().includes(query.toLowerCase())),
-    took_ms: 2,
-  }));
+  const search = spyOn(api, "search").mockImplementation(async (query: string) =>
+    searchResponse(
+      hitRows.filter((hit) => hit.snippet.toLowerCase().includes(query.toLowerCase())),
+      { took_ms: 2 }
+    )
+  );
   const sent: string[] = [];
   render(
     <MemoryRouter>

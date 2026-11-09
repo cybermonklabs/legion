@@ -7,13 +7,13 @@ import (
 )
 
 // commit_held.go answers one question about one commit: whether a repository holds it at all.
-// It is not a default-branch answer, which default_branch.go owns alone, and it keeps nothing:
+// It is not an answer about a branch, which branch.go owns alone, and it keeps nothing:
 // GitHub is asked each time, by the one caller that asks before it stores a check result
 // (api/results.go).
 
 // RepositoryHoldsCommit answers whether repoFull holds sha, through the App: it mints the
-// repository's installation token, through the repositoryRead prologue commitOnBranch and
-// repositoryDefaultBranch share, and makes githubapp.Client.HasCommit's read.
+// repository's installation token, through the repositoryRead prologue askGitHubCommitOnBranch
+// and repositoryDefaultBranch share, and makes githubapp.Client.HasCommit's read.
 //
 // A false with no error is the one 422 whose message begins `No commit found for SHA`, the
 // only answer that proves the repository does not hold the commit (githubapp.Client.HasCommit

@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { Agent, ArchitectureTree, IssueCollaborators } from "../../api/types";
 import { MentionField } from "./MentionField";
@@ -26,6 +27,7 @@ const planner: Agent = {
   open_asks: 0,
   roles: ["planner"],
   session_id: "planner-session",
+  state: "live",
   title: "Planner",
 };
 
@@ -78,7 +80,7 @@ function renderField(writing = dispatchWritingBox("conversation-composer", "comm
     collaborators
   );
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
-  const search = spyOn(api, "search").mockResolvedValue({ results: [], took_ms: 1 });
+  const search = spyOn(api, "search").mockResolvedValue(searchResponse([]));
   const keys: HostKeys = { fromField: [], fromWindow: [] };
   const windowKeys = (event: KeyboardEvent) => keys.fromWindow.push(event.key);
   window.addEventListener("keydown", windowKeys);

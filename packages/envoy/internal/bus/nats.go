@@ -503,7 +503,10 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // reconciled stream on nc (ensureStreamWithConfig) when stream is not nil. The reconcile is told
 // whether nc's server caps a stream that sets no consumer cap at a default of its own, read from
 // the version nc answers (serverDefaultsAnUnsetCap). Installing it is a connection event
-// (ConnectionChanged).
+// (ConnectionChanged). It is also where the client enters the registry of live clients
+// (registerClient), the constructor's own step: install runs only from the constructor and only
+// a client it returns gets this far, so a caller holding a connection can find the client that
+// owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, stream *nats.StreamConfig) error {
 	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
@@ -521,6 +524,7 @@ func (c *Client) install(nc *nats.Conn, stream *nats.StreamConfig) error {
 	// been recorded (recordPublishDenial records only for c.Conn) and this clear finds it empty.
 	c.clearPublishDenials()
 	c.mu.Unlock()
+	registerClient(c)
 	return nil
 }
 
@@ -1162,9 +1166,11 @@ func (c *Client) stopped() bool {
 	}
 }
 
-// Close stops any recovery goroutine and the keeper, and closes the underlying NATS connection. It
-// returns once the keeper has ended (awaitKeeper).
+// Close stops any recovery goroutine and the keeper, and closes the underlying NATS connection,
+// and takes the client out of the registry of live clients (forgetClient), since its connection
+// is going. It returns once the keeper has ended (awaitKeeper).
 func (c *Client) Close() {
+	forgetClient(c)
 	c.subscriptionsMu.Lock()
 	if c.stopMode == clientRunning {
 		c.stopMode = clientClosed
@@ -1197,7 +1203,8 @@ func (c *Client) Close() {
 // own, which the connection's drain takes (endBind). The close ends one still in flight. A
 // reconnect nats.go reports once the client has stopped closes the connection only when it came
 // after the stop (closeStopped). The stop ends the keeper too, which Drain waits for once the
-// connection is closed (awaitKeeper).
+// connection is closed (awaitKeeper). The stop also takes the client out of the registry of live
+// clients (forgetClient), as Close does, since the connection it owns is going.
 func (c *Client) Drain(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	deliveriesDeadline := deadline.Add(-min(drainHookReserve, timeout*3/10))
@@ -1206,6 +1213,7 @@ func (c *Client) Drain(timeout time.Duration) error {
 		c.stopMode = clientDraining
 	}
 	c.subscriptionsMu.Unlock()
+	forgetClient(c)
 	// The stop and the reconnect count are one step under mu, so a reconnect callback that finds
 	// the client stopped also finds the count (closeStopped).
 	c.mu.Lock()

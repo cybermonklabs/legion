@@ -43,20 +43,22 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
    *  both belong to `others`. */
   const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null && isLegionRole(agent.legion.role);
-  const legion = collaborators.agents.filter(known);
+  // The document types every list as nullable, though this handler always sends `[]`.
+  const agents = collaborators.agents ?? [];
+  const legion = agents.filter(known);
   return {
     // A section is the role's slice of the server's list, in the order it sent them: the server
     // ordered the registry's agents by role and then newest first, so a filter is the whole of
     // this. `LEGION_ROLES` decides which sections there are and where each one sits, which is
     // the same workflow order; a role nobody worked has no section.
     legion: LEGION_ROLES.flatMap((role) => {
-      const agents = legion.filter((agent) => agent.legion.role === role);
-      return agents.length === 0 ? [] : [{ agents, role }];
+      const roleAgents = legion.filter((agent) => agent.legion.role === role);
+      return roleAgents.length === 0 ? [] : [{ agents: roleAgents, role }];
     }),
     // Every session no Legion section holds, so a registry entry naming a role this build does
     // not know is listed rather than dropped from the page. The server's order again.
-    others: collaborators.agents.filter((agent) => !known(agent)),
-    people: collaborators.people,
+    others: agents.filter((agent) => !known(agent)),
+    people: collaborators.people ?? [],
   };
 }
 
@@ -92,9 +94,11 @@ function Worked({
   lastAt: string | null;
   reasons: IssueCollaboratorPerson["reasons"];
 }): ReactNode {
+  // The document types every list as nullable, though this handler always sends `[]`.
+  const worked = reasons ?? [];
   return (
     <>
-      {reasons.length === 0 ? null : <span>{reasons.join(", ")}</span>}
+      {worked.length === 0 ? null : <span>{worked.join(", ")}</span>}
       {lastAt === null ? null : <Timestamp at={lastAt} />}
     </>
   );
@@ -122,11 +126,10 @@ export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode 
   }
   const collaborators = query.data;
   const sections = collaboratorSections(collaborators);
-  const titles = new Map(
-    collaborators.agents.map((agent) => [agent.session_id, agent.title ?? undefined])
-  );
+  const agents = collaborators.agents ?? [];
+  const titles = new Map(agents.map((agent) => [agent.session_id, agent.title ?? undefined]));
   const unavailable = collaborators.legion_registry === "unavailable";
-  const empty = collaborators.agents.length === 0 && collaborators.people.length === 0;
+  const empty = agents.length === 0 && sections.people.length === 0;
   return (
     <div className="min-w-0 space-y-6">
       {unavailable ? (

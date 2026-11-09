@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
@@ -196,9 +197,32 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 // rather than Stage 1's empty record.
 func populatedState(t *testing.T) State {
 	t.Helper()
-	approvedVersion, mergedApproval := 6, 4
+	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
+	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
+	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
+	// arguments' text, only their length and the eight-byte fingerprint the daemon keeps.
+	architectStep := supervise.StepRecord{
+		At:            time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC),
+		TurnStartedAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
+		Tool:          "read",
+		CallID:        "toolu_arch_3",
+		ArgsBytes:     74,
+		ArgsHash:      "3f7c1a9d62b40e58",
+		StartedAt:     time.Date(2026, 9, 22, 9, 16, 55, 0, time.UTC),
+		EndedAt:       time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC),
+	}
+	implementerStep := supervise.StepRecord{
+		At:            time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
+		TurnStartedAt: time.Date(2026, 9, 22, 9, 16, 30, 0, time.UTC),
+		Tool:          "bash",
+		CallID:        "toolu_impl_11",
+		ArgsBytes:     128,
+		ArgsHash:      "9b2e45c0d1f8a673",
+		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
+	}
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -208,12 +232,16 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:     2,
-			Active:  []string{"LEGION-208", "LEGION-210"},
-			Waiting: []string{"LEGION-211"},
+			Cap:    2,
+			Active: []string{"LEGION-208", "LEGION-210"},
+			// The line is two long, so the fixture carries a place behind its front as well as the
+			// front itself: LEGION-211 stands at 1, where admission skips it while LEGION-210
+			// holds it, and LEGION-212, whose person answered later, stands at 2 behind it. Each
+			// of the two carries its own place (`waitingLine`).
+			Waiting: []string{"LEGION-211", "LEGION-212"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed, and
-			// each of the other three roots a tree of its own.
-			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-212"},
+			// each of the other four roots a tree of its own.
+			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which
 			// no waiting line carries. Both are listed, by issue key, with what each waits on —
@@ -241,6 +269,7 @@ func populatedState(t *testing.T) State {
 						Incarnation: "31881:9442101",
 						Tmux:        &runtime.TmuxLocator{Window: "@4", Pane: "%12"},
 					},
+					Step: StepViewOf(architectStep),
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -289,6 +318,9 @@ func populatedState(t *testing.T) State {
 							// The same round, on the worker that has not answered it yet: no head is
 							// reported until a worker answers.
 							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							// The call this worker is in: a start the daemon received and no end,
+							// which is what a turn that has stopped moving leaves behind.
+							Step: StepViewOf(implementerStep),
 						},
 						HandoffCommit: "",
 						Rounds:        2,
@@ -339,8 +371,36 @@ func populatedState(t *testing.T) State {
 				// document, no version and no approval, and holds the tree's work.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
 			},
+			// LEGION-211 is a root of its own, at the front of the admission line and skipped
+			// there while LEGION-210, the issue `admission.blocked` names, is unfinished. A
+			// release suspended its implementer and the wake never brought that pod back, so its
+			// work is owed a start and it stands ahead of LEGION-212, whose answer came later.
+			"LEGION-211": {
+				Key:           "LEGION-211",
+				Generation:    2,
+				Phase:         phase.Implementing,
+				Status:        "in_progress",
+				Tree:          "LEGION-211",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended"}, Rounds: 1},
+				},
+				// Its spec stands approved at the version Dispatch holds, which is how its work
+				// began: what holds it now is the blocker, not the gate.
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
+					CurrentVersion:  3,
+					ApprovedVersion: &lineApproval,
+					Status:          GatedStepApproved,
+				}},
+				// The front of the line, which the length beside it reads against.
+				WaitingLine: &WaitingLineView{Place: 1, Length: 2},
+			},
 			// LEGION-212's architect asked a person a question and handed the turn back, which gave
-			// its slot up; the person has answered the question.
+			// its slot up; the person has answered the question, so it stands in the admission
+			// line waiting for a slot to come back.
 			"LEGION-212": {
 				Key:           "LEGION-212",
 				Generation:    1,
@@ -350,6 +410,8 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers:       map[claim.Role]PhaseView{},
+				// Second in the line, behind the root LEGION-210 blocks.
+				WaitingLine: &WaitingLineView{Place: 2, Length: 2},
 				WaitingOn: &WaitingOnView{
 					Kind:       "ask",
 					Ask:        "9a8fd348-55d5-4d72-a793-3cd037f75f13",
@@ -881,6 +943,18 @@ func operatorClaim() OperatorClaim {
 		// and it is replaced only once its worker has pushed its work and answered, which it has.
 		UpdateRound: "plugin:43",
 		UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		// What the daemon last saw this agent do: an `eval` call whose start it received and
+		// whose end it has not, which is the shape a turn that stopped moving leaves behind. The
+		// arguments are measured and fingerprinted, never kept (supervise.StepRecord).
+		Step: StepViewOf(supervise.StepRecord{
+			At:            time.Date(2026, 9, 22, 9, 31, 22, 0, time.UTC),
+			TurnStartedAt: time.Date(2026, 9, 22, 9, 31, 6, 0, time.UTC),
+			Tool:          "eval",
+			CallID:        "toolu_impl_209_4",
+			ArgsBytes:     412,
+			ArgsHash:      "c40d9e1b7a52f368",
+			StartedAt:     time.Date(2026, 9, 22, 9, 31, 22, 0, time.UTC),
+		}),
 	}
 }
 
