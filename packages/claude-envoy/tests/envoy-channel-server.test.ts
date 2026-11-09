@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -929,6 +930,11 @@ test("the server calls the listener with the file's envoy.token and signs in to 
             machine_id: "test",
             dir: "/tmp",
             topics: body.topics,
+            // Every stand-in listener answers the session's own consumer
+            // (`@legion/envoy-client/test/subscribe-answer`): one that answers no delivery leaves
+            // its session refused inbound, which is a state of its own and not this case's. What
+            // this case reads is what an accepted registration carries: its bearer and its plugin.
+            delivery: consumerDelivery(body.session_id),
           })
         }
         if (request.method === "DELETE") return new Response(null, { status: 200 })

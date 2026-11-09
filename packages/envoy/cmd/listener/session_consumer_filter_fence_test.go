@@ -386,14 +386,7 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	const added = "notifications.dispatch.issue.LOSTANSWERADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-	var moved, faulted sync.Once
-	rig.deps.consumers.afterRepairPlan = func() {
-		moved.Do(func() {
-			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
-				t.Errorf("store %s on the session's row: %v", added, err)
-			}
-		})
-	}
+	var faulted sync.Once
 	rig.deps.consumers.consumers.SetCreateFault(func(string) error {
 		var answer error
 		faulted.Do(func() { answer = context.DeadlineExceeded })
@@ -401,14 +394,9 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	})
 	t.Cleanup(func() { rig.deps.consumers.consumers.SetCreateFault(nil) })
 
-	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
-	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
-	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
-		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
-	}
-	rig.deps.consumers.afterRepairPlan = nil
+	// Nothing of this case's own stands between the two passes: the faulted call of the first
+	// pass is what sends the fence round again.
+	requireRestoreMakesACorrectivePass(t, rig, sessionID, added, nil)
 	rig.deps.consumers.consumers.SetCreateFault(nil)
 
 	requireFilters(t, rig, sessionID, kept, added)
@@ -496,12 +484,13 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 // registration's filter, so there is no window to name (fenceFilterWrite, filterWriteSettled).
 //
 // The order is built rather than waited for. The restore's first pass writes the row it read,
-// and the hook below stores a newer one under that write - a role claim's write, which sets no
-// filter - so the fence reads the bucket again. The pass after it plans from that newest row,
-// and the second hook lets a registration on the other listener set the consumer's filter to
-// that same row first, so this pass's own call sends nothing (bus.SessionConsumers.Ensure). A
-// fence reading "sent nothing" as a write that did not land names a window the consumer is not
-// in: it filters on the newest row, which is what the line it would log says it does not.
+// and the drive below (requireRestoreMakesACorrectivePass) stores a newer one under that write
+// - a role claim's write, which sets no filter - so the fence reads the bucket again. The pass
+// after it plans from that newest row, and the hook this case hands that drive lets a
+// registration on the other listener set the consumer's filter to that same row first, so this
+// pass's own call sends nothing (bus.SessionConsumers.Ensure). A fence reading "sent nothing"
+// as a write that did not land names a window the consumer is not in: it filters on the newest
+// row, which is what the line it would log says it does not.
 func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind(t *testing.T) {
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
@@ -510,39 +499,12 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 	const added = "notifications.dispatch.issue.FENCEALREADYADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-	var moved sync.Once
-	a.deps.consumers.afterRepairPlan = func() {
-		// The row of a write that sets no filter - a role claim's - stored under the restore's
-		// own write, which is what sends the fence round again.
-		moved.Do(func() {
-			if _, err := a.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
-				t.Errorf("store %s on the session's row: %v", added, err)
-			}
-		})
-	}
-	passes := 0
-	a.deps.consumers.beforeRepairPlan = func() {
-		passes++
-		if passes != 2 {
-			return
-		}
+	requireRestoreMakesACorrectivePass(t, a, sessionID, added, func() {
 		// The registration on the other listener that sets the consumer's filter to the newest
 		// row, before the corrective pass plans from that same row.
 		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
-	}
+	})
 
-	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
-	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
-	if err := a.deps.consumers.deleteConsumer(ctx, a.deps, sessionID); err != nil {
-		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
-	}
-	a.deps.consumers.beforeRepairPlan, a.deps.consumers.afterRepairPlan = nil, nil
-
-	if passes != 2 {
-		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
-	}
 	requireFilters(t, a, sessionID, kept, added)
 	if logs := a.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
 		t.Errorf("a fence whose corrective pass found the consumer as the newest row asks must report nothing left behind:\n%s", logs)
@@ -559,9 +521,10 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 // filterWriteSessionGone).
 //
 // The order is built rather than waited for. The restore's first pass writes the row it read
-// and creates the consumer the delete took, and the hook below stores a newer row under that
-// write - a role claim's write, which sets no filter - so the fence reads the bucket again. The
-// second hook then deletes the session's record before the corrective pass plans, as a reaper
+// and creates the consumer the delete took, and the drive below
+// (requireRestoreMakesACorrectivePass) stores a newer row under that write - a role claim's
+// write, which sets no filter - so the fence reads the bucket again. The hook this case hands
+// that drive then deletes the session's record before the corrective pass plans, as a reaper
 // pass or a clean stop deletes it: neither takes this listener's consumer lock, so both reach
 // the bucket while the restore holds it (session.SessionReaper.DeleteConsumer,
 // deleteSessionConsumer).
@@ -572,41 +535,14 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 	const added = "notifications.dispatch.issue.FENCERECGONEADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-	var moved sync.Once
-	rig.deps.consumers.afterRepairPlan = func() {
-		// The row of a write that sets no filter - a role claim's - stored under the restore's
-		// own write, which is what sends the fence round again.
-		moved.Do(func() {
-			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
-				t.Errorf("store %s on the session's row: %v", added, err)
-			}
-		})
-	}
-	passes := 0
-	rig.deps.consumers.beforeRepairPlan = func() {
-		passes++
-		if passes != 2 {
-			return
-		}
+	requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
 		// The record delete of a reaper pass or a clean stop, landing between the restore's
 		// write and the corrective pass over the row stored under it.
 		if err := rig.deps.sessions.Delete(context.Background(), sessionID); err != nil {
 			t.Errorf("delete the record of %s under its own repair: %v", sessionID, err)
 		}
-	}
+	})
 
-	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
-	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
-	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
-		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
-	}
-	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil
-
-	if passes != 2 {
-		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
-	}
 	if _, err := rig.deps.sessions.Refresh(context.Background(), sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
 		t.Fatalf("the bucket answers %v for %s's record, want no record at all: the corrective pass must find it deleted", err, sessionID)
 	}
@@ -630,9 +566,10 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 // behind it, where the fence ends silently: nothing of the loop stands anywhere to report.
 //
 // The order is built rather than waited for. The restore's first pass creates the consumer the
-// delete took, filtered on the row it read, and the first hook stores a newer row under that
-// write - a role claim's write, which sets no filter - so the fence reads the bucket again. The
-// second hook then closes the connection this listener reads the record and the row through,
+// delete took, filtered on the row it read, and the drive below
+// (requireRestoreMakesACorrectivePass) stores a newer row under that write - a role claim's
+// write, which sets no filter - so the fence reads the bucket again. The hook this case hands
+// that drive then closes the connection this listener reads the record and the row through,
 // before the corrective pass plans: neither read answers, so that pass plans nothing, sends
 // nothing and leaves the first pass's filter standing (registeredTarget, registeredReadFailed).
 func TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft(t *testing.T) {
@@ -641,49 +578,14 @@ func TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft(t *te
 	const kept = "notifications.dispatch.issue.FENCEPLANSNOTHINGKEPT.>"
 	const added = "notifications.dispatch.issue.FENCEPLANSNOTHINGADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-	_, registered, err := rig.harness.registry.RefreshAt(context.Background(), sessionID)
-	if err != nil {
-		t.Fatalf("read the revision of %s's row: %v", sessionID, err)
-	}
 
-	var moved sync.Once
-	var movedTo uint64
-	rig.deps.consumers.afterRepairPlan = func() {
-		// The row of a write that sets no filter - a role claim's - stored under the restore's
-		// own write, which is what sends the fence round again.
-		moved.Do(func() {
-			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
-				t.Errorf("store %s on the session's row: %v", added, err)
-			}
-			if _, movedTo, err = rig.harness.registry.RefreshAt(context.Background(), sessionID); err != nil {
-				t.Errorf("read the revision the row moved to: %v", err)
-			}
-		})
-	}
-	passes := 0
-	rig.deps.consumers.beforeRepairPlan = func() {
-		passes++
-		if passes != 2 {
-			return
-		}
+	registered, movedTo := requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
 		// The connection this listener reads the record and the row through, closed before the
 		// corrective pass plans and no part of the consumer calls, which go over the
 		// session-consumer connection (session.SessionRegistry.Refresh, store.Registry.RefreshAt).
 		rig.harness.client.Close()
-	}
+	})
 
-	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
-	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
-	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
-		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
-	}
-	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil
-
-	if passes != 2 {
-		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
-	}
 	wrote, newest := requireFenceExhaustionLogged(t, rig, sessionID)
 	if wrote != registered || newest != movedTo {
 		t.Errorf("the line names revision %d written and %d newest, want the %d the first pass read and the %d stored under its write", wrote, newest, registered, movedTo)
@@ -929,4 +831,64 @@ func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, 
 	requireFilters(t, rig, sessionID, topics...)
 	rig.store(t, message)
 	rig.awaitPending(t, sessionID, 1)
+}
+
+// requireRestoreMakesACorrectivePass drives the restore of sessionID's consumer that each
+// corrective-pass case above is built on, and fails the test unless the fence made the two
+// passes those cases read: the write planned from the row the bucket holds, and the corrective
+// pass over the row stored under it. A restore that made one pass found nothing moved, and the
+// case's own assertions would then be of a window no pass of this loop opened.
+//
+// The order is built rather than waited for. added is stored on the session's row from inside
+// the first pass, as a write that sets no filter - a role claim's - lands under the restore's
+// own write, which is what sends the fence round again. underTheCorrectivePass runs before the
+// second pass plans, and is where each case puts what it is about; it is nil for a case whose
+// second pass the consumer call of the first brings about on its own. Both hooks are off before
+// this answers, so nothing a case asserts afterwards drives another pass.
+//
+// It answers the revision the row held when the restore started, which the first pass's write
+// is built from, and the revision the row moved to under that write.
+func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, sessionID, added string, underTheCorrectivePass func()) (uint64, uint64) {
+	t.Helper()
+	_, registered, err := rig.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the revision of %s's row: %v", sessionID, err)
+	}
+
+	var moved sync.Once
+	var movedTo uint64
+	rig.deps.consumers.afterRepairPlan = func() {
+		// The row of a write that sets no filter - a role claim's - stored under the restore's
+		// own write, which is what sends the fence round again.
+		moved.Do(func() {
+			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
+				t.Errorf("store %s on the session's row: %v", added, err)
+			}
+			if _, movedTo, err = rig.harness.registry.RefreshAt(context.Background(), sessionID); err != nil {
+				t.Errorf("read the revision the row moved to: %v", err)
+			}
+		})
+	}
+	passes := 0
+	rig.deps.consumers.beforeRepairPlan = func() {
+		passes++
+		if passes != 2 || underTheCorrectivePass == nil {
+			return
+		}
+		underTheCorrectivePass()
+	}
+
+	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
+	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
+		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
+	}
+	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil
+
+	if passes != 2 {
+		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
+	}
+	return registered, movedTo
 }

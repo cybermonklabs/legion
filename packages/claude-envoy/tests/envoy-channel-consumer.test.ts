@@ -398,8 +398,10 @@ test("a late BTW is passed over and answered done, and the frame after it is sho
 // The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS
 // subscription. The whole subscription set is asserted, never the presence of the relay subject,
 // so a core subscription added back on any followed subject fails here. Oh My Pi's plugin holds
-// one more, its agent-stream control subject; this server has no agent stream, so the relay
-// subject is the whole set.
+// one more, its agent-stream control subject, and so does this server once a mod links to it:
+// the stream it starts then subscribes to `agentstream.<id>.control` (`startAgentStream`,
+// `../src/agent-stream-runner`). This harness starts the session alone, so the relay subject is
+// the whole set.
 test("holds exactly its relay subject after registration, and no other subscription", async () => {
   const directory = scratchState()
   const nats = new FakeNats()

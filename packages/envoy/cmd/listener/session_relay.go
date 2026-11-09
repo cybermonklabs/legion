@@ -231,10 +231,17 @@ const (
 	// (sessionRelays.wanted). A clean stop (deleteSessionConsumer, cmd/listener/api.go) and the
 	// session reaper (session.SessionReaper.DeleteConsumer) each delete the session's consumer
 	// with the record they delete, which is where most relays end, a clean stop being where most
-	// sessions end; a record that lapsed out of the cache instead leaves the consumer standing
-	// for a session that registers again, or for the stream's inactive threshold. Either way
-	// nobody is delivered the messages the run gives back: a nak is a publish the server answers
-	// nothing to, and a consumer the server no longer holds drops it.
+	// sessions end; the messages the run gives back are naked into a consumer the server no
+	// longer holds, which drops them, and nothing reports that, a nak being a publish the server
+	// answers nothing to. A record that lapsed out of the bucket instead leaves the consumer
+	// standing with those messages on it: the reaper judges the records the cache holds, and a
+	// record whose bucket age is under the gone horizon - five minutes against an hour where
+	// the deployment sets no ENVOY_SESSION_MAX_AGE (session.BucketMaxAge, session.GoneHorizon)
+	// - leaves that cache before a pass of it judges the session gone, so nothing deletes that
+	// consumer until the stream's inactive threshold (bus.SessionConsumerInactiveThreshold)
+	// and the session is delivered those messages when it registers again, which is what a
+	// laptop that slept through its heartbeats does. The cache reports a record deleted and
+	// one lapsed the same way, so the hand-over line names both (relayHandOverLines).
 	relayCancelSessionGone
 	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
 	// floor replaced this one.
@@ -273,17 +280,19 @@ func (r relayCancelReason) Error() string { return r.String() }
 // nak of one of them, or the drain of its pull, did not reach the server (sessionRelays.release,
 // bus.SessionPull.Release).
 //
-// A session whose record is gone gets lines of its own because nobody is delivered its messages:
-// no listener relays a session with no record (sessionRelays.wanted), and a stop or a reap that
-// took the record took the consumer the naks reach with it, which the server drops them for
-// (relayCancelSessionGone). The other reasons leave the session's record and its consumer where
-// they are, so the naks have the server deliver those messages to that consumer's next pull at
-// once. A reader is told which of the two happened: one says the messages are on their way, the
-// other that nothing is taking them.
+// A session whose record is gone gets lines of its own because no listener relays it
+// (sessionRelays.wanted), so the messages the run gives back wait on its consumer instead of
+// going to a next owner. What becomes of them turns on how the record went: a stop or a reap
+// took the consumer with the record and the server drops the naks, while a record that lapsed
+// leaves the consumer standing and the session is delivered those messages when it registers
+// again (relayCancelSessionGone). The line names both, since the run has nothing to tell the
+// two apart by and a sleeping laptop's line reads as loss otherwise. The other reasons leave
+// the session's record and its consumer where they are, so the naks have the server deliver
+// those messages to that consumer's next pull at once.
 func relayHandOverLines(reason relayCancelReason) (whole, failed string) {
 	if reason == relayCancelSessionGone {
-		return "session relay stopped; the session has no record, so nothing relays it and nobody is delivered the messages it held",
-			"session relay stopped; it could not give the server back every message it held, and the session has no record, so nothing relays it and nobody is delivered those messages either way"
+		return "session relay stopped; the session has no record, so nothing relays it; the messages it held stand on the session's consumer, which delivers them when the session registers again, and nobody is delivered them where a stop or a reap deleted that consumer with the record",
+			"session relay stopped; it could not give the server back every message it held, and the session has no record, so nothing relays it; the messages it held stand on the session's consumer, those it could not give back only once their ack wait passes, and nobody is delivered them where a stop or a reap deleted that consumer with the record"
 	}
 	return "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait",
 		"session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
@@ -943,8 +952,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		fromPull, pullErr := pull.Release()
 		returned += fromPull
 		// What the line says depends on the reason, because a session with no record is
-		// delivered none of these messages: the line for every other reason would have an
-		// operator wait for a delivery that never comes (relayHandOverLines).
+		// delivered these messages only when it registers again, and not at all where the
+		// delete that took the record took its consumer: the line for every other reason
+		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
 		reason := relayCancelledFor(ctx)
 		whole, failed := relayHandOverLines(reason)
 		// The run writes its hand-over line itself rather than the loop that cancelled it: only
@@ -1079,10 +1089,11 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 // release forgets run and returns the message of every frame it dropped to the server, so the
 // session's next owner is delivered them at once rather than after their ack wait
 // (bus.SessionConsumerAckWait). A session whose record is gone has no owner at all, since no
-// listener relays a session with no record, and a stop or a reap that took the record took its
-// consumer with it, so the naks of such a hand-over are publishes the server drops; the run's
-// line says so (relayCancelSessionGone, relayHandOverLines). A nak is safe to repeat as far as
-// the server goes, since the session consumer sets MaxDeliver = -1
+// listener relays a session with no record: the naks of such a hand-over reach the consumer a
+// lapsed record leaves standing, which holds those messages for the session's next
+// registration, and are publishes the server drops where a stop or a reap took the consumer
+// with the record; the run's line says both (relayCancelSessionGone, relayHandOverLines). A nak
+// is safe to repeat as far as the server goes, since the session consumer sets MaxDeliver = -1
 // (internal/bus/session_consumers.go, applySettings): a message returned here spends no server
 // redelivery budget. Each delivery still raises the message's delivery count, which the session's
 // client counts toward the attempts it allows a frame its host fails

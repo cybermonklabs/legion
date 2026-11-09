@@ -34,16 +34,19 @@ const (
 	// filterWriteSettled is a pass that left the fence nothing to judge: it sent nothing
 	// because the consumer already filters on what its row asks, because the stream holds no
 	// consumer to filter at all (bus.ErrSessionConsumerNotFound), which the session's next
-	// registration creates, or because the record asks for no consumer of this session, which
-	// is delivered to on the core path and whose delivery no filter is a window in
-	// (registeredNoConsumerDelivery). The fence ends on it with no line of its own, whichever
-	// pass it is: nothing standing on a consumer this session reads is an older row's filter.
+	// registration creates, or because the record asks for no consumer of this session, a
+	// record an earlier build left, which nothing delivers to and which leaves no delivery a
+	// filter is a window in (registeredNoConsumerDelivery). The fence ends on it with no line
+	// of its own, whichever pass it is: nothing standing on a consumer this session reads is
+	// an older row's filter.
 	filterWriteSettled
 	// filterWriteSessionGone is a pass that found the session gone: the bucket holds no record
-	// of it, so no heartbeat of it registers again and nothing sets a filter this loop leaves
-	// (repairRegistered). The fence ends on it by logging what stands rather than on the line
-	// that leaves the filter to the next heartbeat, that session having none to make
-	// (fenceFilterWrite).
+	// of it, so nothing of this listener's sets a filter this loop leaves - a session whose
+	// record a stop or a reap deleted registers no more, and one whose record lapsed out of the
+	// bucket sets its filter only when it registers again, which no pass of this loop waits for
+	// (repairRegistered, sessionRelays.release, which tells the same two cases apart in its own
+	// line). The fence ends on it by logging what stands rather than on the line that leaves
+	// the filter to the next heartbeat, since this loop has none to wait on (fenceFilterWrite).
 	filterWriteSessionGone
 	// filterWriteNotMade is a pass that planned no write, or whose write the server refused with
 	// an answer of its own: nothing of this pass reached the consumer. The fence ends on it, and

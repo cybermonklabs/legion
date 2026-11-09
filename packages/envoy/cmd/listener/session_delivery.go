@@ -424,9 +424,10 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// it left one is the fence's own to know and to report (filterWriteSessionGone).
 			return 0, filterWriteSessionGone
 		case registeredNoConsumerDelivery:
-			// The record asks for no consumer of this session - it is delivered to on the core
-			// path (session.DeliveryConsumer) - so this repair has nothing to write and the
-			// fence nothing to judge: no filter of any row is a window in that delivery.
+			// The record asks for no consumer of this session - a record an earlier build
+			// left, which nothing delivers to (session.DeliveryConsumer) - so this repair has
+			// nothing to write and the fence nothing to judge: it leaves no delivery a filter
+			// is a window in.
 			return 0, filterWriteSettled
 		case registeredReadFailed:
 			// What the bucket holds went unread, so this pass plans nothing and puts no filter
@@ -498,8 +499,10 @@ const (
 	// session is left to repair, and nothing will repair it.
 	registeredRecordGone
 	// registeredNoConsumerDelivery is a record that records no consumer delivery
-	// (session.DeliveryConsumer): the session is delivered to on the core path, and its record
-	// names no consumer to repair.
+	// (session.DeliveryConsumer): a record an earlier build left, which nothing delivers to and
+	// which names no consumer to repair. No registration at this head writes one, since a
+	// registration this listener can give no consumer is refused by name and the handler then
+	// writes nothing (register, consumerFor).
 	registeredNoConsumerDelivery
 	// registeredReadFailed is a read of the record or of the interest row that did not answer.
 	// What the bucket holds is unknown, so the caller plans nothing and leaves the consumer as

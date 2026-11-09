@@ -285,14 +285,17 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 }
 
 // A relay whose session was deregistered tells an operator that nobody is delivered the
-// messages it held, and never that they are delivered again. The stop deletes the session's
-// record, which cancels the relay (sessionRelays.apply), and that same stop deletes the
-// session's consumer (deleteSessionConsumer), so the naks of the hand-over reach a consumer the
-// server no longer holds and it drops them: a nak is a publish the server answers nothing to,
-// so every one of them is reported returned while nothing delivers those messages, at once or
-// after the consumer's ack wait. This is where most relays end, a clean stop being where most
-// sessions end, so the line that promises a further delivery would have an operator wait for
-// one that never comes.
+// messages it held, and never that they are delivered again at the consumer's next pull. The
+// stop deletes the session's record, which cancels the relay (sessionRelays.apply), and that
+// same stop deletes the session's consumer (deleteSessionConsumer), so the naks of the
+// hand-over reach a consumer the server no longer holds and it drops them: a nak is a publish
+// the server answers nothing to, so every one of them is reported returned while nothing
+// delivers those messages, at once or after the consumer's ack wait. This is where most relays
+// end, a clean stop being where most sessions end, so the line that promises a further
+// delivery would have an operator wait for one that never comes. That line names the lapse
+// beside this case, the run having nothing to tell the two apart by (relayHandOverLines), and
+// TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands holds the half of it this
+// row does not.
 //
 // The row reads the line's words, its reason and its count, since those are what a reader and
 // an alert key on, and it reads the consumer after the stop, which is the fact behind the line.
@@ -311,7 +314,7 @@ func TestACleanStopsRelayHandOverSaysTheMessagesItHeldAreDeliveredToNobody(t *te
 
 	stopSession(t, rig.mux, sessionID, "")
 
-	const nobody = "session relay stopped; the session has no record, so nothing relays it and nobody is delivered the messages it held"
+	const nobody = "session relay stopped; the session has no record, so nothing relays it; the messages it held stand on the session's consumer, which delivers them when the session registers again, and nobody is delivered them where a stop or a reap deleted that consumer with the record"
 	const againAtOnce = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
 	const afterTheAckWait = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
 	awaitLogLine(t, rig, "session relay stopped;", 15*time.Second)
