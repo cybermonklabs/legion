@@ -1221,14 +1221,16 @@ func (s *Service) coalesceAwareness(flush func()) {
 }
 
 // awarenessWindows are the windows the service's own tests open in the relay's paths, each kept
-// as a field of the service and nil outside tests. The two a flush is split at have no field
-// here: the test that opens them is its own host (awareness_relay_schedule_test.go), since a
-// flush of a whole process runs on a timer no test holds.
+// as a field of the service and nil outside tests. beforeSnapshot and beforeRaise have no field
+// here: the only test that opens them parks in each one to step the relay itself, which a test
+// of a whole process cannot do - its flushes run on a timer no test holds - so that test is its
+// own host (awareness_relay_schedule_test.go).
 func (s *Service) awarenessWindows() awarenessWindows {
 	return awarenessWindows{
 		beforeWatch:        s.beforeAwarenessWatch,
 		beforeRecord:       s.beforeAwarenessRecord,
 		beforeAnswerRecord: s.beforeAwarenessAnswerRecord,
+		beforeResolve:      s.beforeAwarenessResolve,
 	}
 }
 

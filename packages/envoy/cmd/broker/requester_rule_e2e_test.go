@@ -152,8 +152,10 @@ const (
 
 	// requesterDaemonLoginAccount is the ServiceAccount the daemon logs in as to get the launcher
 	// credential its pods enrol under (BROKER_SERVICE_LOGINS). It is an account of its own
-	// because the broker refuses a login account BROKER_SERVICES binds for the service's pods:
-	// every such pod holds a token for it and could log in as the service itself.
+	// because this leg drives a launcher enrolling pods it does not run as: a login account
+	// BROKER_SERVICES also binds for the service's pods is a pod of that account enrolling
+	// itself, and such a login reaches the one pod whose token made it and no other
+	// (enroll.Service.podUnderTokenLogin).
 	requesterDaemonLoginAccount = "system:serviceaccount:example:example-daemon-login"
 	// requesterDaemonPod is the pod UID the daemon's projected token proves, which its enrollment
 	// records as its runtime id and which every line of this test names that pod by.
@@ -244,8 +246,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		"BROKER_SIGNIN_CLIENT_SECRET_FILE=" + signInClientSecretFile(t),
 		"BROKER_SIGNIN_DOMAIN=" + brokertest.SignInDomain,
 		"BROKER_SERVICES=" + requesterDaemonService + "=" + requesterDaemonAccount,
-		// The daemon's own login account, which is how it gets the launcher credential its pods
-		// enrol under: an account of its own, never one BROKER_SERVICES binds for its pods.
+		// The daemon's login account, which is how it gets the launcher credential its pods enrol
+		// under. It is an account of its own because this leg enrols pods of requesterDaemonAccount.
 		"BROKER_SERVICE_LOGINS=" + requesterDaemonService + "=" + requesterDaemonLoginAccount,
 		"BROKER_VM_SERVICES=" + requesterBoxService + "=" + requesterBoxAccount,
 		// Each google-service-account secret mints for the one account the deployment binds it
