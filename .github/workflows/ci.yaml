@@ -2882,7 +2882,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_legion == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Main's runs take about nine minutes. scripts/skill-scenarios/daemon-pane.test.ts builds the
+    # daemon with `go run`, and a change that brings modules the restored go-daemon cache does not
+    # hold compiles them cold: INFRA-204's answer loop (agentloop and its model SDKs) took that test
+    # from 14 s to 62 s, past ten minutes.
+    timeout-minutes: 15
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:

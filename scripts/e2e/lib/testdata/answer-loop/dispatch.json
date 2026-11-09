@@ -27,7 +27,11 @@
     "id": "ask-1",
     "author": { "id": "session-architect", "kind": "agent" },
     "replies": [
-      { "id": "reply-person", "author": { "id": "user:smoke", "kind": "user" }, "body": "Keep it, and say why." },
+      {
+        "id": "reply-person",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "body": "Keep it, and say why."
+      },
       {
         "id": "reply-agent",
         "author": { "id": "session-architect", "kind": "agent" },
@@ -39,7 +43,11 @@
     "id": "ask-2",
     "author": { "id": "session-architect", "kind": "agent" },
     "replies": [
-      { "id": "reply-person", "author": { "id": "user:smoke", "kind": "user" }, "body": "Keep it, and say why." }
+      {
+        "id": "reply-person",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "body": "Keep it, and say why."
+      }
     ]
   },
   "issues/ALX-3/comments": [
@@ -68,13 +76,20 @@
     "agents": [
       {
         "session_id": "session-tester-old",
-        "legion": { "role": "tester", "role_token": "ALX-3-tester", "replaced_by": "session-tester" }
+        "legion": {
+          "role": "tester",
+          "role_token": "ALX-3-tester",
+          "replaced_by": "session-tester"
+        }
       },
       {
         "session_id": "session-tester",
         "legion": { "role": "tester", "role_token": "ALX-3-tester", "replaced_by": null }
       },
-      { "session_id": "session-planner", "legion": { "role": "planner", "role_token": "ALX-2-planner", "replaced_by": null } }
+      {
+        "session_id": "session-planner",
+        "legion": { "role": "planner", "role_token": "ALX-2-planner", "replaced_by": null }
+      }
     ]
   },
   "issues/ALX-8/collaborators": {
@@ -82,7 +97,11 @@
     "agents": [
       {
         "session_id": "session-tester",
-        "legion": { "role": "tester", "role_token": "ALX-8-tester", "replaced_by": "session-tester-newer" }
+        "legion": {
+          "role": "tester",
+          "role_token": "ALX-8-tester",
+          "replaced_by": "session-tester-newer"
+        }
       }
     ]
   }

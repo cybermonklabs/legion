@@ -1,0 +1,6 @@
+{"time":"2026-11-08T21:53:26.690Z","level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:10735"}
+this line is not JSON at all
+{"time":"2026-11-08T22:01:30.000Z","level":"INFO","msg":"listener handed a message to its legion daemon","event_id":"event-one","session_id":"session-architect","subject":"legion.alx.answers"}
+{"time":"2026-11-08T22:01:31.000Z","level":"INFO","msg":"listener delivered a message to a live session","event_id":"event-three","session_id":"session-architect"}
+{"time":"2026-11-08T22:02:20.000Z","level":"INFO","msg":"listener handed a message to its legion daemon","event_id":"event-two","session_id":"session-tester-old","subject":"legion.alx.answers"}
+{"time":"2026-11-08T22:02:22.000Z","level":"INFO","msg":"listener handed a message to its legion daemon","event_id":"event-four","session_id":"session-tester-old","subject":"legion.alx.answers"}

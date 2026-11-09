@@ -29,8 +29,8 @@ const guard = nameMissingHelpers(join(e2e, "answer-loop.sh"));
 const dir = temporaryDirectory("answer-loop-reads-test");
 
 /** The daemon log of a run: every boot appended to one file, this one two boots long. */
-const bootOne = readFileSync(join(data, "daemon-boot-one.log"), "utf8");
-const bootTwo = readFileSync(join(data, "daemon-boot-two.log"), "utf8");
+const bootOne = readFileSync(join(data, "daemon-boot-one.log.txt"), "utf8");
+const bootTwo = readFileSync(join(data, "daemon-boot-two.log.txt"), "utf8");
 const daemonLog = join(dir, "daemon.log");
 /** What the rig records when the second boot starts: boot_log reads past it, run_log reads all. */
 const bootOffset = Buffer.byteLength(bootOne);
@@ -52,7 +52,7 @@ beforeAll(() => {
   mkdirSync(join(evidence, "logs"), { recursive: true });
   cpSync(join(data, "inbox.jsonl"), join(evidence, "inbox.jsonl"));
   cpSync(join(data, "model-calls.jsonl"), join(evidence, "model-calls.jsonl"));
-  cpSync(join(data, "listener.log"), join(evidence, "logs", "listener.log"));
+  cpSync(join(data, "listener.log.txt"), join(evidence, "logs", "listener.log"));
   cpSync(join(data, "a13"), join(evidence, "a13"), { recursive: true });
   mkdirSync(join(emptyEvidence, "logs"), { recursive: true });
   writeFileSync(join(emptyEvidence, "inbox.jsonl"), "");
@@ -96,8 +96,8 @@ empty_evidence=${shq(emptyEvidence)}
 bare_evidence=${shq(bareEvidence)}
 daemon_log=${shq(daemonLog)}
 empty_log=${shq(emptyLog)}
-quiet_log=${shq(join(data, "daemon-no-answers-quiet.log"))}
-loud_log=${shq(join(data, "daemon-no-answers-loud.log"))}
+quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
+loud_log=${shq(join(data, "daemon-no-answers-loud.log.txt"))}
 boot_offset=${bootOffset}
 whole_run=0
 store=files
