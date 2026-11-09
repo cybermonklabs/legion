@@ -1,0 +1,176 @@
+# The tools a CI job of this repository installs from a GitHub release asset, one row per asset.
+# Each row names the one pinned digest both of that tool's sources are checked against, where its
+# second source is, and how that source is filled.
+# An hour of 504s on GitHub's release assets holds every merge of this repository, because each of
+# these installs reads one source and has nowhere else to go (dispatch://INFRA-1873).
+# A second source ends that hour; the pinned digest keeps it from widening what a job will run.
+# No unverified byte enters by either path: both are checked against the one `digest` of the row,
+# the same literal, and a refusal names the source that served the bytes.
+#
+# Each row's `version` agrees with the pin that decides which version a job installs:
+# for crane and changie the row is the pin itself, since install-crane and install-changie hold
+# no version of their own and install the version this row names,
+# `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
+# `ARG JJ_TOOL` of that same file for jj,
+# and .bun-version for the three bun rows.
+# .github/scripts/check-ci-tools.sh is the gate that holds a row to its pin and to this file's
+# shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
+# ci.yaml's `ci-images` job, the one copy path this repository has.
+#
+# Raising a tool is one commit: the row and the pin it answers to move together.
+# A row that disagrees with its pin installs one version and verifies another, and that is the
+# hole .github/scripts/check-ci-tools.sh exists to close, so the tree never holds that state.
+#
+# Raising Bun is the one raise that takes two commits, and the three bun rows below move in the
+# second one, with .bun-version. That raise takes two because it moves a container image as
+# well as these rows: .github/ci-images.yaml's new `oven/bun` row goes first and alone, since a
+# consumer there names a digest and the new row is inert until a `FROM` moves onto it, and
+# .bun-version, `ARG BUN_VERSION`, every `FROM` and these three rows follow in the second
+# commit. What a tool row cannot do is go ahead of its pin the way an image row can, because a
+# call site names a row rather than a version: a second row of the same tool has no name a call
+# site could use, and this file's gate refuses two rows of one name for that reason.
+#
+# One commit races nothing: ci.yaml's `tool-fallback` job declares `needs: [changes, ci-images]`,
+# so the copy of the new row is filled before `tool-fallback` reads it, and no other job waits on
+# that copy, because an install reaches the copy only where its primary did not serve the bytes.
+# The one window it leaves, said out loud: a raise merged while that tool's release asset is
+# down and its copy is not yet filled. In that window the tool has exactly the single source it
+# has today, which is what every install of it had before this file existed.
+#
+# WHY A ROW'S SECOND SOURCE IS WHAT IT IS.
+# crane, changie, mise and jj publish the exact bytes nowhere but GitHub release assets, so their
+# second source is a copy in the package this repository already publishes and already reads with
+# no login, ghcr.io/cybermonklabs/legion/ci, which every CI job of this repository reaches for its
+# container images already.
+# Bun publishes the same binary to npm, one package per platform, so a bun row's second source is
+# the npm registry: a different service, one every job already reaches for `bun install`, and one
+# that needs no copy, so it serves the bytes on the day a copy would still be cold.
+#
+# WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
+# `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
+# and .github/actions/install-jj verifies the mise archive and nothing of the jj binary mise then
+# builds or downloads.
+# A GitHub zip and an npm tarball are different archives of the same program, so the only literal
+# both can be held to is the digest of the binary that ends up installed.
+# That is what those rows pin, and the check runs on the primary path too: an install that got its
+# bytes from the third party verifies the same digest as one that got them from the second source.
+
+# The package every ghcr-mirror copy lives in: the one .github/ci-images.yaml publishes, which is
+# public and which a job pulls with no login (sjawhar/legion#2512).
+registry: ghcr.io/cybermonklabs/legion/ci
+
+tools:
+  # crane, the registry client .github/scripts/mirror-ci-images.sh copies images with.
+  # .github/actions/install-crane installs it.
+  - # The row's key: what a call site names, and what every log line and refusal says.
+    name: crane
+    # The version string, without the leading `v` its release tag carries.
+    version: 0.22.1
+    # The one 64-hex sha256 both paths check, written bare: no `sha256:` prefix, because this one
+    # literal goes into a `sha256sum` line and into a ghcr blob URL alike.
+    digest: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+    # The bytes that digest is of.
+    digest_of: the release tarball go-containerregistry_Linux_x86_64.tar.gz, whole
+    # The URL the primary path fetches, empty where a third party fetches the bytes for us.
+    primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
+    # Where the bytes come from when the primary does not serve them: `ghcr-mirror` for a copy in
+    # the package `registry:` names, `npm` for the npm registry.
+    # It is the one word every log line and every refusal of that source says, so a row that
+    # moves to another source moves every sentence about it with one edit.
+    second_source: ghcr-mirror
+    # The per-attempt bound in seconds the helper gives curl. One attempt that hangs past a minute
+    # is the outage the second source answers, so every row carries 60.
+    max_time: 60
+    # ghcr-mirror rows only. The URL .github/scripts/mirror-ci-tools.sh fetches the bytes from to
+    # fill the copy. It is the row's `primary` wherever the primary is the asset itself.
+    mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
+    # ghcr-mirror rows only. The tar member to take out of `mirror_from`'s archive before the
+    # digest is checked and the bytes are pushed, or "" to push the archive whole.
+    mirror_member: ""
+
+  # changie, which renders the changelog. .github/actions/install-changie installs it.
+  - name: changie
+    version: 1.26.0
+    digest: eab168c8287a6e91912e1c02e5260911232d945bfd3c89d8a0e1ace6bb7b6161
+    digest_of: the release tarball changie_1.26.0_linux_amd64.tar.gz, whole
+    primary: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
+    mirror_member: ""
+
+  # mise, which .github/actions/install-jj installs jj with, and which the worker image's tools
+  # stage installs the same way. The version and the digest are the `ARG MISE_VERSION` and
+  # `ARG MISE_SHA256` pair of packages/daemon/docker/worker.Dockerfile, without the tag's `v`.
+  - name: mise
+    version: 2026.8.12
+    digest: 0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
+    digest_of: the release tarball mise-v2026.8.12-linux-x64.tar.gz, whole
+    primary: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
+    mirror_member: ""
+
+  # jj, the fork the worker image ships, pinned by `ARG JJ_TOOL`. The version is the part of it in
+  # packages/daemon/docker/worker.Dockerfile after the `@`, and the release tag carries a leading
+  # `v` that tool spec does not.
+  # `primary` is empty because mise fetches the primary bytes: .github/actions/install-jj runs
+  # `mise x github:sjawhar/jj@<version>`, and nothing of this repository reaches that asset.
+  # The digest is of the binary mise installs, so the second source and the primary path are held
+  # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
+  # it, which is what the copy holds.
+  - name: jj
+    version: 0.45.1-sami.20260910-043938
+    digest: fe32ffcd64432000027c87030af074eb48e55181ca389e09d3ab4b44200aba7a
+    digest_of: the jj binary itself, the 24424232-byte `./jj` member of the release tarball
+    primary: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
+    mirror_member: ./jj
+
+  # Bun for an x64 runner, the version .bun-version pins. `primary` is empty on every bun row:
+  # `oven-sh/setup-bun` fetches the GitHub zip itself, and .github/actions/setup-bun is the one
+  # place this repository calls it from.
+  # The digest is of the binary that ends up installed, which is `package/bin/bun` in the npm
+  # tarball and `bun-linux-x64/bun` in the GitHub zip, 107308936 bytes.
+  #
+  # This row and the baseline row below carry one digest: upstream ships the same binary for both
+  # x64 variants at 1.4.4, measured on npm and on the GitHub zips alike. They stay two rows because
+  # the variant a runner selects is read from /proc/cpuinfo, so which one a job installs is decided
+  # on the runner, and a later Bun may ship two different binaries again.
+  - name: bun-linux-x64
+    version: 1.4.4
+    digest: 10702245766b225e70bbf6235fd6b47214fd94b4760d00ffaed8ab0df57ac235
+    digest_of: the installed bun binary, 107308936 bytes
+    primary: ""
+    second_source: npm
+    max_time: 60
+    # npm rows only. The package the binary is published in, one per platform variant.
+    npm_package: "@oven/bun-linux-x64"
+    # npm rows only. The member of that package's tarball which is the binary itself.
+    npm_member: package/bin/bun
+
+  # Bun for an x64 runner whose CPU lacks the instructions the row above needs. One binary with the
+  # row above at 1.4.4, two rows for the reason stated there.
+  - name: bun-linux-x64-baseline
+    version: 1.4.4
+    digest: 10702245766b225e70bbf6235fd6b47214fd94b4760d00ffaed8ab0df57ac235
+    digest_of: the installed bun binary, 107308936 bytes
+    primary: ""
+    second_source: npm
+    max_time: 60
+    npm_package: "@oven/bun-linux-x64-baseline"
+    npm_member: package/bin/bun
+
+  # Bun for an aarch64 runner. Its own binary, 107339768 bytes.
+  - name: bun-linux-aarch64
+    version: 1.4.4
+    digest: 354c2b049c716aca07b2e5cddb887928ac58950675d1258bb6312083917793b6
+    digest_of: the installed bun binary, 107339768 bytes
+    primary: ""
+    second_source: npm
+    max_time: 60
+    npm_package: "@oven/bun-linux-aarch64"
+    npm_member: package/bin/bun
