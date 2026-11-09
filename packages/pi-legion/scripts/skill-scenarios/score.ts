@@ -1194,13 +1194,7 @@ function sessionOf(runDir: string, role: Role): string | undefined {
  * require passes an empty list, which no message satisfies rather than every message satisfying
  * it. `after` is a time Envoy's own record is ordered against, so a message that reached the
  * topic before it is no answer to what happened then. */
-function publishedTo(
-  runDir: string,
-  by: Role,
-  role: Role,
-  names: string[],
-  after = ""
-): boolean {
+function publishedTo(runDir: string, by: Role, role: Role, names: string[], after = ""): boolean {
   return publishes(runDir, by).some(
     (sent) =>
       sent.at > after &&

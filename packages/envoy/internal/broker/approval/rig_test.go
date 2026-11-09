@@ -99,7 +99,7 @@ func newRig(t *testing.T) *rig {
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := brokertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
@@ -127,6 +127,20 @@ func newRig(t *testing.T) *rig {
 }
 
 // --- the broker's machine and session side, which makes the records a person decides ---
+
+// retag puts changed into the rig's secret store, replacing each secret of the same name, and
+// reloads the policy, as the broker's next refresh does after someone edits a secret in Secrets
+// Manager. It is how a test moves the policy under a request that is already pending.
+func (r *rig) retag(t *testing.T, changed ...secrets.LocalSecret) {
+	t.Helper()
+	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	for _, s := range changed {
+		local.Put(s)
+	}
+	if err := r.machine.Policy.Refresh(t.Context()); err != nil {
+		t.Fatalf("policy refresh: %v", err)
+	}
+}
 
 // call sends a JSON request to the broker with headers and answers its status and body.
 func (r *rig) call(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
