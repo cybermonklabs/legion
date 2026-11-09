@@ -104,6 +104,11 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
   return {
     pending: pending > 0,
     submit: async (ids, until) => {
+      // Built before anything is written down: the builder refuses an id the route's pattern has
+      // no value for, and a refusal here, inside `ids.map` below, would escape `submit` after the
+      // optimistic write with `pending` raised and no row rolled back. No caller sends an empty
+      // id, so this is where that stays true rather than a case to handle.
+      const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
@@ -112,14 +117,14 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
       );
       const results = await Promise.allSettled(
-        ids.map((id) =>
+        writeOf.map(({ id, request }) =>
           writes.run({
             detail: null,
             inline: true,
             kind: plainWrite,
             label: "Ask snoozed",
             presentation: "indicator",
-            request: askSnoozeRequest(id, until),
+            request,
             target: `ask-snooze:${id}`,
           })
         )

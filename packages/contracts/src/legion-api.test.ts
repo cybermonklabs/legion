@@ -1018,7 +1018,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211"]);
+  expect(state.admission.waiting).toEqual(["LEGION-211", "LEGION-212"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
@@ -1656,7 +1656,7 @@ test("the state golden names the held lifecycle rows, and the list cannot be dro
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 });
 
-// The questions passed to the controller (contract 58): the golden carries the question LEGION-207's
+// The questions passed to the controller (contract 59): the golden carries the question LEGION-207's
 // stopped tester could not answer, a state with none carries an empty list rather than none, a
 // question names its role and when it was passed, and the list cannot be dropped: a plugin from
 // before the field refuses the state, which is what the bump is for.

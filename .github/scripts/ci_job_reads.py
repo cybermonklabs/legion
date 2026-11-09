@@ -177,6 +177,7 @@ def at_docs(step):
 # dispatch-browser.yaml that holds the step.
 BROWSER_JOB = "dispatch-browser"
 BROWSER_SHARD, BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "shard", "alone", "multiprocess", "merge"
+BROWSER_VISUAL = "visual"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -331,6 +332,11 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
+    f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         "internal/dispatch/api/openapi_test.go:189-190 (the path built runtime-relative ../../../../.., then "
+         "read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
+         "emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
@@ -747,17 +753,26 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
-# The four steps that run the browser suite, named together wherever a Run or a read cites the
-# whole suite: one list, so a step renamed above reaches every citation of it.
-BROWSER_SUITE_STEPS = (
-    f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
-    f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}"
-)
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_INSTALL = "Install the lane's Playwright browsers"
 BROWSER_APT_KEY = "Compute the apt archive cache key"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
+BROWSER_READ_ONE_STEP = "Reading one, the rows"
+BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
+# The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
+# e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
+# in the pinned container. The `go build` the Run above pins is the same one, started the same
+# way, so this job adds no command of its own.
+BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
+# The five steps that run the browser suite, named together wherever a Run or a read cites the
+# whole suite: one list, so a step renamed above reaches every citation of it. It is declared
+# here, below the five names, rather than beside the first of them.
+BROWSER_SUITE_STEPS = (
+    f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
+    f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} and "
+    f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
+)
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
@@ -993,6 +1008,7 @@ GATES = [
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:776,874"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:96 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:51"),
+        ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:14 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
         ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:23,57,142; scripts/skill-scenarios/rig.test.ts:791,1004; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:96"),
@@ -1088,6 +1104,11 @@ GATES = [
          "start it and read its two summaries"),
         (".github/scripts/playwright-deps-current.sh", at_browser(BROWSER_INSTALL)),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
+        (".github/scripts/dispatch-browser-run-reads.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "
+         f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
+         "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
+         "could not complete"),
         (".github/playwright-apt-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
          "that name both run .github/scripts/playwright-install.sh, which reads it as the apt list it installs"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
@@ -1139,6 +1160,14 @@ GATES = [
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
     ], exact=[
+        # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
+        # and this Run stands for the command it compiles.
+        pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,
+                    "go run ./cmd/dispatch openapi --check", [
+                        (ENVOY, ["./cmd/dispatch"],
+                         "go run ./cmd/dispatch openapi --check, which emits the document from the "
+                         "route table and compares it with the committed one", {"mode": "build"}),
+                    ]),
         # One linux build of the listener per architecture the loop reads from the target list.
         pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
@@ -1149,6 +1178,12 @@ GATES = [
         (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
         ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
+        # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
+        # must start this job: the Run stands for what the command compiles, never for what it reads.
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
+         "cmd/dispatch/subcommands.go:125 reads the committed document to compare it (:171 only builds a "
+         "candidate path for it)"),
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),

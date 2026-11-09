@@ -29,6 +29,7 @@ test("ProofDocument keeps transport active without cursor decorations in the com
   const queryClient = createQueryClient();
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "",
+    token: "sha256:empty-spec",
     version: null,
   });
   const view = render(

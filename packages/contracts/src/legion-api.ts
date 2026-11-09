@@ -262,6 +262,14 @@ const legionSlotView = z.object({
   lentTo: issueKey.optional(),
 });
 
+/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
+ * in the line, and `length`, how long that list was at this read. It says where the issue stands,
+ * not what holds it, which `admission.blocked` names. */
+const legionWaitingLineView = z.object({
+  place: z.number().int().positive(),
+  length: z.number().int().positive(),
+});
+
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
  * (`merge` for the look the close opens, `check wake` for one the checking agent's own `wake_at`
  * or the retry of a look nobody reported starts, and `bound` for the last look; a check whose
@@ -318,8 +326,8 @@ export const LEGION_WAIT_ANSWERS = [
 
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
- * (`answeredBy` names how, not always by a person), when the root waits at the front of
- * admission's waiting line for its slot. */
+ * (`answeredBy` names how, not always by a person), when the root waits in admission's waiting
+ * line for its slot, among the issues whose work came back, oldest first. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),
@@ -394,7 +402,7 @@ const legionHeldOutboxRow = z.object({
 });
 
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
- * passed to the controller (its `agent-question` notice, contract 58): the question's id, the
+ * passed to the controller (its `agent-question` notice, contract 59): the question's id, the
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
@@ -464,6 +472,10 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
+  /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
+   * list names, so a slot holder and every other issue the line does not carry have none, and a
+   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
@@ -653,7 +665,7 @@ const legionConsumerLag = z.object({
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. `questionsForController` is every question the answer loop passed to the controller in
  * the last seven days, newest first, at most 100, never null: the `agent-question` notice is a
- * live wake only, so a controller that starts later reads here what it missed (contract 58). */
+ * live wake only, so a controller that starts later reads here what it missed (contract 59). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   admission: legionAdmission,

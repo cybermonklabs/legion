@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  Daemon API contract 52: `legion state` and the controller's `read_state` carry
+  Daemon API contract 59: `legion state` and the controller's `read_state` carry
   `questionsForController`, every question to a stopped agent that the daemon's answer loop passed
   to the controller in the last seven days (`id`, `issue`, `role`, `session`, `asker`, `ref`,
   `reason`, `passedAt`), newest first and at most 100. The daemon's `agent-question` notice on the
