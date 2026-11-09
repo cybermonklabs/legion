@@ -534,8 +534,8 @@ func (s *Service) tokenLoginListed(subject, service string) bool {
 // and this read moves the row out from under the proof: a read by launcher id alone would hand
 // the caller whatever identity the row then holds, and Revoke's own-account branch would judge
 // the request as the pod that row names. A login bound to no pod takes one row per subject on
-// either schema (IssueTokenLoginTx's pod-less conflict target), so another login of that
-// subject still moves this caller's row, and a pod's own re-login moves its own row's key
+// either schema (IssueTokenLoginTx's pod-less conflict target), so another pod-less login of
+// that subject still moves this caller's row, and a pod's own re-login moves its own row's key
 // under the same id, so the pair is right on either schema. A row whose key has moved is no
 // credential of this caller's, and the route refuses it (401 LAUNCHER_INVALID) rather than
 // acting under another pod's identity.
