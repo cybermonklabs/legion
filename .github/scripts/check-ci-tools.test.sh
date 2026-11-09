@@ -385,8 +385,9 @@ check "names the file, the line and the address the job builds" \
   "$(contains "$out" '^.github/workflows/uv.yaml:8: this file builds the address of a release asset of example/uv (https://github.com/example/uv/releases/download/$version/uv.tar.gz)')"
 
 echo "case: rule 3 — a workflow that fetches Bun's own release asset"
-# No bun row carries a primary, because oven-sh/setup-bun fetches that asset. The repository is
-# covered all the same, so a workflow that reached for it names a Bun no row pins.
+# No bun row carries a primary, because oven-sh/setup-bun fetches that asset. So this URL is a
+# release asset no row and no entry names, and the gate refuses it as it refuses any other,
+# whatever repository it names.
 root=$(fixture reach-bun-asset)
 cat > "$root/.github/workflows/bun.yaml" <<'YAML'
 name: Bun
@@ -568,6 +569,36 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "quotes the placeholder and says how much the gate wants" \
   "$(contains "$out" "^.github/ci-tools.yaml:48: this entry's why is TODO, which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
+
+echo "case: a no_second_source entry whose why is a placeholder padded past the length bound"
+# Every placeholder the gate knows is shorter than the 40 characters it wants, so the case above
+# would be refused on length alone and the list of placeholders would never be read. This one is
+# 41 characters of `unknown` and padding: only the list refuses it.
+root=$(fixture decline-padded-placeholder-why)
+cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: |
+          curl -fsSL -O $SOLO_URL
+          echo "$SOLO  solo-2.2.2.tar.gz" | sha256sum -c -
+YAML
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: .github/workflows/solo.yaml
+    why: unknown . . . . . . . . . . . . . . . . .
+YAML
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the padded placeholder, which is long enough for the length bound" \
+  "$(contains "$out" "^.github/ci-tools.yaml:48: this entry's why is unknown . . . . . . . . . . . . . . . . ., which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
 
 echo "case: a no_second_source entry whose URL no file under .github writes"
 # The install this entry declined a second source for was deleted and the entry stayed. Refusing

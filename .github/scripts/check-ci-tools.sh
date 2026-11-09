@@ -78,7 +78,7 @@
 #          bypasses a tool that has a second source;
 #        * `why` is a sentence rather than a placeholder.
 #      Whether that reason is TRUE is the reviewer's judgement and no gate's: the three rules
-#      above are the whole of what a program can check here.
+#      before it are the whole of what a program can check here.
 #
 #   4. No short reference to a tool blob.
 #      A `<the manifest's registry>@sha256:<d>` under .github/ whose <d> is a row's digest is
@@ -172,6 +172,13 @@ NPM_BASE = "https://registry.npmjs.org"
 # A `no_second_source` entry: the one way a URL with no second source anywhere is allowed.
 NO_SECOND_SOURCE = "no_second_source"
 ENTRY_FIELDS = ("url", "digest", "pinned_in", "why")
+# What rule 3's refusal of an unnamed URL ends with. Neither depends on the URL found, so both
+# are written once here rather than rebuilt at every match.
+ASSET_REMEDY = (
+    f"Add a row naming its second source and fetch it with {HELPER}, or, where those bytes are "
+    f"published nowhere but there, a {NO_SECOND_SOURCE} entry carrying {', '.join(ENTRY_FIELDS)}."
+)
+NPM_REMEDY = f"Add the row, or fetch it with {HELPER}."
 # A reason that is one of these, or shorter than this, says nothing a reader could act on. The
 # bound is stated in the refusal, so the writer is told what the gate wants rather than guessing.
 REASON_PLACEHOLDERS = {"todo", "tbd", "n/a", "na", "none", "-", "--", "unknown", "?", "fixme"}
@@ -499,7 +506,7 @@ OWN_REPOSITORY = f"{own_match.group('owner')}/{own_match.group('repo')}"
 # and the npm scopes they cover.
 row_repositories: dict[str, str] = {}
 covered_scopes: set[str] = set()
-allowed: dict[str, str] = {}
+allowed: set[str] = set()
 for row in readable:
     name = str(row["name"]).strip()
     version = str(row["version"]).strip()
@@ -507,7 +514,7 @@ for row in readable:
         url = str(row.get(field) or "").strip()
         if not url:
             continue
-        allowed[url] = f"the {name} row's {field}"
+        allowed.add(url)
         match = ASSET_URL.match(url)
         if match:
             row_repositories.setdefault(
@@ -521,16 +528,9 @@ for row in readable:
         # npm serves a scoped package's tarball under the package name without its scope, which
         # is the URL .github/scripts/ci-tools.sh builds for this row.
         derived = f"{NPM_BASE}/{package}/-/{package.rpartition('/')[2]}-{version}.tgz"
-        allowed[derived] = f"the {name} row's npm tarball"
+        allowed.add(derived)
 for entry in declines:
-    allowed[str(entry["url"]).strip()] = (
-        f"the {NO_SECOND_SOURCE} entry on line {line_of(entry)}"
-    )
-
-npm_reach: set[Path] = set()
-for directory in NPM_DIRECTORIES:
-    for suffix in ("*.yml", "*.yaml"):
-        npm_reach.update(directory.rglob(suffix))
+    allowed.add(str(entry["url"]).strip())
 
 # ------------------------------------------------- one pass: rule 3 and rule 4 over .github/
 # Rule 4: a tool blob is read at the full https://<base>/v2/<path>/blobs/sha256:<digest> URL the
@@ -539,9 +539,15 @@ for directory in NPM_DIRECTORIES:
 short_references = {f"{registry}@sha256:{str(row['digest']).strip()}": str(row["name"]).strip()
                     for row in readable}
 # Rule 4's sweep already reads every file under .github/, so rule 3 rides it rather than opening
-# the tree twice. `writers` is what an entry's first rule is decided on: the text of every file
-# rule 3 reads, the manifest left out, since an entry naming only itself names no install.
-writers: dict[Path, str] = {}
+# the tree twice. An entry's first rule — some file writes its url — is decided inside this pass:
+# deciding it afterwards would mean holding the text of every file rule 3 reads until then. The
+# manifest is left out of the pass, since an entry naming only itself names no install.
+written: set[str] = set()
+# The files the entries name as their pin. The pass keeps the text of any of them it reads, so
+# an entry's digest rule does not open .github/workflows/ci.yaml a second time; a path the pass
+# never reaches — the manifest, a .test. file, a file outside .github/ — is read where it is used.
+pinned_paths = {Path(str(entry["pinned_in"]).strip()) for entry in declines}
+pin_texts: dict[Path, str] = {}
 named = 0
 read_files = 0
 swept = 0
@@ -572,7 +578,10 @@ for file in sorted(GITHUB.rglob("*")):
     if TEST_FILE in file.name or file == CI_TOOLS:
         continue
     read_files += 1
-    writers[file] = text
+    # Inside the pass, so no file's text outlives it: see `written` above.
+    written.update(url for url in declared_urls if url in text)
+    if file in pinned_paths:
+        pin_texts[file] = text
 
     # offset, the URL as written, what it names, the repository it names, the remedy
     found: list[tuple[int, str, str, str | None, str]] = []
@@ -584,12 +593,13 @@ for file in sorted(GITHUB.rglob("*")):
                 match.group(0).rstrip(",);"),
                 f"a release asset of {repository}",
                 repository,
-                f"Add a row naming its second source and fetch it with {HELPER}, or, where those "
-                f"bytes are published nowhere but there, a {NO_SECOND_SOURCE} entry carrying "
-                f"{', '.join(ENTRY_FIELDS)}.",
+                ASSET_REMEDY,
             )
         )
-    if file in npm_reach:
+    # Rule 3's npm half claims every *.yml and *.yaml under NPM_DIRECTORIES and nothing else.
+    if file.name.endswith((".yml", ".yaml")) and any(
+        directory in file.parents for directory in NPM_DIRECTORIES
+    ):
         for match in NPM_URL.finditer(text):
             scope = match.group("rest").partition("/")[0]
             if scope not in covered_scopes:
@@ -600,7 +610,7 @@ for file in sorted(GITHUB.rglob("*")):
                     match.group(0).rstrip(",);"),
                     f"an npm package under {scope}",
                     None,
-                    f"Add the row, or fetch it with {HELPER}.",
+                    NPM_REMEDY,
                 )
             )
 
@@ -630,11 +640,10 @@ for file in sorted(GITHUB.rglob("*")):
 # ------------------------------------------- the four rules a no_second_source entry is held to
 for entry in declines:
     url = str(entry["url"]).strip()
-    line = line_of(entry)
-    repository = ASSET_URL.match(url)
-    repository = f"{repository.group('owner')}/{repository.group('repo')}"
+    url_match = ASSET_URL.match(url)
+    repository = f"{url_match.group('owner')}/{url_match.group('repo')}"
 
-    if not any(url in text for text in writers.values()):
+    if url not in written:
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'url')}: no file under {GITHUB} writes "
             f"{one_line(url)}, so this entry declines a second source for an install that is no "
@@ -644,7 +653,9 @@ for entry in declines:
 
     digest = str(entry["digest"]).strip()
     pinned_in = Path(str(entry["pinned_in"]).strip())
-    pin_text = read_text(pinned_in) if pinned_in.is_file() else None
+    pin_text = pin_texts.get(pinned_in)
+    if pin_text is None and pinned_in.is_file():
+        pin_text = read_text(pinned_in)
     if not DIGEST.fullmatch(digest):
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'digest')}: this entry's digest is {one_line(digest)}, "
@@ -674,10 +685,10 @@ for entry in declines:
             f"row."
         )
 
-    why = " ".join(str(entry["why"]).split())
+    why = one_line(entry["why"])
     if why.strip(" .").lower() in REASON_PLACEHOLDERS or len(why) < REASON_MINIMUM:
         problems.append(
-            f"{CI_TOOLS}:{key_line(entry, 'why')}: this entry's why is {one_line(why)}, which "
+            f"{CI_TOOLS}:{key_line(entry, 'why')}: this entry's why is {why}, which "
             f"says nothing a reader could act on. Write at least {REASON_MINIMUM} characters "
             f"naming which second source was looked for, why there is none today, and what "
             f"building one would take. Whether that reason is true is the reviewer's judgement "
