@@ -45,7 +45,7 @@
 # the run: the rig talks only to its own loopback stack.
 set -euo pipefail
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
-# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
@@ -81,7 +81,10 @@ nats_pid=
 listener_pid=
 dispatch_pid=
 holder_pid=
+# The run has its database's name from `setup`, before it creates it, so the drop below reads
+# database_created, which the `create database` sets, and never names a database that is not there.
 database=
+database_created=
 ok=
 
 note() { echo "   $*"; }
@@ -109,8 +112,8 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
-  if [ -n "$database" ]; then
-    psql "$LEGION_TEST_PG_DSN" -qtA -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+  if [ -n "$database_created" ]; then
+    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
@@ -131,7 +134,14 @@ echo "== setup"
 for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
-require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "the run creates and drops a database there" || fail "$db_host"
+require_loopback_dsn database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "the run creates and drops a database there" || fail "$database_url"
+# The database's name is only this shell's pid and random bytes, so the run has it here, and the
+# rewrite that refuses a DSN whose values the connection string cannot carry runs in this step,
+# before the builds, the services and the `create database` further down. Both answers go to
+# database_url: the run keeps the connection string alone, and either refusal is the line this
+# script fails with.
+database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -196,9 +206,8 @@ nats_pid=$!
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
-database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-psql "$LEGION_TEST_PG_DSN" -qtA -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there"
+psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+database_created=1
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&

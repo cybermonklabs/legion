@@ -163,7 +163,7 @@
 # shellcheck disable=SC2317 # cleanup runs from the EXIT trap, the probes from await and wait_until
 set -euo pipefail
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
-# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | LEGION_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE)
@@ -283,15 +283,25 @@ done
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
-# lib/rig.sh for require_loopback_dsn and run_database_url, the two helpers every proof that
-# writes a PostgreSQL server shares; it reads the checkout as $root and brings lib/port-file.sh
-# with it. This proof calls no other helper of the rig's, and its own await_port_file and
-# keep_port, written for the pid map below, replace the rig's two of those names.
-root=$repo_root
-# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
-. "$repo_root/scripts/e2e/lib/rig.sh"
+# lib/loopback-dsn.sh for require_loopback_dsn and run_database_url, the two helpers a proof that
+# writes a PostgreSQL server reads its caller's DSN with, and lib/port-file.sh for
+# read_port_file, which this proof's own await_port_file waits with. Neither file reads a
+# variable of this shell. This proof sources no rig: its await_port_file and keep_port, written
+# for the pid map below, are its own, and lib/rig.sh defines both of those names and a start_held
+# that calls its own await_port_file, so sourcing it for the two DSN helpers would leave which
+# await_port_file runs to the order of the two files.
+# shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
+. "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
+. "$repo_root/scripts/e2e/lib/port-file.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
-require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and force-drops a database there" || refuse "$db_host"
+require_loopback_dsn database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and force-drops a database there" || refuse "$database_url"
+# The database's name is only this shell's pid and random bytes, so the run has it here, and the
+# rewrite that refuses a DSN whose values the connection string cannot carry runs before the
+# builds, the services and the `create database` further down. Both answers go to database_url:
+# the run keeps the connection string alone, and either refusal is the line this script prints.
+database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$database_url"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
@@ -302,7 +312,10 @@ events="$work/events.jsonl"
 # ---- processes and teardown -------------------------------------------------------------------
 declare -A pid=()        # service or session label -> pid
 declare -A fd=()         # session label -> the write end of its stdin fifo
-database=""
+# The run has its database's name from the setup step, before it creates it, so the drop in
+# cleanup reads this, which the `create database` sets, and never names a database that is not
+# there.
+database_created=""
 running() {
   local state
   [[ -r "/proc/$1/stat" ]] || return 1
@@ -348,7 +361,7 @@ cleanup() {
     keep-listener-dispatch; do
     stop_label "$label"
   done
-  if [[ -n "$database" ]]; then
+  if [[ -n "$database_created" ]]; then
     psql "$LEGION_TEST_PG_DSN" -qtA -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
   fi
@@ -674,9 +687,8 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 psql "$LEGION_TEST_PG_DSN" -qtA -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there"
+database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 mkdir -p "$web_dist"

@@ -136,7 +136,7 @@ claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
 omp_bin=${LEGION_E2E_OMP_PATH:-}
 claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
-# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;

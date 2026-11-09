@@ -3256,8 +3256,9 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 
 - **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`merged-root-waits.sh`](#merged-root-waitssh).
   The script creates a database of its own in it with `psql` and force-drops it with `psql` on any exit.
-  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/rig.sh`](#librigsh)'s `require_loopback_dsn`, which it calls before it creates that database.
-  Dispatch's `DATABASE_URL` is the connection string `run_database_url` rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so libpq reads the DSN for every client of the run and the driver reads it for none.
+  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn`, which it calls in `setup`, before it builds or starts anything.
+  Dispatch's `DATABASE_URL` is the connection string `run_database_url` rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so no client of the run is handed the DSN's own text, and `setup` refuses a DSN the rebuild cannot carry.
+  psql is libpq, and Dispatch reads that rebuilt string with pgx (`pgxpool.ParseConfig`), which reads the keyword/value form as libpq does: the pinned `github.com/jackc/pgx/v5 v5.11.0` carries a port of libpq's parser, and `lib/loopback-dsn.sh` says what a raise of that pin moves.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
 - **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.10.22, which the rig installs once with `go install`.
@@ -4463,7 +4464,7 @@ Its inputs:
 
 | input | what it is |
 | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>` and given to the run as the `dbname=` of a connection string [`lib/rig.sh`](#librigsh)'s `run_database_url` rebuilds from the DSN, so the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, the run takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>` and given to the run as the `dbname=` of a connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url` rebuilds from the DSN, so the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, the run takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
 | `LEGION_GH_PATH` | optional: the real `gh` the composer is told, the first `gh` on `PATH` otherwise, where the run refuses to start when there is neither and when the one it found is not an executable file |
 | `--base-commit <rev>` | required: the control's commit |
@@ -4657,7 +4658,7 @@ The role lane falls back to the machine groups, since that grant carries no shar
 
 | input | default | meaning |
 | :--- | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and force-drops a database of its own there with `psql`, gives Dispatch the connection string [`lib/rig.sh`](#librigsh)'s `run_database_url` rebuilds for that database, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it |
+| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and force-drops a database of its own there with `psql`, gives Dispatch the connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url` rebuilds for that database, and refuses the DSN in `setup`, before any build or service, when [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses the host or the rebuild |
 | `SESSION_DELIVERY_MODEL_KEY_FILE` | `/var/run/model-gateway-key/key` | the file holding the sessions' model key, handed to Oh My Pi and Claude Code alone as their `ANTHROPIC_API_KEY` and never printed; the default is where every role pod mounts its model gateway's key |
 | `ANTHROPIC_BASE_URL` | unset | when set, passed to Oh My Pi and Claude Code only, beside the key: a model gateway whose key the key file holds; an issue pod has no Anthropic key of its own; its `ANTHROPIC_BASE_URL` names its model gateway, and `/var/run/model-gateway-key/key` holds that gateway's key |
 | `SESSION_DELIVERY_OMP` | `omp` on `PATH`, else `/opt/omp/bin/omp` | the Oh My Pi to run |
@@ -4680,13 +4681,19 @@ Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
 Eight proofs call it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
-Each of the eight calls it in one line, through [`lib/rig.sh`](#librigsh)'s `require_loopback_dsn`, which all eight source:
+Each of the eight calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn`, which seven of them source through [`lib/rig.sh`](#librigsh) and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources on its own:
 
 ```sh
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The rationale is written once, above `require_loopback_dsn` in `lib/rig.sh`: the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
+The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
+Those eight are not every proof that writes such a server: `handoff-records.sh` creates and drops a database on the server its own `LEGION_TEST_PG_DSN` names, and calls neither helper.
+Five of the eight give every server they start the string `run_database_url` rebuilds, which libpq read back inside the helper.
+The other three — `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) — give Dispatch the caller's raw DSN, which Dispatch reads with pgx (`pgxpool.ParseConfig`, `packages/envoy/internal/dispatch/store/store.go:58`).
+Two facts keep those three safe: the pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own `pgconn/parse_url.go` is written to match libpq's URI parser, and all three run Dispatch with `DISPATCH_DEV_SIGNIN=1`, whose boot reads the host again with pgx and refuses one that is not loopback (`loopbackDatabase`, `packages/envoy/cmd/dispatch/main.go:1270-1284`).
+Nothing enforces that pin for this guard: it is `github.com/jackc/pgx/v5 v5.11.0` in `packages/envoy/go.mod` and `packages/daemon/go.mod`, `.github/dependabot.yml` covers the `github-actions` ecosystem alone, so no automation raises it, and no CI job runs `go mod tidy`, `go mod verify` or any other check that reads which pgx version is in use.
+`lib/loopback-dsn.sh`'s comment is the one text that ties the pin to this guard, so whoever raises pgx moves the safety of those three proofs and must drive the guard's own cases (`lib/loopback-dsn.test.ts`) again.
 
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
@@ -4706,7 +4713,7 @@ A WHATWG `URL` ends the user name at the last `@` and starts the query at the fi
 Measured with psql 18.6: the first names the port `5432@10.1.2.3`, which psql refuses before it connects anywhere, and the second connects to `localhost (127.0.0.1)`.
 
 `loopback-dsn.py NAME WHAT --dbname DATABASE` prints the connection string that gives a run its own database on the host the DSN names.
-The proofs reach it through `run_database_url` in [`lib/rig.sh`](#librigsh), which all eight source.
+The proofs reach it through `run_database_url` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh), which all eight source.
 The string is the keywords libpq reads from the DSN, with DATABASE as `dbname`, written as `dbname='…' host='…'`: the keyword/value form libpq and pgx read wherever they read a URL.
 It is rebuilt and not appended to.
 A `?dbname=` or `&dbname=` appended to the DSN's own text takes its separator from a `?` that can be inside the user name, where it starts no query, and it breaks a DSN whose text ends in a `?`.
@@ -4727,6 +4734,33 @@ There is no second, weaker check to fall back on.
 the DSN a run is given, `localhost` and `::1`, a `host=` parameter, a host name inside the user name, an empty `hostaddr=`, the two forms with a `?` inside the user name, a second `@` inside the authority, a `?` right before the `@`, a password of bytes that are no UTF-8 text, a `%68ost=` key, a Unix-socket directory, a newline before an `&host=`, a percent-encoded newline, a percent-encoded escape sequence and a percent-encoded C1 control in the host, two hosts, a `hostaddr`, a `service`, a remote host, a DSN with no host, a DSN libpq cannot parse, and an unset variable.
 It drives `run_database_url` over seven DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, the DSN a run is given, the two a WHATWG `URL` reads another host from, and one whose query sets `dbname` — and pins the string the rewrite answers with, which libpq has read back inside the helper.
 Two more cases pin a refusal of that mode: a password of bytes libpq reads as no UTF-8 text, and a percent-encoded newline in a password.
+
+## lib/loopback-dsn.sh
+
+The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
+Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
+[`lib/rig.sh`](#librigsh) sources it, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+
+```sh
+. "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
+```
+
+- `require_loopback_dsn VAR NAME DSN WHAT`
+
+  assigns VAR the host libpq reads from DSN, which is `127.0.0.1`, `localhost` or `::1`, and returns 0.
+  For a DSN [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses it assigns VAR that refusal line and returns 1, so each proof ends the run in its own words (`|| fail "$db_host"`, and `|| refuse "$database_url"` in `envoy-session-delivery.sh` and `|| fail "$database_url"` in `dispatch-session-settings.sh`, which give the guard's answer and the rewrite's the same variable).
+  NAME is the environment variable the caller read DSN from, and it starts the refusal, and WHAT is what the run does on that server, in a few words.
+  The comment above it is the one copy of why every proof asks libpq, which clients the proofs then write the server with, and what a raise of the pinned pgx moves
+
+- `run_database_url VAR NAME DSN DATABASE WHAT`
+
+  assigns VAR the connection string that names the run's own database DATABASE on the server DSN names, so nothing the run starts writes the database the caller's DSN itself names, and returns 0.
+  For a DSN the helper refuses it assigns VAR that refusal line and returns 1, the contract `require_loopback_dsn` has, so the caller chooses how the run ends.
+  [`lib/loopback-dsn.py`](#libloopback-dsnpy) rebuilds that string from the keywords libpq reads and reads it back before it prints it, and NAME, the variable the caller read DSN from, starts the refusal a DSN it will not take earns.
+  WHAT is what the run does on that server, in a few words.
+  This mode refuses every DSN the guard refuses, and a value the rebuilt string cannot carry as well, so [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it in their setup step, beside the guard and before any build or service
+
+Both helpers share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
 
 ## lib/held-port.py
 
@@ -5327,7 +5361,8 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Each of the eight proofs that writes a PostgreSQL server sources it too, for the two helpers below that read the caller's DSN; `envoy-session-delivery.sh` sources it for those two alone and keeps its own `await_port_file` and `keep_port`, which replace the rig's.
+Seven of the eight proofs that write a PostgreSQL server source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them.
+`envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
@@ -5346,19 +5381,6 @@ Each item below names a function, then what it does.
   It says what it waits for on entry and every 60 s.
   A poll that never returns would hold the wait, so callers bound their remote calls.
   A guard that writes `$evidence/pane-endpoint-violation.txt` makes the next wait abort, naming the violation
-
-- `require_loopback_dsn VAR NAME DSN WHAT`
-
-  assigns VAR the host libpq reads from DSN, which is `127.0.0.1`, `localhost` or `::1`, and returns 0.
-  For a DSN [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses it assigns VAR that refusal line and returns 1, so each proof ends the run in its own words (`|| fail "$db_host"`, and `|| refuse "$db_host"` in `envoy-session-delivery.sh`).
-  NAME is the environment variable the caller read DSN from, and it starts the refusal; WHAT is what the run does on that server, in a few words.
-  The comment above it in `lib/rig.sh` is the one copy of why every proof asks libpq, and why the clients it then writes the server with are libpq's own
-
-- `run_database_url VAR NAME DSN DATABASE WHAT`
-
-  assigns VAR the connection string that names the run's own database DATABASE on the server DSN names, so nothing the run starts writes the database the caller's DSN itself names.
-  [`lib/loopback-dsn.py`](#libloopback-dsnpy) rebuilds that string from the keywords libpq reads and reads it back before it prints it, and NAME, the variable the caller read DSN from, starts the refusal a DSN it will not take earns.
-  WHAT is what the run does on that server, in a few words
 
 - `start_process NAME CMD…`
 

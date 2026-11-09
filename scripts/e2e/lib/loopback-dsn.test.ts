@@ -4,9 +4,9 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
-// last block drives lib/rig.sh's run_database_url, which the proofs call, and pins the
-// connection string it answers with. A host with no python3 or no libpq skips them, naming what
-// it lacks.
+// last block drives lib/loopback-dsn.sh's run_database_url, which the proofs call and lib/rig.sh
+// sources, and pins the connection string it answers with. A host with no python3 or no libpq
+// skips them, naming what it lacks.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const helper = join(import.meta.dir, "loopback-dsn.py");
@@ -30,7 +30,8 @@ function guard(dsn: string): { code: number; host: string; refusal: string } {
 }
 
 /** The shell a run_database_url case runs: the rig as a proof sources it, with the note and the
- *  fail every proof defines. $1 is the checkout, and $2 to $5 are the function's own arguments. */
+ *  fail every proof defines, and the `|| fail` each caller of the function writes. $1 is the
+ *  checkout, and $2 to $5 are the function's own arguments. */
 const rig = `set -euo pipefail
 note() { :; }
 fail() { echo "$*" >&2; exit 1; }
@@ -39,7 +40,7 @@ evidence=''
 work=''
 timeout_hook=''
 . "$root/scripts/e2e/lib/rig.sh"
-run_database_url url "$2" "$3" "$4" "$5"
+run_database_url url "$2" "$3" "$4" "$5" || fail "$url"
 printf '%s\\n' "$url"
 `;
 
@@ -297,7 +298,7 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
   });
 });
 
-describe.skipIf(skip)("lib/rig.sh's run_database_url names the run's own database", () => {
+describe.skipIf(skip)("lib/loopback-dsn.sh's run_database_url names the run's own database", () => {
   const database = "ppd_7_head_1_1";
   // Each row is a DSN the guard takes, the connection string the function answers with, and the
   // host the DSN names. The first two hold a `?` inside the user name, where libpq starts no

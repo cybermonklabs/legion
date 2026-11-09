@@ -166,7 +166,8 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# require_loopback_dsn in lib/rig.sh says why a caller of the loopback guard clears these three.
+# require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears these
+# three.
 # The `compgen -e` sweep further down makes the session's environment, not this shell's.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 

@@ -72,7 +72,7 @@ github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
-# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in

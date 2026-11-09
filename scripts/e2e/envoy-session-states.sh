@@ -109,7 +109,7 @@ pg_dsn=${ENVOY_SESSION_STATES_PG_DSN:-}
 wanted=${ENVOY_SESSION_STATES_CHECKS:-}
 evidence=${ENVOY_SESSION_STATES_EVIDENCE_DIR:-}
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
-# scripts/e2e/lib/rig.sh says why a caller of the loopback guard clears the three.
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
