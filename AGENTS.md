@@ -88,7 +88,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **TypeScript** on **Bun** runtime — the version `.bun-version` pins.
   Every job installs it through `.github/actions/setup-bun`, and `packages/daemon/docker/worker.Dockerfile`'s `ARG BUN_VERSION` default must equal it, since no build passes `--build-arg` and its notices stage fetches Bun's licence at that version.
-  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves.
+  Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves, with the three `bun-*` rows of `.github/ci-tools.yaml` moving in that second commit beside `.bun-version`.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
 - **bun.lock** — `ci.yaml`'s `lint` job holds the step `Check bun.lock agrees with the workspace manifests`, which runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
@@ -144,6 +144,18 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
   on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
   A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
+
+- **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
+  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own.
+  `.github/scripts/ci-tools.sh` is the one fetch helper every install goes through: it tries the primary, then the second source, and leaves only bytes of the row's digest behind.
+  A transport failure of the primary sends it to the second source and a digest mismatch does not, because a checksum mismatch is a supply-chain signal rather than an outage, and every exit names the source that served the bytes.
+  Bun's second source is the npm package upstream publishes the same binary in, which needs no copy; crane, changie, mise and jj take a copy in the same package the images live in, addressed by the digest the install checks.
+  `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
+  A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
+  `.github/scripts/check-ci-tools.sh` is the gate, a step of `lint`: it holds each row to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile), refuses a release-asset URL under `.github/actions` or `.github/workflows` of a repository a row already covers, or of `oven-sh/bun`, and an npm URL under a scope a row names, unless the URL is exactly a row's own, and refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob.
+  It does not see a release asset of a repository no row covers, so a new tool installed from a GitHub release with no row and no second source passes it (dispatch://INFRA-1974).
+  `ci.yaml`'s `tool-fallback` job is the live proof: it faults GitHub's release hosts for a whole job, runs the merge base's four installs as the negative control and the head's four beside them, and drives eight corrupted payloads to read every refusal.
+  Raising a tool is one commit, unlike an image: a call site names a row rather than a digest, so a second row of the same tool has no name a call site can use, and a row that disagrees with its pin installs one version and verifies another, which is what the gate refuses; Bun is the exception that takes two, and its three `bun-*` rows move in the second commit, with `.bun-version`; `tool-fallback` needs `ci-images`, so the copy is filled before `tool-fallback` reads it, and the one window left is a raise merged while the asset is down and the copy is still cold, where the tool has the single source it has today
 
 ## Commands
 
@@ -962,9 +974,9 @@ A close of an item of the wait — a tree question, or an approval request of th
 — moves the wait to what is still with the person, and ends it only when nothing is;
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
-An answered root goes to the front of the waiting line, among the issues whose work came back and ahead of every issue whose first phase has yet to start, oldest answer first, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
+An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
 the resume starts no phase worker, so a root whose design gate has already opened holds no slot and resumes at once however full the cap is, while one whose gate has never opened — its architect still writing the spec, which is work the cap counts — resumes at the next free slot;
-a phase that resume then starts waits for a slot of its own, at the front of the line;
+a phase that resume then starts waits for a slot of its own, the root's own first phase among the issues whose work came back, oldest first, by the moment its design gate opened, and a released child of it behind them, by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.
