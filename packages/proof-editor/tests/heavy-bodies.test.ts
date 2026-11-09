@@ -11,10 +11,12 @@
  * 1. What each shape parses to, and what it costs. Every shape, at the longest body a caller may
  *    write, parses in the read-only engine and in the default mode to the text and the nesting
  *    its row names, within `parseCpuBudgetMs` of CPU time, and at a cost that grows no faster
- *    than the body does: a row reads the shape at its full size and at an eighth of it, in CPU
- *    time rather than wall time (tests/cpu-time.ts). The one shape the default mode refuses is
- *    read the same way and then asked for its refusal. Without the dependency patches the
- *    lazy-line and bracket shapes cost 10-20 s, and about half a second with them.
+ *    than its growing dimension does: a row reads the shape at its full size and at an eighth of
+ *    that dimension, in CPU time rather than wall time (tests/cpu-time.ts). The one shape the
+ *    default mode refuses is read the same way and then asked for its refusal. With
+ *    `patches/micromark@4.0.2.patch` reverted the two lazy shapes cost 35,030 to 55,440 ms of CPU
+ *    time, against 500 to 840 ms with it; with `patches/micromark-core-commonmark@2.0.3.patch`
+ *    reverted the two bracket shapes cost 18,230 to 37,460 ms, against 150 to 380 ms with it.
  * 2. The nesting bound, at the boundaries the document service draws them at
  *    (`maxNesting`, packages/envoy/internal/dispatch/pmdoc/nesting.go: a quote, a list, a list
  *    item, a typed block and a footnote definition each count one). A list opener opens a list and
@@ -32,7 +34,12 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 import { serverBlockSchema } from "./block-schema-fixture";
-import { growthStep, parsedWithinCostBounds, refusalWithinCostBounds } from "./cpu-time";
+import {
+  type CostShape,
+  measuredRowCeilingMs,
+  parsedWithinCostBounds,
+  refusalWithinCostBounds,
+} from "./cpu-time";
 
 /** The longest comment, message or broadcast body a caller may write, in characters. */
 const bodyCap = 32_000;
@@ -64,21 +71,16 @@ const nest49 = nestedItems(maxListNesting - 1);
 const nest100 = nestedItems(maxBlockNesting);
 
 /**
- * A shape, as a reader is sent it and as a row measures it.
+ * A shape, as a reader is sent it and as a row measures it: `CostShape` of tests/cpu-time.ts,
+ * with what the row reads on the parse.
  *
- * `grow` builds the shape at a size of the dimension whose growth costs: the items of a list, the
- * lines after a marker, the brackets of a run, the blank lines under a nesting. A row builds the
- * shape at `full` and at an eighth of that size, so the two parses differ by their input and by
- * nothing else. The nesting of the two nested shapes is held at its depth while their blank lines
- * shrink, because what costs there is the blank lines times the blocks open above them; shrinking
- * the whole body instead drops the blank lines and measures another shape.
+ * `CostShape.grow` builds the shape at a size of the dimension whose growth costs: the items of a
+ * list, the lines after a marker, the brackets of a run, the blank lines under a nesting. The
+ * nesting of the two nested shapes is held at its depth while their blank lines shrink, because
+ * what costs there is the blank lines times the blocks open above them; shrinking the whole body
+ * instead drops the blank lines and measures another shape.
  */
-type HeavyShape = {
-  name: string;
-  /** The shape at `size` of its growing dimension. */
-  grow: (size: number) => string;
-  /** The size at which the body is the longest a caller may write. */
-  full: number;
+type HeavyShape = CostShape & {
   /** What a parse of the full body produces, in a mode that reads it. */
   expectDoc: (doc: ProseMirrorNode) => void;
   /** What the default mode refuses the full body with, for the shape it refuses. */
@@ -191,48 +193,51 @@ function depthOf(node: ProseMirrorNode, type: string): number {
   return node.type.name === type ? deepest + 1 : deepest;
 }
 
-// Every `300_000` in this file, on the rows below and on the nesting-bound rows after them, is a
-// hang guard, not a bound on work: on bun 1.4.4 a per-test limit cannot interrupt a synchronous
-// body, and is reported once that body returns, so what ends a hang is the `dispatch-ui` job's
-// `timeout-minutes: 15` in .github/workflows/ci.yaml. `parseCpuBudgetMs` is the bound on work.
 for (const shape of shapes) {
-  const smallBody = shape.grow(Math.floor(shape.full / growthStep));
-  const fullBody = shape.grow(shape.full);
   const refused = shape.refusedInDefaultMode;
 
-  test(`the read-only engine parses ${shape.name} at a cost proportional to its length`, async () => {
-    const proof = await readOnlyProof();
-    const doc = parsedWithinCostBounds(
-      `the read-only engine's parse of ${shape.name}`,
-      (body) => proof.parseMarkdown(body),
-      smallBody,
-      fullBody
-    );
-    shape.expectDoc(doc);
-  }, 300_000);
-
-  if (refused === undefined) {
-    test(`the default mode parses ${shape.name} at a cost proportional to its length`, async () => {
-      const proof = await defaultProof();
+  test(
+    `the read-only engine parses ${shape.name} at a cost proportional to its length`,
+    async () => {
+      const proof = await readOnlyProof();
       const doc = parsedWithinCostBounds(
-        `the default mode's parse of ${shape.name}`,
-        (body) => proof.parseMarkdown(body),
-        smallBody,
-        fullBody
+        `the read-only engine's parse of ${shape.name}`,
+        shape,
+        (body) => proof.parseMarkdown(body)
       );
       shape.expectDoc(doc);
-    }, 300_000);
+    },
+    measuredRowCeilingMs
+  );
+
+  if (refused === undefined) {
+    test(
+      `the default mode parses ${shape.name} at a cost proportional to its length`,
+      async () => {
+        const proof = await defaultProof();
+        const doc = parsedWithinCostBounds(
+          `the default mode's parse of ${shape.name}`,
+          shape,
+          (body) => proof.parseMarkdown(body)
+        );
+        shape.expectDoc(doc);
+      },
+      measuredRowCeilingMs
+    );
   } else {
-    test(`the default mode refuses ${shape.name} at a cost proportional to its length`, async () => {
-      const proof = await defaultProof();
-      const refusal = refusalWithinCostBounds(
-        `the default mode's refusal of ${shape.name}`,
-        (body) => proof.parseMarkdown(body),
-        smallBody,
-        fullBody
-      );
-      expect(refusal.message).toMatch(refused);
-    }, 300_000);
+    test(
+      `the default mode refuses ${shape.name} at a cost proportional to its length`,
+      async () => {
+        const proof = await defaultProof();
+        refusalWithinCostBounds(
+          `the default mode's refusal of ${shape.name}`,
+          shape,
+          (body) => proof.parseMarkdown(body),
+          refused
+        );
+      },
+      measuredRowCeilingMs
+    );
   }
 }
 
@@ -243,87 +248,113 @@ const modes = [
 ] as const;
 
 for (const [mode, proofOf] of modes) {
-  test(`${mode} nests 50 list markers and reads the 51st as text`, async () => {
-    const proof = await proofOf();
-    const deepest = proof.parseMarkdown(`${"- ".repeat(maxListNesting)}x`);
-    expect(depthOf(deepest, "bullet_list")).toBe(maxListNesting);
-    expect(deepest.textContent).toBe("x");
+  test(
+    `${mode} nests 50 list markers and reads the 51st as text`,
+    async () => {
+      const proof = await proofOf();
+      const deepest = proof.parseMarkdown(`${"- ".repeat(maxListNesting)}x`);
+      expect(depthOf(deepest, "bullet_list")).toBe(maxListNesting);
+      expect(deepest.textContent).toBe("x");
 
-    const over = proof.parseMarkdown(`${"- ".repeat(maxListNesting + 1)}x`);
-    expect(depthOf(over, "bullet_list")).toBe(maxListNesting);
-    expect(over.textContent).toBe("- x");
-  }, 300_000);
+      const over = proof.parseMarkdown(`${"- ".repeat(maxListNesting + 1)}x`);
+      expect(depthOf(over, "bullet_list")).toBe(maxListNesting);
+      expect(over.textContent).toBe("- x");
+    },
+    measuredRowCeilingMs
+  );
 
-  test(`${mode} nests 100 quotes and reads the 101st as text`, async () => {
-    const proof = await proofOf();
-    const deepest = proof.parseMarkdown(`${"> ".repeat(maxQuoteNesting)}x`);
-    expect(depthOf(deepest, "blockquote")).toBe(maxQuoteNesting);
-    expect(deepest.textContent).toBe("x");
+  test(
+    `${mode} nests 100 quotes and reads the 101st as text`,
+    async () => {
+      const proof = await proofOf();
+      const deepest = proof.parseMarkdown(`${"> ".repeat(maxQuoteNesting)}x`);
+      expect(depthOf(deepest, "blockquote")).toBe(maxQuoteNesting);
+      expect(deepest.textContent).toBe("x");
 
-    const over = proof.parseMarkdown(`${"> ".repeat(maxQuoteNesting + 1)}x`);
-    expect(depthOf(over, "blockquote")).toBe(maxQuoteNesting);
-    expect(over.textContent).toBe("> x");
-  }, 300_000);
+      const over = proof.parseMarkdown(`${"> ".repeat(maxQuoteNesting + 1)}x`);
+      expect(depthOf(over, "blockquote")).toBe(maxQuoteNesting);
+      expect(over.textContent).toBe("> x");
+    },
+    measuredRowCeilingMs
+  );
 
-  test(`${mode} nests 33 quote-and-list levels and reads the 34th list as text`, async () => {
-    const proof = await proofOf();
-    const deepest = proof.parseMarkdown(`${"> - ".repeat(maxAlternatingNesting)}x`);
-    expect(depthOf(deepest, "blockquote")).toBe(maxAlternatingNesting);
-    expect(depthOf(deepest, "bullet_list")).toBe(maxAlternatingNesting);
-    expect(deepest.textContent).toBe("x");
+  test(
+    `${mode} nests 33 quote-and-list levels and reads the 34th list as text`,
+    async () => {
+      const proof = await proofOf();
+      const deepest = proof.parseMarkdown(`${"> - ".repeat(maxAlternatingNesting)}x`);
+      expect(depthOf(deepest, "blockquote")).toBe(maxAlternatingNesting);
+      expect(depthOf(deepest, "bullet_list")).toBe(maxAlternatingNesting);
+      expect(deepest.textContent).toBe("x");
 
-    // The 34th quote stands at the bound's hundredth block; the list its line would open next
-    // would stand past it, so the rest of the line is that quote's text.
-    const over = proof.parseMarkdown(`${"> - ".repeat(maxAlternatingNesting + 1)}x`);
-    expect(depthOf(over, "blockquote")).toBe(maxAlternatingNesting + 1);
-    expect(depthOf(over, "bullet_list")).toBe(maxAlternatingNesting);
-    expect(over.textContent).toBe("- x");
-  }, 300_000);
+      // The 34th quote stands at the bound's hundredth block; the list its line would open next
+      // would stand past it, so the rest of the line is that quote's text.
+      const over = proof.parseMarkdown(`${"> - ".repeat(maxAlternatingNesting + 1)}x`);
+      expect(depthOf(over, "blockquote")).toBe(maxAlternatingNesting + 1);
+      expect(depthOf(over, "bullet_list")).toBe(maxAlternatingNesting);
+      expect(over.textContent).toBe("- x");
+    },
+    measuredRowCeilingMs
+  );
 
-  test(`${mode} opens a typed block inside 99 blocks and reads one inside 100 as text`, async () => {
-    const proof = await proofOf();
-    const fence = [":::callout{}", "a", ":::"];
-    const insideQuotes = "> ".repeat(maxBlockNesting - 1);
-    const inside = proof.parseMarkdown(`${fence.map((line) => insideQuotes + line).join("\n")}\n`);
-    expect(depthOf(inside, "blockquote")).toBe(maxBlockNesting - 1);
-    expect(depthOf(inside, "callout")).toBe(1);
-    expect(inside.textContent).toBe("a");
+  test(
+    `${mode} opens a typed block inside 99 blocks and reads one inside 100 as text`,
+    async () => {
+      const proof = await proofOf();
+      const fence = [":::callout{}", "a", ":::"];
+      const insideQuotes = "> ".repeat(maxBlockNesting - 1);
+      const inside = proof.parseMarkdown(
+        `${fence.map((line) => insideQuotes + line).join("\n")}\n`
+      );
+      expect(depthOf(inside, "blockquote")).toBe(maxBlockNesting - 1);
+      expect(depthOf(inside, "callout")).toBe(1);
+      expect(inside.textContent).toBe("a");
 
-    const atBound = "> ".repeat(maxBlockNesting);
-    const over = proof.parseMarkdown(`${fence.map((line) => atBound + line).join("\n")}\n`);
-    expect(depthOf(over, "blockquote")).toBe(maxBlockNesting);
-    expect(depthOf(over, "callout")).toBe(0);
-    expect(over.textContent).toContain(":::callout{}");
-  }, 300_000);
+      const atBound = "> ".repeat(maxBlockNesting);
+      const over = proof.parseMarkdown(`${fence.map((line) => atBound + line).join("\n")}\n`);
+      expect(depthOf(over, "blockquote")).toBe(maxBlockNesting);
+      expect(depthOf(over, "callout")).toBe(0);
+      expect(over.textContent).toContain(":::callout{}");
+    },
+    measuredRowCeilingMs
+  );
 
-  test(`${mode} keeps every line past the bound as the text it is`, async () => {
-    const proof = await proofOf();
-    const past = 5;
-    const lines: string[] = [];
-    for (let level = 1; level <= maxListNesting + past; level++) {
-      // Each line past the bound stands at the indentation of the innermost item the bound allows,
-      // so every one of them is a list opener the bound refuses rather than a deeper item.
-      const indent = Math.min(level, maxListNesting + 1) - 1;
-      lines.push(`${"  ".repeat(indent)}- level ${level} words`);
-    }
-    const doc = proof.parseMarkdown(`${lines.join("\n")}\n`);
+  test(
+    `${mode} keeps every line past the bound as the text it is`,
+    async () => {
+      const proof = await proofOf();
+      const past = 5;
+      const lines: string[] = [];
+      for (let level = 1; level <= maxListNesting + past; level++) {
+        // Each line past the bound stands at the indentation of the innermost item the bound allows,
+        // so every one of them is a list opener the bound refuses rather than a deeper item.
+        const indent = Math.min(level, maxListNesting + 1) - 1;
+        lines.push(`${"  ".repeat(indent)}- level ${level} words`);
+      }
+      const doc = proof.parseMarkdown(`${lines.join("\n")}\n`);
 
-    expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
-    for (let level = 1; level <= maxListNesting + past; level++) {
-      expect(doc.textContent).toContain(`level ${level} words`);
-    }
-    // The refused markers are text too, not a marker the reader never sees.
-    expect(doc.textContent).toContain(`- level ${maxListNesting + 1} words`);
-  }, 300_000);
+      expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
+      for (let level = 1; level <= maxListNesting + past; level++) {
+        expect(doc.textContent).toContain(`level ${level} words`);
+      }
+      // The refused markers are text too, not a marker the reader never sees.
+      expect(doc.textContent).toContain(`- level ${maxListNesting + 1} words`);
+    },
+    measuredRowCeilingMs
+  );
 
-  test(`${mode} reads a chain of 1,000 list markers as text past the bound`, async () => {
-    // Without the bound this chain overflows the stack of Milkdown's parser, which is a page the
-    // reader loses rather than a body they cannot read.
-    const proof = await proofOf();
-    const doc = proof.parseMarkdown(`${"- ".repeat(1_000)}x`);
-    expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
-    expect(doc.textContent).toBe(`${"- ".repeat(1_000 - maxListNesting)}x`);
-  }, 300_000);
+  test(
+    `${mode} reads a chain of 1,000 list markers as text past the bound`,
+    async () => {
+      // Without the bound this chain overflows the stack of Milkdown's parser, which is a page the
+      // reader loses rather than a body they cannot read.
+      const proof = await proofOf();
+      const doc = proof.parseMarkdown(`${"- ".repeat(1_000)}x`);
+      expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
+      expect(doc.textContent).toBe(`${"- ".repeat(1_000 - maxListNesting)}x`);
+    },
+    measuredRowCeilingMs
+  );
 }
 
 /** An mdast node, as much of one as the bare processor's tree is read through here. */
@@ -346,19 +377,23 @@ function mdastText(node: MdastNode): string {
   return node.children.map(mdastText).join("");
 }
 
-test("the bound holds through a bare remark-parse processor", async () => {
-  // Loading the headless engine loads the module that holds micromark's own `list` and
-  // `blockQuote` to the bound. The processor below shares those two objects with every parser in
-  // this tree - unless a second copy of `micromark-core-commonmark` is installed, which is what
-  // this test fails on.
-  await readOnlyProof();
-  const processor = unified().use(remarkParse);
+test(
+  "the bound holds through a bare remark-parse processor",
+  async () => {
+    // Loading the headless engine loads the module that holds micromark's own `list` and
+    // `blockQuote` to the bound. The processor below shares those two objects with every parser in
+    // this tree - unless a second copy of `micromark-core-commonmark` is installed, which is what
+    // this test fails on.
+    await readOnlyProof();
+    const processor = unified().use(remarkParse);
 
-  const items = processor.parse(`${"- ".repeat(maxListNesting + 1)}x`) as unknown as MdastNode;
-  expect(mdastDepthOf(items, "list")).toBe(maxListNesting);
-  expect(mdastText(items)).toBe("- x");
+    const items = processor.parse(`${"- ".repeat(maxListNesting + 1)}x`) as unknown as MdastNode;
+    expect(mdastDepthOf(items, "list")).toBe(maxListNesting);
+    expect(mdastText(items)).toBe("- x");
 
-  const quotes = processor.parse(`${"> ".repeat(maxQuoteNesting + 1)}x`) as unknown as MdastNode;
-  expect(mdastDepthOf(quotes, "blockquote")).toBe(maxQuoteNesting);
-  expect(mdastText(quotes)).toBe("> x");
-}, 300_000);
+    const quotes = processor.parse(`${"> ".repeat(maxQuoteNesting + 1)}x`) as unknown as MdastNode;
+    expect(mdastDepthOf(quotes, "blockquote")).toBe(maxQuoteNesting);
+    expect(mdastText(quotes)).toBe("> x");
+  },
+  measuredRowCeilingMs
+);

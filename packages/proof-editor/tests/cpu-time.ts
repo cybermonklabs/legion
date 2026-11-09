@@ -45,10 +45,11 @@ export const linearSlack = 4;
  *
  * The highest healthy reading measured in this pod is 3,570 ms ("49 items nested by indentation
  * then blank lines", default mode, under 12 busy loops), so this carries 3.4 times of slack for a
- * slower machine. The one broken parser measured costs 205,220 ms, which clears the budget 17
- * times. It is a bound on work, not a hang guard: a parse that hangs is ended by the CI job's
- * `timeout-minutes`, never by this number. Both readings were taken with `cpuTimeOf` below, the
- * port of `packages/envoy/internal/cputest`.
+ * slower machine. The nearest break on the other side is
+ * `patches/micromark-core-commonmark@2.0.3.patch` reverted, which cost 18,230 ms of CPU time in
+ * one round of control measurements and 24,750 ms in another: 1.5 to 2 times this budget. That
+ * margin is the room the budget's size rests on. Every reading was taken with `cpuTimeOf` below,
+ * the port of `packages/envoy/internal/cputest`.
  */
 const parseCpuBudgetMs = 12_000;
 
@@ -62,6 +63,31 @@ const parseCpuBudgetMs = 12_000;
 // - The slack is not a tight bound. The growth check reads two measurements, each wrong by up to
 //   4 per cent from the clock (see `windowSteps`) before the machine's own noise, and the slack
 //   of 4 is the room the healthy ratio of 14.46 above needs, against the bound of 32.
+
+/**
+ * The wall-clock ceiling every row of tests/heavy-bodies.test.ts carries, and the two measured
+ * rows of tests/nested-directive.test.ts, in place of bun's own default of 5,000 ms.
+ *
+ * On bun 1.4.4 a per-test limit does not interrupt a synchronous body: it is reported once that
+ * body returns, so a row whose body ran past this fails on it afterwards. It is a ceiling set far
+ * above any healthy row, not a hang guard. Under the calibrated load of 12 busy loops the slowest
+ * of these rows, "the default mode parses 49 items nested by indentation then blank lines", took
+ * 64.4 s of wall time, and the next three took 61.3 s, 54.8 s and 52.4 s, so this ceiling is about
+ * 4.7 times the slowest (bun's junit reporter, one loaded run of the two files, 2026-11-09). What
+ * ends a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
+ */
+export const measuredRowCeilingMs = 300_000;
+
+/**
+ * The wall-clock ceiling the four rows of tests/nested-directive.test.ts that read no cost carry,
+ * in place of bun's own default of 5,000 ms.
+ *
+ * It is a ceiling of the same kind as `measuredRowCeilingMs` above: reported once the row's body
+ * returns, rather than interrupting it. Under the same load of 12 busy loops those four rows cost
+ * 0.13 s to 0.73 s of wall time, so this ceiling is about 82 times the dearest of them. What ends
+ * a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
+ */
+export const plainRowCeilingMs = 60_000;
 
 /**
  * How many changes of the CPU clock `cpuClockStepMs` waits for. A sample that also counts another
@@ -119,23 +145,26 @@ function measureCpuClockStepMs(): number {
 }
 
 /**
- * What a throw inside a measured window costs. `cpuTimeOf` gives the throw back to its caller
- * rather than swallowing it, so a row can assert the cost of a parse that refuses its input and
- * then assert the refusal itself.
+ * One side of a growth step, read: what one parse of that side cost, and what it threw where it
+ * threw.
+ *
+ * The cost and the throw come back together, as `Measure` in `packages/envoy/internal/cputest`
+ * returns its duration beside its error, so a row can assert the cost of a parse that refuses its
+ * input and then assert the refusal itself. A break can make a parse both dearer and throwing, and
+ * what the row is for is the cost (INFRA-1629).
  */
-class CpuTimedError extends Error {
+type CostReading = {
   /** The CPU time one run cost: the window the runs filled, divided by those runs. */
   readonly cpuMs: number;
-
-  constructor(cpuMs: number, cause: unknown) {
-    super(`the work threw after ${Math.round(cpuMs)} ms of CPU time`, { cause });
-    this.name = "CpuTimedError";
-    this.cpuMs = cpuMs;
-  }
-}
+  /** Whether a run threw. A run that throws `undefined` has thrown too, which is why this stands
+   *  beside `thrown` rather than being read off it. */
+  readonly threw: boolean;
+  /** The last throw a run raised, `undefined` where no run threw. */
+  readonly thrown: unknown;
+};
 
 /**
- * The CPU time one run of `work` costs, in milliseconds.
+ * The CPU time one run of `work` costs, in milliseconds, with the throw where `work` threw.
  *
  * It runs `work` once in a timed window, and runs it more times in the next window until a window
  * lasts `windowSteps` clock steps, then divides that window by its runs. A shorter window is
@@ -144,38 +173,32 @@ class CpuTimedError extends Error {
  * is further, so a run a little slower than this window's average still lands the next window past
  * the mark.
  *
- * A run that throws does not end the window. The measurement keeps the throw aside, runs the rest
- * of the window, and raises a `CpuTimedError` carrying the window's per-run cost as its `cpuMs`
- * and the throw it kept as its `cause`. The parses these rows measure refuse their input every
- * time, so every run of such a window throws and the window measures exactly the work the refusal
- * costs. The window is what makes the reading steady: one unrepeated run of a 20 ms refusal reads
- * as 10, 20 or 30 ms on this pod's 10 ms clock, an error of up to 50 per cent on the baseline of
- * a growth check. A throw from a window too short to keep is kept as well, so a work that throws
- * once and returns on every later run reaches its caller as a throw, never as a plain reading.
+ * A run that throws does not end the window: the throw is kept, the rest of the window runs, and
+ * the reading carries the window's per-run cost beside the last throw. The parses these rows
+ * measure refuse their input every time, so every run of such a window throws and the window
+ * measures exactly the work the refusal costs. The window is what makes the reading steady: one
+ * unrepeated run of a 20 ms refusal reads as 10, 20 or 30 ms on this pod's 10 ms clock, an error
+ * of up to 50 per cent on the baseline of a growth check. A throw from a window too short to keep
+ * is kept as well, so a work that throws once and returns on every later run is read as a work
+ * that threw, never as a plain cost.
  */
-function cpuTimeOf(work: () => unknown): number {
+function cpuTimeOf(work: () => unknown): CostReading {
   const want = windowSteps * cpuClockStepMs();
   let threw = false;
   let thrown: unknown;
   let runs = 1;
   for (;;) {
     const started = processCpuMs();
-    // The runs sit inside one `try`, as they do for a work that never throws; a throw re-enters
-    // it at the next run, so the window goes on and a work that never throws costs no more.
-    for (let run = 0; run < runs; ) {
+    for (let run = 0; run < runs; run++) {
       try {
-        for (; run < runs; run++) work();
+        work();
       } catch (cause) {
         threw = true;
         thrown = cause;
-        run++;
       }
     }
     const took = processCpuMs() - started;
-    if (took >= want) {
-      if (threw) throw new CpuTimedError(took / runs, thrown);
-      return took / runs;
-    }
+    if (took >= want) return { cpuMs: took / runs, threw, thrown };
     if (took <= 0) {
       runs *= 10;
       continue;
@@ -185,70 +208,35 @@ function cpuTimeOf(work: () => unknown): number {
 }
 
 /**
- * The least of `defaultSamples` readings of `cpuTimeOf`.
+ * The least cost of `defaultSamples` readings of `cpuTimeOf`, with the last throw of them.
  *
  * Both sides of a growth check take the same number of samples. Sampling the small side more often
  * than the large one biases the baseline low under bursty load and inflates the ratio, which is the
  * defect `linear_test.go`'s own `sampleCount` comment records from its third round. A work that
- * throws is sampled as many times as any other, and raises a `CpuTimedError` carrying the least of
- * those readings and the throw of the last sample.
+ * throws is sampled as many times as any other.
  *
  * A reading already past `parseCpuBudgetMs` is not read again: a second reading cannot bring it
  * under the budget, and taking one doubles the cost of the failure these rows exist to catch. With
- * the nesting bound of src/block-nesting.ts neutralised, `a chain of 15,999 list markers on one
- * line` costs 205,220 ms of CPU time read-only, so a second reading of it would carry that row
- * past its own 300,000 ms hang guard and report a timeout where the budget should report a clean
+ * the nesting bound of src/block-nesting.ts raised past the shape, `a chain of 15,999 list markers
+ * on one line` costs 235,560 ms of CPU time read-only, so a second reading of it would carry that
+ * row past `measuredRowCeilingMs` and report that ceiling where the budget should report a clean
  * failure. Every reading under the budget, which is every healthy row, is read as many times as
  * before, so the symmetry above is untouched.
  */
-function fastestCpuTimeOf(work: () => unknown): number {
+function fastestCpuTimeOf(work: () => unknown): CostReading {
   let best = Number.POSITIVE_INFINITY;
-  let thrown: CpuTimedError | undefined;
+  let threw = false;
+  let thrown: unknown;
   for (let sample = 0; sample < defaultSamples; sample++) {
-    try {
-      const took = cpuTimeOf(work);
-      if (took < best) best = took;
-    } catch (error) {
-      if (!(error instanceof CpuTimedError)) throw error;
-      if (error.cpuMs < best) best = error.cpuMs;
-      thrown = error;
+    const reading = cpuTimeOf(work);
+    if (reading.cpuMs < best) best = reading.cpuMs;
+    if (reading.threw) {
+      threw = true;
+      thrown = reading.thrown;
     }
     if (best > parseCpuBudgetMs) break;
   }
-  if (thrown !== undefined) throw new CpuTimedError(best, thrown.cause);
-  return best;
-}
-
-/**
- * One side of a growth step, read: what one parse of that side cost, and what it threw where it
- * threw. `costReadingOf` is the only way this module reads a side, so both helpers below assert
- * the cost of a side before they report its throw.
- */
-type CostReading = {
-  /** The CPU time one run of the parse cost, in milliseconds. */
-  readonly cpuMs: number;
-  /** The throw the measurement kept, with the parse's own throw as its `cause`; `undefined`
-   *  where every run of the parse returned. */
-  readonly thrown: CpuTimedError | undefined;
-};
-
-/**
- * Reads one side of a growth step: the cost always, and the throw where the parse threw.
- *
- * `fastestCpuTimeOf` raises a `CpuTimedError` carrying both the least reading and the throw, so a
- * row that called it directly would lose the reading the moment the parse threw. A break can make
- * a parse both dearer and throwing, and what the row is for is the cost, so the cost comes back
- * here as a value and the throw is left for the row to report after its assertions (INFRA-1629).
- * A throw that is not a `CpuTimedError` comes from the measurement itself, not from the parse,
- * and is left on its way out.
- */
-function costReadingOf(parse: () => unknown): CostReading {
-  try {
-    return { cpuMs: fastestCpuTimeOf(parse), thrown: undefined };
-  } catch (error) {
-    if (!(error instanceof CpuTimedError)) throw error;
-    return { cpuMs: error.cpuMs, thrown: error };
-  }
+  return { cpuMs: best, threw, thrown };
 }
 
 /**
@@ -269,88 +257,126 @@ export function costGrewTooFast(
 
 /**
  * Fails when `full`, the cost at the full size, grew more than `linearSlack` times faster than the
- * input did at `growthStep`. It reports what `costGrewTooFast` decided, as `growsLinearly` in
- * `linear_test.go` reports `growthVerdict`'s. Both costs are in milliseconds.
+ * shape's growing dimension did at `growthStep`. It reports what `costGrewTooFast` decided, as
+ * `growsLinearly` in `linear_test.go` reports `growthVerdict`'s. Both costs are in milliseconds.
  */
 export function expectCostGrowsLinearly(name: string, small: number, full: number): void {
   const bound = linearSlack * growthStep;
   const ratio = full / small;
   const reading = `${Math.round(full)} ms at the full size against ${Math.round(small)} ms`;
-  // The small side's share of the full size, read from `growthStep` so that the sentence cannot
-  // contradict the step it reports.
+  // The small side's share of the growing dimension, read from `growthStep` so that the sentence
+  // cannot contradict the step it reports.
   const fraction = `1/${growthStep}`;
-  const grew = `at ${fraction} of it, ${ratio.toFixed(1)} times for an input ${growthStep} times`;
-  const message = `${name} cost ${reading} ${grew} larger (at most ${bound} times)`;
-  expect(costGrewTooFast(small, full), message).toBe(false);
+  const grew = `at ${fraction} of its growing dimension, ${ratio.toFixed(1)} times`;
+  const larger = `for a dimension ${growthStep} times larger (at most ${bound} times)`;
+  expect(costGrewTooFast(small, full), `${name} cost ${reading} ${grew} ${larger}`).toBe(false);
 }
 
 /**
- * What a parse produced at the full size, once that parse has been read at both sizes and found
- * to cost less than `parseCpuBudgetMs` and to grow no faster than its input did at `growthStep`.
+ * A shape a row measures, at the two sizes of a growth step.
+ *
+ * `grow` builds the shape at a size of the dimension whose growth costs. The helpers below build
+ * the shape at `full` and at an eighth of that size themselves, so the growth check's bound of
+ * `linearSlack * growthStep` is the bound of the step the two sizes actually make, which a caller
+ * doing its own arithmetic could not promise. `growsLinearly` in `linear_test.go` takes its sizes
+ * the same way. tests/heavy-bodies.test.ts's `HeavyShape` and tests/nested-directive.test.ts's
+ * `DirectiveBody` both extend this.
+ */
+export type CostShape = {
+  /** What the shape is, as a row's name says it. */
+  name: string;
+  /** The shape at `size` of its growing dimension. */
+  grow: (size: number) => string;
+  /** The size at which the body is the one the row stands for. */
+  full: number;
+};
+
+/**
+ * Reads `shape` at both sizes and holds the full size to `parseCpuBudgetMs` and to the growth
+ * check: the two assertions both helpers below share.
  *
  * `parse` is given the body to read, so the two sizes go through one closure and differ by their
- * input and by nothing else; `name` is what the growth check calls the parse in its message. The
- * row asserts what it reads on the document this returns, which is the one the full size's
- * measured parse produced.
- *
- * A parse that threw where it was to return a document is reported only once both assertions
- * have passed, because a break can make a parse both dearer and throwing and the cost is what
- * the row is for. The throw reaches the runner as itself, with its own stack.
+ * input and by nothing else; `what` is what the growth check calls the parse in its message. Both
+ * bodies are built before either is measured, as `cpuTimeOf` in `linear_test.go` builds a run's
+ * input outside the window it times: building a body is not the work under test.
  */
-export function parsedWithinCostBounds<T>(
-  name: string,
-  parse: (body: string) => T,
-  smallBody: string,
-  fullBody: string
-): T {
-  const small = costReadingOf(() => parse(smallBody));
-  let parsed: T | undefined;
-  const full = costReadingOf(() => {
-    parsed = parse(fullBody);
-  });
+function costsWithinBounds(
+  what: string,
+  shape: CostShape,
+  parse: (body: string) => unknown
+): { small: CostReading; full: CostReading } {
+  const smallBody = shape.grow(Math.floor(shape.full / growthStep));
+  const fullBody = shape.grow(shape.full);
+  const small = fastestCpuTimeOf(() => parse(smallBody));
+  const full = fastestCpuTimeOf(() => parse(fullBody));
   expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
     parseCpuBudgetMs
   );
-  expectCostGrowsLinearly(name, small.cpuMs, full.cpuMs);
+  expectCostGrowsLinearly(what, small.cpuMs, full.cpuMs);
+  return { small, full };
+}
+
+/**
+ * What a parse produced at the full size, once `shape` has been read at both sizes and found to
+ * cost less than `parseCpuBudgetMs` and to grow no faster than its growing dimension did at
+ * `growthStep`.
+ *
+ * The row asserts what it reads on the document this returns, which is the one the full size's
+ * measured parse produced.
+ *
+ * A parse that threw where it was to return a document is reported only once both assertions have
+ * passed, because a break can make a parse both dearer and throwing and the cost is what the row
+ * is for. The throw reaches the runner as itself, with its own stack.
+ */
+export function parsedWithinCostBounds<T>(
+  what: string,
+  shape: CostShape,
+  parse: (body: string) => T
+): T {
+  let parsed: T | undefined;
+  const { small, full } = costsWithinBounds(what, shape, (body) => {
+    parsed = parse(body);
+  });
   // The full size's throw is reported first: it is the side the row reads its document from. A
   // small side that threw is reported after it, rather than left to pass on the full size alone.
-  if (full.thrown !== undefined) throw full.thrown.cause;
-  if (small.thrown !== undefined) throw small.thrown.cause;
+  if (full.threw) throw full.thrown;
+  if (small.threw) throw small.thrown;
   if (parsed === undefined) throw new Error("the measured parse produced no document");
   return parsed;
 }
 
 /**
- * The refusal a parse raised at the full size, once that refusal has been read at both sizes and
- * found to cost less than `parseCpuBudgetMs` and to grow no faster than its input did at
- * `growthStep`.
+ * Fails unless the parse of one side was refused with an `Error` whose message matches `refused`.
  *
- * The two costs are asserted before the refusal is required, for the reason above: a break that
- * makes a refused parse dearer is read as the cost failure the row is for, not as a missing
- * refusal. A side that returned rather than being refused then fails the row, so a row that
- * means to measure a refusal cannot read a plain reading as one. A cause that is not an `Error`
- * is thrown on as it is, so such a throw reaches the runner with its own stack rather than as a
- * message that matched nothing.
+ * A throw that is not an `Error` is thrown on as it is, so it reaches the runner with its own
+ * stack rather than as a message that matched nothing.
+ */
+function expectRefusal(side: string, reading: CostReading, refused: RegExp): void {
+  if (!reading.threw) {
+    throw new Error(`the parse at the ${side} size was expected to be refused and was not`);
+  }
+  if (!(reading.thrown instanceof Error)) throw reading.thrown;
+  const what = `the parse at the ${side} size was refused by something else`;
+  expect(reading.thrown.message, what).toMatch(refused);
+}
+
+/**
+ * Holds a parse that refuses `shape` to the two cost assertions above, and then to the refusal
+ * itself at both sizes: each must throw an `Error` whose message matches `refused`.
+ *
+ * The costs are asserted first, for the reason above: a break that makes a refused parse dearer is
+ * read as the cost failure the row is for, not as a missing refusal. Both sides are then checked
+ * against the pattern, because a side that failed with something else — a `RangeError` from a
+ * stack it overflowed, say — is not the refusal this row measures, and reading it as one puts the
+ * cost of another failure into the growth check (INFRA-1629).
  */
 export function refusalWithinCostBounds(
-  name: string,
+  what: string,
+  shape: CostShape,
   parse: (body: string) => unknown,
-  smallBody: string,
-  fullBody: string
-): Error {
-  const small = costReadingOf(() => parse(smallBody));
-  const full = costReadingOf(() => parse(fullBody));
-  expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
-    parseCpuBudgetMs
-  );
-  expectCostGrowsLinearly(name, small.cpuMs, full.cpuMs);
-  if (full.thrown === undefined) {
-    throw new Error("the parse at the full size was expected to be refused and was not");
-  }
-  if (small.thrown === undefined) {
-    throw new Error("the parse at the small size was expected to be refused and was not");
-  }
-  const refusal = full.thrown.cause;
-  if (!(refusal instanceof Error)) throw refusal;
-  return refusal;
+  refused: RegExp
+): void {
+  const { small, full } = costsWithinBounds(what, shape, parse);
+  expectRefusal("full", full, refused);
+  expectRefusal("small", small, refused);
 }
