@@ -140,7 +140,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		return
 	}
 	gone, deleted := 0, 0
-	for sessionID := range listed {
+	for sessionID, info := range listed {
 		if ctx.Err() != nil {
 			return
 		}
@@ -151,7 +151,10 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		if deleted >= sessionConsumerSweepCap || !s.confirmGone(ctx, sessionID) {
 			continue
 		}
-		s.delivery.deleteConsumer(ctx, sessionID)
+		// The info the list already answered is handed to the delete, which records the
+		// consumer's floor from it rather than reading the consumer again: a session this pass
+		// confirmed gone has nobody left to move that floor.
+		s.delivery.deleteConsumer(ctx, sessionID, info)
 		deleted++
 	}
 	// deleted counts the consumers the pass asked the server to delete; a delete that failed

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -85,10 +86,6 @@ type sessionDeliveryOutcome struct {
 	answer *deliveryAnswer
 	// epoch is the plugin's epoch, recorded on the entry when the session is relayed.
 	epoch string
-	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
-	// beside the epoch: the durable path still delivers a stored message below it, which is in no
-	// consumer (session.SessionEntry.ConsumerStart).
-	consumerStart uint64
 	// heard is the registration's mark (sessionDelivery.mark), taken once its topics were stored
 	// and its consumer created or updated, when the session is relayed.
 	heard uint64
@@ -260,9 +257,8 @@ func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, regi
 			Gap:           &gap,
 			ConsumerStart: start.StartSeq,
 		},
-		epoch:         epoch,
-		consumerStart: start.StartSeq,
-		heard:         m.mark(),
+		epoch: epoch,
+		heard: m.mark(),
 	}
 }
 
@@ -349,9 +345,11 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 // deleteConsumer removes sessionID's consumer (bus.SessionConsumers.Delete) once the session's
 // registration is gone, so the consumer holds a slot of the stream's consumer cap no longer
 // rather than waiting out the server's inactivity threshold
-// (bus.SessionConsumerInactiveThreshold). A failure is logged, not returned: the deregistration
-// that asked for it answers the same either way, and the listener's sweep and that threshold
-// each reach the consumer again.
+// (bus.SessionConsumerInactiveThreshold). listed is the consumer's info when the caller already
+// holds it, as the sweep does from the one consumer list its pass reads, and nil for a caller
+// that has the delete read it. A failure is logged, not returned: the deregistration that asked
+// for it answers the same either way, and the listener's sweep and that threshold each reach
+// the consumer again.
 //
 // The session's lock orders the delete against this listener's own consumer calls for the
 // session and against nothing else: a registration's create or filter update, an unsubscribe's
@@ -361,14 +359,14 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 // than creating anything. A second listener task — a rolling deploy's other task, or the one a
 // heartbeat races to — can still create the consumer in that window, and the listener's periodic
 // sweep, not this lock, is what reaches that consumer.
-func (m *sessionDelivery) deleteConsumer(ctx context.Context, sessionID string) {
+func (m *sessionDelivery) deleteConsumer(ctx context.Context, sessionID string, listed *jetstream.ConsumerInfo) {
 	if m == nil || m.consumers == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	unlock := m.locks.lock(sessionID)
-	err := m.consumers.Delete(ctx, sessionID, nil)
+	err := m.consumers.Delete(ctx, sessionID, listed)
 	unlock()
 	if err != nil {
 		m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))

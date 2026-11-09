@@ -194,8 +194,8 @@ func SessionResumeSubject(sessionID string) string {
 const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 
 // streamSubjects are the notification subjects the stream carries, and the list every consumer
-// filter over them takes (StreamSubjects). The stream carries one subject more, the listener's own
-// kept lane (streamCarriedSubjects).
+// filter over them takes (StreamSubjects). The stream carries two subjects more, the listener's
+// own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
 	"notifications.dispatch.>",
@@ -210,15 +210,20 @@ var streamSubjects = []string{
 	ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
 }
 
-// streamCarriedSubjects is every subject the stream itself carries: the notification subjects,
-// the listener's kept lane, the role messages it could not deliver and the per-role drain cursors
-// over them, and the listener's resume lane, where a session consumer's resume floor is recorded
-// before that consumer is deleted (SessionResumeSubject). Each of those two prefixes is the
-// stream's alone and no consumer filter takes it: a kept copy still carries its role topic in the
-// envelope, so a consumer handed one would deliver it as a role message and re-trigger role
-// delivery on every listener, and a resume record is no envelope at all. The listener reads both
-// lanes itself instead (cmd/listener/role_keep.go, SessionConsumers).
-var streamCarriedSubjects = slices.Concat(streamSubjects, []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"})
+// listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
+// lane, holding the role messages it could not deliver and the per-role drain cursors over them
+// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
+// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
+// consumer handed one would deliver it as a role message and re-trigger role delivery on every
+// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
+// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
+// carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+
+// streamCarriedSubjects is every subject the stream itself carries: the notification subjects
+// and the listener's own lanes (listenerOwnStreamLanes).
+var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes)
 
 // Every subject of streamCarriedSubjects is classified for POST /v1/replay (cmd/listener/replay.go) by
 // whether a topic under it ever carries one agent session's private payload, read from the code
@@ -492,14 +497,14 @@ func purgeLegacyRoleMessages(js nats.JetStreamContext) error {
 	return nil
 }
 
-// consumerFilterSubjects is subjects without the listener's own kept and resume lanes, the list a
-// consumer's filter may carry: the stream's own list holds both prefixes (streamCarriedSubjects)
-// and no consumer filter ever does, since a kept copy still carries its role topic and a consumer
-// handed one would deliver it as a role message, and a drain cursor and a resume record are no
-// envelope at all.
+// consumerFilterSubjects is subjects without the listener's own lanes
+// (listenerOwnStreamLanes), the list a consumer's filter may carry: the stream's own list holds
+// both prefixes (streamCarriedSubjects) and no consumer filter ever does.
 func consumerFilterSubjects(subjects []string) []string {
 	return slices.DeleteFunc(slices.Clone(subjects), func(subject string) bool {
-		return subjectsOverlap(subject, KeptTopicPrefix+">") || subjectsOverlap(subject, SessionResumeSubjectPrefix+">")
+		return slices.ContainsFunc(listenerOwnStreamLanes, func(lane string) bool {
+			return subjectsOverlap(subject, lane)
+		})
 	})
 }
 

@@ -850,7 +850,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 				writeStoreError(ctx, w, err, http.StatusInternalServerError)
 				return
 			}
-			d.consumers.deleteConsumer(deleting, sessionID)
+			d.consumers.deleteConsumer(deleting, sessionID, nil)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -861,7 +861,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 		}
 		switch outcome {
 		case session.EntryDeleted:
-			d.consumers.deleteConsumer(deleting, sessionID)
+			d.consumers.deleteConsumer(deleting, sessionID, nil)
 			writeJSON(w, http.StatusOK, deleteSessionResponse{Deleted: true})
 		case session.EntryKeptForAnotherInstance:
 			writeJSON(w, http.StatusOK, deleteSessionResponse{
