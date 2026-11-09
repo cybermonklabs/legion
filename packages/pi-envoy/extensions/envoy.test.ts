@@ -909,6 +909,9 @@ async function bootDirectSession(
     readonly idle?: () => boolean;
     /** The host's `ctx.getContextUsage`, which a host that predates it lacks. */
     readonly contextUsage?: () => ContextUsage | undefined;
+    /** The host's own session id, read live: the fixture's fixed `ses_delivery` by default, and
+     *  a closure a row moves where the host leaves the session with no event for it. */
+    readonly hostSessionID?: () => string;
     /** The session's working directory, which a person's `!command` runs in; the fixture's own
      *  `/tmp/envoy-omp-test`, which is no real directory, by default. */
     readonly cwd?: string;
@@ -1034,6 +1037,7 @@ async function bootDirectSession(
       ...base.sessionManager,
       getBranch: () => options.branch ?? [...prior, ...fixture.entries],
       getEntries: () => [...prior, ...fixture.entries],
+      ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
   await fixture.handlers.get("session_start")?.({}, context);
@@ -13124,6 +13128,9 @@ console.log(JSON.stringify(args));
           /** Runs as the host is handed the agent's copy of the report; a throw is the host
            *  refusing it. */
           readonly beforeSend?: () => void;
+          /** The host's own session id, read live: a row moves it where the host leaves this
+           *  session with no event for it. */
+          readonly hostSessionID?: () => string;
           readonly limitMs?: number;
           readonly sideTurn?: (prompt: string) => string;
         } = {}
@@ -13138,6 +13145,7 @@ console.log(JSON.stringify(args));
           sendUserInput: async () => ({ handled: "prompt" }),
           ...(options.accept !== undefined && { accept: options.accept }),
           ...(options.beforeSend !== undefined && { beforeSend: options.beforeSend }),
+          ...(options.hostSessionID !== undefined && { hostSessionID: options.hostSessionID }),
           ...(options.sideTurn !== undefined && { sideTurn: options.sideTurn }),
         });
         natsState.controls
@@ -13411,6 +13419,55 @@ console.log(JSON.stringify(args));
           { text: expect.stringContaining("```\nhi\n```"), type: "text" },
         ]);
         // The session the host moved to reads nothing of a command it was never asked for.
+        expect(
+          fixture.deliveries.filter((delivery) =>
+            delivery.content.includes("A person ran this shell command")
+          )
+        ).toEqual([]);
+      }, 20_000);
+
+      // The same move, with no session event for it: the host moves its session manager first
+      // and emits `session_switch` after its resets, and a move the host makes without an event
+      // at all reaches the plugin only at the next reconcile pass, so through either window the
+      // plugin's own `sessionID` still reads the session the command was asked of while the host
+      // is already on another conversation. The agent's copy follows the host's live id, so the
+      // conversation the host is on is handed nothing here either.
+      test("hands the agent no copy when the host moved on with no session event", async () => {
+        let live = "ses_delivery";
+        const { agent, fixture, replied, replies, work } = await bootShellSession(
+          "shell-command-host-moved",
+          {
+            accept: () => ({
+              accepted: true,
+              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+            }),
+            hostSessionID: () => live,
+          }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
+        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+
+        // The host is on another conversation now. No handler is fired for it, so the plugin's
+        // own `sessionID` still reads ses_delivery.
+        live = "ses_after_shell";
+        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+        writeFileSync(join(work, "go"), "");
+        await replied(1);
+
+        // The person is answered, and the live view of the session that ran the command carries
+        // the report, keyed on the Dispatch message it answers.
+        expect(replies[0]?.body).toMatchObject({
+          body: expect.stringContaining("```\nhi\n```"),
+        });
+        const frames = streamFrames();
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+        expect(frames[0]?.message.parts).toEqual([
+          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+        ]);
+        // The conversation the host moved to reads nothing of a command it was never asked for.
         expect(
           fixture.deliveries.filter((delivery) =>
             delivery.content.includes("A person ran this shell command")
