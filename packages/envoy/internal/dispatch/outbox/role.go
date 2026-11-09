@@ -25,7 +25,7 @@ import (
 // else: the batch waiting on it settles and releases every other owner as their own sends come
 // in, and the batches beside it read and publish the owners it does not hold (Outbox.scan, lanes).
 //
-// Deps.receiptTimeout is the wait one outbox gives.
+// An outbox waits this long unless a test set Deps.receiptWait (Deps.receiptTimeout).
 const roleReceiptTimeout = 5 * time.Second
 
 // errNoRoleReaders is a role route's holder resolved with no role-claim or session reader in Deps.

@@ -930,10 +930,14 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
 			rowsRead, secondRowsRead)
 	}
-	// The blocks are as steady as the rows: 37 on both runs of each size, in all 12 readings of
-	// 3 runs of the healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one.
+	// The blocks are as steady as the rows once the claim has run on this database: 37 on both
+	// runs of each size, in all 12 readings of 3 runs of the healthy claim on 2026-11-09, and 56
+	// and 113 on both runs of the mutated one. The 20 explains above run it first. A claim run
+	// for the first time marks the dead index entries the scan's publish left, and reads those
+	// pages again to do it: measured before the explains, a pair read 38 and 37, and 39 and 37
+	// (the review of INFRA-2065, round 2). So the pair stays after the explains.
 	if indexBlocks != secondIndexBlocks {
-		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and a second run of the same claim on the same connection fetches the same blocks",
+		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and once the explains above have run the claim, a second run on the same connection fetches the same blocks",
 			indexBlocks, secondIndexBlocks)
 	}
 	if rowsRead == 0 && secondRowsRead == 0 {
@@ -986,7 +990,8 @@ func someIDs(ids []int64) string {
 // condition, which walks every entry of the index, returns none of them and touches no heap row.
 // On 2026-11-09 that claim read the same 30 rows at both sizes, removed no row by filter or
 // recheck and returned the right ten ids, so every other clause here passed it; of the figures
-// this row logs only the time moved, 0.43 ms to 1.08 ms at 20,000.
+// the row logged before it counted index blocks, only the time moved, 0.43 ms to 1.08 ms at
+// 20,000.
 //
 // The blocks the claim fetched from the indexes of events, summed over pg_index with
 // pg_stat_get_xact_blocks_fetched in the same transaction and on the same connection, see that
