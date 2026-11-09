@@ -374,6 +374,32 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
          "internal/textcheck/reclaim_doc_test.go:43 reads the committed copy it holds the guide's paragraph to")),
+    # main's #2989 holds three of the daemon's own tests to the texts that ship the waiting line,
+    # each read from the repository root under `..`, so daemon_go_tests must match them: a docs-only
+    # edit of one breaks the test, and before these rows it merged green.
+    f"{DAEMON}/cmd/legion/main_test.go": reads(
+        ("docs/site/src/content/docs/legion/running-legion.md",
+         "cmd/legion/main_test.go:1803 reads it under ../../../.. and holds awaitingSummary's own line to it")),
+    f"{DAEMON}/internal/api/waiting_line_test.go": reads(
+        ("docs/site/src/content/docs/legion/running-legion.md",
+         "internal/api/waiting_line_test.go:189 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/troubleshooting.md",
+         "internal/api/waiting_line_test.go:190 reads it under ../../../.."),
+        ("packages/pi-legion/AGENTS.md", "internal/api/waiting_line_test.go:188 reads it under ../../../.."),
+        ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
+         "internal/api/waiting_line_test.go:191 reads that one fragment under ../../../.."),
+        ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
+         "internal/api/waiting_line_test.go:192 reads that one fragment under ../../../.."),
+        ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+         "internal/api/waiting_line_test.go:193 reads that one fragment under ../../../..")),
+    f"{DAEMON}/internal/workflow/waiting_for_slot_notice_test.go": reads(
+        ("AGENTS.md", "internal/workflow/waiting_for_slot_notice_test.go:172 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/concepts.md",
+         "internal/workflow/waiting_for_slot_notice_test.go:167 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/running-legion.md",
+         "internal/workflow/waiting_for_slot_notice_test.go:165,174 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/troubleshooting.md",
+         "internal/workflow/waiting_for_slot_notice_test.go:166,175 reads it under ../../../..")),
     # --- envoy
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
@@ -1193,6 +1219,8 @@ SCRIPT_TEST_GATES = [
     harness("dispatch_browser_run_reads_test", "Test the browser lane's run reads",
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-run-reads.sh", "the script under test"),
+        (f"{SCRIPTS}/gh-read.sh",
+         "dispatch-browser-run-reads.sh:79 sources it, and dispatch-browser-run-reads.test.sh:9-12 tests its retry ladder"),
     ]),
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
             f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
@@ -1648,6 +1676,9 @@ GATES = [
          f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
          "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
          "could not complete"),
+        (".github/scripts/gh-read.sh",
+         "dispatch-browser-run-reads.sh:79 sources it, so the merge job's two reads of its own run "
+         "take its retry ladder"),
         (".github/playwright-apt-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
          "that name both run .github/scripts/playwright-install.sh, which reads it as the apt list it installs"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),

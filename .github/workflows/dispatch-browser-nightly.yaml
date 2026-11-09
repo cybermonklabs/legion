@@ -47,10 +47,10 @@ jobs:
   # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
   # "Supported keywords for jobs that call a reusable workflow"), so what dispatch-browser.yaml's
   # jobs need is declared here. `contents: read` is the `actions/checkout` step every one of its
-  # four jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
-  # merge job's "Reading one, the rows" step, which reads this run's own jobs with
-  # `gh api repos/<repo>/actions/runs/<id>/jobs` (and its "Reading three" step reads that same
-  # file). No `checks: write`, which the ci-ok report would need: this call passes no
+  # five jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
+  # merge job's "Reading one, the rows" step, which reads this run's own attempt's jobs by running
+  # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
+  # same file). No `checks: write`, which the ci-ok report would need: this call passes no
   # `ci-ok-changes`, so that step does not run and this workflow posts no check.
   full:
     permissions:
