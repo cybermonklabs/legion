@@ -300,3 +300,4 @@ case "$mode" in
     usage "$@"
     ;;
 esac
+# selection probe
