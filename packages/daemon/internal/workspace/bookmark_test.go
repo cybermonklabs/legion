@@ -384,9 +384,9 @@ func pushOrphanBranch(t *testing.T, remote, branch, file string) string {
 	scratch := t.TempDir()
 	runSetup(t, scratch, "git", "clone", "--quiet", remote, "other")
 	other := filepath.Join(scratch, "other")
-	runSetup(t, other, "git", "checkout", "--quiet", "--orphan", branch)
-	// --orphan leaves the default branch's tree staged, which the orphan commit must not carry.
-	runSetup(t, other, "git", "rm", "-r", "-q", "-f", ".")
+	// --orphan on `git switch` leaves the index and the working copy empty, where `git checkout
+	// --orphan` would stage the default branch's whole tree for the orphan commit to carry.
+	runSetup(t, other, "git", "switch", "--quiet", "--orphan", branch)
 	if err := os.WriteFile(filepath.Join(other, file), []byte("pushed on a history of its own\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

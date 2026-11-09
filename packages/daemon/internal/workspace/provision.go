@@ -171,9 +171,9 @@ func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, err
 		cloneRoot := filepath.Dir(filepath.Dir(workspace.Clone))
 		switch {
 		case workspace.Dir == workspace.Clone:
-			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is the shared clone itself, not a workspace of one. A clone holds no sparse pattern by design, because it carries no working tree (feedClone's `jj sparse set --clear`). An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone", workspace.Dir)
+			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is the shared clone itself, not a workspace of one."+whyACloneHasNoAnswer, workspace.Dir)
 		case underDirectory(cloneRoot, workspace.Dir):
-			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is under the clone root %s, which holds a shared clone of each repository. A clone holds no sparse pattern by design, because it carries no working tree (feedClone's `jj sparse set --clear`). An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone", workspace.Dir, cloneRoot)
+			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is under the clone root %s, which holds a shared clone of each repository."+whyACloneHasNoAnswer, workspace.Dir, cloneRoot)
 		}
 	}
 	listed, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "sparse", "list", "--ignore-working-copy", "--color=never"})
@@ -183,14 +183,19 @@ func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, err
 	return strings.TrimSpace(listed.Stdout) != "", nil
 }
 
+// whyACloneHasNoAnswer is the tail of both of CheckedOut's refusals: the reason a clone's pattern
+// set answers nothing, which is the same whichever clone directory was asked about.
+const whyACloneHasNoAnswer = " A clone holds no sparse pattern by design, because it carries no working tree (feedClone's `jj sparse set --clear`). An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone"
+
 // underDirectory is whether dir is root or lies below it, compared one path segment at a time
-// (filepath.Rel). A string prefix would call /a/bc a child of /a/b.
+// (filepath.Rel, then filepath.IsLocal, as cmd/legion's sessions.go and runtime/sandbox's
+// manifest.go compare a path with its root). A string prefix would call /a/bc a child of /a/b.
 func underDirectory(root, dir string) bool {
 	relative, err := filepath.Rel(root, dir)
 	if err != nil {
 		return false
 	}
-	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	return filepath.IsLocal(relative)
 }
 
 // excludeCodegraphDirectory appends ".codegraph/" to cloneDir's ".git/info/exclude" unless a

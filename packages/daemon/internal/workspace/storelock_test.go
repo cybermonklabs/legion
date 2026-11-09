@@ -498,11 +498,9 @@ func TestCheckedOutCloneRootDirectoriesAreRefused(t *testing.T) {
 	// A second repository in the same state directory, so its own shared clone — a real jj clone,
 	// with a .jj of its own, which guardWorkspace alone would let through — sits beside the first
 	// under one clone root.
-	beside := provisionRequest(t)
-	beside.StateDir = req.StateDir
+	beside := req
 	beside.Repo = ghrepo.MustParse("acme/gadgets")
 	beside.Issue = "GADGETS-7"
-	beside.Source = FromGitHub(staticToken("test-installation-token"), req.StateDir)
 	other, err := Provision(context.Background(), run, beside)
 	if err != nil {
 		t.Fatalf("Provision of the second repository: %v", err)
