@@ -3186,7 +3186,10 @@ export interface CheckResultRecorded {
 /** What `POST /api/v1/issues/{key}/results` takes. Absent counts are 0; a `pass` counting any of
  *  them is refused `400 RESULT_CONTRADICTS`. `commit` is 40 lowercase hex; one the repository of
  *  the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and
- *  that `owner/repo`, while a repository Dispatch cannot read stores the result as before. */
+ *  that `owner/repo`, while a repository Dispatch cannot read stores the result as before. A
+ *  check a document version rewords at each of the write's two attempts is refused `409
+ *  CHECK_CONTENDED` with `Retry-After: 1` and nothing recorded: the write was waiting for that
+ *  version to land rather than spending a budget, so read the check and send the result again. */
 export interface RecordCheckResultInput {
   readonly actor?: Actor;
   readonly check: string;

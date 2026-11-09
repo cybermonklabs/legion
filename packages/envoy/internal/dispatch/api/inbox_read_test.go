@@ -338,8 +338,8 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 // A mark-all and a session's reply in one of the threads it marks, at once: neither waits on the
 // other forever, the mark is never lost and the reply's time is never lost either. The owner is
 // what orders this pair (the lock order is markInboxReadThreads'): the mark-all takes the
-// thread's issue `for share` before it touches any user_threads row, and the comment writer
-// holds that issue `for no key update` while its trigger moves those rows, so one of the two
+// thread's issue in shared mode before it touches any user_threads row, and the comment writer
+// holds that issue's lock exclusively while its trigger moves those rows, so one of the two
 // waits at the issue holding nothing the other wants.
 func TestInboxReadRacingASessionReply(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
@@ -382,8 +382,8 @@ func TestInboxReadRacingASessionReply(t *testing.T) {
 
 // A mark-all and one thread's own PUT /api/v1/me/threads/{id}/read, for the same person and a
 // thread the mark-all marks, at once. Both move that user_threads row and both append under its
-// project, and the thread's owner orders neither of them: each takes it `for share`, and two
-// share locks do not conflict. Only taking the row and the project in one order does
+// project, and the thread's owner orders neither of them: each takes its lock in shared mode,
+// and two shared holders do not conflict. Only taking the row and the project in one order does
 // (markInboxReadThreads), so a round where one held the row while the other held the project
 // would die of a deadlock (40P01) its caller answers 500.
 //
@@ -639,9 +639,9 @@ func holdGateThread(t *testing.T, database *store.Store, gate string) gateHold {
 
 // Two Mark all read presses by one person over the same threads, at once, with their query
 // plans forced apart (markAllOnPlan): two tabs, two devices, or a narrowed press racing an
-// unfiltered one. Both take the same owner `for share`, which orders nothing, and both move the
-// same user_threads rows, so those rows are all that can order the pair - which is what the
-// lock pass in thread_id order does (markInboxReadThreads, inboxReadLockThreads).
+// unfiltered one. Both take the same owner's lock in shared mode, which orders nothing, and
+// both move the same user_threads rows, so those rows are all that can order the pair - which
+// is what the lock pass in thread_id order does (markInboxReadThreads, inboxReadLockThreads).
 //
 // The crossing is made rather than waited for. Each round picks the row both presses wait on
 // and the threads they mark (raceGate), holds that row on a connection of the test's own and

@@ -371,8 +371,8 @@ func TestDismissLeavesAThreadRepliedToWhileItRan(t *testing.T) {
 			held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() { answered <- postInboxDismiss(t, seed.handler, "alice", body) }()
-			if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockOwners, 10*time.Second) == 0 {
-				t.Fatal("the dismiss never queued on the document row it locks before it writes")
+			if storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second) == 0 {
+				t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
 			}
 			row.write(t, seed)
 			held.release()
@@ -428,9 +428,9 @@ func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
 	held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	dismissing := storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockOwners, 10*time.Second)
+	dismissing := storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second)
 	if dismissing == 0 {
-		t.Fatal("the dismiss never queued on the document row it locks before it writes")
+		t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
 	}
 	replying := holdSessionReply(t, database, seed.agentReply)
 	held.release()
@@ -597,8 +597,8 @@ func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *test
 	held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockOwners, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued on the document row it locks before it writes")
+	if storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second) == 0 {
+		t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
 	}
 	writeThreadReply(t, writing.tx, seed.firstIssue, seed.first, "session", "s1", stamp)
 	writing.commit(t)

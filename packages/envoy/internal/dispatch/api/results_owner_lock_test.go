@@ -140,3 +140,86 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 		t.Errorf("the pull-request line = %q, want the check's words as the version this write saw left them", result.Line)
 	}
 }
+
+// contendedCheckReads holds the marked request at each of its first two reads of the
+// Verification document and lets the test write a version while it waits, so the digest the
+// route carries into its locks is stale at both of its attempts (checkWordsAttempts). Only the
+// marked request's reads of that one document are held; every other caller reads straight
+// through, which is what lets the test write those versions. The read counter is touched by the
+// marked request alone, whose reads run one after another.
+type contendedCheckReads struct {
+	docs.API
+	// artifactID is the Verification document; reads of anything else pass straight through.
+	artifactID string
+	// held carries the ordinal of each held read, and let releases it.
+	held  chan int
+	let   chan struct{}
+	reads int
+}
+
+func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
+	if artifactID != d.artifactID || ctx.Value(slowCheckReadKey{}) == nil {
+		return d.API.Text(ctx, artifactID)
+	}
+	d.reads++
+	if d.reads <= checkWordsAttempts {
+		d.held <- d.reads
+		<-d.let
+	}
+	return d.API.Text(ctx, artifactID)
+}
+
+// A results write whose check a document version rewords at each of its two attempts records
+// nothing and is refused 409 CHECK_CONTENDED. The refusal carries Retry-After: 1: what the
+// caller waits for is the version that moved the check landing, which has landed by the time a
+// retry a second later asks, and no budget of its own that a longer wait would refill
+// (checkContendedRetryAfter).
+func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
+	reads := &contendedCheckReads{held: make(chan int), let: make(chan struct{})}
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		t.Cleanup(func() {
+			if err := service.Shutdown(context.Background()); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
+		reads.API = service
+		return reads
+	})
+
+	issue := createInteractionIssue(t, handler, "RESC", "A check reworded at every attempt", "A spec\n")
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
+	reads.artifactID = verification.Artifact.ID
+
+	marked := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), slowCheckReadKey{}, true)))
+	})
+	recorded := make(chan *httptest.ResponseRecorder, 1)
+	go func() { recorded <- recordResult(t, marked, issue.Key, resultBody("k1", "pass", headCommit, nil)) }()
+
+	// Each held read is about to give the route the words of a digest this upload replaces: the
+	// first is the route's resolve, the second the re-read it makes once its locks found that
+	// digest moved. So the route reaches its locks with stale words both times, and the second
+	// time is its last attempt.
+	for _, words := range []string{siblingChecksReworded, siblingChecksRewordedAgain} {
+		<-reads.held
+		uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", words)
+		reads.let <- struct{}{}
+	}
+
+	response := <-recorded
+	code, text := refusalOf(t, response)
+	if response.Code != http.StatusConflict || code != "CHECK_CONTENDED" {
+		t.Fatalf("a check reworded at each attempt: status=%d body=%s, want 409 CHECK_CONTENDED",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(text, "k1") {
+		t.Errorf("the refusal = %q, want the check nothing was recorded against", text)
+	}
+	if got := response.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want 1: the caller waits only for the version that moved the check to land", got)
+	}
+	if results := checkOf(t, readResults(t, handler, issue.Key), "k1").Results; len(results) != 0 {
+		t.Errorf("k1 carries %d results, want none: the refusal recorded nothing", len(results))
+	}
+}

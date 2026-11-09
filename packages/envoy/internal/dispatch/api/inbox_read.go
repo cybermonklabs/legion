@@ -120,25 +120,23 @@ var inboxReadAgentThreads = inboxAgentRootsQuery(
 	myAgentUnreadRoots, inboxAgentUnreadReplies, inboxAgentRepliedThrough)
 
 // The lock statements of this transaction, which it takes in the order markInboxReadThreads
-// writes down: the owners of the threads it marks, in shared mode (inboxReadLockOwners,
+// writes down: the owners of the threads it marks, in shared mode (lockInboxReadOwners,
 // store.LockOwnersShared), then the caller's own user_threads rows `for no key update`. The
-// owners are one statement, which sorts and deduplicates their lock keys itself, and the rows
-// are ordered before they are locked, so the locks are taken in the sorted order rather than
-// whatever order the scan returns, and the update below re-locks the rows rather than taking
-// them in the order its own plan reaches them.
+// owners are two statements, the marked threads' documents and then their issues, each sorting
+// and deduplicating its own lock keys, and the rows are ordered before they are locked, so the
+// locks are taken in the sorted order rather than whatever order the scan returns, and the
+// update below re-locks the rows rather than taking them in the order its own plan reaches
+// them.
 //
 // The owners are taken by their advisory lock rather than `for share` on their rows: a row lock
 // assigns the transaction a transaction id, which it would then hold across everything this
 // request does, and every writer of an owner now serialises on that advisory lock instead
 // (store.LockOwner, api/lock_level_test.go's TestNoForUpdateOnOwnerTables).
-const (
-	inboxReadLockOwners  = store.OwnersLockShared
-	inboxReadLockThreads = `
+const inboxReadLockThreads = `
 	select 1 from user_threads
 	where login = $1 and thread_id = any($2::uuid[])
 	order by thread_id
 	for no key update`
-)
 
 // inboxReadMarkThreads moves the caller's mark on every Reply thread it was given, and answers
 // the project of each row it moved. Every row it reaches is one inboxReadLockThreads has just

@@ -188,7 +188,7 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 		if refreshed == mark.anchor {
 			continue
 		}
-		comment := mark.markType == string(MarkComment) || mark.markType == string(MarkSuggestion)
+		comment := anchorTable(mark.markType) == "comments"
 		changed = append(changed, changedAnchor{mark: mark, refreshed: refreshed, comment: comment})
 	}
 	if s.afterAnchorRefresh != nil {

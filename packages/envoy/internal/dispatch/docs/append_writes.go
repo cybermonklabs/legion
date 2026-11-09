@@ -237,9 +237,9 @@ func (p *appendPlan) send(ctx context.Context, tx pgx.Tx) error {
 // authors of the ask blocks the run's renders first showed (askAuthorsStatement), recorded with
 // the updates so a settlement on any process finds them, consumed credit or not: a version lists
 // authors, not ask blocks. The rows are exactly those the same updates leave appended one at a
-// time. A caller runs the statements in its transaction (writeStatement.exec), puts them on its
-// write phase (writeStatement.queueWrite) or queues them into the batch it commits with
-// (writeStatement.queue).
+// time. A caller puts the statements on its transaction's write phase (appendPlan.send, which
+// queues each with writeStatement.queueWrite) or queues them itself into the batch its own
+// connection commits with (writeStatement.queue, appendRoomTx in room_appends.go).
 //
 // owes is whether the document owes a settlement from these updates. It is false for a room's
 // parked bytes alone (AppendParkedUpdate), which change nothing a settlement reads and credit

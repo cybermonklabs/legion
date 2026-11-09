@@ -525,27 +525,27 @@ func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree
 // addressOfDocument is where document artifactID sits and what it is called
 // (refs.DocumentAddress): the address this transaction recorded for an artifacts row it is
 // creating (Ledger.RegisterPendingArtifact), else the stored row's, read from its ref_key,
-// issue_key and name columns and from the columns its own dispatch:// address is spelled from
-// (refs.ArtifactRef). A stored row's address carries no pending parent: a transaction that is
-// not creating the document creates no issue for it either.
+// issue_key and name columns. A stored address is left without the document's own dispatch://
+// reference (DocumentAddress.Ref): both readers of a stored one - refs.BlockTargets, which keys
+// the write by its reference key and issue, and documentTitle, which wants the name - read none
+// of it, and the one reader of that field reads it off a pending address alone
+// (Ledger.PendingArtifact). A stored row's address carries no pending parent either: a
+// transaction that is not creating the document creates no issue for it.
 func addressOfDocument(ctx context.Context, tx pgx.Tx, artifactID string) (refs.DocumentAddress, error) {
 	if address, pending := pendingArtifact(ctx, artifactID); pending {
 		return address, nil
 	}
 	var address refs.DocumentAddress
-	var issueKey, session *string
-	var project, slug, kind string
-	var primary bool
+	var issueKey *string
 	if err := tx.QueryRow(ctx, `
-		select coalesce(ref_key, ''), issue_key, name, coalesce(project_key, ''), session_id, slug, kind, is_primary
+		select coalesce(ref_key, ''), issue_key, name
 		from artifacts where id = $1
-	`, artifactID).Scan(&address.RefKey, &issueKey, &address.Name, &project, &session, &slug, &kind, &primary); err != nil {
+	`, artifactID).Scan(&address.RefKey, &issueKey, &address.Name); err != nil {
 		return refs.DocumentAddress{}, fmt.Errorf("read the address of document %s: %w", artifactID, err)
 	}
 	if issueKey != nil {
 		address.IssueKey = *issueKey
 	}
-	address.Ref = refs.ArtifactRef(issueKey, project, session, slug, kind, primary)
 	return address, nil
 }
 
@@ -1203,8 +1203,8 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 
 // JoinWrite takes the calling transaction's write to artifactID (joinLiveWrite) and changes
 // nothing: it has every other process holding a room of the document store that room's updates
-// (flushOtherRooms), takes the document's owner row and then its writer slot, and leaves the
-// transaction's later document calls to find the write already open.
+// (flushOtherRooms), takes the document owner's advisory lock and then its writer slot, and
+// leaves the transaction's later document calls to find the write already open.
 //
 // It is where a transaction that reads the document under its advisory lock before it writes
 // joins its write: a comment or an ask anchored to a mark the document already holds
@@ -1229,9 +1229,9 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 // takes the lock.
 //
 // The write it opens is a write like any other - it waits for the transaction holding the slot,
-// refuses a failed room and a shutting-down document - and it records the owner row's state
-// (liveWrite.ownerClosed), which is what sends a comment's anchor on a closed issue down the cold
-// fork (closedIssueCommentMark).
+// refuses a failed room and a shutting-down document - and it records what the read beside that
+// owner lock answered (lockArtifactOwner, liveWrite.ownerClosed), which is what sends a comment's
+// anchor on a closed issue down the cold fork (closedIssueCommentMark).
 func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 	if s.shuttingDown(artifactID) {
 		return ErrServiceUnavailable

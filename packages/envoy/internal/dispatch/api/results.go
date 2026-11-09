@@ -189,6 +189,16 @@ const checkWordsAttempts = 2
 // attempt. Nothing is recorded, and the caller's retry resolves the check again.
 const checkContended = "CHECK_CONTENDED"
 
+// checkContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
+// caller waits for is another writer's document version landing on the check's block - a
+// transaction already committing, not a budget this caller has spent - so the wait is the
+// shortest whole second HTTP can ask for, which is what Dispatch already answers a caller whose
+// write another transaction is in the middle of (writeKeyInFlight's 409 KEY_IN_FLIGHT,
+// request_keys.go). Nothing longer is honest here: this is no rate limit, so there is no budget
+// to refill and no burst to spread out, and a longer wait would only hold back a retry that can
+// land as soon as the version that moved the check has committed.
+const checkContendedRetryAfter = 1
+
 // errCheckWordsMoved is how the locked half reports that the digest the index holds for the check
 // is no longer the one the words in hand were read against. It never reaches a client:
 // recordResultWithFreshWords either reads the words again or answers checkContended.
@@ -226,9 +236,11 @@ func (s *server) recordResultWithFreshWords(
 			return model.CheckResult{}, model.Event{}, err
 		}
 	}
-	return model.CheckResult{}, model.Event{}, errorf(http.StatusConflict, checkContended,
+	refusal := errorf(http.StatusConflict, checkContended,
 		"check %s was reworded at each of %d attempts while this request waited to lock its issues, so nothing was recorded: read the check and retry",
 		check.BlockID, checkWordsAttempts)
+	refusal.retryAfter = checkContendedRetryAfter
+	return model.CheckResult{}, model.Event{}, refusal
 }
 
 // recordResultUnderOwnerLocks is the locked half: it takes both issues' owner locks, judges the

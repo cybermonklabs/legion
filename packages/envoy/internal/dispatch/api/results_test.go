@@ -29,7 +29,8 @@ const twoChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" negative_c
 	":::\n"
 
 // siblingChecks is two pre-merge checks, so a rewording of one can be seen to leave the other's
-// results alone; siblingChecksReworded changes k1's words and leaves k3's.
+// results alone; siblingChecksReworded and siblingChecksRewordedAgain each change k1's words
+// and leave k3's, so a write can be made to find k1 moved twice.
 const siblingChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" +
 	"The server records a result against a check.\n" +
 	":::\n\n" +
@@ -39,6 +40,13 @@ const siblingChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" +
 
 const siblingChecksReworded = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" +
 	"The server records a result against a check, named by its block id.\n" +
+	":::\n\n" +
+	":::check{#k3 surface=\"cli\" run=\"go test ./...\"}\n" +
+	"A sibling check nobody reworded.\n" +
+	":::\n"
+
+const siblingChecksRewordedAgain = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" +
+	"The server records a result against a check, named by its block id or its reference.\n" +
 	":::\n\n" +
 	":::check{#k3 surface=\"cli\" run=\"go test ./...\"}\n" +
 	"A sibling check nobody reworded.\n" +

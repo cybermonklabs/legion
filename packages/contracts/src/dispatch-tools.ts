@@ -1363,7 +1363,9 @@ export const dispatchToolSpecs = [
       "a child's run of a parent's check appears under that check. A closed issue takes a " +
       "result only for a check whose when is after_merge or default_branch — the production " +
       "check after the merge — and refuses every other one with 409 ISSUE_CLOSED, as it refuses " +
-      "every other write. Write the printed line into the pull-request body unchanged: it is " +
+      "every other write. A check a document version rewords while the result is being written " +
+      "is 409 CHECK_CONTENDED, with nothing recorded: run the same command again. " +
+      "Write the printed line into the pull-request body unchanged: it is " +
       "the one grammar every writer uses, and it carries no link to Dispatch. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({

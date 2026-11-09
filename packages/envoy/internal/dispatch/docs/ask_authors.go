@@ -305,10 +305,12 @@ const askAuthorsStatement = `
 	select $1::uuid, block, actor from unnest($2::text[], $3::jsonb[]) as author(block, actor)
 	on conflict (artifact_id, block_id_key(block_id)) do nothing`
 
-// askAuthorsArgs is askAuthorsStatement's arguments for authors, keyed by block id, and nil when
-// none of them can name a durable row (storableAskBlockID). Its one caller is queueAskAuthors,
-// which every queue of the statement goes through.
-func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) {
+// askAuthorsArgs is askAuthorsStatement's arguments for authors, keyed by block id, and the
+// block ids those arguments name: the ones that can name a durable row (storableAskBlockID).
+// Both are nil when none of them can. Its one caller is queueAskAuthors, which every queue of
+// the statement goes through, and which keys its ledger overlay by those ids rather than
+// weighing each id a second time.
+func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, []string, error) {
 	blocks := make([]string, 0, len(authors))
 	encoded := make([]string, 0, len(authors))
 	for block, actor := range authors {
@@ -317,15 +319,15 @@ func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) 
 		}
 		raw, err := json.Marshal(actor)
 		if err != nil {
-			return nil, fmt.Errorf("encode an ask block's author: %w", err)
+			return nil, nil, fmt.Errorf("encode an ask block's author: %w", err)
 		}
 		blocks = append(blocks, block)
 		encoded = append(encoded, string(raw))
 	}
 	if len(blocks) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return []any{room, blocks, encoded}, nil
+	return []any{room, blocks, encoded}, blocks, nil
 }
 
 // queueAskAuthors queues askAuthorsStatement for authors, keyed by block id, on plan, and
@@ -336,7 +338,7 @@ func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) 
 // consult (transactionRecordedAskAuthors). It queues nothing where no author can name a durable
 // row (askAuthorsArgs), which leaves no row for a read to miss either.
 func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room string, authors map[string]model.Actor) error {
-	args, err := askAuthorsArgs(room, authors)
+	args, blocks, err := askAuthorsArgs(room, authors)
 	if err != nil || args == nil {
 		return err
 	}
@@ -345,11 +347,9 @@ func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room stri
 	if ledger == nil {
 		return nil
 	}
-	queued := make(map[string]model.Actor, len(authors))
-	for block, actor := range authors {
-		if storableAskBlockID(block) {
-			queued[block] = actor
-		}
+	queued := make(map[string]model.Actor, len(blocks))
+	for _, block := range blocks {
+		queued[block] = authors[block]
 	}
 	ledger.queuedAskAuthors(room, queued)
 	return nil

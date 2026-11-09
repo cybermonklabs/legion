@@ -7637,6 +7637,42 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // CHECK_CONTENDED means the write found the check reworded at both of its attempts and
+  // recorded nothing, so the same call again is the whole remedy. Unwrapped it reached the
+  // caller as the server's prose with its code hidden, which reads as a failure to work out
+  // rather than a write to repeat.
+  test("a contended dispatch_result says the check moved and to run the command again", async () => {
+    const refusal =
+      "check k1 was reworded at each of 2 attempts while this request waited to lock its issues, so nothing was recorded: read the check and retry";
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      new Response(JSON.stringify({ code: "CHECK_CONTENDED", error: refusal }), {
+        status: 409,
+        headers: { "Content-Type": "application/json", "Retry-After": "1" },
+      });
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_result",
+        args: {
+          issue: "DSP-42",
+          check: "k1",
+          role: "implementer",
+          verdict: "pass",
+          commit: "1".repeat(40),
+        },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: "session-one",
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow(
+      `CHECK_CONTENDED: ${refusal}; the check moved twice while this result was being written, and nothing was recorded: run the same dispatch result command again`
+    );
+  });
+
   test("dispatch_request_approval sends its summary and reports the question the Inbox shows", async () => {
     const posts: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

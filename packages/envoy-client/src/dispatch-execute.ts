@@ -11,6 +11,7 @@ import type {
   AskRead,
   AskUrgency,
   BlockPath,
+  CheckResultRecorded,
   ClaimedIssue,
   ClaimHolderLiveness,
   Comment,
@@ -5188,14 +5189,31 @@ export async function executeDispatchTool(
         ...defined("excluded", optionalNumber(args, "excluded")),
         ...defined("screenshots", optionalStringArray(args, "screenshots")),
       };
-      const recorded = await client.recordResult(issue, {
-        actor,
-        check: stringArg(args, "check"),
-        role: stringArg(args, "role"),
-        verdict: stringArg(args, "verdict") as "pass" | "fail",
-        commit: stringArg(args, "commit"),
-        ...optional,
-      });
+      let recorded: CheckResultRecorded;
+      try {
+        recorded = await client.recordResult(issue, {
+          actor,
+          check: stringArg(args, "check"),
+          role: stringArg(args, "role"),
+          verdict: stringArg(args, "verdict") as "pass" | "fail",
+          commit: stringArg(args, "commit"),
+          ...optional,
+        });
+      } catch (error) {
+        // CHECK_CONTENDED is the one refusal of this route that asks for nothing but the same
+        // call again: a document version reworded the check at both of the write's attempts, so
+        // nothing was recorded and the next call resolves the check afresh. Every other refusal
+        // it can give asks the caller to change something first, and reaches them as Dispatch
+        // wrote it. Untouched, this one reaches them as prose with its code hidden, which reads
+        // as a failure to work out rather than a write to repeat.
+        if (dispatchAnswered(error, 409) && error.code === "CHECK_CONTENDED") {
+          throw refusalWithCode(
+            error,
+            "the check moved twice while this result was being written, and nothing was recorded: run the same dispatch result command again"
+          );
+        }
+        throw error;
+      }
       return {
         text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,
         details: {
