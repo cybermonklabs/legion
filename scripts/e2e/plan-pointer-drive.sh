@@ -78,12 +78,25 @@
 #   6. the run's row: which staging and which watcher shape it came from, every plan version the
 #      session read and when, the design each task's file names, read off the files, whether the
 #      two differ, the version the accepted handoff record cites, the trigger, the times the
-#      trigger fired and the version landed, when the scored file was written, and this verdict on
-#      that file: `approved` when it names the newest approved design at the moment it was
-#      written, `stale` when it names an approved design that is no longer the newest, `unapproved`
-#      when it names a design only an unapproved version carries, and `other` when it names no
-#      design or more than one. The summary line of each arm names the staging and the watcher
-#      shape, and counts each verdict.
+#      trigger fired and the version landed, when the scored file was written, and the verdict on
+#      that file. The verdict is read against the approvals the session could have read when it
+#      wrote that file, and it is the first of these five words that holds:
+#
+#        approved    the file names the newest approved design, which the rule asks for;
+#        pointer     it names the design of the plan.md version the task line's handoff record
+#                    cites, which is the build the rule forbids;
+#        stale       it names an approved design that is neither the newest approved one nor the
+#                    pointer's, which is lag;
+#        unapproved  it names a design no plan review approved;
+#        other       it names no design's call, or more than one.
+#
+#      The watcher's own plan review counts for that verdict only where the session read the
+#      plan after the watcher's version landed, or read a text that carried it, and in both
+#      cases before it wrote the scored file. A session that reads the approved plan, and
+#      writes that design a second after the watcher moves the plan, followed the rule. The
+#      row's `counted-mid-approval=` says which of the two it was.
+#      The summary line of each arm names the staging and the watcher shape, and counts each
+#      verdict.
 #
 # An attempt whose mid-session version landed after the scored file was written is unscorable: the
 # session wrote that file before the new version existed, so the attempt is neither a pass nor a
@@ -108,11 +121,12 @@
 # PLAN_POINTER_DRIVE_ATTEMPTS (3) how many attempts one run makes before an unscorable run fails.
 #
 # The run refuses to start - no database, no server, no session - when LEGION_TEST_PG_DSN is
-# unset, is no postgres URL, names a host that is not loopback or names its host in a parameter,
-# when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, when --mid-approval is
-# neither word, when --base-commit is missing or names no commit of this checkout, when either
-# arm's daemon module is missing, or when the two arms compose the same prompt byte for byte,
-# which is a base arm that is no control.
+# unset, is no postgres URL, names a host that is not loopback, names more than one host, holds
+# a percent sign in its authority, names its host in a parameter or writes a parameter key with
+# a percent sign, when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, when
+# --mid-approval is neither word, when --base-commit is missing or names no commit of this
+# checkout, when either arm's daemon module is missing, or when the two arms compose the same
+# prompt byte for byte, which is a base arm that is no control.
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
@@ -298,15 +312,28 @@ begin prerequisites
 [ -n "$pg_dsn" ] ||
   fail "LEGION_TEST_PG_DSN is required: it names the loopback PostgreSQL server this run creates a database of its own on (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
 # The host of postgres://[user[:password]@]host[:port]/database[?params]: this run creates and
-# force-drops databases there, so it must be this machine's. A host given by a parameter, or
-# several hosts, are refused rather than parsed, as the sibling proofs refuse them
-# (dispatch-two-builds.sh, verification-results.sh).
+# force-drops databases there, so it must be this machine's. The guard reads the authority, the
+# text between `://` and the first `/` or `?`, and refuses a comma in it: libpq takes a list of
+# hosts there and connects to the second when the first does not answer, so the one host this
+# guard reads is not the only one a `drop database` can reach. It refuses a percent sign in the
+# authority for the same reason, since libpq decodes one and `%2C` is a comma. It then refuses a
+# parameter named `host` or `hostaddr`, and any parameter key that holds a percent sign, because
+# libpq decodes a key too and `%68ost=` reaches it as `host=`. The sibling proofs refuse a DSN
+# they cannot read the same way (dispatch-two-builds.sh, verification-results.sh).
 case "$pg_dsn" in
   postgres://* | postgresql://*) ;;
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
 authority=${pg_dsn#*://}
 authority=${authority%%[/?]*}
+case "$authority" in
+  *,*)
+    fail "LEGION_TEST_PG_DSN must name one host: '$authority' names several, and libpq connects to the next when the first does not answer, so a database this run drops could be on a server this check never read"
+    ;;
+  *%*)
+    fail "LEGION_TEST_PG_DSN must write its host as itself: '$authority' holds a percent sign, which libpq decodes, so the host it connects to is not the host this check reads"
+    ;;
+esac
 hostport=${authority##*@}
 if [[ "$hostport" == \[* ]]; then
   db_host=${hostport#\[}
@@ -318,8 +345,22 @@ case "$db_host" in
   127.0.0.1 | localhost | ::1) ;;
   *) fail "LEGION_TEST_PG_DSN must name 127.0.0.1, localhost or ::1, not '$db_host': this run creates and drops databases there" ;;
 esac
-[[ "$pg_dsn" != *[?\&]host=* && "$pg_dsn" != *[?\&]hostaddr=* ]] ||
-  fail "LEGION_TEST_PG_DSN must not name its host in a parameter"
+dsn_query=''
+case "$pg_dsn" in *\?*) dsn_query=${pg_dsn#*\?} ;; esac
+if [ -n "$dsn_query" ]; then
+  IFS='&' read -r -a dsn_parameters <<<"$dsn_query"
+  for dsn_parameter in ${dsn_parameters[@]+"${dsn_parameters[@]}"}; do
+    dsn_key=${dsn_parameter%%=*}
+    case "$dsn_key" in
+      *%*)
+        fail "LEGION_TEST_PG_DSN must write its parameter keys as themselves: the key '$dsn_key' holds a percent sign, which libpq decodes, so such a key can spell host"
+        ;;
+      host | hostaddr)
+        fail "LEGION_TEST_PG_DSN must not name its host in a parameter: it carries '$dsn_key='"
+        ;;
+    esac
+  done
+fi
 [ -n "$omp" ] || fail "LEGION_OMP_PATH is required: it names the Oh My Pi binary each session runs"
 [ -x "$omp" ] || fail "LEGION_OMP_PATH=$omp is not an executable file"
 # python3 and openssl are the Dispatch server's own: packages/dispatch/e2e/run-server.sh holds
@@ -500,6 +541,11 @@ run_attempt() {
   session_pid=''
   [ "$status" -eq 0 ] ||
     fail "the session exited $status (124 is its ${session_seconds}s bound); see $run_dir/logs/session.log"
+  # The watcher writes advance.json by renaming a whole file into place (writeJsonWhole,
+  # scripts/e2e/plan-pointer-drive.ts), so the file this wait finds holds the watcher's whole
+  # answer and the score below cannot read a part of it. The watcher exits of its own once it
+  # has renamed that file, and stop_tree reaches it in the moment between the rename and that
+  # exit alone.
   until_true "$((trigger_seconds + 120))" \
     "the watcher to move the plan (see $run_dir/logs/watcher.log)" test -f "$run_dir/advance.json"
   stop_tree "$watcher_pid"

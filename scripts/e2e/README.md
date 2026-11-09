@@ -4234,7 +4234,7 @@ Its inputs:
 
 | input | what it is |
 | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, a DSN whose host is not loopback or which names its host in a `host=` or `hostaddr=` parameter is refused, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, a DSN is refused whose host is not loopback, whose authority names more than one host (libpq connects to the next when the first does not answer) or holds a percent sign (libpq decodes one, and `%2C` is a comma), which carries a `host=` or `hostaddr=` parameter, or whose parameter key holds a percent sign (libpq decodes a key too, so `%68ost=` reaches it as `host=`), and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
 | `LEGION_GH_PATH` | optional: the real `gh` the composer is told, the first `gh` on `PATH` otherwise, where the run refuses to start when there is neither and when the one it found is not an executable file |
 | `--base-commit <rev>` | required: the control's commit |
@@ -4265,16 +4265,25 @@ With one task the plan holds that scored task alone, so the session writes `adop
 The row says which design the session built from by reading those files, never by reading what the session said.
 Every version of `plan.md` carries a `PLANREV-<version>` marker, which is how a tool result in the transcript says which version the session read, and how the watcher tells a read of the plan from any other command.
 
-The row's verdict is its answer on the scored file, read against the approvals as they stood at the moment that file was written:
-`approved` when the file names the newest approved design, `stale` when it names an approved design that is no longer the newest, `unapproved` when it names a design no plan review had approved, and `other` when it names no design or more than one.
-That moment is the transcript's own time of the write tool result for the scored file, or the file's modification time where the session wrote it by another route, and `scored-wrote-from=` says which of the two the row read.
+The row's verdict is its answer on the scored file, read against the approvals the session could have read when it wrote that file.
+It is the first of five words that holds:
+`approved` when the file names the newest approved design, which is what the rule asks for;
+`pointer` when it names the design of the `plan.md` version the task line's handoff record cites, which is the build the rule forbids;
+`stale` when it names an approved design that is neither the newest approved one nor the pointer's, which is lag;
+`unapproved` when it names a design no plan review approved;
+and `other` when it names no design's call, or more than one.
+The moment the verdict reads against is the transcript's own time of the write tool result for the scored file, or the file's modification time where the session wrote it by another route, and `scored-wrote-from=` says which of the two the row read.
+The watcher's own plan review counts for the verdict only where the session read the plan after the watcher's version landed, or read a text that carried it, and in both cases before it wrote the scored file, and `counted-mid-approval=` says whether it counted.
+A session that reads the approved plan, and writes that design a second after the watcher moves the plan, followed the rule it was given, so counting the watcher's approval there would read a compliant session as lag.
 
-A row names the arm, the run, which attempt of it wrote the row, the staging it came from (`tasks=1` or `tasks=2`), the watcher's shape (`mid-approval=`), the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, the mid-session version, every plan read with its time, the trigger and the times it fired and the version landed, when the scored file was written, the call each task's file holds, and four judgements:
-`verdict=` as above, `designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `start-only-read=yes` when no plan read of the session's carried the mid-session version, and `scorable=no` when the scored file was written before that version landed.
+A row names the arm, the run, which attempt of it wrote the row, the staging it came from (`tasks=1` or `tasks=2`), the watcher's shape (`mid-approval=`), the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, the mid-session version, every plan read with its time, the trigger and the times it fired and the version landed, when the scored file was written, the call each task's file holds, and five judgements:
+`verdict=` as above, `counted-mid-approval=yes` when that verdict counted the watcher's own plan review, `designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `read-after-change=yes` when a plan read of the session's carried the mid-session version, and `scorable=no` when the scored file was written before that version landed.
 An unscorable attempt is neither a pass nor a failure, since the session wrote the scored file before the new version existed.
 The shell prints one line for it, with the two times, and makes the run again, up to `PLAN_POINTER_DRIVE_ATTEMPTS` attempts.
 A run whose every attempt is unscorable fails.
-One `summary` line per arm names the staging and the watcher's shape, counts the kept rows, one per run, by the design each wrote and by the verdict each carries, and its `attempts=` is how many sessions that arm ran, the discarded attempts included.
+One `summary` line per arm names the staging (`tasks=`) and the watcher's shape (`mid-approval=`), and counts the kept rows, one per run (`runs=`), beside the sessions that arm ran, the discarded attempts included (`attempts=`).
+It counts those rows by the design each wrote (`wrote-mid=`, `wrote-unapproved=`, `wrote-standing=`, `wrote-early=`, `wrote-other=`) and by the verdict each carries (`verdict-approved=`, `verdict-pointer=`, `verdict-stale=`, `verdict-unapproved=`, `verdict-other=`).
+Three counts end the line: `designs-differ=`, the rows whose two files name different designs, `read-after-change=`, the rows whose session read the plan after the watcher moved it, and `trigger-at-bound=`, the rows whose watcher reached its bound with no plan read to fire it.
 The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
 only the extracted base tree is removed.
 

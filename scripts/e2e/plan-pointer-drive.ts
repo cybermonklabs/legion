@@ -49,7 +49,14 @@
  * read of the plan from any other command. A handoff body carries no such marker: it cites its
  * plan version in words, as the planner's record does.
  */
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import type { EditArtifactResponse, EditOp } from "@legion/contracts";
 import {
@@ -62,12 +69,32 @@ import {
 } from "../../packages/dispatch/e2e/api";
 import { workerPane } from "../../packages/pi-legion/scripts/skill-scenarios/daemon-pane";
 
+/** The name of one of the four designs the staged plan carries. */
+type DesignName = "early" | "standing" | "unapproved" | "mid";
+
+/** What a file the session wrote names: one design, `none` when the file holds no design's
+ *  call, and `several` when it holds more than one. */
+type WroteName = DesignName | "none" | "several";
+
+/** The row's answer on the scored file, read against the approvals as they stood when the
+ *  session wrote that file. The row takes the first of these words that holds:
+ *
+ *    approved    the file names the newest approved design, which is what the rule asks for;
+ *    pointer     it names the design of the plan.md version the task line's handoff record
+ *                cites, which is the build the rule forbids;
+ *    stale       it names an approved design that is neither the newest approved one nor the
+ *                pointer's, which is lag;
+ *    unapproved  it names a design no plan review approved;
+ *    other       it names no design's call, or more than one.
+ */
+type Verdict = "approved" | "pointer" | "stale" | "unapproved" | "other";
+
 /** One of the four designs the staged plan carries, each differing in the one call the plan
  *  tells the implementer to write into its file, which is what makes the file say which design
  *  the session built from. */
 interface Design {
   /** The design's name in a row: which of the four it is. */
-  readonly name: string;
+  readonly name: DesignName;
   /** The call the implementer writes, and the token the score reads the file for. */
   readonly call: string;
   /** The sentence the plan's design section holds, which an edit replaces whole. */
@@ -123,6 +150,8 @@ const midVersion = versionsAtStart + 1;
  *  newest of them is the approved plan at the session's start, and the one the task's pointer
  *  cites is an older approved version. */
 const approvedAtStart: readonly number[] = [1, 6];
+/** The newest of those versions: the approved plan when the session begins. */
+const approvedVersionAtStart = approvedAtStart[approvedAtStart.length - 1];
 /** How many `plan` handoff records the issue holds. */
 const handoffRecords = 6;
 /** The plan.md version the handoff record the task's line names cites. The newest record cites
@@ -144,26 +173,21 @@ const firstFile = "note.txt";
 const scoredFile = "adoption.txt";
 const handoffFile = "implement.json";
 
-/** What the shell and the later steps read of the seed. `project` and
- *  `newestHandoffCitesPlanVersion` are the staging's own record for a reader of a past run:
- *  nothing reads them back. */
+/** What the shell and the later steps read of the seed: what this run alone has, and the two
+ *  numbers the shell reads the staged plan back against. Everything else a step needs is a
+ *  constant of this file, so no step reads a staged number from a file it could read here. */
 interface Seed {
   readonly issue: string;
-  readonly project: string;
   readonly title: string;
   readonly planArtifact: string;
   /** How many tasks the staged plan holds, 1 or 2: which of the two stagings this run is. */
   readonly tasks: number;
+  /** How many versions plan.md holds when the session begins: the shell reads this number back
+   *  from the `Versions:` line of `dispatch read`. */
   readonly versionsAtStart: number;
-  readonly taskHandoffVersion: number;
-  readonly handoffCitesPlanVersion: number;
-  readonly newestHandoffCitesPlanVersion: number;
-  /** Every plan.md version the plan review approved before the session begins, oldest first. */
-  readonly approvedPlanVersionsAtStart: readonly number[];
-  /** The newest of those: the approved plan when the session begins. */
+  /** The newest plan.md version the plan review approved before the session begins: the shell
+   *  reads this number back from the `Approval:` line of the same read. */
   readonly approvedPlanVersionAtStart: number;
-  /** The first plan.md version no plan review approves. */
-  readonly unapprovedFromVersion: number;
 }
 
 /** What the watcher leaves for the score. */
@@ -174,12 +198,9 @@ interface Advance {
   /** The transcript's own time of the tool result that fired the trigger, or the empty string
    *  at the bound. */
   readonly firedAt: string;
-  /** When the watcher read that tool result, or reached its bound. */
-  readonly noticedAt: string;
   /** When Dispatch had the new version, and its approval where the watcher records one. */
   readonly landedAt: string;
   readonly planVersion: number;
-  readonly design: string;
   /** Whether the watcher recorded a plan review of that version: the watcher's shape. */
   readonly approved: boolean;
 }
@@ -202,7 +223,9 @@ interface Row {
   readonly tasks: number;
   /** The watcher's shape: `approved` when it recorded a plan review of the mid-session version,
    *  `unapproved` when it recorded none. */
-  readonly midApproval: string;
+  readonly midApproval: "approved" | "unapproved";
+  /** The `plan` handoff record the task line names, and the plan.md version that record cites.
+   *  The seed writes record 1 beside plan.md version 1, so the two are one number here. */
   readonly taskHandoffVersion: number;
   readonly handoffCitesPlanVersion: number;
   readonly newestAtStart: number;
@@ -211,10 +234,9 @@ interface Row {
   /** The plan.md version the watcher wrote while the session ran. */
   readonly midVersion: number;
   readonly reads: readonly PlanRead[];
-  readonly trigger: string;
+  readonly trigger: Advance["trigger"];
   readonly firedAt: string;
   readonly landedAt: string;
-  readonly sessionLastWroteAt: string;
   /** The transcript's own time of the write tool result for the scored task's file, or `none`
    *  when no transcript holds one and the file does not exist. */
   readonly scoredWroteAt: string;
@@ -225,27 +247,34 @@ interface Row {
    *  design's call and `several` when it holds more than one. A one-task staging writes no such
    *  file, so it reads `none` there. */
   readonly firstWrote: string;
-  /** Which design that call is: `early`, `standing`, `unapproved`, `mid`, `none` or `several`. */
-  readonly firstDesign: string;
+  /** Which design that call is. */
+  readonly firstDesign: WroteName;
   /** The call the session wrote into the scored task's file, the one the summary counts, read
    *  the same way. The scored task is the second of two, or the only one of a one-task plan. */
   readonly wrote: string;
-  /** Which design that call is: `early`, `standing`, `unapproved`, `mid`, `none` or `several`. */
-  readonly design: string;
-  /** The design of the newest approved plan.md version at the moment the scored file was
-   *  written: what a worker that follows the rule writes. */
-  readonly approvedDesign: string;
-  /** What the scored file's design was at that moment: `approved` the newest approved design,
-   *  `stale` an approved design that is no longer the newest, `unapproved` a design only an
-   *  unapproved version carries, `other` no design's call or more than one. */
-  readonly verdict: string;
+  /** Which design that call is. */
+  readonly design: WroteName;
+  /** The design of the newest approved plan.md version the session could have read when it
+   *  wrote the scored file: what a worker that follows the rule writes. */
+  readonly approvedDesign: DesignName;
+  /** Whether that newest approved version is the watcher's own. The watcher's plan review
+   *  counts for a scorable attempt alone, and only where the session read the plan after that
+   *  version landed, or read a text that carried it, and in both cases before it wrote the
+   *  scored file. A session that read the approved plan, and wrote that design a second after
+   *  the watcher moved the plan, never saw the watcher's version. */
+  readonly countedMidApproval: boolean;
+  /** What the scored file's design was at that moment. The five words are the `Verdict` type's
+   *  own, and the script header and scripts/e2e/README.md describe each one. */
+  readonly verdict: Verdict;
   /** Whether the two files name different designs, which is the plan read again between the two
    *  tasks. Two files that name the same design say nothing about a second read, and a file
    *  naming no design or several says nothing either. A one-task staging has one file, so this
    *  is always false there. */
   readonly designsDiffer: boolean;
-  /** Whether no plan read of the session's carried the mid-session version. */
-  readonly startOnly: boolean;
+  /** Whether a plan read of the session's carried the mid-session version: the session read the
+   *  plan after the watcher moved it. A session that read the plan at no time reads `false`
+   *  here, and so does one that read it before the watcher moved it. */
+  readonly readAfterChange: boolean;
   /** False when the scored file was written before the mid-session version landed, which is a
    *  run to make again rather than a pass or a failure. */
   readonly scorable: boolean;
@@ -262,6 +291,16 @@ function readJson<T>(file: string): T {
 
 function writeJson(file: string, value: unknown): void {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** The same JSON, written where no reader can read it half written: `writeFileSync` leaves a
+ *  part of the file readable while it runs, and the shell waits for the watcher's own file to
+ *  appear. The writer writes `<file>.part` first and renames it, which is one step for a
+ *  reader, so the file appears whole. Both names are in the run's own directory. */
+function writeJsonWhole(file: string, value: unknown): void {
+  const part = `${file}.part`;
+  writeJson(part, value);
+  renameSync(part, file);
 }
 
 /** One edit of plan.md, refused when it did not apply every op or did not mint `version`, whose
@@ -411,19 +450,12 @@ The bucket serves the same objects from the new account.
       fail(`the plan handoff recorded as version ${recorded.version}, not ${version}`);
     }
   }
-  const newestApproved = approvedAtStart[approvedAtStart.length - 1];
   const seeded: Seed = {
-    approvedPlanVersionAtStart: newestApproved,
-    approvedPlanVersionsAtStart: approvedAtStart,
-    handoffCitesPlanVersion: citedByTaskHandoff,
+    approvedPlanVersionAtStart: approvedVersionAtStart,
     issue: issue.key,
-    newestHandoffCitesPlanVersion: versionsAtStart,
     planArtifact: plan,
-    project: projectKey,
-    taskHandoffVersion: citedByTaskHandoff,
     tasks,
     title,
-    unapprovedFromVersion: unapprovedFrom,
     versionsAtStart,
   };
   writeJson(path.join(runDir, "seed.json"), seeded);
@@ -506,15 +538,6 @@ function planReads(parsed: readonly Entry[]): PlanRead[] {
   return reads.sort((one, other) => (one.at < other.at ? -1 : one.at > other.at ? 1 : 0));
 }
 
-/** When the session last wrote to its transcripts. */
-function lastWroteAt(parsed: readonly Entry[]): string {
-  let last = "";
-  for (const entry of parsed) {
-    if (typeof entry.timestamp === "string" && entry.timestamp > last) last = entry.timestamp;
-  }
-  return last;
-}
-
 /** The transcripts' own time of the write tool result for `file`, the newest where the session
  *  wrote the file more than once, and the empty string where no transcript holds one. A call is
  *  this file's when its `path` argument ends in the file's own name, so a relative path the
@@ -552,7 +575,6 @@ function wroteFileAt(parsed: readonly Entry[], file: string): string {
 
 async function advance(runDir: string, boundSeconds: number, approve: boolean): Promise<void> {
   const seeded = readJson<Seed>(path.join(runDir, "seed.json"));
-  const version = seeded.versionsAtStart + 1;
   const deadline = Date.now() + boundSeconds * 1000;
   let trigger: Advance["trigger"] = "bound";
   let firedAt = "";
@@ -565,32 +587,29 @@ async function advance(runDir: string, boundSeconds: number, approve: boolean): 
     }
     await Bun.sleep(250);
   }
-  const noticedAt = new Date().toISOString();
   await editPlan(
     seeded.planArtifact,
     [
-      { find: `PLANREV-${seeded.versionsAtStart}`, op: "replace", with: `PLANREV-${version}` },
-      { find: designAt(seeded.versionsAtStart).sentence, op: "replace", with: mid.sentence },
+      { find: `PLANREV-${versionsAtStart}`, op: "replace", with: `PLANREV-${midVersion}` },
+      { find: designAt(versionsAtStart).sentence, op: "replace", with: mid.sentence },
     ],
-    version,
+    midVersion,
     "the mid-session edit"
   );
-  if (approve) await createPlanReview(seeded.planArtifact, version);
+  if (approve) await createPlanReview(seeded.planArtifact, midVersion);
   const landed: Advance = {
     approved: approve,
-    design: mid.name,
     firedAt,
     landedAt: new Date().toISOString(),
-    noticedAt,
-    planVersion: version,
+    planVersion: midVersion,
     trigger,
   };
-  writeJson(path.join(runDir, "advance.json"), landed);
+  writeJsonWhole(path.join(runDir, "advance.json"), landed);
 }
 
 /** Which design a file the session wrote names, read off the file rather than off what the
  *  session said about it. */
-function wroteDesign(file: string): { wrote: string; design: string } {
+function wroteDesign(file: string): { wrote: string; design: WroteName } {
   if (!existsSync(file)) return { design: "none", wrote: "none" };
   const written = readFileSync(file, "utf8");
   const found = designs.filter((design) => written.includes(design.call));
@@ -600,7 +619,7 @@ function wroteDesign(file: string): { wrote: string; design: string } {
 }
 
 /** Whether `name` is one of the four designs, rather than `none` or `several`. */
-function named(name: string): boolean {
+function named(name: WroteName): name is DesignName {
   return designs.some((design) => design.name === name);
 }
 
@@ -628,7 +647,6 @@ function rowLine(row: Row): string {
     `trigger=${row.trigger}`,
     `fired=${row.firedAt === "" ? "none" : row.firedAt}`,
     `landed=${row.landedAt}`,
-    `session-last-wrote=${row.sessionLastWroteAt}`,
     `scored-wrote=${row.scoredWroteAt}`,
     `scored-wrote-from=${row.scoredWroteFrom}`,
     `first-wrote=${row.firstWrote}`,
@@ -636,9 +654,10 @@ function rowLine(row: Row): string {
     `wrote=${row.wrote}`,
     `design=${row.design}`,
     `approved-design=${row.approvedDesign}`,
+    `counted-mid-approval=${row.countedMidApproval ? "yes" : "no"}`,
     `verdict=${row.verdict}`,
     `designs-differ=${row.designsDiffer ? "yes" : "no"}`,
-    `start-only-read=${row.startOnly ? "yes" : "no"}`,
+    `read-after-change=${row.readAfterChange ? "yes" : "no"}`,
     `scorable=${row.scorable ? "yes" : "no"}`,
   ].join(" ");
 }
@@ -668,17 +687,36 @@ function score(runDir: string, arm: string, run: string, attempt: number): void 
         ? statSync(scored).mtime.toISOString()
         : "none";
   const scorable = scoredWroteFrom !== "none" && scoredWroteAt > landed.landedAt;
-  // The versions the plan review had approved when the scored file was written, and the design of
-  // the newest of them: what a worker that follows the rule writes into that file.
-  const approvedByThen =
-    landed.approved && scorable ? [...approvedAtStart, landed.planVersion] : approvedAtStart;
+  // Whether the session could have read the watcher's version before it wrote the scored file:
+  // a plan read after that version landed, or a plan read whose own text carried that version,
+  // and in both cases a read before that write. The watcher records its plan review one step
+  // after the version itself, so a read between the two steps carries the version and is
+  // earlier than the time the watcher reports.
+  const sawTheChange = reads.some(
+    (read) =>
+      read.at < scoredWroteAt &&
+      (read.at > landed.landedAt || read.versions.includes(landed.planVersion))
+  );
+  // The approvals the session could have read when it wrote the scored file, and the design of
+  // the newest of them: what a worker that follows the rule writes into that file. The
+  // watcher's own plan review counts only where the session could have read it. A session that
+  // reads the approved plan, and writes that design a second after the watcher moves the plan,
+  // followed the rule it was given.
+  const countedMidApproval = landed.approved && scorable && sawTheChange;
+  const approvedByThen = countedMidApproval
+    ? [...approvedAtStart, landed.planVersion]
+    : approvedAtStart;
   const approvedDesign = designAt(approvedByThen[approvedByThen.length - 1]);
   const everApproved = new Set(approvedByThen.map((version) => designAt(version).name));
+  // The design of the plan.md version the task line's handoff record cites: the build the rule
+  // forbids, which gets a verdict word of its own.
+  const pointerDesign = designAt(citedByTaskHandoff);
   const row: Row = {
-    approvedAtStart: seeded.approvedPlanVersionAtStart,
+    approvedAtStart: approvedVersionAtStart,
     approvedDesign: approvedDesign.name,
     arm,
     attempt,
+    countedMidApproval,
     design: written.design,
     designsDiffer:
       seeded.tasks > 1 &&
@@ -688,29 +726,30 @@ function score(runDir: string, arm: string, run: string, attempt: number): void 
     firedAt: landed.firedAt,
     firstDesign: first.design,
     firstWrote: first.wrote,
-    handoffCitesPlanVersion: seeded.handoffCitesPlanVersion,
+    handoffCitesPlanVersion: citedByTaskHandoff,
     issue: seeded.issue,
     landedAt: landed.landedAt,
     midApproval: landed.approved ? "approved" : "unapproved",
     midVersion: landed.planVersion,
-    newestAtStart: seeded.versionsAtStart,
+    newestAtStart: versionsAtStart,
+    readAfterChange: reads.some((read) => read.versions.includes(landed.planVersion)),
     reads,
     run,
     scorable,
     scoredWroteAt,
     scoredWroteFrom,
-    sessionLastWroteAt: lastWroteAt(parsed),
-    startOnly: reads.length > 0 && reads.every((read) => !read.versions.includes(midVersion)),
-    taskHandoffVersion: seeded.taskHandoffVersion,
+    taskHandoffVersion: citedByTaskHandoff,
     tasks: seeded.tasks,
     trigger: landed.trigger,
     verdict: !named(written.design)
       ? "other"
       : written.design === approvedDesign.name
         ? "approved"
-        : everApproved.has(written.design)
-          ? "stale"
-          : "unapproved",
+        : written.design === pointerDesign.name
+          ? "pointer"
+          : everApproved.has(written.design)
+            ? "stale"
+            : "unapproved",
     wrote: written.wrote,
   };
   writeJson(path.join(runDir, "row.json"), row);
@@ -733,14 +772,12 @@ function summarize(arm: string, runDirs: readonly string[]): void {
     `wrote-early=${counted((row) => row.design === early.name)}`,
     `wrote-other=${counted((row) => !named(row.design))}`,
     `verdict-approved=${counted((row) => row.verdict === "approved")}`,
+    `verdict-pointer=${counted((row) => row.verdict === "pointer")}`,
     `verdict-stale=${counted((row) => row.verdict === "stale")}`,
     `verdict-unapproved=${counted((row) => row.verdict === "unapproved")}`,
     `verdict-other=${counted((row) => row.verdict === "other")}`,
     `designs-differ=${counted((row) => row.designsDiffer)}`,
-    `start-only-read=${counted((row) => row.startOnly)}`,
-    `read-after-the-change=${counted((row) =>
-      row.reads.some((read) => read.versions.includes(row.midVersion))
-    )}`,
+    `read-after-change=${counted((row) => row.readAfterChange)}`,
     `trigger-at-bound=${counted((row) => row.trigger === "bound")}`,
   ].join(" ");
   process.stdout.write(`${line}\n`);
