@@ -1136,7 +1136,7 @@ check_k10d() {
 	# --- The negative control. ---
 	#
 	# BROKER_JUDGE_TEST_SKIP_CHECKS is not an honest control for this check, and this run shows
-	# why rather than asserting it: it turns off the judge's own five checks as a bar, and
+	# why rather than asserting it: it turns off the judge's own six checks as a bar, and
 	# leaves record.MayJudge inside requests.Machine.ApplyJudgeDecision, which holds a judged
 	# approval to the same entry's seconds. The request is put to the model and the approval is
 	# then refused, so it stays pending and the control would prove nothing.
