@@ -3312,6 +3312,19 @@ reviewRun("reviewer-text-findings-text-only-head-30", {
   "calls.jsonl": calls([submission(approval())]),
   "published.jsonl": bus(toldImplementer(head, "2026-09-30T17:39:00.000Z")),
 });
+// head-35: the reviewer published the wake after its completion was accepted, and never called
+// `read_record` at all. The stand-in answers `accepting` to every state read after that
+// completion, and `handoff_complete` and the phase reminder make those reads themselves, so a
+// scorer that took any 200 serving `accepting` would pass a reviewer that never read the record
+// — which is the step the rule names (review-threads.md step 1).
+reviewRun(
+  "reviewer-text-findings-text-only-head-35",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [...header, ...turn]
+);
 reviewRun("reviewer-text-findings-text-only-head-1", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -4307,7 +4320,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/11\t0/11\t0\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/12\t0/12\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4595,9 +4608,12 @@ test("published: the harness reads every message the score counts, in order", ()
 // with its review — before the completion and before `read_record` could answer `accepting` —
 // scores the same as one that waited, which is the ordering `workflow/review.go` makes
 // load-bearing and the reviewer's own round-1 finding.
-test("reviewer-text-findings, text-only: a wake published before the issue reached accepting fails", () => {
+test("reviewer-text-findings, text-only: a wake sent before the record was read fails, whether it was early or the record was never read", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-30\tpass=false\t.*event=APPROVE .*toldImplementer=false /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-35\tpass=false\t.*event=APPROVE .*toldImplementer=false /
   );
 });
 // Catches: a scorer blind to "to that topic alone" (review-threads.md step 2).
