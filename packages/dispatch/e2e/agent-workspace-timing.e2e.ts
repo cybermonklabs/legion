@@ -11,7 +11,8 @@ import { asUser } from "./users";
 /**
  * What the agent surfaces cost in time (INFRA-812). Every row here reads a wall clock - a
  * sleeping live view at the stream's limit comes back inside 1.2 s, the Agents page paints six
- * hundred sessions inside 100 ms with no task longer than 150 - so the whole file runs in the
+ * hundred sessions with a median paint inside 100 ms and a median longest task under 150 - so
+ * the whole file runs in the
  * `chromium-alone` project, with the machine to itself (D14, `playwright.config.ts`'s
  * `clockSpecs` and `packages/dispatch/AGENTS.md`). Four lanes put four browsers, four Dispatch
  * servers and four Postgres servers on one machine, and a second of wall clock there holds
@@ -170,8 +171,9 @@ test("a sleeping view at the stream's worst case comes back inside 1.2 seconds",
 // Three loads and a median, because one reading judges the machine rather than the page: the
 // same bytes have painted in 40 ms and in 212 ms on this pod, so a single reading says as much
 // about what else the machine was doing as about the page. Each of the three loads is a page
-// of its own, drawn once and then closed - a cold draw, never a re-paint of a list the page
-// has already drawn - so a warm draw cannot pull the median under a bound a cold draw misses.
+// of its own, fresh from its own load, with one timed redraw and then closed - never a second
+// timed draw on a page that has already been timed - so a page warmed by an earlier timing
+// cannot pull the median under a bound a fresh one misses.
 //
 // The 150 ms is this pod's own gap between a windowed draw and an un-windowed one, measured on
 // 2026-11-09 with the machine idle. Windowed, three runs of three loads: the median longest
@@ -195,7 +197,7 @@ test("a sleeping view at the stream's worst case comes back inside 1.2 seconds",
 // medians, whether or not the row passes.
 // SLOW(>=2s): six hundred sessions seeded, then three pages that each list them all before the
 // one draw each of them is timed for.
-test("the Agents page paints six hundred sessions inside 100 ms with no task longer than 150", async ({
+test("the Agents page paints six hundred sessions with a median paint inside 100 ms and a median longest task under 150", async ({
   browser,
 }) => {
   await setLiveSessions(workers());
