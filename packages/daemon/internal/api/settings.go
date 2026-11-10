@@ -12,7 +12,7 @@ import (
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
-// 35): the values the daemon runs on, defaults included (a file that omits `max_fix_attempts`
+// 35): the values the daemon runs on, defaults included (a file that omits `review_round_cap`
 // answers 3), keyed as the file is. The route is unauthenticated, so the audience is every pod of
 // the deployment and anything else that reaches the daemon's API port; the block therefore leaves
 // out every credential, every source of one (a secretsd or Secret key, a key command) and every
@@ -90,7 +90,6 @@ type Settings struct {
 	PodUpdateMaxOpenRounds   *int                    `json:"pod_update_max_open_rounds"`
 	PodUpdateRoundsPerMinute *int                    `json:"pod_update_rounds_per_minute"`
 	ReviewRoundCap           int                     `json:"review_round_cap"`
-	MaxFixAttempts           int                     `json:"max_fix_attempts"`
 	Controller               config.ControllerLaunch `json:"controller"`
 	Capabilities             CapabilitiesSettings    `json:"capabilities"`
 	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
@@ -99,6 +98,13 @@ type Settings struct {
 	// RoleConfigFiles is `role_config_files`, the Oh My Pi overlays one role names and no other
 	// does, by role, `{}` while the file names none.
 	RoleConfigFiles map[string][]string `json:"role_config_files"`
+	// WorkerStallBackstopHours is `worker_stall_backstop_hours`, how long after a role's last
+	// recorded step the daemon ends that turn itself, by role, in hours as the file names them,
+	// 0 being the backstop off for that role. It is absent while the file names no role's
+	// bound, as `github_apps` is absent while the file configures no App: a deployment that
+	// names none runs every role on its own stall ladder's length, which is no number of this
+	// file's.
+	WorkerStallBackstopHours map[string]float64 `json:"worker_stall_backstop_hours,omitempty"`
 	// RepositoryRenames is `repository_renames`, the pairs this deployment treats as one
 	// repository wherever a name is compared, in configured order, `[]` while the file
 	// configures none.
@@ -351,7 +357,6 @@ func SettingsOf(cfg config.Config) Settings {
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
-		MaxFixAttempts:                          cfg.MaxFixAttempts,
 		Controller:                              cfg.ControllerLaunch,
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
@@ -393,6 +398,12 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for role, files := range cfg.RoleConfigFiles {
 		settings.RoleConfigFiles[string(role)] = stringsOf(files)
+	}
+	for role, bound := range cfg.WorkerStallBackstops {
+		if settings.WorkerStallBackstopHours == nil {
+			settings.WorkerStallBackstopHours = make(map[string]float64, len(cfg.WorkerStallBackstops))
+		}
+		settings.WorkerStallBackstopHours[string(role)] = bound.Hours()
 	}
 	return settings
 }

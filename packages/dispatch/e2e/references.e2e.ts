@@ -25,7 +25,8 @@ test.beforeEach(async ({ context }) => {
   await signIn(context, "alice");
 });
 
-test("an issue and its ask show a cross-project message and structural backlinks", async ({
+// @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
+test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -239,12 +240,12 @@ test("an answered decision keeps its backlink control and still moves with a lat
   );
   const live = { timeout: 30_000 };
   const decision = await expect
-    .poll(async () => (await getIssue(target.key)).open_asks.at(0)?.id, {
+    .poll(async () => ((await getIssue(target.key)).open_asks ?? []).at(0)?.id, {
       ...live,
       intervals: [50, 50, 100, 200, 500],
     })
     .not.toBeUndefined()
-    .then(async () => (await getIssue(target.key)).open_asks[0]);
+    .then(async () => ((await getIssue(target.key)).open_asks ?? [])[0]);
 
   const source = await createIssue({ project: "OPS", title: "Citing source" });
   await createMessage(source.key, {

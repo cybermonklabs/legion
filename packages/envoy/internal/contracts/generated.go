@@ -11,24 +11,25 @@ import (
 )
 
 type Envelope struct {
-	EventID        string          `json:"event_id"`
-	Source         string          `json:"source"`
-	SourceEventID  string          `json:"source_event_id"`
-	SourceSession  string          `json:"source_session,omitempty"`
-	Topic          string          `json:"topic"`
-	DedupeKey      string          `json:"dedupe_key"`
-	IssuedAt       int64           `json:"issued_at"`
-	ExpiresAt      *int64          `json:"expires_at,omitempty"`
-	KeptAt         *int64          `json:"kept_at,omitempty"`
-	PayloadSummary string          `json:"payload_summary"`
-	PayloadRef     string          `json:"payload_ref,omitempty"`
-	Payload        string          `json:"payload,omitempty"`
-	TraceID        string          `json:"trace_id"`
-	Sender         *EnvelopeSender `json:"sender,omitempty"`
-	InReplyTo      string          `json:"in_reply_to,omitempty"`
-	Supersedes     string          `json:"supersedes,omitempty"`
-	Urgency        string          `json:"urgency,omitempty"`
-	ExpectsReply   ExpectsReply    `json:"expects_reply,omitempty"`
+	EventID           string            `json:"event_id"`
+	Source            string            `json:"source"`
+	SourceEventID     string            `json:"source_event_id"`
+	SourceSession     string            `json:"source_session,omitempty"`
+	Topic             string            `json:"topic"`
+	DedupeKey         string            `json:"dedupe_key"`
+	IssuedAt          int64             `json:"issued_at"`
+	ExpiresAt         *int64            `json:"expires_at,omitempty"`
+	KeptAt            *int64            `json:"kept_at,omitempty"`
+	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
+	PayloadSummary    string            `json:"payload_summary"`
+	PayloadRef        string            `json:"payload_ref,omitempty"`
+	Payload           string            `json:"payload,omitempty"`
+	TraceID           string            `json:"trace_id"`
+	Sender            *EnvelopeSender   `json:"sender,omitempty"`
+	InReplyTo         string            `json:"in_reply_to,omitempty"`
+	Supersedes        string            `json:"supersedes,omitempty"`
+	Urgency           string            `json:"urgency,omitempty"`
+	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
 }
 
 type EnvelopeSender struct {
@@ -195,6 +196,17 @@ const SearchKindDepth = 100
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = "embedder_unavailable"
+
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = "phrase"
+	SearchOperatorOr      = "or"
+	SearchOperatorExclude = "exclude"
+)
 
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did

@@ -87,6 +87,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			PluginContract: current.PluginContract,
 			UpdateRound:    current.UpdateRound,
 			UpdateHead:     current.UpdateHead,
+			// What the daemon last saw this claim's agent do, which the stall backstop and an
+			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
+			Step: api.StepViewOf(current.Step),
 		}
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
@@ -174,7 +177,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				State:          string(pr.State),
 				ChecksVerdict:  classify.HeadVerdict(*pr),
 				ReviewDecision: reviewDecision,
-				FixAttempts:    pr.FixAttempts,
 			}
 		}
 
@@ -269,17 +271,27 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 	waiting := record.WaitingIssues(line)
 	projected.Admission.Active = active
-	// The roots of the live trees, which no slot says any more: a slot counts one issue at work,
-	// so a running tree holds none while its root waits for its children and they wait for a
-	// slot. The pass's own facts already name every lifecycle, so this costs no further read. A
+	// The roots of the live trees, which no slot says any more: a slot counts one issue the
+	// daemon has started, and a tree is live before the daemon has started anything of it — a
+	// root waiting in the line for its tree to be opened holds no row, and neither does a child
+	// of it. The pass's own facts already name every lifecycle, so this costs no further read. A
 	// lifecycle is keyed by the project token (record.ReadLifecycles) and this pass reads them
 	// all under this daemon's, so another project's root would be judged against a lifecycle
 	// that is not its own.
 	trees := record.LiveRoots(own, facts)
 	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
 	projected.Admission.Waiting = make([]string, len(waiting))
+	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
+	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
+	// Dispatch link blocks stands in the line and takes its place like every other member, and
+	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
+	// already, so the place is set where the key is listed: the line is built from `own`, the
+	// issues of this project among the issues the loop above gave a view to, each of them.
 	for i, issue := range waiting {
 		projected.Admission.Waiting[i] = issue.Key
+		view := projected.Issues[issue.Key]
+		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
+		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))

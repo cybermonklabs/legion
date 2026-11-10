@@ -24,6 +24,8 @@ const issue: IssueDetails = {
       kind: "doc",
       name: "Spec",
       primary: true,
+      ref_key: "CORE-1/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -44,7 +46,10 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  decisions_artifact_id: "",
+  plan_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   project: "CORE",
   referenced_by_count: 0,
   route: null,
@@ -111,6 +116,7 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       open_asks: 0,
       progress: { tasks: null, children: null },
       last_seq: 0,
+      labels: [],
       parent: issue.parent,
       blocked_by: issue.blocked_by,
       primary_artifact_id: issue.primary_artifact_id,
@@ -130,7 +136,13 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
   api.getIssue = async () => issue;
   api.getInbox = async () => inbox;
   api.listProjects = async () => [
-    { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ];
   api.listIssueAsks = async () => [];
   api.listComments = async () => [];
@@ -203,7 +215,12 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     {
       anchor: null,
       answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-1", kind: "session" },
+      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-waiting",
@@ -211,6 +228,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
       // in `waiting_on_person`; the shell signs in as `alice`.
       issue: { assignee: "alice", key: "CORE-1", title: "Responsive shell" },
       issue_key: "CORE-1",
+      last_reply: null,
       waiting_on_person: "alice",
       kind: "question",
       multiple: false,
@@ -237,7 +255,12 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     {
       anchor: null,
       answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-2", kind: "session" },
+      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-answered",

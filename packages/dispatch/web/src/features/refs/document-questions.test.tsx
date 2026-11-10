@@ -39,7 +39,12 @@ function askRead(id: string): AskRead {
     ask: {
       anchor: null,
       answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "planner", kind: "session" },
+      block_id: null,
       created_at: "2026-09-09T00:00:00Z",
       edited_at: null,
       id,

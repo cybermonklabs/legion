@@ -15,7 +15,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 ## Layout
 
 - `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
-- `web/src/api/types.ts` mirrors the Dispatch JSON entities.
+- `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
   the strings are not fixed-width and sort wrongly as text, and `Date.parse` drops their
@@ -524,9 +524,11 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `mergeIssue`'s included.
 - A read of a block of a comment or issue message (`blockQuery`, `["references", "to", ref]`, whose node id is `comment/<uuid>#<block id>` or `message/<uuid>#<block id>`) is no target `references_changed` names (the server stores those blocks as `comment_block` / `message_block`, which `refs.CountedChanges` drops), so its item's own events refresh it (`api/event-refresh.ts`): a `comment.edited` refreshes every read whose node is a block of that comment, pinned or not (`commentBlockReads`), since the edit can change the block's text or its pin's state; and a reply that names a block (`reply_block.node` on `comment.created`, `comment.answered`, `message.created`, `message.answered`) refreshes that block's read, which lists the reply (`appendRepliedBlock`). An issue message is never edited, so its blocks' text never moves.
 - `web/src/main.tsx` installs React Router and the shared Query client, a `DispatchQueryClient` (`api/query-client.ts`): its `refetchQueries`, and through it every `invalidateQueries` and `resetQueries`, never cancels a running request; a query already fetching is fetched once more when that fetch settles, so no read ever has two requests in flight, and a mutation's invalidation during a fetch still ends on the answer composed after its write. Every mutation's own `invalidateQueries` call keeps its shape. A failed read is retried twice unless the failure is definitive (`isRetryableQueryError` in `api/client.ts`: a 401, among others), each retry after `queryRetryDelay` (`api/query-client.ts`): a refusal carrying `Retry-After` in seconds (`ApiError.retryAfterMs`; Dispatch sends it with a 503 refusing excess load) waits that long, at most 30 s (`RETRY_AFTER_CEILING_MS`), plus a random share of it again, so tabs refused together do not all come back in the same instant and the whole wait stays under a minute however long a proxy's `Retry-After` is, and any other failure waits 500 ms.
-- `web/src/features/search/` owns the global palette; the rail `Search` control that opens it is a `RailButton` (below). It opens in one of three modes (`PaletteMode`): `all` - `Ctrl/Cmd+K` and the rail control - lists this page's actions and the search hits, `search` (`/`) lists hits alone, and `projects` (`g p`) lists the projects, Enter opening one. Each open is a global keymap binding in `app.tsx`, and the palette registers its own `Ctrl/Cmd+K` close in the `dialog` scope while open. The palette's dialog is mounted only while it is open, so each open starts on its first row and a closed palette holds no search of its own; `Ctrl/Cmd+K` and `g p` open with an empty query, since a query left there would filter a new page's actions, or its projects, down to nothing, while `/` reopens on its last search, selected so that typing replaces it, since its hits do not depend on the page. The action rows are `appKeymap.actions()`, taken on the render that opens the palette (the registry bullet below says why), so the rail control and `Ctrl/Cmd+K` offer the same rows for the same page and focus; with an empty query they all render under `Actions`, above the `Type at least 2 characters` message, and a query filters them by label. An action whose label the query starts stays under `Actions`, above the hits; one that holds the query further in (`issue` in `Close issue`, `status` in `Move card to the next status`) moves to `More actions`, below the hits, so a search and Enter opens a hit rather than running an action that only shares a word with it. Actions, projects and hits are one list of `role="option"` rows, so the arrows, Enter and `aria-activedescendant` cover all three, and an action row shows the keys that also run it (a palette-only action has none). The highlight is the row the reader sees highlighted, held by its id rather than a position: hits that arrive below the actions after the reader has arrowed, or a refetch that re-ranks them, leave it on that row; a new query returns it to the head, and so does its row leaving the list, the head then keeping it when the row comes back. The head is the first row unless the list holds only `More actions`: then nothing is highlighted and Enter runs nothing until the reader arrows, Down to the first row and Up to the last. While the query's search is still out, the arrows walk only the rows above where its hits will go, and with none they do nothing, so a key pressed before the answer cannot land on a `More actions` row that the hits then arrive above. A refresh that fails keeps the hits the query already has, and `Search failed.` shows only when it has none. The dialog is a column no taller than the screen below it, in which only the list scrolls; the list keeps one row's height, so a short window cuts the key hints and then the message rather than the row, and it scrolls the highlighted row into view whenever the highlight moves or the list's own height changes. It groups hits by their issue or standalone project-document owner; document-owned hits use the document name and `/projects/:key/documents/:slug` route, adding an ask or comment query parameter for discussion hits. It renders server snippets exclusively through `snippetSegments`, never `innerHTML`; document routes pass `?q=` through the document surface to mark and scroll to its first matching rendered text node. It queries between 2 and `SEARCH_QUERY_MAX` (`@legion/contracts/dispatch-tools`, 1,000) characters of trimmed text, the server's own bounds, and names the limit in place of a request past it.
+- `web/src/features/search/` owns the bar, the one list a reader reaches from anywhere; the rail `Search` control that opens it is a `RailButton` (below). `Ctrl/Cmd+K`, `/`, `g p` and that control open the same bar: each is a global keymap binding in `app.tsx` that sets one `barOpen`, and none of them is a palette row (a row that reopens the bar the reader is in helps nobody). `Ctrl/Cmd+K` is `inEditable`, so it opens from inside a document's editor; `/` is not, so a slash typed into a document stays a slash, and the Agents page shadows `/` with its own filter box. The bar registers its own `Ctrl/Cmd+K` close in the `dialog` scope while open. Its dialog is mounted only while it is open, so each open starts on its first row, with an empty box and the rows, the chip and the writing cursor of the page it opened over, and a closed bar holds no search of its own. Above the box sits the chip saying what the bar will act on (`features/search/bar-scope.ts`, `data-testid="search-scope"`, `role="status"`): `Acting on CORE-1` on an issue page, `Acting on Design notes` on a project document (its name from the page's own `["artifact-ref", …]` read, its slug until that answers), `Acting on CORE-1 and CORE-2` with issues selected on the issue list (`setSelectedIssues`, which `features/project/IssueList.tsx` writes while it is mounted and clears as it goes; three keys are named and the rest counted, `and 2 more`), `Acting on the project CORE` where the page names nothing narrower, and no chip at all on a page belonging to no project. `Tab` narrows it to the block the writing cursor was in (`scopeAtCursor`, read on the render that opens the bar, before `useDialog` takes the focus a frame later, from the `[data-block-id]` the cursor stands in; elsewhere Tab still steps through the bar's controls) and `Backspace` widens it to the project, on an empty box alone, so a box with words in it rubs out a letter as every other field does. `barTargets` (`bar-scope.ts`) is what reads that level: it answers what each offer acts on - the block at block level alone, no issue at project level, the project at every level - so the handoff row is listed only while the chip names an issue or a block of it, it names that block in the message it sends, and a new issue is filed in the chip's project. The chip is not the project filter chip: it sits above the box, says `Acting on …` and has no Remove control, while a filter chip sits below the box, reads `Project INFRA` and is removed by itself. With an empty box the list holds the person's recent items (`Recent`, `features/search/recents.ts`) above this page's actions; with words in it, the recents give way to the hits and the projects whose key or name those words hold (`Projects`, which Enter opens). The action rows are `appKeymap.actions()`, taken on the render that opens the bar (the registry bullet below says why), so the rail control and every key offer the same rows for the same page and focus; with an empty query they all render under `Actions`, above the `Type at least 2 characters` message, and a query filters them by label. An action whose label the query starts stays under `Actions`, above the hits; one that holds the query further in (`issue` in `Close issue`, `status` in `Move card to the next status`) moves to `More actions`, below the hits, so a search and Enter opens a hit rather than running an action that only shares a word with it. Recent items, actions, projects and hits are one list of `role="option"` rows, so the arrows, Enter and `aria-activedescendant` cover them all, and an action row shows the keys that also run it (a palette-only action has none). The highlight is the row the reader sees highlighted, held by its id rather than a position: hits that arrive below the actions after the reader has arrowed, or a refetch that re-ranks them, leave it on that row; a new query returns it to the head, and so does its row leaving the list, the head then keeping it when the row comes back. The head is the first row unless the list holds only `More actions`: then nothing is highlighted and Enter runs nothing until the reader arrows, Down to the first row and Up to the last. While the query's search is still out, the arrows walk only the rows above where its hits will go, and with none they do nothing, so a key pressed before the answer cannot land on a `More actions` row that the hits then arrive above. A refresh that fails keeps the hits the query already has, and `Search failed.` shows only when it has none; a projects read that failed says `Could not load projects.` under a query, since projects are rows of this list too. The dialog is a column no taller than the screen below it, in which only the list scrolls; the list keeps one row's height, so a short window cuts the key hints and then the message rather than the row, and it scrolls the highlighted row into view whenever the highlight moves or the list's own height changes. It groups hits by their issue or standalone project-document owner; document-owned hits use the document name and `/projects/:key/documents/:slug` route, adding an ask or comment query parameter for discussion hits. It renders server snippets exclusively through `snippetSegments`, never `innerHTML`; document routes pass `?q=` through the document surface to mark and scroll to its first matching rendered text node. It queries between 2 and `SEARCH_QUERY_MAX` (`@legion/contracts/dispatch-tools`, 1,000) characters of trimmed text, the server's own bounds, and names the limit in place of a request past it.
+- The bar's recent items are the person's own and live in the browser alone: Dispatch has no server store for them, and the keystroke that opens the bar makes no request, which is what lets the list paint at once. `features/search/recents.ts` records the issue or project document of every route the shell lands on (`useRecordRecents`, mounted in `app.tsx`, reading the page's own `["issue", …]` and `["artifact-ref", …]` queries, so it adds no request and fills in the title or name as they answer), keeps the newest `RECENT_LIMIT` (8) of them, newest first and one row per path, and reads them back from `localStorage` under `userPreferenceStorageKey(login, "search.recents")`, the key shape every browser-only value uses, so they are private to the signed-in identity and a reload keeps them.
 - The palette lists one page of hits, `GET /api/v1/search`'s first 20 in the server's fused order (`packages/envoy/cmd/dispatch/README.md`, "Search"), grouped under each owner in the order of its first hit. When the query matches more than the page holds, the message slot under the list says `Showing the best <n> of <total> matches`, so a partial list never reads as complete. An ask hit whose result carries `ask` adds a status line under its excerpt (`AskHitStatus` in `features/search/AskHitStatus.tsx`, which the create dialog's related items show too): a badge (`Open`, `Answered`, `Closed, no answer` or `Closed after an answer`), who closed it and when, and its latest answer - who gave it, when, the options chosen and the start of its text clamped to three lines. The clamp is CSS only and an option's text is its accessible name, so the text is first cut to `ANSWER_PREVIEW_CHARS` characters (beside `AskHitStatus`) at a word, balanced and closed with an ellipsis (`markdownHead` in `features/refs/markdown-fragment.ts`), and a screen reader never reads a whole long answer as the row's name; the closer is named through `AskResolutionLine agent="static"`, since a link inside the option would be a second control in one listbox row, and a hit from a Dispatch that predates the field shows no line.
-- `web/src/features/shell/RailButton.tsx` is the rail's control for a keyboard binding: a label, then the binding's keys in a `<kbd>`, with the top margin passed by the call site. `app.tsx`'s `NavigationContents` renders it twice, beside the keymap the hints stand for: `Search` (`⌘K` / `Ctrl K`), which opens the palette in its `all` mode, and under it `New issue`, which opens the same `CreateIssueDialog` the global `c` binding opens (`app.tsx` owns the one `createOpen` state both set), showing `c` as `?` and the palette show that binding and `aria-keyshortcuts="C"`, so a person who has not learned the shortcut can still file an issue. Each click calls `onClose`, which closes the compact navigation sheet, before it opens its dialog.
+- Between the box and the hits the bar says what it is doing with the words and what it is narrowing by (`features/search/SearchFilterBar.tsx`, `SearchOperators.tsx`, `search-filters.ts`). The three operator forms the route reads are listed as the reader types - `"two words"` the phrase, `this OR that` either word, `-word` hits without that word - and each is marked `in use` while the answer's own `query.operators` names it (`data-operator`, `data-in-use`), which is read from the answer rather than parsed a second time in the browser, so the bar and the search never disagree about what was written. Four narrowings are chips the reader adds: a project, an issue status, an author (typed, not picked: an author is a person's login or a session id and no list holds both, and the box is taken on Enter or on leaving it) and the day since which the item was last written. Each rides the route's own parameter (`project`, `status`, `author`, `updated_since`, the day as the instant its midnight began where the reader is) and each is part of the key the answer is kept under, so a chip added or dropped is another search and not another reading of this one. A chip reads back in the words the reader chose - `Project INFRA`, `Status Needs review`, `Author alice`, `Updated since 1 November` (the Activity tab's own day format, with the year only for another year) - never as a query string, and the chip itself is the control that removes it (`Remove Project INFRA`), which brings its picker back. A search from a project or an issue page narrows by nothing, as a search from anywhere does: the page's project (`routeProjectOf`) rides under `number_project`, the route's own parameter for the project a bare issue number is read in, which narrows nothing and sets no chip, so that page's issue still leads its number while the rest of the page is every project's. A reader who wants that project alone adds its chip. The pickers are plain buttons under a trigger rather than a `<select>` or a listbox: this dialog's `option` rows are its hits, and a second set of options would join the rows the arrows walk and the count a reader is given. Where the answer carries `degraded` the bar says `Searching words only: meaning search is not running, so a hit that uses other words may be missing.` (`data-testid="search-degraded"`, `role="status"`) above the hits, which it still shows. `e2e/going-key-forms.e2e.ts` and `e2e/going-operators.e2e.ts` are the browser rows for the key forms and for the operators and chips, and `e2e/going-bar.e2e.ts` for the one bar: the keys that open it on every page, the chip the page seeds and `Tab`/`Backspace` move, the issue list's selection, and the recent items an empty box lists beside the page's actions.
+- `web/src/features/shell/RailButton.tsx` is the rail's control for a keyboard binding: a label, then the binding's keys in a `<kbd>`, with the top margin passed by the call site. `app.tsx`'s `NavigationContents` renders it twice, beside the keymap the hints stand for: `Search` (`⌘K` / `Ctrl K`), which opens the bar, and under it `New issue`, which opens the same `CreateIssueDialog` the global `c` binding opens (`app.tsx` owns the one `createOpen` state both set), showing `c` as `?` and the palette show that binding and `aria-keyshortcuts="C"`, so a person who has not learned the shortcut can still file an issue. Each click calls `onClose`, which closes the compact navigation sheet, before it opens its dialog.
 - `web/src/features/issue/RelatedItems.tsx` is the new-issue dialog's related-item section, between its Spec field and its refusal: `RELATED_DEBOUNCE_MS` (400 ms, `features/issue/related-timing.ts`, a module importing nothing so the Playwright specs read the value the dialog runs on) after the title rests, it asks `GET /api/v1/projects/{key}/related` (`api.relatedItems`, the no-write check, which records nothing) with the title alone and lists what it found, each item a link in a new tab named by its owner alone, so the draft survives the click and a screen reader's link list names the item. Nothing is asked below two trimmed characters or with no project chosen. The query is keyed on the debounced title, so react-query aborts a check a newer title superseded, and what is shown is gated on that debounced title still being the one in the box: an answer that lands under an older title leaves `Checking for related items…` on screen rather than answering a title the reader has left. Which of the three forms an answer holds is `@legion/contracts`' `relatedCheckFormOf`, the one the CLI's lines read too (`packages/envoy-client/src/related-check.ts`); each surface only words that union, so a check that never ran (`No related-item check was made: …`) cannot be read as one that searched and found nothing on one surface and not the other. A past decision is named under the form, who answered it inside the same list item. The query asks fresh for every settled title (`staleTime: 0`, `gcTime: 0`): nothing invalidates its key, so under the app's defaults a title checked a moment ago would be answered from before the issue someone filed since. The section is a polite live region but `aria-busy` while a check is out, so a screen reader hears the answer alone rather than `Checking for related items…` at every pause in someone's typing; and because the section grows with what the check finds, the dialog's own form caps its height at the window and scrolls (`max-h-[100dvh] overflow-y-auto`, `xl:max-h-[calc(100dvh-6rem)]` for the wrapper's padding), or on a phone its Create row and the possible duplicate's **Create anyway** paint past the bottom edge with nothing to scroll. `e2e/create-issue-related.e2e.ts` drives in a real browser what only a browser shows: the found form and its found-nothing control, the fresh check after an issue is filed between two checks of one title, the debounce, the display gate with its `aria-busy`, and the scroll. The not-made form, the past decision, the failed check with Retry, and the two-character and no-project floors are `RelatedItems.test.tsx`'s.
 - `web/src/features/inbox/InboxDrawer.tsx` is the Inbox as a drawer over any page: the same `Inbox` component, mounted once in `app.tsx` beside `<main>` rather than inside `<Routes>`, so opening it never unmounts the page underneath (a live conversation keeps its half-typed message). It opens from `i` (a global binding offered everywhere but `/`, where the page already is the Inbox), from the compact top bar's `Inbox` / `Inbox N` button and from the rail's `Peek` beside Inbox (on `/` the top bar keeps its plain badge and the rail shows no `Peek`); Escape, Close, a click outside it and any navigation close it, and focus returns to what opened it. It docks right at `md:max-w-md` and fills the screen on a phone. `Inbox` takes `filter`, `onFilterChange`, `onQueryChange`, `keymapScope` and `pane` for it: the drawer keeps its filters, its sort, its grouping, its read-thread switch and its search text in its own `useState` instead of the URL (neither a pick nor a typed word may navigate the page beneath), opening on the reader as the page does, registers the Inbox's keys in the `dialog` scope, the only scope consulted while a dialog is open, and passes `pane={false}`, a peek being a strip beside the page it covers rather than a two-column reader. The reader's own preferences - the thread order and the folded bands - are the same in both, being the browser's rather than the list's.
 - `web/src/features/shell/keymap.ts` is the one keyboard registry. A component registers bindings with `useKeymap(scope, [{ id, keys, label, run, when?, inEditable?, palette? }])` (`scope` is a `KeymapScope` — `global`, `dialog`, `inbox`, `project`, `architecture`, `board`, `issue`, `document`, `agents` today; add a member when a page grows bindings, and list it in `ShortcutHelp.tsx`'s `SCOPE_LABELS` (typed) and `SCOPE_ORDER` (a plain array — a scope missing there is silently dropped from `?`) — and `keys` is tinykeys syntax: `"g i"` chord, `"$mod+k"` for Meta or Control, `"Shift+P"`, `"?"`; an array lists alternatives, and `[]` is a palette-only action no key press ever matches), and a page or dialog pushes its scope with `useKeymapScope(scope)`; `useDialog` pushes `dialog` and registers its Escape there. A combo matches the character its key types, so a reader on AZERTY or Dvorak presses the letter a shortcut names wherever the layout puts it; on a Mac, a combo that holds `Alt` also matches the key's position (`event.code`, `KeyM` for `m`), because Option rewrites the character there (`$mod+Alt+m` types `µ`). Elsewhere Alt combos match the character, so AltGr still types its layout's character; no other combo matches by position, since by position Dvorak's `l` would also press `p`. `ShortcutHelp` shows `$mod` as `⌘` and `Alt` as `⌥` on a Mac (`MOD_KEY_LABEL`, `ALT_KEY_LABEL`). `KeymapProvider` (mounted once around `AppShell`) owns the single `window` keydown dispatcher and the bottom-right chord indicator (`data-testid="chord-indicator"`): a key resolves top-down through `["global", …pages]`, the first scope with a match wins, and while any `dialog` scope is on the stack it is the only scope consulted, whatever mounted after it; a `when()` of `false` neither fires nor shadows. Chords wait 1000 ms for their next key. While a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, contentEditable, or an `INPUT` whose type is one of the text-entry ones - only `inEditable` bindings run (`$mod+k`, `Escape`, a document's `$mod+Alt+m`), so single letters and digits never eat typing; such a binding reaches every one of those controls, so one that belongs to only some of them says which in its `when`; a checkbox, radio or button `INPUT` takes no text, so the page's keys keep working when a pointer leaves focus on one; a keydown something else already `preventDefault`ed, or one mid-IME composition, is left alone. Registering a strict prefix of another sequence (`g` beside `g i`) throws in development. Global bindings live in `app.tsx`: `$mod+k` search, `/` search-only, `?`, `c`, `g i`/`g a`/`g s`, `g d` (the route's project Documents, `routeProjectOf` in `features/refs/routes.ts`, which `CreateIssueDialog` preselects from too), `g p` (pick a project), `i` (the Inbox drawer above, offered everywhere but `/`), and `Shift+S`/`Shift+M` toggling the sidebar and the margin, each persisted like its button and offered only where its button renders: from `xl`, and the margin's only on a route that has one, since below `xl` both are sheets that ignore the stored preference. `appKeymap.actions()` is what `$mod+k` offers as rows: the enabled bindings of the scopes beneath the innermost dialog, innermost scope first, less every one whose `palette` is `false`. `palette` defaults to `true` for a binding with one key or none and to `false` for one with several or one that is `inEditable`. A row presses only its first key, and a binding with several keys may pick what it does by the key pressed (the arrows, `1`–`9`, `0`–`3`), so a binding whose keys all do the same thing says `palette: true`, as the Architecture tab's `Enter`/`o` and `h`/`ArrowLeft` do. An `inEditable` key is one that has to work while the reader types, today `Escape`, `$mod+k` and a document's `$mod+Alt+m`, and such a binding is a row only when it says `palette: true`: inside the palette Escape closes it and `$mod+k` is its own key. Rows read innermost scope first and alphabetically by label within a scope, so the highlighted first row is a decision rather than a result of mount timing. `palette: false` marks the keys that walk a list with the row in hand - moving the cursor (`j`/`k`, and the Board's `h`/`l`) and marking rows (`x`) - the List's and the Board's `Enter` beside their `o`, which is already that action's row, the Architecture tab's `l`/`ArrowRight` into children (on a row with children its Open row does the same, and on a leaf it would do nothing), the Inbox's Escape that clears the marks, since Escape in the palette closes the palette, and `/`, which from `$mod+k`'s palette would only reopen it with its actions taken away. A binding that opens something else - `g p`'s project list, `?`'s shortcuts, `c`'s dialog - is a row like any other, since a row runs once the palette has closed. The list is taken on the render that opens the palette, while focus is still on whatever opened it, and a chosen row runs after the palette has closed and `useDialog` has put focus back there — otherwise a `when()` or a `run` that reads the focused element would see the palette's own input, and a row that moves focus would have its move undone by that restore. Running a row calls the binding's `run` with a `keydown` for its first key as written (`key: "Shift+P"` with no modifier flags, where a press of Shift+P reads `key: "P"` and `shiftKey: true`; no row's `run` reads its event today), and only if the binding is still registered and its `when()` still holds at that moment: the row was decided when the palette opened, and since then its control may have gone (another writer reopened the issue) or its component unmounted (the page fell to its error view). `c` mounts `features/issue/CreateIssueDialog.tsx` — project (preselecting the route's project), title, optional first spec line — which `POST`s through `api.createIssue`, shows a `POSSIBLE_DUPLICATE` answer with its candidate and offers **Create anyway** (`force`), and opens the created issue; Escape closes it and returns focus to the caller. The Inbox registers `j`/`k` (and arrows from a focused row) roving real focus over its `tabIndex={-1}` rows - a step taken from inside the reading column puts the focus back on the selected row first (`move` in `Inbox.tsx`), since a step that swaps the column's body unmounts the scroller holding the focus and drops it to `document.body`, where neither branch of Escape holds - `Enter` for the row's answer textarea, `1`–`9` for its fixed options, `o` for the owning issue, document or thread, `y` to copy the focused row's `dispatch://` reference where it has one, an Agent row having none (it clicks that row's own `CopyRefButton`, `COPY_REF_SELECTOR`, so the control confirms), `l` to move the focus into the reading column's own scroller (`read-pane`, `Move the focus into the reading pane`), which records the row it was pressed on - the focused row, else the selected one - for Escape to return to, and does nothing where there is no column: below 1280 px and in the drawer `paneShown` is false, and with no row selected no column is rendered for `paneScroller()` to find, `f` to put the focus in the search box (`search`, `Search asks`; not `inEditable`, so inside the box itself the key types an `f` rather than re-focusing what the reader is already in), `Escape` back to the row and then out - from inside the column to the row `l` was pressed on, else the row the column is showing, and from inside the search box to the list's selected row, or its first row where none is selected (`leave-search`, `inEditable` and offered only while the focus is in the box, so the Inbox's other Escapes are untouched and the drawer's own Close waits its turn) - `x` to mark the focused row - a Reply or Agent row as much as an ask, since the bar writes for both (its own checkbox is the mouse path into the same selection) - `e` to dismiss the focused thread row, which in the Dismissed view puts it back and which an Ask or Approval row has no Dismiss for, and `h` to snooze - the asks in the selection whenever it holds one, from wherever marking leaves the reader (a row, the checkbox they just ticked, the page) but not from inside an ask card, where the card's controls own the keys; otherwise the focused row's own picker - with `Escape` out of the bulk picker returning to the row focus came from (the bar itself when no row is rendered), and `Escape` with no row focused clearing the selection (the assignee filter's popover takes Escape first, since one press should close it rather than also drop what the reader marked). The bar holds both kinds of row and offers each its own write - **Snooze** for the asks marked, **Dismiss** for the threads - and it counts, as those writes touch, only the marks whose rows are on the page: a mark made under a wider assignee filter neither shows nor writes once the filter is back on the reader's own work, one the search box has hidden neither shows nor writes while the text hides it, and one whose row has folded into `Later` neither shows nor writes until the band is opened, since the reader has no checkbox for it there and may well have set that row's own moment since marking it. The mark itself survives all three. **Select all** is the one press that reaches past the page: it marks every row the list's narrowing matches, drawn or not, and the dismiss that follows names each of them by id - the Inbox's own thread read is unpaged, so they are all in hand, the ones behind **Show more** and the ones in a folded band among them - while in the paged Dismissed view, where they are not, it names the list's own narrowing with that read's own mark instead. Each row's own controls are named after its ask (`Select CORE-12: Which release?`, and the same for Snooze), since two asks on one issue would otherwise give two controls one name; where an issue has more than one row in the list the name carries the position too (`Select CORE-12, ask 2 of 2: …`), because two questions can agree for longer than a name can carry; a thread row's checkbox is named after its subject, which is what that row shows. `ProjectPage` pushes `project` and registers `v` (List ⇄ Board; inert on the Architecture and Documents tabs) while `IssueList` registers the List's own rows into that same scope, mounting only while the List shows so the Board never lists them beside its own: `j`/`k` rove real focus over its `tabIndex={-1}` `[data-issue-row]` rows, `o` opens the focused issue and `Enter` does from the row itself, and `j`/`k` are greyed in `?` whenever no row sits outside a collapsed band - a reader who folds every band by hand, as much as a project whose every issue is closed and so has only the band the page renders closed. `roveFocus` steps only over rows a reader can reach - every row that is not inside a closed `details` (`reachableRows`, the one helper the `when` gates count too, so a step and the offer of it cannot disagree; `checkVisibility()` would answer the same and needs Safari 17.4) - so a collapsed status band is crossed rather than dead-ended in: its rows stay in the DOM, can take no focus, and counting them would strand every row past the band; the same rule holds for the Inbox and Architecture rows it also serves, and the Board, which keeps the same four keys for its cards, answers it in its own model (`focusTarget`'s `isCollapsed`, since a collapsed rail renders no card). The Architecture tab pushes `architecture` and registers `j`/`k` (and arrows from a focused row) roving real focus over its `tabIndex={-1}` component rows, `Enter`/`o` to open the focused component (into its children when it has any, exactly like `l`, else its details), `l`/`ArrowRight` into its children and `h`/`ArrowLeft` up one level (focus follows: the first row of the new level, or the row just left), and `Escape` back to the row and then out. The Board pushes `board` and registers `j`/`k` (and arrows from a focused card, column or rail) roving real focus over its `tabIndex={-1}` cards, `h`/`l` to the previous / next column at the same index clamped (an empty column or a collapsed rail takes focus itself), `Shift+J`/`Shift+K` to move the focused card down / up one, `Shift+H`/`Shift+L` to move it to the top of the previous / next status (into Done closes, out of Done reopens - the drag rule), `o` and `Enter` (on the card itself) to open the issue, `p` to focus the card's priority select, `y` / `Shift+Y` to copy the focused card's `dispatch://CORE-12` reference / bare key, and `Escape` back to the card and then out; every move goes through `moveCard` and is read out by the board's `sr-only` `role=status` live region (`Board announcements`: `CORE-12 → Todo, position 2 of 5`, `CORE-12 → Done, closed`, `Copied dispatch://CORE-12`). The Agents page pushes `agents` and registers `j`/`k` roving real focus over its `tabIndex={-1}` session rows, `Enter` to message the focused agent (opening a collapsed row first, then focusing its composer on the next frame), `i` for that row's issue picker - which ends inside the picker's own `<select>`, where the arrows choose, Enter commits the pick and hands the reader on to the composer the issue is for, and Escape closes the picker and returns to the row, from inside the composer and from the row itself (a list that fails or is still out renders no select, so the row is where `i` leaves the reader), while leaving the select any other way - Tab, Shift+Tab, a click elsewhere - drops a choice Enter has not committed, so the open select never shows an issue the message is not addressed to; the picker takes focus only once its list lands and only if focus is still where the open left it - the row, the picker's own button, or nothing - and a pick keeps whatever the reader has already typed, since the composer takes the mention an issue-owned comment needs into the live draft in place - body and accepted mentions together, so what the reader sees and what reaches the wire cannot disagree, with the one exception that the mention a channel seeded is dropped on the way into a channel that seeds none (a direct message already reaches its session), while a mention the reader accepted themselves survives every trip; a message on its way to the server is addressed already, so it holds the picker (disabled, and `i` greyed, until the server answers), every Reply and Cancel reply, and a refusal hands back exactly the draft that was sent; an issue closed after it was picked drops out of the open list on the next read but stays in the select (a disabled option) and on the toggle as `<KEY> (closed)` until another is picked, as a closed issue's header keeps its own status among its Status select's options, and a send to it posts, since a closed issue takes comments and messages - `Shift+P` to pin or unpin it, focus following the row to where the pin moves it - or to the fold's toggle when the row lands in a closed fold, hidden - since moving the row's node can drop focus to the document, and `x` to tick its broadcast checkbox; Escape inside the composer is the composer's own key - `MentionComposer` stops it before the dispatcher sees it - and its close runs the same `Back to the agent row` the `agents` scope registers, so `?` describes it and the binding takes over if the composer ever stops swallowing it. `IssuePage` pushes `issue` and registers the header's own controls: `s` and `p` focus the Status and priority selects, `0`–`3` set P0–P3 through the very write the picker uses - `IssuePage` creates one `useIssuePriority` for the page and hands it to `IssueHeader`, which renders `PriorityEditor` with it, so a refused keyed write rolls back once and is reported by the control the reader is looking at (every other surface - list row, board card, Inbox row - has no second way to write that priority and uses `PriorityControl`, which owns its write), `l` opens the labels popover, `e` edits the title, `Shift+P` pins or unpins, the chords `t s`/`t k`/`t p`/`t c`/`t h`/`t a`/`t v`/`t d`/`t o` select the Spec, Verification, Plan, Conversation, Children, Artifacts, Activity, Decisions and Collaborators tabs (`t a` is already Artifacts and `l` is already the label editor, so Activity takes `t v`, Verification takes its checks' `t k`, and Collaborators, the last tab, takes `t o`), and `Escape` leaves a focused Status or priority select - without it the next key is that select's own type-ahead, where `t` picks Todo or Testing instead of starting a chord. The bindings find their controls through `data-issue-header`, and each is offered exactly while its own control takes a click, so a closed issue greys the ones its header disables. `IssueHeader` registers keyless `close`, `reopen` and `set-p0`-`set-p3` into the same scope: too consequential for a single key, so they are palette-only, on the same handlers and the same guards as the Close and Reopen buttons and the priority editor, and the four priority rows write through the page's one priority write too, so a refused palette pick is reported where a refused digit is. The two that write without focusing a control - `0`-`3` and `Shift+P` - are also withheld while focus is on any `<input>` (an ask card's option radios, the margin composer's `Allow multiple`) or anywhere inside an ask card (`[data-ask-card]`, whose buttons are the card's too), since a key pressed there belongs to that control's own surface. A focused `<button>` is deliberately not withheld: every single-key binding in the registry fires from one, a digit has no native meaning on a button, and after any click - a tab, a disclosure, Copy - focus sits on the button that was clicked, which is where a reader reaching for the next shortcut stands. Single keys reach these controls at all because the registry passes every control that takes no typed text; that permission carries the obligation that a page whose key writes says for itself where the reader may press it (`IssuePage`'s `outsideInputsAndAskCards`, the Inbox's `outsideAskCard`). `ProofDocument` pushes `document` - an issue's Spec and its other documents and a project's document page each render one - and registers `$mod+Alt+m`, `Comment on selection` (Google Docs' chord): `inEditable`, since the editor is where it is pressed, and offered only while that editor has focus, takes edits and holds a non-empty selection, which is when the selection bar offers Comment, so it does nothing from a comment composer or any other field, on a closed issue's or a historical document, or with only a caret. It calls `ProofEditorHandle.commentOnSelection`, the bar's own Comment path (`act` in `@legion/proof-editor`'s `dispatch-action-bar.ts`, which the buttons call too), so the margin's composer opens on a provisional mark exactly as the button opens it. The issue page keeps its Spec mounted, hidden, beside another of its documents, so two documents register the binding at once; `describe()` lists a binding two mounted instances register as one row, enabled when either's `when()` holds. `?` opens `ShortcutHelp`, a `useDialog` overlay rendered from the registry as described the moment `?` fired (grouped by scope, live-filtered, `when()===false` rows greyed, keyless palette-only bindings omitted since they have no key to list, closed by a route change) — adding a binding is the whole change; the help has no list of its own.
@@ -593,11 +595,11 @@ The `Children` tab (`features/issue/ChildrenTab.tsx`) lists the issue's direct c
 
 An issue's own progress (`features/issue/ProgressChips.tsx`) is the `progress` object every issue read and list row carries (LEGION-542): `tasks`, the task-list items (`- [ ]` / `- [x]`, nested lists and callouts included) of its primary document's latest version, read from its markdown for the checkboxes alone (`pmdoc.CountTasksMarkdown`), so a spec holding a table the Proof schema refuses is still counted; stored on the issue with the version it was counted from by every version write (`docs.RecordTaskProgress`) and counted again once when the server starts, for every row whose stored version is not the document's latest - the rows the migration found, a version a build predating LEGION-542 wrote, and a row another writer held, retried briefly (`docs.Service.RunTaskProgressReconciliation`); and `children`, its direct children, every status, done being `status = 'done'`, computed from the children's statuses on each read. Each is `null` when the issue has none, and the component renders nothing for a null, or for a response with no `progress` at all (an older server during a deploy's overlap), so a list of plain issues stays quiet. The issue header shows each as a thin bar filled to done/total beside `3/7 tasks` (the `bar` prop; a count of one reads `1/1 task`, `0/1 child`), in the wrapping state row with the status, priority and claim, since the metadata rail below clips; a List row and a Board card show each as a `label` pill beside the claim chip. The bar's fill is `progressBarFill` in `theme/classes.ts`. The Children tab's per-child `D/N done` is a different count — that child's whole subtree — and stays.
 
-The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts (2)`; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`) for the `EventBody` fallback.
+The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`) for the `EventBody` fallback.
 
 Project pages keep their name, linked project key, project tabs, and, on issue routes, the keyboard-reachable List/Board control in a dense responsive header. At `md` and above these controls form one strip; on smaller screens the name, key, and blocker pill form the first row, with tabs and the view control below. When an open ask waits on the viewer, the header's `Blocked on you · N` pill links to the Inbox; it is absent when no asks are waiting.
 
-A List row (`IssueList.tsx`) is a keyboard target as well as one grid: `tabIndex={-1}` and `data-issue-row`, roved by the `j`/`k`/`o`/`Enter` bindings `IssueList` registers in the `project` scope - there, rather than in `ProjectPage`, because the component mounts only while the List is the view showing, and on the Board `?` would otherwise list each of those keys twice, once per scope. The rows of a collapsed status band are in the DOM, take no focus and are no step, so `j`/`k` cross a folded band and are greyed in `?` when no row sits outside one. Its key and title are one run of text inside the row's link, wrapped in a single span because below 1280 px every link is an inline-flex box (`styles.css`) whose children would otherwise be two flex columns, and the key is `whitespace-nowrap`, so it never breaks at its hyphen. From `sm` the timestamp shares the first line with the reference and the metadata runs below; on a phone the reference takes the whole first line and the timestamp sits at the right of the metadata line, since beside the title it would leave the title a column about 130 px wide.
+A List row (`IssueList.tsx`) is a keyboard target as well as one grid: `tabIndex={-1}` and `data-issue-row`, roved by the `j`/`k`/`o`/`Enter` bindings `IssueList` registers in the `project` scope - there, rather than in `ProjectPage`, because the component mounts only while the List is the view showing, and on the Board `?` would otherwise list each of those keys twice, once per scope. The rows of a collapsed status band are in the DOM, take no focus and are no step, so `j`/`k` cross a folded band and are greyed in `?` when no row sits outside one. Each row also carries a `Select <KEY>` checkbox, the Inbox's pattern: `x` and that checkbox are the two ways to select the row in hand, a key the list no longer holds drops out of the selection, and what is selected is what the bar says it will act on (`setSelectedIssues`, `features/search/bar-scope.ts`), which leaving the List clears. Its key and title are one run of text inside the row's link, wrapped in a single span because below 1280 px every link is an inline-flex box (`styles.css`) whose children would otherwise be two flex columns, and the key is `whitespace-nowrap`, so it never breaks at its hyphen. From `sm` the timestamp shares the first line with the reference and the metadata runs below; on a phone the reference takes the whole first line and the timestamp sits at the right of the metadata line, since beside the title it would leave the title a column about 130 px wide.
 
 A project's routes are `/projects/:key/architecture`, `/projects/:key/issues` (the List and the Board; every `?label=`/`?status=`/`?q=` filter URL lives here), and `/projects/:key/documents`; the bare `/projects/:key` (the sidebar's link) is the open-on rule in `ProjectPage.tsx`: it renders nothing while `["architecture-sources", key]` (`projectArchitectureSourcesQuery`, `GET /projects/{key}/architecture-sources`) is pending, then `<Navigate replace>` to `/architecture` when the list names at least one source or to `/issues` — the search forwarded — when it answers `[]`, which is what a project with no source reads as; any failure renders `QueryError`, never a quiet fall back to Issues. That key sits under Settings' `["architecture-sources"]` (`architectureSourcesQuery`, every project's sources), so invalidating the Settings list refreshes every project's too; the event feed refreshes both (`api/event-refresh.ts`), with `["components", key]` and `["architecture", key]`, on `settings.architecture_source.updated`, `architecture.synced` and `architecture.sync_failed`. (`isSourceNotFound` in `api/client.ts` remains for the architecture TREE read, which is still `404 SOURCE_NOT_FOUND` without a source, and stops the shared retry policy retrying it.) The Architecture tab exists only when the project has a source (a direct `/architecture` link without one is `NotFoundPage`). Settings' Architecture sources section (`features/settings/ArchitectureSourcesSection.tsx`) lists one row per source, keyed by project and repository: its project, repository and branch, and a status of `Synced <sha12> · N components <Timestamp>`, or the error with `Previous model stays up at <sha12> · N components`, or `Access verified` before the first import; each row's Refresh and Delete act on that source alone and are labelled with its repository and project (`Refresh architecture source <repo> for <project>`). The form's `Add source` adds a repository as a source of the chosen project, and saving a repository the project already has changes its branch; the copy says a project's model is every source's components together, so a component id must not repeat across a project's sources.
 
@@ -1038,12 +1040,13 @@ offers no button that can only fail.
 `GrantsSection.tsx` renders on `/settings` only where the pending list is not `null`: every live
 grant of a session the viewer operates, automatic or approved by anyone, and every grant the viewer
 approved (`grants.ts`'s `credentialGrantsQuery`, `?approver=me`). Each row names how it was
-granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; `CredentialGrant`
-is a union on `granted`, so an automatic grant has a null approver and record and an approved one
-has both), a pod enrollment's slot under its enrollment - the broker's `enrollment.slot`
-(`implementer-g3`, null without one), which is what tells two roles' grants in one pod apart, since
-they share the pod's kind and runtime id - and has a Revoke button that POSTs `{}` to
-`/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
+granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; the generated
+`ApproverGrantResp.granted` is the closed union `"automatic" | "approval"`, which the Go field's
+`enum` tag states, so the page reads the discriminant the broker writes rather than inferring it
+from a null approver), a pod enrollment's slot under its enrollment - the broker's
+`enrollment.slot` (`implementer-g3`, null without one), which is what tells two roles' grants in
+one pod apart, since they share the pod's kind and runtime id - and has a Revoke button that POSTs
+to `/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
 one makes that session ask before it gets those secrets again: its other automatic grants of them
 end with it.
 The list also holds, for every signed-in person, every live grant that belongs to no person: one
@@ -1635,15 +1638,18 @@ own lane's values under the plain names.
 
 A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one lane that names neither is refused naming both.
-`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names,
-which is CI's path: a runner has Docker and no Postgres binaries, and the shard
-and alone jobs of `.github/workflows/dispatch-browser.yaml` pass the pgvector
-digest on their browser step's own command line.
-`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`,
-which is a developer's and an issue pod's path, where there is a Postgres
-installation and no Docker; that provider runs `initdb` once per run and copies
-the data directory it made per lane, since `initdb` is the cost that grows with
-the lanes. Both keep the lane's data under the run's own temporary directory,
+`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
+a developer's path on a machine with Docker and no Postgres binaries, and the
+visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
+runner with only its Playwright command in a container.
+`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
+the shard and alone jobs' path and an issue pod's: those two jobs of
+`.github/workflows/dispatch-browser.yaml` run in a container that carries
+PostgreSQL 18 with `vector`, where there are Postgres binaries and no Docker
+socket, and they name that installation's directory. That provider runs
+`initdb` once per run and copies the data directory it made per lane, since
+`initdb` is the cost that grows with the lanes. Both keep the lane's data under
+the run's own temporary directory,
 which `e2e/run.ts` removes when it ends, and both answer on 127.0.0.1, which
 the server's dev sign-in requires of its database. With one worker and
 `DATABASE_URL` set, the run uses that database as lane 0 and starts no
@@ -1738,12 +1744,33 @@ owns the claim — a bun test under `e2e/__tests__/` for a harness module of thi
 directory (`e2e/__tests__/round-robin-proxy.test.ts` is the shape to follow: it
 spawns the module with `Bun.spawn`, waits for its listening line, drives it
 against stub upstreams and kills it in `afterAll`), that package's own tests for
-a command, and a Go test for a claim about the server (INFRA-1404). Two rows
-still in this suite take no page fixture: `e2e/cli-reply-answers.e2e.ts:10`,
-which drives the CLI, and `e2e/two-builds.multiprocess.e2e.ts:723`, which waits
-out the two-build block index's window. Both sit outside the ten rows
-INFRA-1404 moved and are tracked as dispatch://INFRA-1554, so they are
-exceptions on record rather than the shape to copy.
+a command, and a Go test for a claim about the server (INFRA-1404). Every row
+of this suite binds `page`, `browser` or `context`, and
+`cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
+check that decides it: it reads every call of `e2e/**/*.e2e.ts` whose callee
+TypeScript types as @playwright/test's `TestType`, or types as one of the
+title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of one — so
+a `test` extended by `test.extend`, renamed on import, reached through a
+namespace or bound to another name declares its rows like `test` itself, and a
+member bound to another name, by `const only = test.only` or
+`const { skip } = test`, declares its row like `test.only` and `test.skip`,
+since each is decided by the type the callee carries and not by the name it is
+written under — for the fixtures its callback binds, and refuses a row that
+binds none of the three. A callback written in the call is read there, and one
+passed by name is read where TypeScript's own checker says that name is bound:
+in its own scope, and in the module an import leads to, so a `for`-of `const`,
+a parameter or an import is never read as a same-named function declared
+elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
+the program cannot resolve — leaves its row refused with no fixtures, since
+fixtures the check did not read are not fixtures it saw. It reads the three
+Playwright listings first, to prove it scanned the files the suite runs. A row
+may stand all the same as a named exemption with its reason, written in
+`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
+exemption too — one naming a row the suite no longer holds, or one that drives
+a browser now — so the rule cannot come to lie in the other direction either.
+INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
+agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
+two-build rollout row.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
@@ -1885,11 +1912,14 @@ and a server that makes no call to Bedrock - which it would otherwise make for
 every indexed text and every query, on the file store's static keys, and be
 refused 403. `DISPATCH_TEST_EMBEDDER_OFF=0` builds the embedder again, for a
 run that means to prove that path. Its default is the one default of the four
-that is not fixed: `0` where this harness builds the dev embedder for the run
-(`DISPATCH_DEV_EMBEDDER`, which the server reads beside dev sign-in alone, so
-`DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc` builds none), `1`
-everywhere else, so the runs that read a vector the queue wrote need say it
-once and no other run reaches Bedrock.
+that is not fixed: `0` where this harness builds an embedder for the run - the
+dev embedder (`DISPATCH_DEV_EMBEDDER`, which the server reads beside dev
+sign-in alone, so `DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc`
+builds none), or the fake embedder (`DISPATCH_E2E_EMBEDDER=fake`, the listener
+`e2e/fake-embedder.ts`, which the server calls as it calls Bedrock and which
+counts the calls it was asked for) - and `1` everywhere else, so the runs that
+read a vector the queue wrote, or count the embeddings a stretch of typing
+cost, need say it once and no other run reaches Bedrock.
 
 Proof uses collaborative cursor decorations at the desktop `xl` breakpoint and above. Compact
 layouts intentionally omit the remote cursor plugin because its edge widget disrupts mobile
@@ -2195,7 +2225,16 @@ instead of building one from this checkout, read before its environment sweep as
 `scripts/e2e/dispatch-claimant-delivery.sh` reads `DISPATCH_BIN`, and refused when it is not an
 executable file; the harness gives B its own as `DISPATCH_E2E_SERVER_BIN_B`, so a run puts two
 builds of the server against one database the way `DISPATCH_E2E_WEB_DIST_B` puts two builds of
-the dashboard there (`scripts/e2e/dispatch-two-builds.sh`). The proxy alternates each HTTP
+the dashboard there (`scripts/e2e/dispatch-two-builds.sh`). `DISPATCH_E2E_BROKER_BIN_DIR` is the
+same for the real secrets broker: a directory holding `broker`, `dev-oidc-issuer` and
+`requestseed` that the caller built, which `e2e/run-broker.sh` execs instead of building them
+from this checkout, and which it refuses when any of the three is not executable there. It
+serves one directory only, `packages/envoy/out/dispatch-e2e-broker` under this checkout, and
+refuses every other by name before anything starts, because
+`e2e/real-broker.ts` runs `requestseed` out of that path alone, resolved against its own module
+and from no variable; its one caller, the `shard` and `alone` jobs of
+`.github/workflows/dispatch-browser.yaml`, downloads that file's `binaries` job's artifact into
+exactly that path. The proxy alternates each HTTP
 request and each websocket upgrade between A and B (two turns, each starting at A), streams each
 response back as it arrives, and forwards `Host` and `Origin` unchanged. `X-Dispatch-E2E-Process: a|b` on any request
 pins it, over a `dispatch-e2e-process=a|b` cookie, which pins a whole browser context, websocket
@@ -2452,6 +2491,287 @@ than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that pr
 over real time - that no request happens within a second - needs no such project: contention
 cannot make that claim false. A project whose dependency has a failing row does not run at all,
 so a red run leaves these rows unrun rather than measured beside a retry.
+
+## The stubbed layer
+
+Most rows of this suite need a real engine and not a real server: ProseMirror and Milkdown,
+Mermaid in a worker, `contenteditable`, the highlight API, forced colours, the phone. Such a row
+runs in the `stub` and `stub-phone` projects, in a real browser, against a recording of the API:
+a static file server over the build under test serves the document and its assets
+(`e2e/stub/static-server.ts`), every `/api/v1/**` and `/auth/whoami` answer is replayed from a
+HAR committed under `e2e/__recordings__/`, `/ws/live` answers from the contract fixtures, and the
+run holds no Go server, no Postgres, no fake listener, no sign-in and no database reset at all.
+`bun run e2e:stub` is that run, and it needs none of the harness.
+
+What a stubbed row may assert is what the browser does with a fixed answer: a layout, a width, a
+computed colour, focus and roving, a chord, an address, an accessibility scan, the markdown or
+directive the page draws from what the API returned, and a rule the page applies itself, which
+such a row proves by asserting that no request was made. What only a real-stack row may assert
+is anything the server decides. Four shapes, and a row of any of them stays where it is:
+
+- it reads something the server computes, enforces, refuses or ranks — a validation, a claim, an
+  admission, a settlement, a permission, an idempotency key, a search result's own ranking;
+- it **writes and then reads its own write**: a recording answers a refetch with the state
+  recorded before the write, so the row passes while proving nothing. This is the exclusion a
+  reader of "no coverage is lost" would miss, and it is mechanical rather than semantic: a row
+  that posts, patches or deletes and then asserts on a refetch, a reload, a second page or
+  another context belongs on the real stack whatever it asserts;
+- it needs a frame the server sends: a delivery arriving, an agent's turn streaming, or the live
+  document, whose Yjs socket no recording replays and whose editor an in-memory Hocuspocus does
+  not hold (measured on this issue: the editor reaches `connected` and takes the first keystroke
+  and no more);
+- it reads a clock the server keeps moving. A recording freezes `last_seen`, so a row whose
+  claim depends on how long ago something happened rots: ten minutes after a re-recording the
+  Agents page folds every seeded session under `Inactive (N)` (`isInactive`,
+  `web/src/features/agents/AgentsPage.tsx`). That is why no row of `agents.e2e.ts`,
+  `keyboard-agents.e2e.ts` or `keyboard-agents-pin.e2e.ts` is here.
+
+A row moves by moving its file, never by an annotation: 150 spec files reset the database in a
+`beforeEach` and most of them sign in and seed through the API, so a stubbed row left among them
+would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps every
+assertion it had and its title but for the ` @pr` the lane axis adds, and the file it left keeps
+its own rows and hooks. A row that the real-stack projects ran at two widths keeps both here
+too: `stub` runs every stubbed row as `chromium` runs every row of the suite, `stub-phone` greps
+the `@phone` tag as `iphone` does, and a row that is a phone row alone says so itself with the
+`test.skip` its author wrote, read against this project's name. Such a file
+declares its `test` with `stubbed(seed)` (`e2e/stub/stub-test.ts`): `seed` is the API seeding the
+rows need, which runs in record mode alone, and what it returns is written beside the recording
+as a scene file and handed back to each row as `scene`, so no row ever names an id the server
+minted. The fixture's `page` is already signed in, because the recording answers `/auth/whoami`.
+
+A recording is made with `bun run e2e:stub:record`, which runs the same rows against the real
+harness and writes each row's HAR and scene under
+`e2e/__recordings__/<project>/<family>/<row>.har`. The project names the directory because a
+row whose claim holds at both widths runs in both stubbed projects, and one file for the two
+would be written twice by two workers at once and replayed in whichever shape won
+(`e2e/stub/recordings.ts`).
+It is normalised as it is written (`e2e/stub/recording.ts`): the volatile transport erased, the
+entries in an order two recordings agree on, every URL on a placeholder origin, and every
+credential gone — the `dsession` cookie among them, since these files are committed to a public
+repository and a recording that still carries one is refused rather than cleaned at review time.
+The bodies are kept exactly as the server wrote them, so the page renders what it would have
+rendered; the masking that lets two recordings be compared is a second pass that is written
+nowhere.
+
+Two guards keep a recording from drifting out of step with the server unseen, and neither is
+optional. `e2e/__tests__/stub-recordings.test.ts` runs on every pull request that touches this
+package and holds every committed recording to
+`packages/contracts/schemas/dispatch-openapi.json`: the route, the method, the status and the
+body against that status's schema, so a response shape that changes fails on the commit that
+changes it. The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs daily,
+re-records every stubbed row against the real harness into a directory of its own and fails
+naming each route that no longer answers as its recording holds. It compares the **status of
+each route** and nothing else - no body's values and no body's shape - because two recordings
+of one row never agree on an id, a counter, a time, an empty list or a nullable field, and
+masking enough of that to be green would mask what the job exists to watch (`statusDrift`,
+`e2e/stub/recording.ts`). So four guards divide the work, each watching what the others
+cannot: the generated contract holds client and server to one shape at compile time, the
+contract test holds every recorded body to that shape on each pull request, this holds the
+status of each route, and the rows that stayed on the real stack hold the server's behaviour.
+The job uploads the re-recorded set, and applying it is a replacement of
+`e2e/__recordings__` by that artifact rather than a copy over it: a copy would leave behind
+every recording the job named as written by no row any more.
+It finds those too - which it could not while it re-recorded over the committed set - and a
+pull request refuses one before a nightly meets it, in two halves, because no one reading can
+see them all. `bun e2e/tools/row-map.ts` reads the listing: it refuses a recording no listed
+row owns, and a row the listing marks `skipped` owns none, which is every row skipped where it
+is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip`, or a describe-level
+`test.skip(true)` or `test.fixme()` - none of which runs a test-scoped fixture at all. The
+replay refuses what a listing cannot read: a row that skips itself inside its body, and one
+that passed and set no `scene` (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+Neither half sees a describe-level modifier whose condition is a function of a worker fixture,
+such as `test.skip(({ isMobile }) => !isMobile)`: the listing marks its rows `passed`, and
+Playwright decides it before any test-scoped fixture runs. So a stubbed row skips itself
+inside its own body, as every one of them does, and whoever skips a row any other way deletes
+its recordings in the same change.
+Read the recording step before you apply the artifact: the comparison runs even where that
+step failed, and a failed row leaves one of two things. One that threw while seeding wrote
+nothing, so it is named as a recording no row writes while its committed copy is sound; one
+that threw in its body wrote its `.har` all the same, holding whatever it reached before it
+failed. Fix the row and record again rather than replacing the directory, which would delete
+the first and commit the second.
+
+The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
+pull-request lane runs `--grep=(^|\s)@pr(\s|$)` over `chromium`, `iphone`, `stub` and
+`stub-phone`, which is `tagged("pr")`'s own pattern, anchored so `@prototype` is not `@pr`; the full
+lane, which the merge queue and the nightly run, runs every project and no grep. So a tagged row
+answers a pull request and an untagged one gates `main` at the merge queue, and nothing is
+deleted either way. Every stubbed row carries the tag, which
+`e2e/__tests__/pull-request-lane.test.ts` enforces along with the lane's budget: at most 330
+rows, at most 150 of them outside the stubbed projects. A real-stack row carries it only when a
+pull request needs to see its failure first, with a `// @pr: ` line above it saying why. **A new
+row defaults to neither**: write it where its claim belongs, and tag it only if the lane has room
+and the pull request needs it.
+
+`e2e/row-map.md` holds the rows that moved, each with the reason a recording can answer it, and
+every file whose rows stayed, each with the server behaviour those rows depend on.
+`bun e2e/tools/row-map.ts --write` writes it and `e2e/__tests__/row-map.test.ts` fails when the
+committed file and a fresh generation differ. It carries no count and names no `@pr` row,
+deliberately: both are read from a listing of the whole suite, so a map that held them would be
+red on every pull request of every tree that adds or removes a row here. A **new spec file**
+still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the
+generation refuses to write a map without one - and refuses a reason there for a file the
+listing does not name.
+
+What the map says of a moved row is that the move touched no line of what it asserts, and that
+sentence is the whole of what a reviewer reads for it, so a row where it is false must say so
+instead. `e2e/stub/moved-row-notes.ts` holds those rows, keyed by the spec file and the title
+joined by ` › `, with the note the map writes in that sentence's place; it owns the sentence
+too, so one file holds both halves. The usual cause is a forward merge: `main` changes a row
+this layer has already moved and the change cannot be copied across as it stands, because the
+stubbed row runs against a recording and a scene its file shares. Whether a row needs a note is
+a person's reading - nothing in a merged tree holds the row's assertions before the move, since
+the real-stack copy is the one this change deleted. What the generation does hold is the other
+direction: a note for a row the listing does not name fails it, and
+`e2e/__tests__/row-map.test.ts` fails a map that carries the unchanged sentence for a row with
+a note.
+
+## Accessibility and visual review
+
+Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
+every pull request and a containerised visual review that runs on the full lane. Each entry of
+that table carries the router path it stands for, the URL to open against `e2e/review-seed.ts`'s
+corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
+count of pages each covers is a program's answer rather than a sentence here.
+
+`e2e/accessibility.e2e.ts` opens every page of that table's scan set, in light and in dark, and
+scans each with `@axe-core/playwright` at `wcag2a`, `wcag2aa`, `wcag21a` and `wcag21aa` - WCAG
+2.0 and 2.1 at levels A and AA, and no best-practice rule, since a best practice is not a
+conformance failure and this gate refuses a pull request. One row per page reads both schemes,
+a reset, a seed and a sign-in paid once rather than twice, and each (route, scheme) prints an
+`A11Y …` line with its counts by impact and attaches the whole axe result to the report. A row
+fails on any serious or critical finding no exclusion entry covers. The rows are untagged, so
+`chromium` runs them and the pass reaches every pull request. What axe decides is the part of
+WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
+somewhere sensible, a reading order a person judges, a label that is present and wrong rather
+than missing, a focus order that is legal and useless - none of those are findings, and all of
+them stay the work of the browser rows that drive the page. A green accessibility pass says no
+machine-decidable conformance failure, never that the page is usable without a mouse.
+
+One bound on that is worth knowing before you reason about what this gate would have caught, and
+it was found by driving the check's own negative control rather than by reading the rules. A
+control's accessible name has more than one source, and axe takes `title` when nothing better is
+there. `components/PinButton.tsx` is icon-only and sets both `aria-label` and `title`: with the
+`aria-label` deleted the scan stayed at `critical=0 serious=0` and the row passed, because the
+name had not gone, it had fallen back. Only with both gone did the page report `button-name`
+(critical). So on a control that carries a `title`, a missing label is invisible here - and a
+negative control that deletes one and reads a green pass has measured nothing.
+
+The visual layer has the same trap in its own shape. A control of it does not go in
+`web/src/theme/palette.ts`: a `Swatch` there feeds contrast arithmetic alone - `pair()` builds
+the `{light, dark}` objects `CONTRAST_CHECKS` reads - while every colour a page actually draws
+is a static Tailwind literal such as `bg-slate-200`, whose value is Tailwind's own. So moving a
+swatch's OKLCH numbers changes no pixel, and a run that compares baselines after one passes
+with nothing different. A control that moves a rendered colour edits a class literal in
+`web/src/theme/classes.ts` together with its paired swatch, or a hex in `web/src/styles.css`.
+Keep the other layers green while you do it: `sky-700` in place of `slate-700` drops the
+offline pill below AA and reddens the unit step, and a control whose earlier step is red hides
+the reading it exists to take.
+
+Four rules follow from what controls of this layer have measured. The figures are in
+`e2e/visual.e2e.ts`'s comment on the bound, which owns them; they are not repeated here.
+
+**What bounds this layer is a count, not a per-pixel distance.** `threshold` is `0` and
+`maxDiffPixels` is `20`. A per-pixel threshold cannot be the bound, because the renderer's own
+drift moves a pixel further than the smallest real re-colour does, so any threshold that
+absorbs the drift blinds the layer. Read the count, and read what the layer therefore cannot
+see - a colour change confined to fewer than about 20 pixels - rather than a margin quoted from
+the widest token, which overstates it by three orders of magnitude.
+
+**A swatch and a class literal are many-to-one, so a control must move the literal the page
+actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
+`card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
+mappings table: a control on `surfaceBg` left both `settings` shots untouched where the `card`
+control reddened them. It is the `palette.ts` trap above in a second shape - a clean comparison
+told you nothing about the token, only about the string you edited. So never read a clean
+comparison as proof that a token is absent from a baseline.
+
+**A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
+gives twice the failures a hard assertion inside the `SCHEMES` loop gives, and nothing in the
+suite pins that behaviour, so a both-scheme control is the only check of it there is.
+
+**The host cannot read these baselines at all.** They are the pinned container's rendering,
+which is what the spec's `SKIP_REASON` says, and the skip is defeated by setting
+`DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
+every row at thousands of pixels. Every figure a control of this layer reports comes from a
+container run, and the way to know the rig is honest is to run it once with nothing changed.
+
+A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
+disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
+entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
+can judge, and the `dispatch://KEY` that owns the fix; the gate matches a finding to an entry on
+the first three. It also fails on an entry that matched nothing in the rows that ran, judged per
+worker over the routes that worker scanned (`test.afterAll`), so an entry left behind by a fix
+cannot sit there hiding the regression it once accepted. An entry is written only where the fix
+would change what another row of the suite claims - where the accessible page and the behaviour
+the product was asked for disagree - and that is a product judgement, so it goes to the
+architect with the rule, the DOM and the rows it would move, and is written once the architect
+has answered. Every other finding is fixed in `web/src`, in the change that found it.
+
+`e2e/visual.e2e.ts` compares the same table's shot set against committed baselines, in light
+and in dark, at the 1280x800 desktop width and, for the pages a phone width rearranges
+(`"shoot-phone"`), again on an iPhone 13. One spec, two projects: the phone rows carry the
+` @phone` tag, `visual-phone` greps it and `visual` inverts it, so each row runs once and
+reads its own project's baseline directory. Which pages are shot and which are excluded is
+`e2e/review-routes.ts` and nowhere else. An entry's `layers` says which layers read it: a page
+whose pixels cannot be held still is scanned and not shot,
+which is where `/machines`, `/machines/:machine` and `/credentials/machine` are - a registry's
+freshness, a tmux layout the seed carries none of and a capability probe that blinks each make
+a comparison flake and none of them touches a scan, which reads the DOM. An excluded entry is
+read by neither and carries the reason, a redirect, a live socket, a page another entry draws -
+and `e2e/__tests__/review-routes.test.ts` is what keeps that list honest: it holds every entry
+to a route of the router through `e2e/two-builds-routes.ts` and refuses a router route that no
+entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or
+written off, never silently unreviewed. `toHaveScreenshot` detects a change against a file
+somebody committed; it binds no element to the swatch `web/src/theme/classes.ts` names for it,
+which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-request lane.
+
+Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
+person takes and a baseline CI compares must be the same rendering, and a host's browser build,
+fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it seeds on the
+host, where `psql` is, starts the container and runs those two projects in it. Run it through
+the harness from this package, and give it `--update-snapshots` to take the baselines again:
+
+```sh
+bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
+```
+
+Outside that container the rows reach the runner and every one of them skips itself, since
+`DISPATCH_E2E_VISUAL_SEED` is unset.
+
+**That command needs a container runtime, and this package's pods have none, so from a pod the
+baselines come out of CI's own run.** The `visual` job is on the full lane alone, so a change
+that moves any shot page passes the pull-request lane and is caught by the merge queue or the
+nightly instead; the recovery from either is the same four steps.
+
+1. Read the full-lane run that refused the change: the merge queue's, or the nightly's. To
+   check the new baselines before the queue reads them again, add the `full-ci` label and push:
+   checking a fix for a failure that took the pull request out of the queue is the case the
+   root `AGENTS.md` gives the label. It takes effect at the next push, not when it is added,
+   and it is taken off again once that run has passed.
+2. Download what the job uploaded: `gh run download <run id> --repo <owner>/<repo> --name
+   dispatch-browser-visual-<attempt>`. The attempt is the run attempt, so a re-run's artifact
+   is `-2`.
+3. The archive holds the repository path, so every shot the comparison wrote is under
+   `<download>/…/packages/dispatch/e2e/test-results/`, one directory per failing row, named by
+   Playwright from the spec, the row's title and the project (`…-baseline-in-light-and-dark-
+   visual/`), with the file inside it called `<route>-<scheme>-actual.png`. `find <download>
+   -name '*-actual.png'` is the way to list them. Playwright writes an `-actual.png` for a
+   FAILING row only; a row that passed wrote nothing and its baseline is already right.
+4. Read the difference before you take it. Open the `-actual.png` beside the committed
+   `e2e/__screenshots__/<project>/<route>-<scheme>.png` and satisfy yourself that every pixel
+   that moved is one this change meant to move - a run of the same tree twice, byte for byte
+   identical, is what tells a real change from a page that has not settled. Then copy the
+   `-actual.png` over the baseline and commit it with the reason in the message.
+
+A baseline lives at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and is committed. It is
+the one file a spec of this suite reads that is not under `testInfo.outputPath()`, and the
+reason is what it is for: an output of a row is a debugging artefact the workflow uploads when
+the row fails, while a baseline is an input a person reads in a review and a reviewer approves
+as part of the diff. The path template drops the `{platform}` segment Playwright's default adds,
+since every shot is taken in that one pinned Linux image and the segment would say the same
+thing on every file. A route this layer gains has no baseline at all until a run writes one,
+which is the same four steps above with every row of the new route failing rather than one.
 
 ## Phone acceptance
 

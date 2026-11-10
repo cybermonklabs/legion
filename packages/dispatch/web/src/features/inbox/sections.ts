@@ -1,4 +1,5 @@
 import type { AskTurn } from "../../api/types";
+import { askTurn } from "./ask-turn";
 import { askWaitingOnPerson, type InboxListRow } from "./list-row";
 import { isSnoozed } from "./snooze";
 
@@ -100,5 +101,5 @@ export function sectionTitles(
 export function sectionOf(row: InboxListRow, now: number): InboxSection | undefined {
   if (row.kind === "thread") return "human";
   if (isSnoozed(row.ask, now)) return "later";
-  return row.ask.waiting_on;
+  return askTurn(row.ask.waiting_on);
 }

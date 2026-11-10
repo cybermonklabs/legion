@@ -18,24 +18,31 @@ import type {
 } from "../api/types";
 import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
+import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
 import { commentDeliveryFields } from "./comment-fixture";
+import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
-  node: { id: "ask-1", kind: "ask" },
+  node: graphNode({ id: "ask-1", kind: "ask" }),
 });
 
 afterAll(() => {
   getReferences.mockRestore();
 });
 
-function ask(overrides: Partial<Ask> = {}): Ask {
+function ask(overrides: Partial<OwnedAsk> = {}): OwnedAsk {
   return {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { kind: "session", id: "session-1" },
+    block_id: null,
     created_at: "2026-09-09T00:00:00Z",
     edited_at: null,
     id: "ask-1",
@@ -52,10 +59,16 @@ function ask(overrides: Partial<Ask> = {}): Ask {
   };
 }
 
-function answered(input: Ask, selected: string[], text: string | null = null): Ask {
+/** `input` answered. `selected` is the answer as the route table carries it, so a submission
+ *  this card made is passed straight in: a submission that picked nothing reads as no options. */
+function answered(
+  input: OwnedAsk,
+  selected: string[] | null | undefined,
+  text: string | null = null
+): OwnedAsk {
   return {
     ...input,
-    answer: { at: "2026-09-09T00:05:00Z", selected, text, user: "alice" },
+    answer: { at: "2026-09-09T00:05:00Z", selected: selected ?? null, text, user: "alice" },
     state: "answered",
   };
 }
@@ -626,10 +639,7 @@ test("AskCard keeps the backlink control its count earned after an answer", asyn
 
 test("AskCard submits the selected single option with the revision the human reviewed", async () => {
   const user = userEvent.setup();
-  const submitted: Array<{
-    id: string;
-    input: { selected: string[]; text?: string; expected_edited_at: string | null };
-  }> = [];
+  const submitted: Array<{ id: string; input: AnswerAskInput }> = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
     <AskCard
@@ -1364,6 +1374,7 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
   );
   const inboxInput: InboxRow = {
     ...input,
+    last_reply: null,
     priority: null,
     snoozed_until: null,
     thread: {
@@ -1678,7 +1689,11 @@ test("the thread composer only appears after an ask is answered", async () => {
 test("AskCard asks back from its answer field and clears the text without clearing the selection", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  const posted: Array<{ issueKey: string; body: string; askId?: string }> = [];
+  const posted: Array<{
+    issueKey: string;
+    body: string | undefined;
+    askId: string | null | undefined;
+  }> = [];
   const { view } = renderCard(
     <AskCard
       ask={input}
@@ -2083,7 +2098,7 @@ test("a reply composer remounted while its send is out shows the draft disabled 
   const user = userEvent.setup();
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
-  const bodies: string[] = [];
+  const bodies: (string | undefined)[] = [];
   const createReply = async (_issueKey: string, body: CreateCommentInput) => {
     bodies.push(body.body);
     return sent.promise;
@@ -2128,7 +2143,7 @@ test("two reply composers for one ask share its draft and its send", async () =>
   const user = userEvent.setup();
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
-  const bodies: string[] = [];
+  const bodies: (string | undefined)[] = [];
   const createReply = async (_issueKey: string, body: CreateCommentInput) => {
     bodies.push(body.body);
     return sent.promise;
@@ -2172,7 +2187,7 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
     return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
   });
   const input = answered(ask(), []);
-  const bodies: string[] = [];
+  const bodies: (string | undefined)[] = [];
   const createReply = async (_issueKey: string, body: CreateCommentInput) => {
     bodies.push(body.body);
     return reply({ body: body.body });
@@ -2222,6 +2237,7 @@ test("a document ask links its project and document page", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([
     {
       ...input,
+      last_reply: null,
       priority: null,
       snoozed_until: null,
       thread: {

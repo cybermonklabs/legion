@@ -53,7 +53,8 @@ allows, and they read no check; `skill://legion-worker`, *Every role pushes its 
 gives them).
 Under the Go daemon a check or workflow the base branch requires that settles red on the head,
 before the completion or after it, sends the work back to `implementing` with the failing checks
-named, until `max_fix_attempts` is spent, when the architect decides. The one CI result an implementer waits for is a re-run: when its task names a red that
+named, however many reds came before it.
+The one CI result an implementer waits for is a re-run: when its task names a red that
 failed on its own in a `pull_request` run, it re-runs the failed jobs once (`gh run rerun <run-id> --failed`) and completes once
 the re-run settles green, woken by the pull request's checks event (`skill://envoy`, *Wait for
 CI or a merge*: subscribe, then end the turn), never by a sleep loop.
@@ -118,18 +119,22 @@ you can run is reported under *When no surface reaches the changed path* below, 
 
 **A result is current** while its commit is still the head of an open pull request of the check's
 issue, or the final head of a merged one, and the check's words have not changed since; an
-`after_merge` or `default_branch` result is current at a commit the default branch carries. A push
-makes every result at the old head older, with no Dispatch write of anyone's, so each check is
-recorded again at the new head. `dispatch results --issue <issue>` prints each check with its
-latest result and whether it is current; `dispatch read --issue <issue>` names each requirement
-of the spec no check serves.
+`after_merge` result is current at a commit the branch its own issue's pull request merged into
+carries, or the repository's default branch does — that default branch alone where Dispatch knows
+of no merge of that issue — and a `default_branch` result only at a commit the repository's
+default branch carries.
+A push makes every result at the old head older, with no Dispatch write of anyone's, so each
+check is recorded again at the new head. `dispatch results --issue <issue>` prints each check
+with its latest result and whether it is current; `dispatch read --issue <issue>` names each
+requirement of the spec no check serves.
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
 own Verification document, read at its own head, so a child's pull request never makes a root
 check's result current and a child never records the result that proves a root's check. A child
 carrying part of a root's requirement proves it with a check on its own Verification document
-whose `serves` names that requirement. A root's own checks are proven at its own head, or on the
-default branch for an `after_merge` check, in its last round.
+whose `serves` names that requirement. A root's own checks are proven at its own head, or, for
+an `after_merge` check, on the branch the root's pull request merged into or on the repository's
+default branch, in its last round.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap

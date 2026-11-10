@@ -39,7 +39,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an email address written into a spec is a mailto link in the editor and in a past version", async ({
+// @pr: The mailto family's only row: an address written into a spec is a link in the editor and in a past version.
+test("an email address written into a spec is a mailto link in the editor and in a past version @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -59,7 +60,7 @@ test("an email address written into a spec is a mailto link in the editor and in
   );
   const newestVersion = async () =>
     Math.max(
-      ...(await getArtifact(issue.primary_artifact_id)).versions.map(({ number }) => number)
+      ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(({ number }) => number)
     );
   await expect.poll(newestVersion).toBeGreaterThan(1);
   const written = await newestVersion();

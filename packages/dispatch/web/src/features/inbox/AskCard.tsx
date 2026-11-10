@@ -11,7 +11,14 @@ import {
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import { usersQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import type {
+  AnswerAskInput,
+  Ask,
+  AskRead,
+  AskUrgency,
+  Comment,
+  CreateCommentInput,
+} from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -66,8 +73,9 @@ import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
+import type { OwnedAsk } from "./ask-name";
 import { askTurnHolder } from "./ask-turn";
-import { URGENCY_LABELS } from "./ask-urgency";
+import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { EarlierApproval } from "./EarlierApproval";
 import { askWaitingOnPerson } from "./list-row";
 import { clearReplyDraft } from "./reply-drafts";
@@ -85,7 +93,7 @@ const createReply = (
 
 export interface AskCardProps {
   artifactSlug?: string;
-  ask: Ask;
+  ask: OwnedAsk;
   /** The project document that owns an ask whose read lacks `document` (only Inbox rows carry
    *  it), so the card can still name the ask's `dispatch://` reference. */
   owner?: { project: string; slug: string };
@@ -139,7 +147,7 @@ export interface AskCardProps {
 }
 
 /** The urgency notch's text colour, matching the urgency badge of the same level. */
-const URGENCY_NOTCH_TEXT: Record<Ask["urgency"], string> = {
+const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   blocking: badgeBlocking.text,
   high: badgeHigh.text,
   low: badgeLow.text,
@@ -188,20 +196,22 @@ function useFormRef(): [
  * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
  * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
  * (`usersQuery`, read only once the reader reaches for the control and then kept for the
- * session), with the assignee of the ask's own issue offered first where the read carries it -
- * the Inbox hydrates `issue.assignee` and the other ask reads do not - since handing the ask
- * back to them is what empties the stored field and lets the ask follow its issue again.
+ * session), with the assignee of the ask's own issue offered first where the card has it -
+ * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and
+ * null on every other surface - since handing the ask back to them is what empties the stored
+ * field and lets the ask follow its issue again. Where it is null that person is still in the
+ * people list, under their own login: the named choice is a label, not the only way to pick
+ * them, and the control's own value comes from the ask itself.
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
  * reader pressed it, as `AssignToMe` and `SnoozeControl` do.
  */
-function AskHandOn({ ask }: { ask: Ask }): ReactNode {
+function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useAskHandOn(ask.id);
-  const assignee = ask.issue?.assignee ?? null;
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The list is drawn only once the reader reaches for the control, as it is read: the query
   // keeps its people for the session, so a card that built its options from whatever another
@@ -364,13 +374,15 @@ export function AskCard({
   const referencesPanelId = useId();
   const isCompact = variant === "compact";
   const inBlock = frame === "block";
-  const reference = itemRoute("ask", displayedAsk, displayedAsk.document ?? owner);
+  // `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
+  // cannot name it and this card's own row is where it is read.
+  const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
   const source = textSourceOf("ask", displayedAsk.id);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
-  const documentProject = (displayedAsk.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
+  const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
   const uploadOwner: ArtifactOwner | undefined =
     displayedAsk.issue_key !== null
       ? { issue: displayedAsk.issue_key }
@@ -435,8 +447,8 @@ export function AskCard({
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
-  const hasUrgencyNotch =
-    !inBlock && (displayedAsk.urgency === "blocking" || displayedAsk.urgency === "high");
+  const urgency = askUrgency(displayedAsk.urgency);
+  const hasUrgencyNotch = !inBlock && (urgency === "blocking" || urgency === "high");
   // The thread's own "still open?" wording must track the post-answer ask, not the possibly
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
@@ -449,11 +461,11 @@ export function AskCard({
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
-  const turnHolder = askTurnHolder(currentAsk, threadQuery.data?.replies.at(-1));
+  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
-  const newestReply = threadQuery.data?.replies.at(-1);
+  const newestReply = (threadQuery.data?.replies ?? []).at(-1);
   const recordedAnswer = completed?.state === "answered" ? completed.answer : null;
   const answerIsNewest =
     recordedAnswer !== null &&
@@ -466,7 +478,7 @@ export function AskCard({
     newestShownAt: answerIsNewest ? recordedAnswer?.at : newestReply?.created_at,
     owner: askRepliesOwner(displayedAsk),
     threadId: displayedAsk.id,
-    writes: threadQuery.data?.replies,
+    writes: threadQuery.data?.replies ?? undefined,
   });
   const markNewest = threadRead.ref;
   const unreadReplies = unread ?? threadRead.unread;
@@ -662,11 +674,11 @@ export function AskCard({
 
   return (
     <article
-      aria-label={`Urgency: ${URGENCY_LABELS[displayedAsk.urgency]}`}
+      aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[displayedAsk.urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -679,9 +691,9 @@ export function AskCard({
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[displayedAsk.urgency]}`}
+          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}`}
         >
-          {URGENCY_LABELS[displayedAsk.urgency].toUpperCase()}
+          {URGENCY_LABELS[urgency].toUpperCase()}
         </span>
       ) : null}
       <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
@@ -809,8 +821,12 @@ export function AskCard({
         {/* Whose question it is now, and the one control that hands it to somebody else. An
             ask that is not open waits on nobody, so it has none: a card whose ask is answered,
             resolved or withdrawn draws its record instead, and the one case that reaches here
-            is a reader changing the answer of a closed ask. */}
-        {displayedAsk.state === "open" ? <AskHandOn ask={displayedAsk} /> : null}
+            is a reader changing the answer of a closed ask. The ask is the fresher read and
+            the issue is the card's own prop: only an Inbox row carries one, and the ask reads
+            do not. */}
+        {displayedAsk.state === "open" ? (
+          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+        ) : null}
         <AskEditHistory ask={displayedAsk} edits={edits} />
         {referencedByNode}
       </div>
@@ -824,10 +840,10 @@ export function AskCard({
           the question in Newest first, at the foot of the card in Oldest first. */}
       {answerFirst ? null : threadNode}
       <form className="mt-3 space-y-3" onSubmit={submit} ref={trackForm}>
-        {displayedAsk.options.length === 0 ? null : (
+        {(displayedAsk.options ?? []).length === 0 ? null : (
           <fieldset className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
-            {displayedAsk.options.map((option) => (
+            {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
                 disabled={isSubmitting}

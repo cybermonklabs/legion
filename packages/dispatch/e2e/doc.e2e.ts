@@ -171,7 +171,7 @@ test("reading a document gives its headings ids without versioning it or crediti
   // nobody.
   const nameVersion = async (summary: string) => {
     const named = await createNamedVersion(artifactId, summary, { login: "bob" });
-    expect(named.authors.map(({ id }) => id)).toEqual(["bob"]);
+    expect((named.authors ?? []).map(({ id }) => id)).toEqual(["bob"]);
     return named.number;
   };
 
@@ -187,7 +187,9 @@ test("reading a document gives its headings ids without versioning it or crediti
       session
     );
     await expect
-      .poll(async () => (await getArtifact(artifactId)).versions.map(({ number }) => number))
+      .poll(async () =>
+        ((await getArtifact(artifactId)).versions ?? []).map(({ number }) => number)
+      )
       .toEqual([1, 2, 3]);
     await readAs(alice, "One region first.");
     expect(await nameVersion("after the agent's heading")).toBe(4);
@@ -196,7 +198,8 @@ test("reading a document gives its headings ids without versioning it or crediti
   }
 });
 
-test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both", async ({
+// @pr: The two-context race at the heart of the editor: two people edit one spec, see each other's text and cursor, and settle one version.
+test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -238,9 +241,9 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions
+          (artifact.versions ?? [])
             .find(({ number }) => number === 2)
-            ?.authors.map(({ id }) => id)
+            ?.authors?.map(({ id }) => id)
             .sort()
         )
       )
@@ -248,7 +251,7 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 2)
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -290,7 +293,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 2)
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -303,7 +306,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 3)
+          (artifact.versions ?? []).find(({ number }) => number === 3)
         )
       )
       .toMatchObject({ named: true, number: 3, summary: "Decided Postgres" });
@@ -331,7 +334,8 @@ test("named versions, the version picker, and the diff stay current across users
   }
 });
 
-test("an agent edit lands live in every open editor", async ({ browser }) => {
+// @pr: The live document: an agent's edit has to land in every open editor.
+test("an agent edit lands live in every open editor @pr", async ({ browser }) => {
   await createProject({ key: "LIVE", name: "Live updates" });
   const issue = await createIssue({
     project: "LIVE",
@@ -507,7 +511,8 @@ test("moving between issue documents leaves one open document connection, not on
 // end its session.
 // SLOW(>=2s): two browser contexts and the provider's own reconnect after the drop, which no
 // page clock can bring forward: the socket it reopens is a real one.
-test("a dropped document transport reconnects the mounted editor and leaves one connection", async ({
+// @pr: The live document: a dropped transport reconnects the mounted editor and leaves one connection, not one per drop.
+test("a dropped document transport reconnects the mounted editor and leaves one connection @pr", async ({
   browser,
 }) => {
   await createProject({ key: "BLIP", name: "Blip" });

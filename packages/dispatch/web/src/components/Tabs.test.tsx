@@ -51,7 +51,7 @@ test("tablist moves focus and selection with arrow, Home, and End keys and marks
   }
 });
 
-test("a counted tab shows the count as a pill and is named `<label> (<count>)`", () => {
+test("a counted tab shows the count as a pill and is named `<label> <count>`", () => {
   const view = render(
     <Tabs
       activeTab="issues"
@@ -66,8 +66,8 @@ test("a counted tab shows the count as a pill and is named `<label> (<count>)`",
   );
 
   try {
-    const documents = screen.getByRole("tab", { name: "Documents (3)" });
-    expect(documents.textContent).toBe("Documents3");
+    const documents = screen.getByRole("tab", { name: "Documents 3" });
+    expect(documents.textContent).toBe("Documents 3");
     expect(screen.getByRole("tab", { name: "Issues" }).textContent).toBe("Issues");
   } finally {
     view.unmount();

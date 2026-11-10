@@ -5,22 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // branchServer serves handler as the GitHub API and answers a client pointed at it.
 func branchServer(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	base := githubtest.Server(t, githubtest.Spec{Handle: handler})
 	_, pemText := testKeyPEM(t)
-	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, server.URL)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

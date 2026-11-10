@@ -438,11 +438,12 @@ test("the one-line preview shows each reference the shared table links as its ta
   const questions = new Map<string, string>();
   for (let offset = 0; ; ) {
     const listed = await listMyAnswers({ limit: 50, offset });
-    for (const row of listed.rows) {
+    const rows = listed.rows ?? [];
+    for (const row of rows) {
       questions.set(row.ask_id, row.question);
     }
-    offset += listed.rows.length;
-    if (listed.rows.length === 0 || offset >= listed.total) {
+    offset += rows.length;
+    if (rows.length === 0 || offset >= listed.total) {
       break;
     }
   }
@@ -512,7 +513,8 @@ function drawnTitlesByRow(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
-test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written", async ({
+// @pr: The live document: every reference of the shared table drawn in the editor, followed, and the stored text left as written.
+test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written @pr", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);

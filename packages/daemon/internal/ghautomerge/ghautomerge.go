@@ -33,7 +33,8 @@ const read = `query PullRequestAutoMerge($owner: String!, $name: String!, $numbe
     autoMergeAllowed
     pullRequest(number: $number) {
       id state headRefOid mergeStateStatus updatedAt isMergeQueueEnabled
-      autoMergeRequest { enabledAt } mergeQueueEntry { enqueuedAt }
+      autoMergeRequest { enabledAt } mergeQueueEntry { enqueuedAt state baseCommit { oid } }
+      baseRef { name target { oid } }
     }
   }
 }`
@@ -134,6 +135,84 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		number, repo, after.AutoMergeRequest != nil, after.MergeQueueEntry != nil)
 }
 
+// FailingRun is one check that failed on the commit the merge queue built for a pull request its
+// merge queue took out: its Name, how it ended (Result: a check run's conclusion as Legion's rule
+// for one reads it, classify.RunResult, or a commit status's state), and URL, the run it failed
+// in. JobID is the Actions job the check ran as, GitHub's databaseId for a check run its workflow
+// run is named with, and zero for everything that is no Actions job — a third-party App's check
+// run and a commit status among them — neither of which has an Actions log to read.
+//
+// Log is what the log of that job said, read after the removal is decided and only where the row
+// is about to tell of it (ReadFailingTests, the daemon's readyMerge): the tests its end states
+// failed with the first line stating one, or which way the daemon could not read them, written as
+// the end of this run's own line. A run whose log has not been read carries none, and its line is
+// what it would have been before any log was read: deciding a removal reads no log at all.
+type FailingRun struct {
+	Name, Result, URL string
+	JobID             int64
+	Log               string
+}
+
+// String is the one line a removal names this run with: the check, how it ended and the run it
+// failed in, with what its log said after them where it has been read.
+//
+// Name, Result and URL come out of GitHub's own check list, and this is the one place any of
+// them is written, so all three pass through cutLine here: that is the rule every string of
+// GitHub's this package renders is held to, one cut each at one place (jobFailures). Log
+// arrives cut, by the read that wrote it. The cut costs GitHub's own run link nothing, since
+// cutLine leaves a string of failureLineUnits runes or fewer exactly as it stands and that
+// link is of a fixed shape and some seventy characters. What it holds is the link of no fixed
+// shape: a third-party App's check run is named by the details URL that App wrote and a commit
+// status by its target URL (failingRuns), each as long as whoever posted the check made it,
+// and the first run of a removal is named however long its line is (FailingRuns).
+func (f FailingRun) String() string {
+	return fmt.Sprintf("%s (%s, %s)%s", cutLine(f.Name), cutLine(f.Result), cutLine(f.URL), f.Log)
+}
+
+// failingRunsUnits is how long the runs of one removal are named for before the rest are
+// counted ("and 12 more runs"), measured in the bytes of the text, which is never fewer than
+// its UTF-16 units.
+//
+// Every sentence this package writes is rendered into one block of a Dispatch post — the
+// implementer's task and the architect's checks-red notice a failed merge sends, the READY
+// withdrawal's post, the re-submission's, and merge-removed — and Dispatch refuses a block over
+// DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units (packages/contracts), naming it; the daemon then
+// tells the architect its message was refused, which is the failure this bound exists to spare
+// it. One job's line is bounded in itself (failingTestsNamed, failureLineUnits): some 2,400
+// units of names and prose as the read writes them, and 22,103 once they are quoted — 22,121
+// with the tail that counts the names it did not state — which is the count a Dispatch post is
+// measured in. The run's own name, result and link are cut here and never quoted
+// (FailingRun.String), so each costs at most 2 × failureLineUnits + 1 = 401 units, a rune
+// outside the BMP, an emoji in a check's name among them, being two UTF-16 units, which is
+// 3 × 401 + 5 = 1,208 for the three of them with the " (", ", " and ")" around them. A merge
+// group a broken base fails across twenty jobs names twenty such lines. Sixteen thousand holds
+// every removal's runs to half that block, which leaves the sentence they stand in, and the
+// prose around it, the other half. The one line this bound gives way to is the first run's,
+// which is named however long it is: a first line of that quoted worst case runs to
+// 22,121 + 1,208 = 23,329 units and every run after it is counted, so a removal's runs stay
+// inside the block whichever way they run.
+const failingRunsUnits = 16000
+
+// FailingRuns is runs as every removal that carries them names them, and as the daemon's own
+// messages of one do: each run's line, "; " between them, up to failingRunsUnits of text, with
+// the rest counted after them ("and 12 more runs"). The first run is always named, however long
+// its own line is: a bound that named none would leave a removal saying nothing of what failed.
+func FailingRuns(runs []FailingRun) string {
+	var named strings.Builder
+	for i, run := range runs {
+		line := run.String()
+		if i > 0 && named.Len()+len(line) > failingRunsUnits {
+			fmt.Fprintf(&named, " and %d more runs", len(runs)-i)
+			break
+		}
+		if i > 0 {
+			named.WriteString("; ")
+		}
+		named.WriteString(line)
+	}
+	return named.String()
+}
+
 // Submit asks GitHub to merge pull request number of repo at head, the head an accepted READY
 // named, through github, a GraphQL client. It reads GitHub first and then asks keep for the READY
 // head the record still awaits, so a READY withdrawn or left between the two submits nothing. A
@@ -155,6 +234,11 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 // failed is MergeFailed, and any other removal, a person's dequeue or turning auto-merge off, is
 // Removed; only a removal that restarts the submission submits again: the submitting App's own, the
 // daemon's disarm landing late, and auto-merge a close turned off, undone by the reopen at head.
+// The queue's removal for a conflict is a ConflictRemoval, that same removal with the merge state
+// this read answered for the pull request (pull.MergeStateStatus, which GitHub computes once the
+// entry is no longer queued): the conflict can be with the base itself or with an entry ahead of
+// it in the queue, and only that state tells them apart, so Submit leaves the two to its caller
+// rather than ending the submission on either.
 // While the record still awaits head, a pull request GitHub shows closed, merged at another head, or
 // at another head is a wait too (Lagging): the webhook that moves the record has not been applied
 // yet, or GitHub's read is the one behind, and the next run decides again. GitHub always answers
@@ -165,6 +249,13 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 // same refusal, and Submit returns it as *Refused. When that read fails, its error is returned,
 // the refusal as its context, so a rate limit it meets reaches the caller (githubrest.RetryAfter).
 // Any other failure, an HTTP or network one included, is returned as it is, for the row to retry.
+//
+// github is GitHub's GraphQL route, and the one client Submit calls: deciding a submission reads
+// and changes the pull request and nothing else, so a removal it reads names each failing run
+// with its Actions job (MergeFailed, Removed, ConflictRemoval) and leaves the log of that job to
+// its caller, which reads it once the decision is made and only where it tells of it
+// (ReadFailingTests). A read of a 54 MB log cannot finish inside a merge row's own budget, so
+// deciding a removal must never wait on one.
 func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
 	answer, err := readRepository(ctx, github, repo, number)
 	if err != nil {
@@ -189,9 +280,9 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	case !pull.openAt(head):
 		return "", &Lagging{Number: number, Head: head, State: pull.State, GitHubHead: pull.HeadRefOid, Since: pull.UpdatedAt}
 	case pull.armed():
-		return "", &Armed{Number: number, Repo: repo, Head: head}
+		return "", pull.armedWait(repo, number, head)
 	case armed:
-		if err := removal(ctx, github, repo, number, head); err != nil {
+		if err := removal(ctx, github, repo, number, head, pull.MergeStateStatus); err != nil {
 			return "", err
 		}
 	}
@@ -205,7 +296,10 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	case sent == nil && chosen.merges:
 		return Merged, nil
 	case sent == nil:
-		return "", &Armed{Number: number, Repo: repo, Head: head}
+		// pull is the read before the mutation, where nothing was armed, so it carries no
+		// merge-queue entry at all: the entry's state and base commit stay empty rather than
+		// invented, and the next run reads the entry GitHub has made of this arm.
+		return "", pull.armedWait(repo, number, head)
 	}
 	failed := fmt.Errorf("%s pull request #%d of %s at READY's head %s: %w", chosen.action, number, repo, head, sent)
 	var refusal *githubrest.GraphQLError
@@ -317,6 +411,24 @@ type Armed struct {
 	Number int
 	Repo   ghrepo.Repository
 	Head   string
+	// QueueState is the state GitHub's merge queue has the entry in (QUEUED, AWAITING_CHECKS,
+	// MERGEABLE, UNMERGEABLE, LOCKED), and is empty where the read found no entry: an auto-merge
+	// arm alone, or an entry GitHub made after the read.
+	QueueState string
+	// QueueBase is the commit the merge queue built the entry's merge on, and is empty where the
+	// read found no entry or the queue had built nothing for it yet. For an entry behind another
+	// it is the commit the queue built for the entry ahead, whose own parent is the base branch's
+	// tip — never that entry's pull-request head. Measured 2026-11-08 00:43:57Z on this
+	// repository: main stood at 1f46e1cc76f4, entry 1 was #2234 AWAITING_CHECKS on baseCommit
+	// 1f46e1cc76f4, and entry 2 was #2859 UNMERGEABLE on baseCommit b66b78d6d9f3, which is no
+	// pull request's head — #2234's head was 7c4463b8ac8b — but the commit the queue built for
+	// #2234, carrying its title and the one parent 1f46e1cc76f4.
+	QueueBase string
+	// BaseName is the branch the pull request merges into, as the same read named it.
+	BaseName string
+	// BaseTip is the commit that branch was at in the same read, which the queue moves on as it
+	// merges what stands before the entry.
+	BaseTip string
 }
 
 func (a *Armed) Error() string {
@@ -329,16 +441,29 @@ func (a *Armed) Is(target error) bool { return target == wait.ErrWaiting }
 // Routine is always true: only the repository's own rules hold an armed pull request back.
 func (a *Armed) Routine() bool { return true }
 
+// UnmergeableOnBaseTip says whether GitHub's merge queue reports the entry unmergeable
+// (QueueState UNMERGEABLE) while it has built that entry on the tip of the pull request's own
+// base branch (QueueBase, BaseTip, both from the one read): the one state in which nothing ahead
+// of the entry in the queue can be what the queue cannot merge, so the head itself is. An entry
+// with something ahead of it carries the commit the queue built for the entry ahead instead,
+// which is the base branch's tip with that entry's merge on top and so never equal to the tip. An
+// entry the queue has built nothing for yet answers false, as every other state does.
+func (a *Armed) UnmergeableOnBaseTip() bool {
+	return a.QueueState == "UNMERGEABLE" && a.QueueBase != "" && a.QueueBase == a.BaseTip
+}
+
 // MergeFailed is the merge queue taking pull request Number out at READY's Head because its merge
 // failed: GitHub's removal for Reason failed_checks, or for a reason GitHub gives no other meaning
 // with a run that failed on Commit, the commit the queue built for it (its merge_group runs ran on
 // gh-readonly-queue/<base>/pr-<n>-…, a branch GitHub deletes with the entry). Runs names each check
-// that failed there, with its run's URL; Event is GitHub's id for the removal, and At when it was
-// made. The submission is over: the issue goes back to implementing on it.
+// that failed there, with its run's URL and the Actions job it ran as, and what that job's log
+// says failed where its caller has read it (ReadFailingTests); Event is GitHub's id for the
+// removal, and At when it was made. The submission is over: the issue goes back to implementing
+// on it.
 type MergeFailed struct {
 	Number               int
 	Head, Reason, Commit string
-	Runs                 []string
+	Runs                 []FailingRun
 	Event                string
 	At                   time.Time
 }
@@ -347,7 +472,7 @@ func (f *MergeFailed) Error() string {
 	text := fmt.Sprintf("the merge queue took pull request #%d out at READY's head %s at %s (%s)", f.Number, f.Head, f.At.UTC().Format(time.RFC3339), f.Reason)
 	switch {
 	case len(f.Runs) > 0:
-		return text + fmt.Sprintf(": its merge_group run on %s, the commit the queue built for it, failed: %s", f.Commit, strings.Join(f.Runs, "; "))
+		return text + fmt.Sprintf(": its merge_group run on %s, the commit the queue built for it, failed: %s", f.Commit, FailingRuns(f.Runs))
 	case f.Commit != "":
 		return text + fmt.Sprintf(": GitHub reported no failing run on %s, the commit the queue built for it", f.Commit)
 	default:
@@ -361,12 +486,17 @@ func (f *MergeFailed) Error() string {
 // or by GitHub on its own (ByGitHub), which names the App that submitted the merge as Actor of its
 // own disables (a merge method the repository blocks, a base switch). Reason is GitHub's reason: a
 // queue removal's, or an auto-merge disable's reason code, with Detail its sentence for it (none for
-// a queue removal). At is when it was made. The submission is over: the removal stands, and the row
-// ends rather than undo it.
+// a queue removal). At is when it was made. Runs names each check that failed on the commit the
+// queue built for a queue removal, with its run's URL, the Actions job it ran as and what that
+// job's log says failed where its caller has read it (ReadFailingTests), from the page of that
+// commit's checks GitHub's timeline answer carried (removal); it is empty where nothing failed,
+// which is what a removal GitHub explains by itself usually leaves. The submission is over: the
+// removal stands, and the row ends rather than undo it.
 type Removed struct {
 	Number                      int
 	Head, Actor, Reason, Detail string
 	Queue, ByGitHub             bool
+	Runs                        []FailingRun
 	At                          time.Time
 }
 
@@ -384,8 +514,72 @@ func (r *Removed) Error() string {
 	default:
 		text = r.Actor + " " + text
 	}
-	return text + " without merging it: the daemon submits it no further, and the issue stays in awaiting_merge"
+	return text + " without merging it: the daemon submits it no further, and the issue stays in awaiting_merge" + r.failures()
 }
+
+// failures is Failures as a sentence of its own after the text a removal is told in, and nothing
+// at all where nothing failed: the two errors this package renders a removal as both end with it.
+func (r *Removed) failures() string {
+	if failures := r.Failures(); failures != "" {
+		return ". " + failures
+	}
+	return ""
+}
+
+// Failures is the sentence a removal's failing runs are told in, wherever one is told of: the
+// checks that failed on the commit the merge queue built for the pull request, each as a line of
+// its own (FailingRuns). It is empty where that commit failed no run at all, which is what a
+// removal GitHub explains by itself usually leaves.
+//
+// The sentence is written here and nowhere else: this removal's own Error carries it, and so does
+// the message the daemon posts when it submits the merge of such a removal once more (its
+// readyMergeResubmitted), which is the same fact told on the issue instead of to the architect.
+func (r *Removed) Failures() string {
+	if len(r.Runs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("These checks failed on the commit the queue built for it: %s", FailingRuns(r.Runs))
+}
+
+// ConflictRemoval is the merge queue taking a pull request out at READY's head because the merge
+// conflicted (GitHub's reason merge_conflict): Removal is that removal as every other one is
+// reported, and MergeState is GitHub's merge state for the pull request from the read that found
+// nothing armed, which GitHub computes freely once the entry is no longer queued (it answers
+// UNKNOWN while one is). The two conflicts GitHub gives the one reason are told apart by that
+// state alone: a head that conflicts with the base itself reads DIRTY, where the merge is over
+// and the removal stands, and a head GitHub still merges cleanly conflicted with an entry ahead
+// of it in the queue, which usually failed no check and which nothing in Legion would ever submit
+// again. Deciding between them is the daemon's (its conflictRemoval), so this is deliberately no
+// *Removed and answers errors.As no *Removed either: the row's own rule that a *Removed ends the
+// row (the daemon's permanentRefusal) must not reach it. Ended is the ending the daemon chooses,
+// as the *Removed its architect's notice is written from.
+type ConflictRemoval struct {
+	Removal    Removed
+	MergeState string
+}
+
+func (c *ConflictRemoval) Error() string {
+	return fmt.Sprintf("the merge queue took pull request #%d out at READY's head %s at %s (%s) while GitHub reports its merge state %s: the daemon decides by that state whether the head conflicts with the base itself or with an entry ahead of it in the queue",
+		c.Removal.Number, c.Removal.Head, c.Removal.At.UTC().Format(time.RFC3339), c.Removal.Reason, c.MergeState) + c.Removal.failures()
+}
+
+// Ended is the removal as the end of the submission, for the daemon that decides the merge is
+// over: the *Removed every other removal of an arm is reported as, which the architect's notice
+// of a merge row ended without a merge is written from.
+func (c *ConflictRemoval) Ended() *Removed {
+	removal := c.Removal
+	return &removal
+}
+
+// WithBase says whether GitHub's merge state has the head conflicting with the base itself
+// (DIRTY), the one of the two conflicts GitHub's single reason covers that no further submission
+// can merge.
+func (c *ConflictRemoval) WithBase() bool { return c.MergeState == "DIRTY" }
+
+// Uncomputed says whether GitHub has computed no merge state for the pull request yet (UNKNOWN),
+// which tells the two conflicts apart not at all: GitHub answers it while the entry is still
+// queued, and computes the state freely once it is out.
+func (c *ConflictRemoval) Uncomputed() bool { return c.MergeState == "UNKNOWN" }
 
 // Merging is the merge queue having taken pull request Number of Repo out at READY's Head to merge
 // it, after the row saw it queued there, while GitHub has yet to show it merged. It is a wait
@@ -469,21 +663,67 @@ type repository struct {
 }
 
 // pullRequest is what Disarm and Submit read of a pull request: its node id, state, head, merge
-// state, GitHub's last change to it, whether its base requires a merge queue, and whether
-// auto-merge is enabled and it sits in a merge queue. Nothing of the squash commit's message is
-// read, since Submit passes none; the enable and merge mutations above say what decides it.
+// state, GitHub's last change to it, whether its base requires a merge queue, whether auto-merge
+// is enabled and what entry it has in the merge queue, and the branch it merges into with that
+// branch's tip. Nothing of the squash commit's message is read, since Submit passes none; the
+// enable and merge mutations above say what decides it.
 type pullRequest struct {
-	ID                  string    `json:"id"`
-	State               string    `json:"state"`
-	HeadRefOid          string    `json:"headRefOid"`
-	MergeStateStatus    string    `json:"mergeStateStatus"`
-	UpdatedAt           time.Time `json:"updatedAt"`
-	IsMergeQueueEnabled bool      `json:"isMergeQueueEnabled"`
-	AutoMergeRequest    *struct{} `json:"autoMergeRequest"`
-	MergeQueueEntry     *struct{} `json:"mergeQueueEntry"`
+	ID                  string           `json:"id"`
+	State               string           `json:"state"`
+	HeadRefOid          string           `json:"headRefOid"`
+	MergeStateStatus    string           `json:"mergeStateStatus"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
+	IsMergeQueueEnabled bool             `json:"isMergeQueueEnabled"`
+	AutoMergeRequest    *struct{}        `json:"autoMergeRequest"`
+	MergeQueueEntry     *mergeQueueEntry `json:"mergeQueueEntry"`
+	// BaseRef is the branch the pull request merges into, nil where GitHub has none for it (a base
+	// branch someone deleted), with Target the commit that branch is at, nil the same way.
+	BaseRef *struct {
+		Name   string `json:"name"`
+		Target *struct {
+			Oid string `json:"oid"`
+		} `json:"target"`
+	} `json:"baseRef"`
+}
+
+// mergeQueueEntry is the pull request's place in its base's merge queue: when GitHub enqueued it,
+// the state the queue has it in (QUEUED, AWAITING_CHECKS, MERGEABLE, UNMERGEABLE, LOCKED), and
+// baseCommit, the commit the queue built this entry's merge on, nil until the queue has built
+// one. For the first entry that commit is the base branch's own tip; for an entry behind another
+// it is the commit the queue built for the entry ahead, whose parent is that tip — it is no pull
+// request's head, and reading it as one would name the wrong commit in every notice. Measured
+// 2026-11-08 00:43:57Z on this repository: entry 2, #2859, carried baseCommit b66b78d6d9f3, which
+// is the queue's own build for entry 1 (#2234, head 7c4463b8ac8b) on main's tip 1f46e1cc76f4. An
+// entry at all says the pull request is queued, whatever its state, which is what armed answers.
+type mergeQueueEntry struct {
+	EnqueuedAt time.Time `json:"enqueuedAt"`
+	State      string    `json:"state"`
+	BaseCommit *struct {
+		Oid string `json:"oid"`
+	} `json:"baseCommit"`
 }
 
 func (p *pullRequest) armed() bool { return p.AutoMergeRequest != nil || p.MergeQueueEntry != nil }
+
+// armedWait is the wait for GitHub's own merge of the pull request at head, from this one read:
+// the merge-queue entry's state and base commit where the read found an entry, and the base
+// branch's name and tip where it found a base branch.
+func (p *pullRequest) armedWait(repo ghrepo.Repository, number int, head string) *Armed {
+	armed := &Armed{Number: number, Repo: repo, Head: head}
+	if entry := p.MergeQueueEntry; entry != nil {
+		armed.QueueState = entry.State
+		if entry.BaseCommit != nil {
+			armed.QueueBase = entry.BaseCommit.Oid
+		}
+	}
+	if base := p.BaseRef; base != nil {
+		armed.BaseName = base.Name
+		if base.Target != nil {
+			armed.BaseTip = base.Target.Oid
+		}
+	}
+	return armed
+}
 
 // kept says whether the pull request's head is head, the READY head an arm is legitimate for.
 func (p *pullRequest) kept(head string) bool { return head != "" && p.HeadRefOid == head }

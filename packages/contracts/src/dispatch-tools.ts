@@ -1115,6 +1115,52 @@ export const dispatchToolSpecs = [
     validation: messageValidation,
   },
   {
+    name: "dispatch_send_to_agent",
+    example: {
+      session: "01234567-0000-4000-8000-000000000001",
+      body: "DSP-1: the rota is nowhere written down. Please write it up.",
+      delivery: "aside",
+    },
+    description:
+      "Hand a piece of work to one agent session, in that session's own conversation, which belongs to no " +
+      "issue: the way to reach the agent already on the work - the session holding an issue's claim, or one " +
+      "you are working with. Name the issue in the body, because this message carries none. It is not how " +
+      "you reach a person (dispatch message, or dispatch ask for something only a person can do), and not a " +
+      "note on an issue (dispatch message --issue), which everyone reading that issue sees; this reaches that " +
+      "one session. It spends that session a turn, so send once and read the reply with " +
+      "dispatch read --message <id> rather than sending again. The call is answered once its first delivery " +
+      "attempt has settled. It needs a credential holding the person scope, and one without it is refused " +
+      `403 OAUTH_SCOPE_REQUIRED, naming the scope. ${BODY_BLOCK_RULE}`,
+    arguments: (z) => ({
+      session: z
+        .string({ min: 1 })
+        .describe(
+          "The session to send to, by its bare session id. An issue's claim names the session holding it, " +
+            "and dispatch whoami names this session's own."
+        ),
+      body: z
+        .string({ min: 1 })
+        .describe(
+          `The words the session reads. Name the issue they are about: this message carries none. ${BODY_BLOCK_RULE}`
+        ),
+      delivery: z
+        .enum(["btw", "aside", "steer"])
+        .describe(
+          "How the words reach the session: btw waits for its next turn, aside reaches it while a turn " +
+            "runs, and steer goes in as a keystroke at its terminal. A session advertises the modes it " +
+            "takes, and Dispatch sends the mode you name rather than another."
+        ),
+      in_reply_to: z
+        .string()
+        .describe(
+          "Optional id of a message in this same session-to-session conversation, threading this message " +
+            "under it; without it the message starts a conversation of its own."
+        )
+        .optional(),
+    }),
+    strict: true,
+  },
+  {
     name: "dispatch_doc_edit",
     example: {
       issue: "DSP-1",
@@ -1442,10 +1488,17 @@ export const dispatchToolSpecs = [
       "Print each check of an issue's Verification document with its latest result and whether " +
       "that result is current. A result is current when it ran at the commit the work stands at " +
       "— the head of an open pull request of the check's issue, the final head of a merged one, " +
-      "or, for an after_merge or default_branch check, a commit on the repository's default " +
-      "branch — and the check's words have not changed since; older otherwise, and unknown when " +
-      "Dispatch cannot read the repository. A push that moves the pull request's head makes a " +
-      "result older with no write of anyone's: record it again at the new head. " +
+      "for an after_merge check a commit on the branch that issue's pull request merged into or " +
+      "on the repository's default branch (which answers alone where Dispatch holds no merge of " +
+      "that issue), or for a default_branch check a commit on the repository's default branch, " +
+      "whatever branch the pull request merged into — and the check's words have not changed " +
+      "since; older otherwise, and unknown when Dispatch cannot read the repository. On an " +
+      "after_merge check's base branch a read GitHub refused — a 403 or 404, which a branch it " +
+      "no longer holds answers with — says the commit is not on that branch and leaves the " +
+      "default branch to decide; every other failure of that read, a rate limit or a 5xx " +
+      "among them, leaves the result unknown and never older. A push that moves the " +
+      "pull request's head makes a result older with no write of anyone's: record it again at " +
+      "the new head. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

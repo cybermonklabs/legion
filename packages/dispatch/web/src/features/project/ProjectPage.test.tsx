@@ -29,13 +29,19 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
   const row: InboxRow = {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-11T00:00:00Z",
     edited_at: null,
     id: "ask-1",
     // The pill counts the reader's own: `renderPage` signs in as `alice`.
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
+    last_reply: null,
     kind: "question",
     multiple: false,
     opened_event_id: 1,
@@ -68,7 +74,15 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
  *  that never settles. */
 function renderPage(
   path: string,
-  projects = [{ created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 }],
+  projects = [
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
+  ],
   login: string | null = "alice",
   inboxRows: InboxRow[] = [],
   sources: ArchitectureSource[] | ApiError | "pending" = []

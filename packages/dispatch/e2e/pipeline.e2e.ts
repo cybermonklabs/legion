@@ -27,7 +27,8 @@ test("the Pipeline rail entry opens the page", async ({ browser }) => {
   await context.close();
 });
 
-test("the Pipeline page shows each stage's timing and the failing jobs", async ({
+// @pr: Live delivery: the Pipeline page's stage timings and failing jobs, which no other row on the lane reads.
+test("the Pipeline page shows each stage's timing and the failing jobs @pr", async ({
   browser,
 }, testInfo) => {
   await seedPipelineFixture();

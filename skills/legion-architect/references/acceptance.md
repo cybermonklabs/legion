@@ -59,8 +59,11 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
 on an approved head carrying the merges of every child those checks need. Each needs a current
-passing result at that head, or, for one in another repository, at a commit that repository's
-default branch carries. A child records no result that proves a parent's check: a child's pull
+passing result at that head, or, for one in another repository, at a commit on the branch that
+issue's pull request merged into or on that repository's default branch — that default branch
+alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
+default branch whatever branch the pull request merged into. A child records no result that
+proves a parent's check: a child's pull
 request never makes a parent check's result current, and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
@@ -79,11 +82,14 @@ Then, in one turn:
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
-   counts a review round.
+   counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
+   record holds the head conflicting with its base.
 
 While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
-its own: the last round's forward merge resolves them all, so spend no backward move per child;
-each counts toward `review_round_cap`.
+its own: the last round's forward merge resolves them all, so spend no backward move per child.
+A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
+the head to leave it out; a move for a conflict the record does hold is left out, and still costs
+the implementer a forward merge the last round makes anyway.
 
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's
 deploy skill says.
@@ -218,8 +224,23 @@ If you are that child's architect:
 - It says `handed_over` alone (no gate to carry): your workers already run their phases, so
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
-  merger's READY waits for its approval. When that `design-approved` arrives, release and start
+  merger's READY waits for its approval.
+  That registration's approval request waits with the person like any other, but it starts no wait of the root's own: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
+  The section below is for a root of your own at `admitted`, not for this one.
+  When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
   `awaiting_merge` the READY is through, so register none; a red or conflicting head that returns
   the root to `implementing` makes its next READY read the gate again, so a later `ready-refused`
   is when you register.
+
+## Your slot while a person has your spec
+
+This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
+A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
+Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done, leaves the workflow or waits only for its merge.
+So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
+The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval.
+While your answered root stands in the line, your record carries `waitingLine`, your place in the line and its length.
+Nothing is sent to you about that wait, and your resume task says what answered it.
+Act on neither: the daemon starts you again on the pass that reads the answer.

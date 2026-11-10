@@ -20,6 +20,14 @@ import (
 // question to somebody is how one person asks another. The row records who handed it on and
 // when (asked_of_by, asked_of_at) whatever else the write leaves, so the ask card can say it.
 
+// askAskedOfInput is the body of PUT /api/v1/asks/{id}/asked-of: the person the ask waits on
+// from now on. It is required - a body naming nobody is 400 INVALID_ASK - and never null,
+// since an ask always waits on somebody; handing one to the assignee of its own issue is what
+// gives the ask back to the issue (the empty stored field below).
+type askAskedOfInput struct {
+	AskedOf *string `json:"asked_of" required:"true"`
+}
+
 // putAskAskedOf writes the person an open ask waits on.
 func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
@@ -31,9 +39,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var input struct {
-		AskedOf *string `json:"asked_of"`
-	}
+	var input askAskedOfInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

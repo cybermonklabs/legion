@@ -64,6 +64,19 @@ export function StatusPill({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
+/** Whether `state` is one of `approvalPill`'s own keys, which are every approval state this
+ *  build has an outline for. */
+function isApprovalTone(state: string): state is keyof typeof approvalPill {
+  return Object.hasOwn(approvalPill, state);
+}
+
+/** `state` as the outline the chip wears. The route table carries the state as a plain string;
+ *  one this build does not know wears the draft outline - the neutral one - while
+ *  `approvalLabel` shows the word itself, so the chip is drawn rather than left unpainted. */
+function approvalTone(state: string): keyof typeof approvalPill {
+  return isApprovalTone(state) ? state : "draft";
+}
+
 /** The approval pill's full class string, for hosts whose chip must stay an interactive
  * element (ApprovalChip's button opens the review history) while looking identical.
  *
@@ -77,5 +90,5 @@ export function StatusPill({ children }: { children: ReactNode }): ReactNode {
  * host, for the reason `pillShapeClassName` records above: two conflicting Tailwind utilities
  * are settled by the generated CSS's order, not the attribute's. */
 export function approvalPillClassName(state: ArtifactApproval["state"]): string {
-  return `inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[state]}`;
+  return `inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
 }

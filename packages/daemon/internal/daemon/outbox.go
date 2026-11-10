@@ -579,7 +579,11 @@ func retryBackoff(attempts int) time.Duration {
 // refuses where it still stands (ghautomerge.Refused), whose pull request GitHub has shown closed
 // or at another head than the record awaits for longer than ghautomerge.LagBound at now
 // (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
-// merge (ghautomerge.Removed), which a retry must not undo. A claim release is the shared
+// merge (ghautomerge.Removed), which a retry must not undo. The merge queue's own removal for a
+// conflict reaches this only as the *Removed the row decided it to be
+// (ghautomerge.ConflictRemoval.Ended, the daemon's conflictRemoval): the ConflictRemoval itself is
+// no *Removed and ends nothing, since a conflict with an entry ahead of it in the queue is
+// submitted once more rather than ended. A claim release is the shared
 // Dispatch rule whole: its executor answers both of Dispatch's 409s as waits of its own before
 // this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
 // purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
@@ -1253,29 +1257,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
-		// The relaunch half of a start brings the worker's session back while the task of the same
-		// start waits for the issue's admission slot (workflow.StartOrOwe marks it Relaunch). A
-		// claim that still holds a task of this row's phase and run is left for the row that
-		// carries that task, whatever state it is in, because every way of bringing such a claim
-		// back sends the task it kept: a retry delivers it as the claim comes back (supervise's
-		// RequestRetry), and a rule-resume sends it once the agent is ready (supervise's
-		// sendPending). Either way the held worker would be put to work with no slot — the one
-		// thing the cap counts — and the task row behind it would then find a claim no longer
-		// failed, suspended or retired, so its own guard would no longer hold and it would deliver
-		// a second prompt for the same phase. A failed claim is left whatever it holds: its retry
-		// is the task row's to make, with the fresh budgets that row's delivery needs.
-		//
-		// The retry or resume belongs to the row that carries the task: it comes when the slot
-		// does, its own delivery is held back while the claim still works that phase's task (the
-		// guard below), and so exactly one task reaches the worker, at the moment the cap allows
-		// it. A start that is nobody's half — a tree architect's, which takes no slot of its own,
-		// or a role relaunched beside the phase's worker (admit's startMidPhaseMembers) — has no
-		// task row behind it, so it brings its claim back here or that session never comes back.
-		if payload.Relaunch && (state == supervise.StateFailed || keepsStartTask(machine.Claim(), payload)) {
-			r.log.Info("outbox relaunch left for the row that carries its task", "row", row.ID, "issue", issue.Key,
-				"role", payload.Role, "phase", payload.Phase, "state", state)
-			return nil
-		}
+		// A phase worker's start is one row that carries its task, so the claim is brought back
+		// and told its work here, in that order, and nothing of the start waits on another row.
+		// Whether the row waited for the issue's admission slot before the lane took it is
+		// settled by then (workflow.StartOrOwe); by here it is a start like any other.
 		switch state {
 		case supervise.StateQueued:
 			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
@@ -1314,18 +1299,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("relaunch retired claim %s: %w", token, err)
 			}
 		}
-		// A claim that, once relaunched, still holds a task of this row's phase and run that it will
-		// work is given that task: one not yet confirmed (a failed claim keeps the task it held, and a
-		// death in a turn takes the task back unconfirmed, behind the sentence saying so), or one
-		// confirmed in the turn the claim is working. The row's own task would follow it as a second
-		// prompt for work already under way, so it is not delivered when it is the phase's resume task
-		// (promotion's) or the row relaunched a failed claim (the architect's retry of the held phase,
-		// or a later transition). A confirmed task on a claim not working is over: the relaunch's
-		// decision retired it here, or retires it first when a launch whose outcome was uncertain is
-		// released and spawned again, after this start, so the row's task goes in its place. A check
-		// start names no phase, so it is never one of these: each look's task is delivered, its row
-		// id its delivery's, and a delivery with no phase is held by nothing (supervise's
-		// phaseHolds), so the task reaches the role the check records whatever the issue's phase.
+		// A claim that, once brought back above, still holds a task of this row's phase and run that
+		// it will work is given that task: one not yet confirmed (a failed claim keeps the task it
+		// held, and a death in a turn takes the task back unconfirmed, behind the sentence saying
+		// so), or one confirmed in the turn the claim is working. The row's own task would follow it
+		// as a second prompt for work already under way, so it is not delivered when it is the
+		// phase's resume task (promotion's) or this row retried a failed claim (the architect's
+		// retry of the held phase, or a later transition), since the retry sends the kept task
+		// itself. A confirmed task on a claim not working is over: the decision above retired it
+		// here, or retires it first when a launch whose outcome was uncertain is released and
+		// spawned again, after this start, so the row's task goes in its place. A check start names
+		// no phase, so it is never one of these: each look's task is delivered, its row id its
+		// delivery's, and a delivery with no phase is held by nothing (supervise's phaseHolds), so
+		// the task reaches the role the check records whatever the issue's phase.
 		held, gave := machine.Claim(), false
 		if (payload.ResumeTask || state == supervise.StateFailed) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
@@ -1375,7 +1361,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (workflow's claimReady), and this runner writes the line that wake writes when the row
 		// runs (wakeRan). A start that launches instead took its turn at the machine's gate above
 		// (supervise's reserveWake), so one start row is one wake either way.
-		if claimTookRole(state) && claim.IsTreeArchitect(payload.Role, issue.Key, issue.Tree) {
+		if supervise.SaidReady(state) && claim.IsTreeArchitect(payload.Role, issue.Key, issue.Tree) {
 			if err := r.settleKept(ctx, row, payload, gave); err != nil {
 				return err
 			}

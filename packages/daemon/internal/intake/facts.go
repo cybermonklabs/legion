@@ -691,6 +691,23 @@ type MergeFailed struct {
 
 func (MergeFailed) isFact() {}
 
+// MergeQueueConflict is GitHub's merge queue reporting its entry for issue's pull request Number
+// at Head, the head its accepted READY named, unmergeable while the queue had built that entry on
+// the tip of the branch the pull request merges into, as the issue's ready_merge outbox row read
+// it from GitHub: never decoded from an event. An entry built on its base branch's tip has
+// nothing ahead of it in the queue to blame, so the head itself is what the queue cannot merge,
+// and the row reads the state that long (the daemon's queueConflictBound) before it sends this.
+// Reason names the branch the implementer is to merge forward and the commit the queue built on;
+// nothing reads either on its own, so neither is a field here.
+type MergeQueueConflict struct {
+	Issue  string
+	Number int
+	Head   string
+	Reason string
+}
+
+func (MergeQueueConflict) isFact() {}
+
 // Push records a branch push.
 type Push struct {
 	Repo   string
@@ -780,6 +797,19 @@ type RetryOrEscalate struct {
 }
 
 func (RetryOrEscalate) isFact() {}
+
+// RestartPhase is the operator's retry of one phase worker, from `legion claims retry` of a claim
+// that failed or that an operator stopped (api's retryClaim). The workflow starts Role's phase
+// again, so a worker relaunched with no task — a new session above all, which has read none of the
+// issue's work — is given the task of the phase it is to work. It is the operator's own fact
+// rather than the architect's RetryOrEscalate because an operator's stop leaves no hold for an
+// architect to decide.
+type RestartPhase struct {
+	Issue string
+	Role  claim.Role
+}
+
+func (RestartPhase) isFact() {}
 
 // SignOff records the architect's post-production-check approval.
 type SignOff struct{ Issue string }

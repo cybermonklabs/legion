@@ -104,15 +104,16 @@
 # fresh /tmp directory, kept and printed).
 #
 # The secrets-* checks are optional and print CHECK <name>: SKIPPED-BLOCKED when
-# unconfigured: LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_OPERATOR (the email of the
-# person who approves secrets-approval-ask's credential request on the Dispatch credential page
-# during the run), LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and LEGION_E2E_AGENT_SECRETS_ACCOUNT
+# unconfigured: LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and
+# LEGION_E2E_AGENT_SECRETS_ACCOUNT
 # (<namespace>/<name> of a ServiceAccount of the proof's own, which the broker's
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The
 # run logs in as the daemon does, with that account's token, which the operator context mints with
 # `kubectl create token` for the broker's audience, an hour long, and mints again every half hour
-# while the run lasts; no person approves it. See scripts/e2e/README.md's Stage 4a section.
+# while the run lasts; no person approves it. The run asks nothing of a person: secrets-approval-ask
+# cancels the one request it makes rather than waiting for an approval. See
+# scripts/e2e/README.md's Stage 4a section.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -141,7 +142,6 @@ pod_reachability=${LEGION_E2E_POD_REACHABILITY:-}
 model_route=${LEGION_E2E_MODEL_ROUTE:-}
 storage_class=${LEGION_E2E_STORAGE_CLASS:-}
 agent_secrets_url=${LEGION_E2E_AGENT_SECRETS_URL:-}
-agent_secrets_operator=${LEGION_E2E_AGENT_SECRETS_OPERATOR:-}
 agent_secrets_auto_sha=${LEGION_E2E_AGENT_SECRETS_AUTO_SHA256:-}
 agent_secrets_account=${LEGION_E2E_AGENT_SECRETS_ACCOUNT:-}
 from=${STAGE4A_FROM:-}
@@ -517,7 +517,6 @@ env \
   LEGION_E2E_OPERATOR_POD="$work/pod.yml" \
   LEGION_E2E_OPERATOR_CONFIGMAP="$route_configmap" \
   LEGION_E2E_AGENT_SECRETS_URL="$agent_secrets_url" \
-  LEGION_E2E_AGENT_SECRETS_OPERATOR="$agent_secrets_operator" \
   LEGION_E2E_AGENT_SECRETS_AUTO_SHA256="$agent_secrets_auto_sha" \
   LEGION_E2E_AGENT_SECRETS_BIN="$work/agent-secrets" \
   LEGION_E2E_AGENT_SECRETS_TOKEN_FILE="$agent_secrets_token_file" \

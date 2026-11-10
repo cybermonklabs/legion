@@ -34,7 +34,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a reply taller than the reading pane is marked read by reading it, and its row stays", async ({
+// @pr: The read mark's own row: reading a reply taller than the pane marks it read and leaves its row in the list.
+test("a reply taller than the reading pane is marked read by reading it, and its row stays @pr", async ({
   browser,
 }) => {
   await setLiveSessions([THREAD_SESSION]);
@@ -51,7 +52,7 @@ test("a reply taller than the reading pane is marked read by reading it, and its
   // Whether the long thread itself is still unread. The other row is read as soon as the column
   // draws it, so the count of every unread thread would not say which of the two this is about.
   const longUnread = async (): Promise<boolean> =>
-    (await listMyReplies({ state: "unread" })).rows.some((row) => row.thread_id === thread);
+    ((await listMyReplies({ state: "unread" })).rows ?? []).some((row) => row.thread_id === thread);
   expect(await longUnread()).toBe(true);
 
   const context = await asUser(browser, "alice");
