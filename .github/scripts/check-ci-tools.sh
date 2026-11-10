@@ -45,8 +45,8 @@
 #      breaks the install that reads the primary, which for the one row that names one, uv, is
 #      .github/actions/install-uv in ci.yaml's `test` job, on every pull request that selects
 #      it; a stale member on the second side is read only where that source is, which is
-#      ci.yaml's `tool-fallback` job, a job of about four and a half minutes (129826623707 ran
-#      12:22:59Z to 12:27:23Z, 264 s). This gate says it in lint, in a second.
+#      ci.yaml's `tool-fallback` job, a job of about five minutes (129885098900 ran 14:15:38Z
+#      to 14:20:22Z, 284 s). This gate says it in lint, in a second.
 #      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
 #      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
 #      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.

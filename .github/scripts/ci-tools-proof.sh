@@ -205,9 +205,10 @@
 #       CI_TOOLS_PROOF_FULL_LADDER, since one case must keep the pinned ladder; where more than
 #       one name did, since the rig keeps one measurement and not several; where the longest
 #       fetch carrying that name is outside LADDER_FLOOR..LADDER_CEILING below, the floor being
-#       the reading that catches a kept case which stopped driving the real ladder; and where a
+#       the reading that catches a kept case which stopped driving the real ladder; where a
 #       fetch the stand-in left on the pinned ladder spent one and then failed, which is a
-#       fault shape its rule did not recognise.
+#       fault shape its rule did not recognise; and where a fetch the stand-in shortened
+#       exited 0, which is a fetch this job means to succeed and not one it arranged to fail.
 #       A fetch that spent a ladder and served the bytes is the ladder doing the work it is
 #       kept for, and it is printed as a warning that refuses nothing.
 #
@@ -271,8 +272,9 @@ FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubuserc
 # dead proxy that stands for a second source that cannot be reached: the CI_TOOLS_GHCR_BASE,
 # CI_TOOLS_NPM_BASE and CI_TOOLS_URL_BASE of its controls, and the http_proxy and https_proxy
 # of its base-pulumi control, each of them `http://127.0.0.1:1`.
-# The rig reads the same address the job writes, so a fetch the job meant to fail is recognised
-# here whichever of those seams carried it.
+# The rig holds a copy of the address the job writes, so a fetch the job meant to fail is
+# recognised here whichever of those seams carried it. Where the two copies drift apart, the
+# fetch keeps the pinned ladder and fails, and `ladder-report` refuses the job for it.
 DEAD_ADDRESS="127.0.0.1:1"
 
 # The window in seconds the one case that keeps the pinned ladder must measure inside.
@@ -774,7 +776,8 @@ stage() {
 # The real curl is resolved by the caller and written in here as an absolute path, because the
 # stand-in is first on PATH and a `command -v curl` of its own would find itself.
 # The four values this rig decides are written in at the top of it for the same reason: the
-# stand-in reads the hosts and the address from this one file and holds no second copy of them.
+# stand-in takes the hosts and the address from this one file, and nobody writes a second copy
+# of them by hand.
 write_stand_in() {
   local real_curl=$1
   cat > "$stand_in" <<SH
@@ -1575,7 +1578,7 @@ ladder_report() {
     echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, under the floor of $LADDER_FLOOR s, so it stopped driving the real ladder: its fetch now ends before the back-off of 1+2+4+8+16+32 s does, and nothing in this job measures the ladder an outage is ridden out on." >&2
     problems=$((problems + 1))
   elif [ "$longest" -gt "$LADDER_CEILING" ]; then
-    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is more than a minute of new attempts and one last attempt of a row's max_time of 60 s: read that fetch for a source that hung where this case expects one that refuses at once." >&2
+    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is more than a minute of new attempts and one last attempt of a row's max_time of 60 s: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 63 s and one that hangs about 124 s, so a reading over this ceiling is a ladder those flags no longer bound." >&2
     problems=$((problems + 1))
   fi
   if [ -n "$unrecognised" ]; then
