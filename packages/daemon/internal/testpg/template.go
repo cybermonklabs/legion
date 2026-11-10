@@ -226,3 +226,7 @@ func prepare(dsn string) error {
 	}
 	return nil
 }
+
+// A scratch comment, on a pull request closed without merging: it measures whether the
+// code-scanning rule holds a pull request that touches a file carrying an open high-severity
+// alert the pull request did not put there.
