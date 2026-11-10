@@ -262,28 +262,42 @@ func eventsStartVerdictOf(state eventsStartState) eventsStartVerdict {
 }
 
 // stallWarningField returns the value of warning's key= field, warning being one slog text line,
-// and whether the line carried that field at all - the two answers strings.Cut gives, and for the
-// same reason. A field the line does not carry and a field carrying the empty string are
-// different things to a caller: reading the first as the second had stallWarningNamesDatabase
-// answer true for a line with no database= field at all whenever the database asked about was "".
-// A value slog quoted is read whole and unquoted, so the warning's query= and an
-// application_name the client set with a space in it (pgAdmin sets "pgAdmin 4 - <connection>")
-// both read as they were written; an unquoted value is the token from the "=" to the next space
-// or the line's end. What it does not do is tell a field from one whose name ends in key: it
-// reads the first "key=" in the line, so a caller asking for "name" would be given
-// application_name's value.
+// and whether the line carried that field at all. A field the line does not carry and a field
+// carrying the empty string are different things to a caller: reading the first as the second had
+// stallWarningNamesDatabase answer true for a line with no database= field at all whenever the
+// database asked about was "".
+//
+// The read walks the line as the sequence of key=value fields it is, rather than searching it for
+// the text "key=", because a field's value is chosen by a client and so can hold that text: a
+// client whose application_name is "database=dispatch_test_ab backfill" would have a search read
+// that name as the line's database= field, and so have a hold in a foreign database read as one
+// in the process's own. The walk compares whole keys too, so a caller asking for "name" is not
+// given application_name's value.
+//
+// A value slog quoted is read whole and unquoted, and the walk resumes past the whole quoted
+// literal, so the warning's query= and an application_name the client set with a space in it
+// (pgAdmin sets "pgAdmin 4 - <connection>") both read as they were written; an unquoted value is
+// the token from the "=" to the next space or the line's end.
 func stallWarningField(warning, key string) (string, bool) {
-	_, value, found := strings.Cut(warning, key+"=")
-	if !found {
-		return "", false
-	}
-	if quoted, err := strconv.QuotedPrefix(value); err == nil {
-		if unquoted, err := strconv.Unquote(quoted); err == nil {
-			return unquoted, true
+	for rest := warning; rest != ""; {
+		name, after, found := strings.Cut(rest, "=")
+		if !found {
+			return "", false
+		}
+		var value string
+		if literal, err := strconv.QuotedPrefix(after); err == nil {
+			// QuotedPrefix answers a literal it has already parsed, so Unquote cannot fail
+			// on it.
+			unquoted, _ := strconv.Unquote(literal)
+			value, rest = unquoted, strings.TrimPrefix(after[len(literal):], " ")
+		} else {
+			value, rest, _ = strings.Cut(after, " ")
+		}
+		if name == key {
+			return value, true
 		}
 	}
-	token, _, _ := strings.Cut(value, " ")
-	return token, true
+	return "", false
 }
 
 // stallWarningNamesDatabase reports whether warning carries a database= field whose value is
@@ -603,34 +617,64 @@ func TestStallWarningNamesDatabaseMatchesTheWholeDatabaseField(t *testing.T) {
 	}
 }
 
-// TestStallWarningNamesDatabaseRestsOnAFieldReadThatTakesAQuotedValueWhole holds the other trap of
-// the field read both that helper and the own-hold failure's client naming go through: slog quotes
-// a value holding a space, and a read that stopped at the first space would cut it. The field that
-// meets one is application_name, because the client sets it - pgAdmin names its connections
-// "pgAdmin 4 - <connection>" - and it is what stallWarningClient names the holding client by.
+// TestStallWarningNamesDatabaseRestsOnAFieldReadThatTakesAQuotedValueWhole holds the other traps
+// of the field read both that helper and the own-hold failure's client naming go through. slog
+// quotes a value holding a space, and a read that stopped at the first space would cut it. The
+// field that meets one is application_name, because the client sets it - pgAdmin names its
+// connections "pgAdmin 4 - <connection>" - and it is what stallWarningClient names the holding
+// client by. That the client sets it is the second trap: the name it chooses can hold the text of
+// another field, so the read must find the line's own fields rather than text the line carries,
+// and it must tell a field from one whose name ends in the key asked for.
 func TestStallWarningNamesDatabaseRestsOnAFieldReadThatTakesAQuotedValueWhole(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
+	const foreignDatabase = "dispatch_test_cd"
 	for _, tc := range []struct {
-		name        string
-		warning     string
-		application string
+		name        string // what the row proves
+		warning     string // the whole stall-warning line the row reads
+		key         string // the field the row asks the read for
+		value       string // the value the read must answer
+		found       bool   // whether the line carries that field at all
+		application string // the application_name the line's holder set, which the client naming carries whole
+		namesOwn    bool   // whether the line is read as naming this process's own database
 	}{
 		{
-			"a quoted application_name holding a space is read whole, so the own-hold failure names the client as it named itself rather than cutting it at its first space",
-			stallWarningHead(eventsStartOwnHoldBound) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
-			"pgAdmin 4 - dispatch",
+			name:        "a quoted application_name holding a space is read whole, so the own-hold failure names the client as it named itself rather than cutting it at its first space",
+			warning:     stallWarningHead(eventsStartOwnHoldBound) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
+			key:         "application_name",
+			value:       "pgAdmin 4 - dispatch",
+			found:       true,
+			application: "pgAdmin 4 - dispatch",
+			namesOwn:    true,
+		},
+		{
+			name:        "a client chooses its own application_name, so a line whose application_name holds the text database=<this process's own database> is read as the hold in another database that its own database= field says it is: a field read that searched the line as text answered that text instead, and had the wait fail on a foreign hold as its own",
+			warning:     stallWarningHead(eventsStartOwnHoldBound) + stallWarningHolder(`"database=`+ownDatabase+` backfill"`, foreignDatabase),
+			key:         "database",
+			value:       foreignDatabase,
+			found:       true,
+			application: "database=" + ownDatabase + " backfill",
+			namesOwn:    false,
+		},
+		{
+			name:        "a key that is the tail of a longer key is not that key: a line carrying application_name and no name= field of its own carries no name= field at all",
+			warning:     stallWarningHead(eventsStartOwnHoldBound) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
+			key:         "name",
+			value:       "",
+			found:       false,
+			application: "pgAdmin 4 - dispatch",
+			namesOwn:    true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, found := stallWarningField(tc.warning, "application_name")
-			if !found || got != tc.application {
-				t.Errorf("stallWarningField(%q, \"application_name\") = %q, %t; want %q and found", tc.warning, got, found, tc.application)
+			got, found := stallWarningField(tc.warning, tc.key)
+			if got != tc.value || found != tc.found {
+				t.Errorf("stallWarningField(%q, %q) = %q, %t; want %q, %t", tc.warning, tc.key, got, found, tc.value, tc.found)
 			}
 			if client := stallWarningClient(tc.warning); !strings.Contains(client, tc.application) {
 				t.Errorf("stallWarningClient(%q) = %q, want it to name the client %q", tc.warning, client, tc.application)
 			}
-			if !stallWarningNamesDatabase(tc.warning, ownDatabase) {
-				t.Errorf("stallWarningNamesDatabase(%q, %q) = false, want the database that follows the quoted application_name still read", tc.warning, ownDatabase)
+			if names := stallWarningNamesDatabase(tc.warning, ownDatabase); names != tc.namesOwn {
+				t.Errorf("stallWarningNamesDatabase(%q, %q) = %t, want %t", tc.warning, ownDatabase, names, tc.namesOwn)
 			}
 		})
 	}
