@@ -704,20 +704,30 @@ function targetedDispatchEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: st
   });
 }
 
-function targetedCommentEnvelope(mode: "aside" | "btw" | "steer", dedupeKey: string): string {
+type DispatchCardActor = {
+  readonly act?: { readonly session?: string };
+  readonly kind: string;
+  readonly id: string;
+};
+
+function targetedCommentEnvelope(
+  mode: "aside" | "btw" | "steer",
+  dedupeKey: string,
+  actor: DispatchCardActor = { id: "alice", kind: "user" }
+): string {
   return JSON.stringify({
     dedupe_key: dedupeKey,
     event_id: `dispatch-${dedupeKey}`,
     issued_at: 1,
     payload: JSON.stringify({
       event: {
-        actor: { id: "alice", kind: "user" },
+        actor,
         issue_key: "CORE-1",
         payload: {
           artifact_id: null,
           artifact_name: "spec.md",
           artifact_slug: "spec",
-          author: { id: "alice", kind: "user" },
+          author: actor,
           body: `Comment ${dedupeKey}`,
           created_at: "2026-09-12T00:00:00Z",
           deliveries: [],
@@ -896,6 +906,8 @@ async function bootDirectSession(
     /** Runs as the host is handed each delivery, before it takes it: a throw is the host refusing
      *  the send. */
     readonly beforeSend?: () => void;
+    /** The host's one-shot side-turn implementation. */
+    readonly runEphemeralTurn?: NonNullable<SessionContext["runEphemeralTurn"]>;
     /** The host's `pi.sendUserInput`, which a host without it lacks; each call is recorded in
      *  `inputs` and counts as a delivery. */
     readonly sendUserInput?: (text: string, options: unknown) => Promise<UserInputResult>;
@@ -1011,6 +1023,9 @@ async function bootDirectSession(
   const context: SessionContext = {
     ...base,
     ...(options.idle !== undefined && { isIdle: options.idle }),
+    ...(options.runEphemeralTurn === undefined
+      ? {}
+      : { runEphemeralTurn: options.runEphemeralTurn }),
     sessionManager: {
       ...base.sessionManager,
       getBranch: () => options.branch ?? [...prior, ...fixture.entries],
@@ -1076,6 +1091,58 @@ function response(body: unknown): Response {
     headers: { "Content-Type": "application/json" },
     status: 200,
   });
+}
+
+/**
+ * Delivers one Dispatch comment card written by `actor` (a person by default) over NATS, then
+ * drives the agent-initiated run it starts through its stop, against a Dispatch with no open asks
+ * and a host whose hidden self-check answers WAITING. Returns each open-asks query string, each
+ * self-check prompt and the custom type of each delivery the host was handed.
+ */
+async function stopAfterDispatchCard(query: string, actor?: DispatchCardActor) {
+  const checks: string[] = [];
+  const openAskQueries: string[] = [];
+  let armedBeforeCard = false;
+  let sends = 0;
+  const { agent, context, delivered, fixture } = await bootDirectSession(query, {
+    beforeSend: () => {
+      if (sends === 0) armedBeforeCard = openAskQueries.length === 1;
+      sends += 1;
+    },
+    dispatch: (url) => {
+      if (url.pathname !== "/api/v1/asks/open") return undefined;
+      openAskQueries.push(url.search);
+      return response({
+        session_id: "ses_delivery",
+        as_of: "2026-11-10T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      });
+    },
+    idle: () => true,
+    runEphemeralTurn: async ({ promptText }) => {
+      checks.push(promptText);
+      return { replyText: "WAITING" };
+    },
+  });
+  const card = delivered(1);
+  agent.push(targetedCommentEnvelope("aside", query, actor));
+  await card;
+  await fixture.handlers.get("agent_start")?.({}, context);
+  await fixture.handlers.get("agent_end")?.(
+    { messages: [{ role: "assistant", stopReason: "stop" }] },
+    context
+  );
+  await Promise.all(contextTimers.splice(0));
+  return {
+    armedBeforeCard,
+    checks,
+    deliveries: fixture.deliveries.map((delivery) => delivery.customType),
+    openAskQueries,
+  };
 }
 
 /** The client instance id one extension instance mints, read by its shape alone: a test that
@@ -1632,8 +1699,10 @@ describe("envoy OMP extension", () => {
       },
     ]);
 
-    // The nudge's own continuation: it replies and stops, having called no tool, so it owes the
-    // period no check and cannot nudge itself. This is the whole loop safety of the design.
+    // The host starts the nudge's agent-attributed custom continuation directly, without
+    // `before_agent_start`; it replies and stops, having called no tool, so it owes the period no
+    // check and cannot nudge itself. This is the whole loop safety of the design.
+    await session.runStart();
     await session.stop();
     expect(session.fixture.deliveries).toHaveLength(1);
 
@@ -1663,6 +1732,34 @@ describe("envoy OMP extension", () => {
       session.fixture.entries.filter((entry) => !entry.customType.startsWith("envoy-replay-"))
     ).toEqual([]);
   });
+
+  test("arms the nudge from a human Dispatch card that starts a run", async () => {
+    const run = await stopAfterDispatchCard("human-card-nudge");
+    expect(run.armedBeforeCard).toBe(true);
+    expect(run.openAskQueries).toEqual([
+      "?author_session=ses_delivery",
+      "?author_session=ses_delivery&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(run.checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(run.deliveries).toEqual(["envoy-message", ASK_REMINDER_TYPE]);
+  });
+
+
+  for (const [name, actor] of [
+    ["agent", { id: "ses_peer", kind: "session" }],
+    ["Dispatch system", { id: "dispatch", kind: "system" }],
+    ["agent acting for a person", { act: { session: "ses_peer" }, id: "alice", kind: "user" }],
+  ] as const satisfies readonly (readonly [string, DispatchCardActor])[]) {
+    test(`does not arm the nudge from a ${name} Dispatch card`, async () => {
+      const run = await stopAfterDispatchCard(`${name.replaceAll(" ", "-")}-card-nudge`, actor);
+      expect(run).toEqual({
+        armedBeforeCard: false,
+        checks: [],
+        deliveries: ["envoy-message"],
+        openAskQueries: [],
+      });
+    });
+  }
 
   test("runs the stop-time check on the managed timer, after agent_end has returned", async () => {
     const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-after-handler");
@@ -17785,6 +17882,7 @@ describe("messages missed while the subscription was down", () => {
     };
     const session = {
       fixture,
+      context,
       notifications,
       agentSubject: `notifications.agent.${sessionID}`,
       entries: () => [...prior, ...fixture.entries, ...written],
@@ -17925,6 +18023,56 @@ describe("messages missed while the subscription was down", () => {
     };
     return session;
   }
+
+  test("arms a replayed human Dispatch card only after it claims the card", async () => {
+    process.env.DISPATCH_URL = "http://replay-nudge.dispatch.test";
+    process.env.DISPATCH_TOKEN = "dispatch-token";
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const model = new StreamModel();
+    const session = await bootReplay("replay-human-card-nudge", model, {
+      firstSweep: false,
+      turn: "streaming",
+      dispatch: async (url) => {
+        if (url.pathname !== "/api/v1/asks/open") return undefined;
+        queries.push(url.search);
+        return response({
+          session_id: "ses_replay",
+          as_of: "2026-11-10T00:00:00Z",
+          opened_since: false,
+          count: 0,
+          waiting_on_human: 0,
+          waiting_on_agent: 0,
+          asks: [],
+        });
+      },
+      runEphemeralTurn: async ({ promptText }) => {
+        checks.push(promptText);
+        return { replyText: "WAITING" };
+      },
+    });
+    const card = issueEvent(session.agentSubject, 404);
+    model.store(session.agentSubject, card);
+    await session.reconnect();
+    expect(session.cards("dispatch-404")).toHaveLength(1);
+
+    await session.fixture.handlers.get("agent_start")?.({}, session.context);
+    await session.fixture.handlers.get("agent_end")?.(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      session.context
+    );
+    await Promise.all(contextTimers.splice(0));
+
+    expect(queries).toEqual([
+      "?author_session=ses_replay",
+      "?author_session=ses_replay&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(session.fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+      "envoy-message",
+      ASK_REMINDER_TYPE,
+    ]);
+  });
 
   describe("registered while its first NATS connection fails", () => {
     // The listener stores what is sent to a registered session and pushes none of it, since the
