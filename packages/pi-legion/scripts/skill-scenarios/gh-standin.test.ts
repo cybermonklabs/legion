@@ -131,6 +131,25 @@ test("a run with no world keeps the route's own diff", () => {
   expect(answer(dir, ["pr", "diff", "1001"])).toBe("the frozen diff");
 });
 
+// Catches: a stand-in that reads a world.json it cannot parse as a run with no world of its own.
+// The two readings serve different answers: a run that builds no world is served the fixture's
+// frozen head and diff, which is right for it and is silence for a run whose world the rig wrote
+// wrongly — a pushing role would read a head that is not its own and stop, and a reviewer the
+// diff without the fix it was sent to read. So only a missing file is "no world", and a file that
+// does not parse exits with an error naming it. The second world below is the one that exercises
+// `base`, which rig.sh's fixture_write writes into every world and this schema defaults for none.
+test("a world.json that does not parse exits with an error, and one with no base too", () => {
+  for (const text of ["{not json", JSON.stringify({ branch: "legion/LWEVAL-1" })]) {
+    const { dir } = runDir({ remote: true });
+    writeFileSync(path.join(dir, "world.json"), text);
+    const call = Bun.spawnSync(["bun", STANDIN, "gh", "pr", "view", "1001"], {
+      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+    });
+    expect(call.exitCode).toBe(2);
+    expect(call.stderr.toString()).toContain("world.json is no world");
+  }
+});
+
 // Catches: a stand-in that records no agent, so a run that boots one agent per role cannot tell
 // which role made a call and the score reads one role's work as the other's.
 test("each call records the agent the run named, and none when it names one", () => {

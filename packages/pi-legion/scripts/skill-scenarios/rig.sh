@@ -1837,13 +1837,20 @@ jobs:
 EOF
 }
 
-# fixture_head_commit commits the implementer's change as $C1, pushes legion/<key> and empties the
-# push log, so the only pushes it holds are the run's own.
+# fixture_head_commit commits the implementer's change as $C1, pushes legion/<key> and makes the
+# three records the score reads a worker run's doings from: the push log, emptied so the only
+# pushes it holds are the run's own, and the gh and bun stand-ins' calls (calls.jsonl) and the
+# daemon stand-in's answers (daemon.log), each created empty before the first agent runs. The
+# three are made together because the score tells an empty record from a missing one: an empty one
+# says no call, no push and no move, each of which a passing run shows, while a missing one is a
+# record the harness never wrote and a rig error naming it (score.ts's `unscored`).
 fixture_head_commit() {
   fixture_git add -A && fixture_git commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
   C1=$(fixture_git rev-parse HEAD)
   fixture_git push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
+  : >"$R/calls.jsonl"
+  : >"$R/daemon.log"
 }
 
 # fixture_implement CHANGED writes the implement handoff as the implementer records it with

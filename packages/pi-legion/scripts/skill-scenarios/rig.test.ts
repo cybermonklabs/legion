@@ -691,6 +691,25 @@ describe("scenario_case", () => {
   });
 });
 
+// The three records a worker run's score reads what the run did from: the pushes, the gh and bun
+// stand-ins' calls, and the daemon stand-in's answers. The fixture makes all three, because the
+// score tells an empty record from a missing one — an empty one says no call, no push and no
+// move, which is what a passing run shows, and a missing one is a rig error (score.ts's
+// `unscored`). Catches: a rig that leaves one of them to the first call that writes it, so a run
+// that made none leaves no record where the score reads one.
+describe("fixture_head_commit", () => {
+  test("it makes the push log, the call log and the daemon log", () => {
+    const dir = freshDir("fixture-records");
+    const result = bash(
+      `${fn("fixture_head_commit")}\nfixture_git() { :; }\nR=$1 worker_key=LWEVAL-1\nfixture_head_commit`,
+      [dir]
+    );
+    expect(result.code).toBe(0);
+    for (const file of ["pushes.log", "calls.jsonl", "daemon.log"])
+      expect(existsSync(path.join(dir, file))).toBe(true);
+  });
+});
+
 // cmd_batch and cmd_run read SKILL_SCENARIOS_SOURCE through source_dir before they start anything.
 describe("source_dir", () => {
   function work(files: string[]) {

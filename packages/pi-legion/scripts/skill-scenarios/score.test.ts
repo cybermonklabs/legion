@@ -3329,11 +3329,14 @@ const readRecordVia = (
 };
 /** The reviewer's wake of the implementer, which an approval that leaves text threads open owns:
  * the daemon starts no phase for the fix, so the implementer learns its turn began from this
- * message naming the head the fix lands above, and from nothing else. */
+ * message and from nothing else. The message names the head the fix lands above and each finding
+ * it must close, which are the two things the reviewer can name in this world: the stand-in's
+ * `reviewThreads` route serves the bot's thread alone, so the threads this round wrote have no
+ * node id to give (review-threads.md step 1). */
 const toldImplementer = (commit: string, at?: string) =>
   sentTo(
     "implementer",
-    `Approved ${commit}: the two text threads are yours to close above it.`,
+    `Approved ${commit}: docs/cli.md and .github/workflows/greet.yml are yours to close above it.`,
     at
   );
 /** The daemon line a clean round leaves: the completion the stand-in accepted. The round's own
@@ -3610,6 +3613,19 @@ reviewRun(
   },
   [...header, ...turn, ...readRecordVia("eval-unreadable")]
 );
+// head-48: the same unreadable read as head-40, in a round that woke nobody. The step is the
+// record read and then the message, so a round that published no wake fails whatever that read
+// answered: the read could have decided nothing, and a rig error here would take a decided
+// failure out of both counts (A1 of the 2026-11-10 audit).
+reviewRun(
+  "reviewer-text-findings-text-only-head-48",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "published.jsonl": bus(),
+  },
+  [...header, ...turn, ...readRecordVia("eval-unreadable")]
+);
 // head-47: two approvals, the read between them. The verdict is the submission the round ended
 // with, so the read came before it and shows nothing of the round ending; a reader taking the
 // round's first APPROVE would find the read after it and pass the run. Every other fixture
@@ -3730,6 +3746,28 @@ reviewRun("reviewer-text-findings-text-only-head-6", {
     },
   ]),
 });
+// head-50: the same submission posted to another repository's pull request. The stand-in matches
+// its routes on the pull request's number alone, so it answered this call as GitHub would answer
+// the right one, but a review of sjawhar/legion-smoke approves nothing of the world's own
+// example/widgets, and a reader that took it counted a verdict the pull request never got — six
+// of the 40 runs recorded on 2026-11-10 submitted to a repository their world does not name,
+// four of them to this one.
+reviewRun("reviewer-text-findings-text-only-head-50", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      ...submission(approval()),
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        "repos/sjawhar/legion-smoke/pulls/1001/reviews",
+        "--input",
+        "body.json",
+      ],
+    },
+  ]),
+});
 // A review round pushes nothing at all.
 reviewRun("reviewer-text-findings-text-only-head-7", {
   "case.txt": "text-only\n",
@@ -3774,6 +3812,41 @@ reviewRun("reviewer-text-findings-text-only-head-11", {
       `Approved ${head}: the two text threads are the implementer's to close above it.`
     )
   ),
+});
+// head-49: the approval the rule asks for, and a wake that names the head alone. Step 1 has the
+// reviewer name the approved head and each open thread; the threads of its own submission have no
+// node id in this world, so their paths are what it can name, and a message naming neither leaves
+// the implementer the whole diff to search for the work the merge waits for.
+reviewRun("reviewer-text-findings-text-only-head-49", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([submission(approval())]),
+  "published.jsonl": bus(
+    sentTo("implementer", `Approved ${head}: the two text threads are yours to close above it.`)
+  ),
+});
+// head-51, head-52 and head-53: the round that passes as head-1 does, each missing one of the
+// three records rig.sh writes with the world. A missing record reads as an empty one (`lines`),
+// which says no call, no push and no move — all three what a passing run shows — so each run is a
+// rig error naming the file it has not got, and head-52, whose only fault is the push log the
+// harness did not write, would otherwise score a pass.
+for (const [name, file] of [
+  ["head-51", "calls.jsonl"],
+  ["head-52", "pushes.log"],
+  ["head-53", "daemon.log"],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    [file]: null,
+  });
+// head-54: the three records present and empty, which is a reading of the run and not a gap in
+// the rig: it made no call, pushed nothing and moved nothing, so it scores, and it fails for
+// having submitted no review.
+reviewRun("reviewer-text-findings-text-only-head-54", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": "",
+  "pushes.log": "",
+  "daemon.log": "",
 });
 // Another label, for the counts.
 reviewRun("reviewer-text-findings-text-only-base-1", {
@@ -4039,6 +4112,7 @@ const fixNames = [
   "threads-closed-text-fixes-head-30",
   "threads-closed-text-fixes-head-32",
   "threads-closed-text-fixes-head-31",
+  "threads-closed-text-fixes-head-33",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -4413,6 +4487,15 @@ fixRun("threads-closed-text-fixes-head-31", {
     toldArchitectOfHead(fix.fixed)
   ),
 });
+// Catches: a scorer that reads a `git diff` the run's own remote refused as a push that carried
+// no file. head-33's push log names a commit the remote does not hold, so the diff of that push
+// cannot be read at all, and the empty answer a failed `git diff` prints is what a push changing
+// nothing looks like: the run is a rig error naming the command, never a row scored on a diff
+// nobody read.
+fixRun("threads-closed-text-fixes-head-33", {
+  "calls.jsonl": calls(closedBoth),
+  "pushes.log": pushed("f".repeat(40)),
+});
 // Another label, for the counts.
 fixRun("threads-closed-text-fixes-base-1", {
   "calls.jsonl": calls(closedBoth),
@@ -4530,11 +4613,15 @@ fixRun("threads-closed-head-9", {
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
+// Bun's default hook bound is 5s, and this one runs the whole scorer over every run of the file:
+// three audit runs and two pods saw it killed at that bound, which reads as "0 pass, a
+// beforeEach/afterEach hook timed out" and says nothing about the scorer. 120s is this file's
+// own staging bound.
 beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-});
+}, 120_000);
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -4655,7 +4742,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t5/21\t0/21\t3\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t5/25\t0/25\t6\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4811,7 +4898,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t9/26\t0/26\t5\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t9/26\t0/26\t6\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
 });
@@ -5034,6 +5121,66 @@ test("reviewer-text-findings, text-only: the record is read on every route, and 
   // that pushed is not a rig error, because the verdict is known.
   expect(out).toMatch(/reviewer-text-findings-text-only-head-46\tpass=false\t.*pushes=1 /);
   expect(out).not.toContain("reviewer-text-findings-text-only-head-46\trig error");
+});
+// Catches: a rig error given to a run the unreadable read could not have decided. The step is the
+// record read and then the wake, so a round that woke nobody fails on whatever that read showed,
+// and a throw there takes a decided failure out of both counts (A1 of the 2026-11-10 audit).
+// head-40's and head-43's wakes followed their unreadable reads, so those stay rig errors above.
+test("reviewer-text-findings, text-only: an unreadable read in a round that woke nobody is a failure", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-48\tpass=false\t.*toldImplementer=false /
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-48\trig error");
+});
+// Catches: a wake that names the approved head and leaves out the work it asks for.
+// review-threads.md step 1 has the reviewer name the head and each open thread; the node ids of
+// the threads its own submission wrote are not in this world, so each finding's path is what it
+// can name, and a message naming the head alone sends the implementer looking for the findings.
+test("reviewer-text-findings, text-only: a wake naming the head and neither finding fails", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-49\tpass=false\t.*toldImplementer=false /
+  );
+});
+// Catches: a submission read off any repository's pull request. The gh stand-in answers a
+// `pulls/<n>/reviews` call whatever repository it names, so a reviewer that posted its approval
+// to another repository — four recorded runs of 2026-11-10 did — scored a verdict the world's own
+// pull request never got.
+test("reviewer-text-findings: a review submitted to another repository is no submission", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-50\tpass=false\t.*event=none .*submissions=0 /
+  );
+});
+// Catches: a scorer that reads a record the harness never wrote as a record of nothing having
+// happened. The three files rig.sh writes with the world say what the run did, and an absent one
+// reads as no call, no push and no move, each of which a passing run shows, so the absence is a
+// rig error naming the file: head-52's only fault is the push log the harness did not write, and
+// it would otherwise pass.
+test("reviewer-text-findings: a missing stand-in record is a rig error", () => {
+  for (const [name, file] of [
+    ["head-51", "calls.jsonl"],
+    ["head-52", "pushes.log"],
+    ["head-53", "daemon.log"],
+  ]) {
+    expect(out).toContain(
+      `reviewer-text-findings-text-only-${name}\trig error: <run>/${file} is missing`
+    );
+    expect(out).not.toContain(`reviewer-text-findings-text-only-${name}\tpass=`);
+  }
+});
+// Catches: a reader that takes an empty record for a missing one, which would make a rig error of
+// every run that called no gh, pushed nothing or moved nothing — the three the rig writes empty
+// and most runs leave that way. head-54 holds all three empty, which is a reading of the run.
+test("reviewer-text-findings: an empty stand-in record is a reading of the run and scores", () => {
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-54\tpass=false\t/);
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-54\trig error");
+  // And the round that passes leaves an empty push log, as every review round does.
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-1\tpass=true\t.*pushes=0 /);
+});
+// Catches: a scorer that takes the empty answer of a `git diff` the run's own remote refused for
+// a push that carried no file. head-33's push names a commit the remote does not hold.
+test("threads-closed, text-fixes: a push whose diff cannot be read is a rig error", () => {
+  expect(out).toMatch(/threads-closed-text-fixes-head-33\trig error: git -C .* diff --name-only /);
+  expect(out).not.toContain("threads-closed-text-fixes-head-33\tpass=");
 });
 // Catches: a scorer that reads a run whose agent could not read the daemon at all as a row of
 // its own. Each label's agents load the plugin of their own checkout, so a stand-in body one

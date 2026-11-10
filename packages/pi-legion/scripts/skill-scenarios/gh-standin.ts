@@ -28,8 +28,9 @@ const Fixtures = z.looseObject({
 
 /** The part of rig.sh's <run>/world.json this stand-in reads: the issue branch of the run's own
  * bare remote, whose tip is the pull request's head, and the branch it is open against, which is
- * the other side of its diff. */
-const World = z.looseObject({ branch: z.string(), base: z.string().default("main") });
+ * the other side of its diff. Neither has a default: rig.sh's fixture_write writes both into every
+ * world it builds, so a world missing one is a world this stand-in cannot serve. */
+const World = z.looseObject({ branch: z.string(), base: z.string() });
 
 const run = process.env.SKILL_SCENARIO_RUN;
 if (!run) {
@@ -119,11 +120,24 @@ if (body !== undefined) {
   kept = body;
 }
 /** The run's world (rig.sh's worker_fixture), or undefined when the run has none: a scenario
- * that builds no world writes no world.json, and a call of its own reads the fixture's answer. */
+ * that builds no world writes no world.json, and a call of its own reads the fixture's answer.
+ * Only a missing file is "no world". A world.json that does not parse is the rig's own fault, and
+ * reading it as none would serve the fixture's frozen head and diff to every call: a pushing role
+ * would read a head that is not its own and stop, and a reviewer would read the diff without the
+ * fix it was sent to read, with nothing anywhere saying why. So it exits with an error instead. */
 function worldOf(): z.infer<typeof World> | undefined {
   if (!existsSync(`${run}/world.json`)) return undefined;
-  const read = World.safeParse(JSON.parse(readFileSync(`${run}/world.json`, "utf8") || "{}"));
-  return read.success ? read.data : undefined;
+  const text = readFileSync(`${run}/world.json`, "utf8");
+  let why = "";
+  try {
+    const read = World.safeParse(JSON.parse(text));
+    if (read.success) return read.data;
+    why = read.error.message;
+  } catch (error) {
+    why = String(error);
+  }
+  console.error(`gh-standin: ${run}/world.json is no world: ${why}`);
+  process.exit(2);
 }
 /** What `git -C <run>/remote.git <args...>` prints, or undefined when the command fails: the
  * run's own bare remote, read at the call. A run with no remote of its own fails every call. */
@@ -138,9 +152,7 @@ function fromRemote(...args: string[]): string | undefined {
 // the call, and a remote the run has not got leaves the fixture's value as it is.
 function branchTip(): string | undefined {
   const world = worldOf();
-  const tip =
-    world === undefined ? undefined : fromRemote("rev-parse", `refs/heads/${world.branch}`);
-  return tip === "" ? undefined : tip;
+  return world === undefined ? undefined : fromRemote("rev-parse", `refs/heads/${world.branch}`);
 }
 // What GitHub serves for `gh pr diff` is the pull request's diff as it stands, so the answer is
 // the diff of the run's own remote at the call, the issue branch against the branch it is open
