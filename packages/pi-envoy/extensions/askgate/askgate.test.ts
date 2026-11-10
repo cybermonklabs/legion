@@ -1806,9 +1806,33 @@ console.log(JSON.stringify(args, null, 2));
   const STUB = { PATH: `${bin}:${process.env.PATH}` };
   const QUESTION = "Should the release wait for the staging soak? Recommendation: wait one day.\n";
   const ASK = `dispatch ask --issue X-1 --question-file - <<'EOF'\n${QUESTION}EOF`;
+  // A clock that stands still, for the rows below that assert the budget the gate asks a dry run
+  // for. That budget is no constant the gate holds: it is
+  // `Math.min(DRY_RUN_TIMEOUT_MS, readsEnd - deps.now())` (askgate-core.ts:3255), where
+  // `readsEnd` is the reads' half of the call's deadline, fixed when the handler is entered
+  // (askgate-core.ts:3502 and :3572). At the 90 s default deadline that half is 45 s, so on the
+  // real clock more than 25 s between the handler's entry and the dry run leaves the gate asking
+  // for less than DRY_RUN_TIMEOUT_MS, which a starved host alone can buy. Held, `readsEnd -
+  // now()` is 45_000 ms however long the host takes, and the gate asks for DRY_RUN_TIMEOUT_MS.
+  // 1_000_000 is the standing value the deadline rows further down use for their own clocks.
+  const HELD_CLOCK = () => 1_000_000;
 
+  // The script, the working directory and the budget the gate asks for when it dry-runs a
+  // here-document `dispatch ask`. The budget it asks for is derived from the real clock: it is
+  // what is left of the reads' half of the call's deadline (askgate-core.ts:3255, over the
+  // `started` of :3502 and the `readsEnd` of :3572), so once more than 25 s of real time passes
+  // between the handler's entry and the dry run the gate asks for less than DRY_RUN_TIMEOUT_MS
+  // and this correct row fails. A starved host bought exactly that: one run in 105 at 240 busy
+  // loops failed at the assertion below, charged 35035.96 ms, well inside the 120_000 ms hang
+  // guard, so the per-test limit decided nothing. Against the row as it stood, a clock held
+  // still for the handler's entry and 30 s on by the dry run makes that diff every time:
+  // `"timeoutMs": 20000` expected, `15000` received, and 15000 is also what 30 s of real time
+  // injected after :3502 leaves (14987 there, the spare being the row's own cost). The row
+  // hands the gate HELD_CLOCK, so `readsEnd - now()` stays 45_000 ms however long the host
+  // takes and the number asserted below is the gate's own DRY_RUN_TIMEOUT_MS, which no host can
+  // lower. What load can still do to this row is the gate's own ceiling, recorded at its guard.
   test("a dispatch ask fed a here-document is reviewed with the JSON its --dry-run printed", async () => {
-    const g = bind({ env: STUB, cwd: work });
+    const g = bind({ env: STUB, cwd: work, now: HELD_CLOCK });
     expect(await g.bash("b1", ASK)).toBeUndefined();
     expect(g.dryRuns).toEqual([
       {
@@ -1845,7 +1869,18 @@ console.log(JSON.stringify(args, null, 2));
     // those 60 runs is 108_669 ms, rounded up to the 120_000 ceiling a guard may take here: 6.6
     // times that worst, and well inside the pi-envoy job's timeout-minutes: 10
     // (.github/workflows/ci.yaml), so a dry run or a model call that never returns reddens with
-    // this test named instead of cancelling the job, which names nothing.
+    // this test named instead of cancelling the job, which names nothing. The row's remaining
+    // load ceiling is the gate's own, not this one, and not the budget asserted above either:
+    // at 240 busy loops, 120 per CPU, a real `dispatch` subprocess cannot finish inside the
+    // gate's own DRY_RUN_TIMEOUT_MS of 20 s, so the gate cuts it and runs it once more with
+    // what is left of the reads' half — a second entry in `g.dryRuns`, `timeoutMs: 45000`,
+    // which fails the `toEqual` above. Four runs in 20 at that rung went that way, the row
+    // charged 39109.57 / 58636.93 / 63615.03 / 69845.21 ms for them, and the 16 green there
+    // cost 54 s to 136 s of wall each; no per-test limit can guard it, because what fires is
+    // the production budget and not this row running long. So this row's acceptance rung is 96
+    // busy loops, 48 per CPU — 20 runs of 20 green there, 6 s to 23 s of wall each — the rung
+    // the markdown-upload row takes for the same ceiling ("a reviewed markdown upload by
+    // --path posts the bytes the model reviewed, once").
   }, 120_000);
   // The literal one-line grammar: one `dispatch ask`, its question a quoted word.
   const ONE_LINE_ASK = "dispatch ask --issue X-1 --question 'Ship the release today?'";
@@ -3062,12 +3097,15 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns[0].cwd).toBe(path.join(work, "sub"));
     expect(g.calls[0].user).toContain('"body": "Body from the working directory."');
   });
+  // The dry runs' budgets asserted below are derived from the real clock as the here-document
+  // row's is (askgate-core.ts:3255), so this row holds the clock too (HELD_CLOCK): what it reads
+  // is each script, the directory it ran in and DRY_RUN_TIMEOUT_MS, never the host's slowness.
   test("a leading cd and a trailing 2>&1 are reviewed, the dry-run in the cd's directory resolved against the call's", async () => {
     fs.mkdirSync(path.join(work, "sub", "inner"), { recursive: true });
     fs.writeFileSync(path.join(work, "sub", "note.txt"), "Body from the working directory.");
     fs.writeFileSync(path.join(work, "sub", "inner", "note.txt"), "Body from the inner directory.");
     for (const mode of ["warn", "block"]) {
-      const g = bind({ env: { ...STUB, OMP_ASKGATE: mode }, cwd: work });
+      const g = bind({ env: { ...STUB, OMP_ASKGATE: mode }, cwd: work, now: HELD_CLOCK });
       const first = await g.bash(
         "cd",
         "cd sub && dispatch message --issue X-1 --body-file note.txt"
@@ -4026,8 +4064,11 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         },
       ]);
     });
+    // The clock is held (HELD_CLOCK) for the DRY_RUN_TIMEOUT_MS this row asserts: the gate
+    // derives that budget from the real clock (askgate-core.ts:3255), and the row's subject is
+    // the directory each dry run ran in, not how long the host took to reach it.
     test("(c) after a leading cd, a relative --path is read from the directory the cd reached, which bash names", async () => {
-      const g = bind({ env: STUB, cwd: work });
+      const g = bind({ env: STUB, cwd: work, now: HELD_CLOCK });
       await g.bash(
         "u3",
         "cd docs && dispatch artifact --issue DSP-1 --name brief.md --path brief.md"
