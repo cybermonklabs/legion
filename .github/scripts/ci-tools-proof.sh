@@ -209,8 +209,9 @@
 #       fetch carrying that name is outside LADDER_FLOOR..LADDER_CEILING below, the floor being
 #       the reading that catches a kept case which stopped driving the real ladder; where a
 #       fetch the stand-in left on the pinned ladder spent one and then failed, which is a
-#       fault shape its rule did not recognise; and where a fetch the stand-in shortened
-#       exited 0, which is a fetch this job means to succeed and not one it arranged to fail.
+#       fault shape its rule did not recognise; where a fetch the stand-in shortened exited 0,
+#       which is a fetch this job means to succeed and not one it arranged to fail; and where a
+#       line of the log is not the five-field line the stand-in writes.
 #       A fetch that spent a ladder and served the bytes is the ladder doing the work it is
 #       kept for, and it is printed as a warning that refuses nothing.
 #
@@ -835,10 +836,8 @@ case $authority in
   *) host=${authority%%:*} ;;
 esac
 # An authority that is only a port, as in http://:443/ or http://u@:80/, leaves the host
-# empty, and the ladder-report verb refuses a line that holds an empty host=. The fallback is
-# therefore on the host and below the case, and not on the authority above it. No test of
-# this script compares the authority against the word none: the one test below compares it
-# against $dead_address, which is an address and a port.
+# empty, and the ladder-report verb refuses a line that holds an empty host=, so an empty host
+# is written as none.
 [ -n "$host" ] || host=none
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
@@ -1552,22 +1551,16 @@ ladder_report() {
   local seconds decision host status bypass line
   note "every fetch the stand-in curl of the shorten-ladder step measured"
   while IFS= read -r line || [ -n "$line" ]; do
-    # The whole line is matched against the shape write_stand_in's printf writes. This one
-    # match stands where this reader held a key check and a value check for each of the five
-    # fields, and it refuses four lines those let through.
-    # A seconds of twenty digits is more than bash holds. The test [ "$seconds" -le "$longest" ]
-    # below then printed `integer expression expected` and returned 2, longest took the text
-    # itself, both window arms read false, and this verb passed the job printing that it
-    # measured the ladder inside the window. The match holds that field to six digits.
-    # A last field that read `full-ladder` with no `=` named the kept case `full-ladder`. The
-    # `=` is part of the shape the match holds every line to.
-    # A sixth field appended went into the fifth value, which was then refused as two kept
-    # names and sent the reader of this job after a case that does not exist. The match ends
-    # at the fifth field and at the end of the line.
-    # A last line with no newline was dropped by `read`, so nothing read that fetch at all.
-    # The `|| [ -n "$line" ]` of the loop header reads it.
+    # Every line is matched whole against the shape write_stand_in's printf writes, and a line
+    # of any other shape refuses the job. The match holds seconds to six digits and exit to
+    # three, so each [ … -le … ], [ … -lt … ], [ … -gt … ] and [ … -eq … ] below reads a number
+    # bash can hold; a value past that limit makes such a test fail with `integer expression
+    # expected` and read false, which would pass the job with no refusal. Each key carries its
+    # `=`, and the `$` anchor ends the line at the fifth field.
+    # The `|| [ -n "$line" ]` of the loop header reads a last line that has no newline, which a
+    # plain `read` drops.
     [[ $line =~ ^seconds=([0-9]{1,6})\ decision=(full|shortened)\ host=([^ ]+)\ exit=([0-9]{1,3})\ full-ladder=([^ ]+)$ ]] ||
-      die "ladder-report: this line of $curl_log is not the line write_stand_in's printf writes, so the two no longer agree: $line"
+      die "ladder-report: this line of $curl_log is not the five-field line write_stand_in's printf writes (seconds= decision= host= exit= full-ladder=, each value without a space): $line"
     seconds=${BASH_REMATCH[1]} decision=${BASH_REMATCH[2]} host=${BASH_REMATCH[3]} status=${BASH_REMATCH[4]} bypass=${BASH_REMATCH[5]}
     printf '  %s: %s, curl exit %s, %ss\n' "$host" "$decision" "$status" "$seconds"
     if [ "$bypass" != none ]; then
