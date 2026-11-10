@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"strings"
+	"testing"
 	"time"
 
 	gws "github.com/gorilla/websocket"
@@ -174,4 +176,228 @@ func readEventsStart(conn *gws.Conn, sub string) <-chan eventsStartRead {
 		}
 	}()
 	return read
+}
+
+// stallWarningHead is the opening of every stall-warning line: slog's time, level and quoted
+// message, then the four attributes warnStall carries whatever its diagnosis found. The shape is
+// warnStall's in internal/dispatch/events/horizon.go, as the text handler writes it, and the
+// message comes from events.StallWarning rather than being retyped, so a reworded warning moves
+// these rows with it.
+const stallWarningHead = `time=2026-11-10T02:14:05.113Z level=WARN msg="` + events.StallWarning +
+	`" pending_for=5.0987s observed_id=2 safe_horizon=0 observer_xid=4021`
+
+// stallWarningLine is a whole stall-warning line naming database as the holder's, as warnStall's
+// default arm logs one (internal/dispatch/events/horizon.go): holder, pid, xact_start, state,
+// application_name and database, then the holder's query, which is quoted and holds spaces. The
+// rows use whole lines rather than a database= fragment, because the field the wait must read is
+// the one in the middle of such a line, with another field after it.
+func stallWarningLine(database string) string {
+	return stallWarningHead + ` holder=backend pid=1188 xact_start=2026-11-10T02:13:59.998Z` +
+		` state=active application_name=psql database=` + database + ` query="begin; select 1"`
+}
+
+// eventsStartVerdictName names a verdict, so a failed row reads as the decision the wait made
+// rather than as the integer the constants are.
+func eventsStartVerdictName(verdict eventsStartVerdict) string {
+	switch verdict {
+	case eventsStartWaitOn:
+		return "eventsStartWaitOn"
+	case eventsStartNoSignal:
+		return "eventsStartNoSignal"
+	case eventsStartSignalStopped:
+		return "eventsStartSignalStopped"
+	case eventsStartOwnHold:
+		return "eventsStartOwnHold"
+	}
+	return fmt.Sprintf("eventsStartVerdict(%d)", int(verdict))
+}
+
+// TestEventsStartVerdictOfKeysTheWaitOnTheServersStallWarning drives every rule of the wait's
+// judgement, with the boundary either side where a rule has one. It needs no server, no Postgres
+// and no network: the judgement is a function of its state alone.
+//
+// Every duration is written in terms of eventsStartBase and eventsStartExtension rather than as
+// seconds, so that a later change of either constant moves the rows with it instead of leaving
+// them to test a boundary that has moved.
+func TestEventsStartVerdictOfKeysTheWaitOnTheServersStallWarning(t *testing.T) {
+	const ownDatabase = "dispatch_test_ab"
+	// A foreign holder: another service's transaction on the same Postgres instance, which holds
+	// the horizon back and is no defect of Dispatch's.
+	foreign := stallWarningLine("legion_daemon")
+	// warnStall's other two arms carry no database= field at all.
+	diagnosisFailed := stallWarningHead + ` diagnosis_error="timeout: context deadline exceeded"`
+	noHolder := stallWarningHead + ` holder="none open now"`
+	for _, tc := range []struct {
+		name  string
+		state eventsStartState
+		want  eventsStartVerdict
+	}{
+		{
+			"a server that has said nothing and is still inside the base bound is waited on, so a merely slow server does not fail the test early",
+			eventsStartState{
+				elapsed:     eventsStartBase - time.Millisecond,
+				ownDatabase: ownDatabase,
+			},
+			eventsStartWaitOn,
+		},
+		{
+			"a server that never said it was held is failed at the base bound rather than waited out",
+			eventsStartState{
+				elapsed:     eventsStartBase,
+				ownDatabase: ownDatabase,
+			},
+			eventsStartNoSignal,
+		},
+		{
+			"a server that keeps saying it is held is waited on far past the base bound, which is the flaky deadline this wait replaces",
+			eventsStartState{
+				elapsed:         4 * eventsStartBase,
+				sinceNewWarning: eventsStartExtension / 2,
+				warnings:        7,
+				lastWarning:     foreign,
+				ownDatabase:     ownDatabase,
+			},
+			eventsStartWaitOn,
+		},
+		{
+			"a server whose newest warning is still inside the extension window is waited on, however long it has been held",
+			eventsStartState{
+				elapsed:         4 * eventsStartBase,
+				sinceNewWarning: eventsStartExtension - time.Millisecond,
+				warnings:        7,
+				lastWarning:     foreign,
+				ownDatabase:     ownDatabase,
+			},
+			eventsStartWaitOn,
+		},
+		{
+			"a hold nobody releases ends at the extension window in a failure that names it, rather than in a wait (docs/testing.md)",
+			eventsStartState{
+				elapsed:         4 * eventsStartBase,
+				sinceNewWarning: eventsStartExtension,
+				warnings:        7,
+				lastWarning:     foreign,
+				ownDatabase:     ownDatabase,
+			},
+			eventsStartSignalStopped,
+		},
+		{
+			"a warning naming this process's own database fails at once, so Dispatch holding up its own readers is never waited out (dispatch://INFRA-636)",
+			eventsStartState{
+				elapsed:     3 * time.Millisecond,
+				warnings:    1,
+				lastWarning: stallWarningLine(ownDatabase),
+				ownDatabase: ownDatabase,
+			},
+			eventsStartOwnHold,
+		},
+		{
+			"a warning whose diagnosis failed names no database at all and still extends the wait, because the server is saying it is held",
+			eventsStartState{
+				elapsed:         2 * eventsStartBase,
+				sinceNewWarning: eventsStartExtension / 2,
+				warnings:        2,
+				lastWarning:     diagnosisFailed,
+				ownDatabase:     ownDatabase,
+			},
+			eventsStartWaitOn,
+		},
+		{
+			"a warning that found no holder still open names no database either and extends the wait for the same reason",
+			eventsStartState{
+				elapsed:         2 * eventsStartBase,
+				sinceNewWarning: eventsStartExtension / 2,
+				warnings:        2,
+				lastWarning:     noHolder,
+				ownDatabase:     ownDatabase,
+			},
+			eventsStartWaitOn,
+		},
+		{
+			"an own-database warning fails before the base bound and inside the extension window, so the own-hold rule is read before the two that would wait",
+			eventsStartState{
+				elapsed:         eventsStartBase - time.Millisecond,
+				sinceNewWarning: eventsStartExtension / 2,
+				warnings:        1,
+				lastWarning:     stallWarningLine(ownDatabase),
+				ownDatabase:     ownDatabase,
+			},
+			eventsStartOwnHold,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := eventsStartVerdictOf(tc.state); got != tc.want {
+				t.Errorf("eventsStartVerdictOf(%+v) = %s, want %s",
+					tc.state, eventsStartVerdictName(got), eventsStartVerdictName(tc.want))
+			}
+		})
+	}
+}
+
+// TestStallWarningNamesDatabaseMatchesTheWholeDatabaseField holds the trap the helper exists to
+// avoid: a prefix match would read a foreign hold as Dispatch's own and fail the test at once on
+// a database the process does not own.
+func TestStallWarningNamesDatabaseMatchesTheWholeDatabaseField(t *testing.T) {
+	const ownDatabase = "dispatch_test_ab"
+	for _, tc := range []struct {
+		name     string
+		warning  string
+		database string
+		want     bool
+	}{
+		{
+			"a warning naming a longer database that opens with this one's name is not read as naming this one",
+			stallWarningLine(ownDatabase + "cd"), ownDatabase, false,
+		},
+		{
+			"a warning naming exactly this database is read as naming it",
+			stallWarningLine(ownDatabase), ownDatabase, true,
+		},
+		{
+			"a line carrying no database= field at all names nothing",
+			stallWarningHead + ` holder="none open now"`, ownDatabase, false,
+		},
+		{
+			"a database= field at the line's end, with no space after it, is still read whole",
+			stallWarningHead + " database=" + ownDatabase, ownDatabase, true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stallWarningNamesDatabase(tc.warning, tc.database); got != tc.want {
+				t.Errorf("stallWarningNamesDatabase(%q, %q) = %t, want %t",
+					tc.warning, tc.database, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLastStallWarningAnswersTheNewestWholeWarningLine proves the wait reads the newest warning
+// whole: the line is what a failure prints, and the database= field in it is what decides whether
+// the hold is Dispatch's own.
+func TestLastStallWarningAnswersTheNewestWholeWarningLine(t *testing.T) {
+	const other = `time=2026-11-10T02:14:05.001Z level=INFO msg="dispatch: live socket subscribed" sub=events`
+	older := stallWarningLine("postgres")
+	newest := stallWarningLine("legion_daemon")
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			"output holding several warnings among other lines answers the newest one whole, with its fields and without the lines around it",
+			strings.Join([]string{other, older, other, newest, other}, "\n") + "\n",
+			newest,
+		},
+		{
+			"output holding no warning at all answers the empty string, which the wait reads as a server that has said nothing",
+			strings.Join([]string{other, other}, "\n") + "\n",
+			"",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lastStallWarning(tc.output); got != tc.want {
+				t.Errorf("lastStallWarning() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
