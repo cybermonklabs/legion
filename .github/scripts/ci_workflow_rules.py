@@ -360,6 +360,39 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
                         f"of this repository reads")
 
 
+# ------------------------------------------------- the size a workflow must stay under
+# GitHub starts no run at all from a workflow file over this size, and the failure is silent
+# exactly where a reader looks for it: the run is created, it holds zero jobs, every required
+# check is ABSENT rather than red, and the only words GitHub gives are "This run likely failed
+# because of a workflow file issue" (https://docs.github.com/actions/reference/limits, "Workflow
+# file size": "Each workflow file in the .github/workflows directory must be 500 KB or smaller to
+# trigger a run"). Measured on this repository: .github/workflows/ci.yaml ran the whole lane at
+# 501,500 bytes (run 42710088044) and started nothing at 525,100 (run 42739729814), so the
+# threshold is inside that bracket and 500,000 is the figure the documentation states.
+WORKFLOW_SIZE_LIMIT = 500_000
+
+
+def check_workflow_size(problems: list) -> None:
+    """Every workflow file stays under the size GitHub needs to start a run.
+
+    This rule runs over the whole directory rather than over the workflows one job's filter
+    names, because the file that grows is not the file whose check would catch it: a pull
+    request that only grows dispatch-browser.yaml merges green and then starts no run of it.
+    Both suffixes are read, since GitHub runs a `.yml` as readily as a `.yaml`, and the message
+    names the file and its size, because a reader whose run holds zero jobs has nothing else to
+    go on."""
+    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
+        size = path.stat().st_size
+        if size <= WORKFLOW_SIZE_LIMIT:
+            continue
+        name = f"{WORKFLOW_DIR}/{path.name}"
+        problems.append(f"::error file={name}::{name} is {size} bytes, over the {WORKFLOW_SIZE_LIMIT} GitHub needs "
+                        f"to start a run: a workflow file above it creates a run with zero jobs that concludes "
+                        f"failure at once, so every required check of it is absent rather than red and nothing says "
+                        f"why. Move this file's background prose into a note beside it, as .github/ci-budgets.md "
+                        f"holds ci.yaml's, keeping each step's own arithmetic where a reader of that step sees it")
+
+
 # ------------------------------------------------- the one workflow a merge group runs
 # The directory every workflow of this repository is in, and the two suffixes GitHub reads there.
 WORKFLOW_DIR = ".github/workflows"

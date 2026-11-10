@@ -1640,6 +1640,31 @@ run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
 
+# The size GitHub needs to start a run, in the rule that reads every workflow of the directory
+# rather than in a case of this suite alone: the file that grows is not the file whose filter
+# would select the check, so a pull request growing only dispatch-browser.yaml would never have
+# run the case above. The fixture writes a workflow of its own past the limit and reads the
+# message for the file and its size, because a run with zero jobs gives a reader nothing else.
+root=$(fixture workflow-size)
+run_check "$root"
+check "passes while every workflow is under the limit" "$(is "$status" 0)"
+{
+  printf 'name: Fat\non: [pull_request]\njobs:\n  fat:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - run: echo %s\n' "$(head -c 500000 /dev/zero | tr '\0' 'x')"
+} > "$root/.github/workflows/fat.yaml"
+run_check "$root"
+check "fails once one is over it" "$(is "$status" 1)"
+fat_size=$(wc -c < "$root/.github/workflows/fat.yaml")
+check "naming the file, its size and the limit" \
+  "$(contains "$out" "::error file=.github/workflows/fat.yaml::.github/workflows/fat.yaml is $fat_size bytes, over the 500000")"
+check "and what a run over it does" \
+  "$(contains "$out" "creates a run with zero jobs that concludes failure at once")"
+mv "$root/.github/workflows/fat.yaml" "$root/.github/workflows/fat.yml"
+run_check "$root"
+check "reading the .yml spelling GitHub reads too" \
+  "$(contains "$out" "::error file=.github/workflows/fat.yml::")"
+
+
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
 # so the cases below run that walk itself, over a tree of this test's making and a lane of its

@@ -7,7 +7,9 @@ The comments that had grown it there were the background ones:
 the rules every budget is written to, the histories behind them, and the measurement campaigns they came from.
 Each step's and each job's own arithmetic stays beside the step in that file, where a reader judging that budget sees it, and each run of prose that moved left a line there naming the section below that now holds it.
 
-In these notes `this file`, `below`, `above` and `this workflow` mean `.github/workflows/ci.yaml`, where this text was written.
+In these notes `this file` and `this workflow` mean `.github/workflows/ci.yaml`, where this text was written.
+A `below` or an `above` means this note's own text, as it does in any document;
+where one points at a step of the workflow rather than at a paragraph here, it says `in ci.yaml`.
 
 ## The router
 
@@ -330,10 +332,10 @@ A GitHub runner leaves both unset today, so nothing here changes what the sites 
 what the step buys is that nothing a runner image ever sets can void the whole job in silence.
 
 $GITHUB_ENV and not each step's own `env:`, for three reasons.
-An `env:` map may hold one spelling of a name and not two (below), and one spelling does not answer for the other:
+An `env:` map may hold one spelling of a name and not two (the run that proved it is named further down), and one spelling does not answer for the other:
 a runner applies the map case-sensitively, so a `no_proxy: ''` beside an inherited `NO_PROXY=*` leaves the bypass live for every client that reads the upper-case one, Go's among them.
 An `unset` written into a `run:` cannot reach the six sites that are `uses:` steps of a composite action.
-And the probe below runs in a step of its own, so only a clearing the whole job carries makes its reading evidence about the step that follows it.
+And the probe runs in a step of its own in ci.yaml, so only a clearing the whole job carries makes its reading evidence about the step that follows it.
 An emptied variable is no proxy and routes nothing, which is why the `clear` step before the ci-ok report refuses a proxy variable that carries a value and accounts for an emptied one rather than refusing it.
 
 Clearing the bypass is necessary and not sufficient

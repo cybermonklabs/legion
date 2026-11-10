@@ -1229,6 +1229,7 @@ def main() -> int:
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    rules.check_workflow_size(problems)
     expander = Expander(files)
     check_dead_patterns(data, filters, expander, problems)
     session = Session()

@@ -49,7 +49,7 @@ jobs:
   bypass-check:
     runs-on: ubuntu-24.04
     # The checkout, two API reads at the push's head, and at most one dispatch: 600 s, the
-    # 10 minutes that gives, plus this job's slowest retried step alone, as ci.yaml's Budgets
+    # 10 minutes that gives, plus this job's slowest retried step alone, as ci-budgets.md's Budgets
     # note derives one — the one `run:` step below, whose three retried calls are
     # 3 x (5 x 30 + 150) = 900 s, a whole number of minutes, so that step's own budget takes one
     # more and this job takes it too. 600 + 960 = 1560 s -> 26 min.
@@ -106,7 +106,7 @@ jobs:
           # runs of the commit, and a commit the queue tested more than once can carry more.
           #
           # The read retries, at the 30 s an attempt this repository's CI gives one page of a
-          # REST route (ci.yaml's Retries note): a refusal here would otherwise leave the
+          # REST route (ci-budgets.md's Retries note): a refusal here would otherwise leave the
           # decision reading an empty list and starting nothing, which is the one outcome this
           # backstop exists to prevent.
           CI_OK=$(retry_fetch "the head's ci-ok check runs" 30 -- \

@@ -46,7 +46,7 @@ name: Dispatch browser suite
 # attempt at once has met an outage of the host rather than the transient fault a retry
 # survives, and in an outage failing at the job's budget is the right behaviour, where each
 # step's own budget is where that step's exhausted retry stops.
-# .github/workflows/ci.yaml's "Budgets" note writes that rule down in full, and
+# .github/ci-budgets.md's "Budgets" note writes that rule down in full, and
 # .github/scripts/check-download-retry.sh's rule 8 is what refuses a step or a job that
 # carries less than its own arithmetic (dispatch://INFRA-1545).
 #
@@ -1239,6 +1239,16 @@ jobs:
         # through Playwright's own Node resolution (the shard job's step of the same name).
         run: bun run build
         working-directory: packages/contracts
+      # The multiprocess job's step of this name, at the same bound and for the same reason: the
+      # build below fetches this module's dependencies itself on a cache miss, where a go command
+      # reaches proxy.golang.org with no retry of its own, and nothing in this workflow could see
+      # that site because it is inside a `go build`.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Build the Dispatch server for the embedder lane
         # run-server.sh builds it too, inside the harness's boot wait; built here, the server
         # finds it current and starts in seconds. The name carries the lane because

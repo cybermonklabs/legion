@@ -126,7 +126,7 @@ jobs:
           # The loop below is a poll and not a retry: it waits for a removal to reach the
           # timeline, which is why it goes round again on a read that succeeded and held
           # nothing. The attempts against a refusing or stalling API are the helper's, at the
-          # 30 s an attempt this repository's CI gives one page of an API route (ci.yaml's
+          # 30 s an attempt this repository's CI gives one page of an API route (ci-budgets.md's
           # Retries note), so one rule still holds them (dispatch://INFRA-1545, R2) and a read
           # that counts as refused here is one five bounded attempts could not make.
           refused=0
