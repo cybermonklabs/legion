@@ -1197,3 +1197,4 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
 # --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code
 # --skip-agent-models` work.
 ENTRYPOINT ["legion"]
+# selection probe
