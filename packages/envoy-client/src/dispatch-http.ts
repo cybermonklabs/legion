@@ -19,6 +19,7 @@ import type {
   Comment,
   CommentRead,
   CommentWriteResponse,
+  CreateAgentMessageInput,
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
@@ -27,12 +28,13 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
+  DocumentAdvised,
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
-  Event,
   GraphEdgeKind,
   GraphReferences,
   Handoff,
@@ -69,6 +71,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -268,6 +271,11 @@ export interface IssuePageRequest {
   readonly offset: number;
 }
 
+/** What the `dispatch search` command narrows by. It carries none of the five members the search
+ *  bar sends (`number_project`, `status`, `author`, `updated_since`, `keywords_only`): those
+ *  belong to the bar's own feature, and the command cannot narrow by them today. `search` reads
+ *  the request's keys rather than this shape, so the day one is added here it is routed to
+ *  `GET /api/v1/search/results` with nobody remembering to. */
 export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
@@ -871,7 +879,7 @@ export class DispatchClient {
     project: string,
     input: CreateArtifactInput,
     key?: string
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<DocumentAdvised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "projects", project, "artifacts"], input, key);
   }
 
@@ -885,7 +893,7 @@ export class DispatchClient {
   async agentArtifact(
     sessionId: string,
     input: CreateArtifactInput
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<Advised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "agents", sessionId, "artifacts"], input);
   }
 
@@ -904,8 +912,15 @@ export class DispatchClient {
     ]);
   }
 
+  /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
+   *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
+   *  build refuses rather than answering unnarrowed. */
   async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-    return this.#json("GET", ["api", "v1", "search"], undefined, { q: query, ...options });
+    const request = { q: query, ...options };
+    const path = everyBuildReadsSearch(request)
+      ? ["api", "v1", "search"]
+      : ["api", "v1", "search", "results"];
+    return this.#json("GET", path, undefined, request);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
@@ -951,7 +966,11 @@ export class DispatchClient {
     );
   }
 
-  async getIssueEvents(issue: string, after = 0, limit = ISSUE_EVENTS_PAGE_MAX): Promise<Event[]> {
+  async getIssueEvents(
+    issue: string,
+    after = 0,
+    limit = ISSUE_EVENTS_PAGE_MAX
+  ): Promise<DispatchEvent[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "events"],
@@ -974,7 +993,7 @@ export class DispatchClient {
         : requested === "all"
           ? issue.last_seq
           : Math.min(requested, issue.last_seq);
-    const events: Event[] = [];
+    const events: DispatchEvent[] = [];
     let after = Math.max(0, issue.last_seq - count);
     while (events.length < count) {
       const limit = Math.min(ISSUE_EVENTS_PAGE_MAX, count - events.length);
@@ -1327,6 +1346,16 @@ export class DispatchClient {
   }
 
   /**
+   * `POST /api/v1/agents/{session_id}/messages`: one message into a session's own conversation,
+   * which belongs to no issue. The route is the person's, so the credential must hold the
+   * `person` scope. It answers once the message's first delivery attempt has settled, with that
+   * attempt on the message.
+   */
+  async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
+    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
+  }
+
+  /**
    * `POST /api/v1/messages/{id}/reply`: the targeted session's reply to the delivery it
    * received. It takes no issue, so it is the route that answers a human's direct message -
    * a conversation Dispatch keeps without one - and the server settles the delivery attempt
@@ -1350,15 +1379,23 @@ export class DispatchClient {
   /**
    * `POST /api/v1/{messages|comments}/{id}/reply` as the session a targeted delivery reached: its
    * reply to that delivery attempt, or why it could not honour it (`postDeliveryReply`, whose
-   * body names the session as `actor` and the `attempt`).
+   * body names the session as `actor` and the `attempt`). `followUp` is `messageReply`'s own
+   * option: the attempt is settled by the first reply Dispatch takes, so a second answer to it -
+   * the output a waiting reply promised - is posted only when it asks (`?follow_up=true`).
    */
   async deliveryReply(
     resource: "message" | "comment",
     id: string,
-    input: Readonly<Record<string, unknown>>
+    input: Readonly<Record<string, unknown>>,
+    options: { readonly followUp?: boolean } = {}
   ): Promise<void> {
     const collection = resource === "message" ? "messages" : "comments";
-    await this.#json("POST", ["api", "v1", collection, id, "reply"], input);
+    await this.#json(
+      "POST",
+      ["api", "v1", collection, id, "reply"],
+      input,
+      options.followUp === true ? { follow_up: "true" } : undefined
+    );
   }
 
   async getMessage(issue: string, id: string): Promise<MessageRead> {
@@ -1402,7 +1439,9 @@ export class DispatchClient {
     issue: string,
     input: CreateArtifactInput
   ): Promise<
-    ArtifactUploadResponse & { readonly artifact: Artifact & { readonly issue_key: string } }
+    Advised<ArtifactUploadResponse> & {
+      readonly artifact: Artifact & { readonly issue_key: string };
+    }
   > {
     return this.#upload(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"],
@@ -1480,7 +1519,11 @@ export class DispatchClient {
    * AskGate's one append per decision, which a resumed session must not write twice — and replaces
    * the key this call would mint for itself. It must match `IDEMPOTENCY_KEY_PATTERN`.
    */
-  async docEdit(id: string, input: EditArtifactInput, key?: string): Promise<EditArtifactResponse> {
+  async docEdit(
+    id: string,
+    input: EditArtifactInput,
+    key?: string
+  ): Promise<Advised<EditArtifactResponse>> {
     return this.#json(
       "POST",
       ["api", "v1", "artifacts", id, "edits"],
@@ -1495,7 +1538,7 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "artifacts", id, "versions"], input);
   }
 
-  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<Event[]> {
+  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<DispatchEvent[]> {
     return this.#json("GET", ["api", "v1", "artifacts", id, "events"], undefined, { after, limit });
   }
 
@@ -1968,7 +2011,13 @@ export class DispatchClient {
     );
     if (query) {
       for (const [name, value] of Object.entries(query)) {
-        if (typeof value === "string" || typeof value === "number") {
+        // A boolean is sent as `true` or `false`, the two words every route that reads one
+        // takes (`parseQueryBool` in the server). It must be sent rather than dropped: a
+        // search's path is picked from the members the request carries
+        // (`everyBuildReadsSearch`), so a dropped `keywords_only: true` would ask for
+        // `/api/v1/search/results` and then arrive with the flag gone, and the server would
+        // answer by meaning the search asked it to skip.
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
           url.searchParams.set(name, String(value));
         } else if (Array.isArray(value)) {
           for (const item of value) url.searchParams.append(name, String(item));

@@ -7,16 +7,19 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // What a mention of a comment asks of the session it reaches. A comment that joins no ask thread
 // and answers no comment is a remark: nothing is wanted back, and a session that answered one
-// wrote a receipt that cost the person who commented a read (INFRA-1225). A reply in a thread and
-// a comment under an ask are conversation, so both keep inviting a reply, and a btw interrupts the
-// session to ask it something, so it waits on an answer whatever the comment is.
+// wrote a receipt that cost the person who commented a read. A reply in a thread and a comment
+// under an ask are conversation, so both keep inviting a reply, and a btw interrupts the session
+// to ask it something, so it waits on an answer whatever the comment is.
 //
-// The value is read off the body the listener was sent, which is what the delivery carries: the
-// no-reply value is the JSON literal false, not a word.
+// The value is read off the body the listener was sent, which is what the delivery carries. A
+// remark leaves the field out rather than writing the literal false that says the same thing,
+// since a listener built before #2903 reads expects_reply only as a string and answers 400 to
+// false; see commentExpectsReply for what removes that.
 func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 	const session = `{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"],"last_seen":200}`
 	var guard sync.Mutex
@@ -54,10 +57,25 @@ func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 		t.Helper()
 		input["body"], input["mentions"] = body, mention
 		created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, input))
-		if len(created.Deliveries) != 1 || created.Deliveries[0].State != "sent" {
-			t.Fatalf("deliveries of %q = %#v, want one sent delivery", body, created.Deliveries)
+		// The comment answers once it commits, its mention's attempt pending: the send runs after
+		// the response, one lane per recipient (INFRA-606), so the value this test reads reaches
+		// the listener a moment later rather than inside the request.
+		if len(created.Deliveries) != 1 || created.Deliveries[0].State != "pending" {
+			t.Fatalf("deliveries of %q = %#v, want one pending delivery", body, created.Deliveries)
 		}
-		return created.ID
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			guard.Lock()
+			_, sent := sends[body]
+			guard.Unlock()
+			if sent {
+				return created.ID
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no mention send of %q reached the listener within 10s", body)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 
 	const plain = "The staging deploy is green."
@@ -76,7 +94,7 @@ func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "a plain comment wants nothing back", body: plain, want: "false"},
+		{name: "a plain comment wants nothing back", body: plain, want: ""},
 		{name: "a reply in a thread invites one", body: threaded, want: `"optional"`},
 		{name: "a comment under an ask invites one", body: underAsk, want: `"optional"`},
 		{name: "a btw waits on one", body: interrupting, want: `"required"`},

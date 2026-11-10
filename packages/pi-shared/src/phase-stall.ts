@@ -1,3 +1,4 @@
+import { lastCustomEntry } from "./custom-entry";
 import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
 
 /**
@@ -190,7 +191,7 @@ export function inboundKind(message: unknown): "assignment" | "inbound-event" | 
 
 /** The text blocks of an assistant message, joined; empty for anything else. A text block is
  * `{ type: "text", text }` on both hosts' shapes: Oh My Pi's own message model, which `message_end`
- * and `session_stop` hand the plugin (`packages/pi-envoy/src/agent-stream.ts` reads it the same
+ * and `session_stop` hand the plugin (`packages/pi-shared/src/agent-stream.ts` reads it the same
  * way), and Claude Code's, whose `Stop` hook hands its host the last message as a string, so that
  * host never comes here. */
 export function assistantText(message: unknown): string {
@@ -212,12 +213,14 @@ export function assistantText(message: unknown): string {
 }
 
 /** Whether a settled assistant message ran at least one real tool call: its `content` holds a
- * tool-call block. The plugin reads this from the host's `message_end`; it registers no
- * `tool_call` hook, so nothing it does can block or shape a call the worker makes.
+ * tool-call block. The plugin reads this from the host's `message_end`, which is where a settled
+ * message is: the `tool_call` handler it registers for the stall watch (INFRA-1274) records one
+ * call's arguments and returns, and says nothing about whether the turn that call belongs to
+ * settled. Neither handler blocks or shapes a call the worker makes.
  *
  * Two block names are accepted because the hosts disagree on it: Oh My Pi's `message_end` hands a
  * `toolCall` block (`{ type: "toolCall", id, name, arguments }`, the shape
- * `packages/pi-envoy/src/agent-stream.ts` reads), and Claude Code names the same thing `tool_use`
+ * `packages/pi-shared/src/agent-stream.ts` reads), and Claude Code names the same thing `tool_use`
  * (its stream-json, which `packages/daemon/internal/claudebridge/bridge.go` reads). Matching only
  * `tool_use` once left a working Oh My Pi worker reported to its architect as stalled. */
 export function assistantRanTool(message: unknown): boolean {
@@ -272,24 +275,9 @@ function phaseStallFrom(
  * the one place the restore reads, so the state and the plugin's own report fields come from one
  * entry rather than two scans that could disagree. */
 function lastPhaseStallData(branch: readonly unknown[]): object | undefined {
-  for (let index = branch.length - 1; index >= 0; index -= 1) {
-    const entry = branch[index];
-    if (
-      typeof entry === "object" &&
-      entry !== null &&
-      "type" in entry &&
-      entry.type === "custom" &&
-      "customType" in entry &&
-      entry.customType === PHASE_STALL_ENTRY &&
-      "data" in entry &&
-      typeof entry.data === "object" &&
-      entry.data !== null &&
-      phaseStallFrom(entry.data) !== undefined
-    ) {
-      return entry.data;
-    }
-  }
-  return undefined;
+  return lastCustomEntry(branch, PHASE_STALL_ENTRY, (data) =>
+    phaseStallFrom(data) === undefined ? undefined : data
+  );
 }
 
 /** The head of the worker's last message the architect notice quotes, and so all of it the record

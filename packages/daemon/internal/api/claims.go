@@ -36,6 +36,11 @@ type Supervisor interface {
 	Create(ctx context.Context, c supervise.Claim, rolePrompt string) (*supervise.Machine, bool, error)
 	// Claims is every claim the daemon supervises, as its store holds them.
 	Claims(ctx context.Context) ([]supervise.Claim, error)
+	// Step is one claim's step record as the store holds it: what the daemon last saw that
+	// claim's agent do. It is no part of a machine's state (supervise's putStep), so every
+	// operator answer about one claim reads it here (operatorAnswer), as the listing of them all
+	// reads it with the claims. A claim the store no longer holds has the zero record.
+	Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error)
 }
 
 // register is the agent's first call: its pane's boot token, and the session it became. The token
@@ -643,7 +648,8 @@ func requireFields(w http.ResponseWriter, fields ...field) bool {
 	return true
 }
 
-// requireGeneration refuses a request with no generation: a launch is generation 1 or later.
+// requireGeneration refuses a request whose launch generation is zero, the one count from 1 the
+// claim and operator routes read: a request that names no generation is fenced against nothing.
 func requireGeneration(w http.ResponseWriter, generation uint64) bool {
 	if generation == 0 {
 		writeJSON(w, http.StatusBadRequest, errorBody("generation is required"))

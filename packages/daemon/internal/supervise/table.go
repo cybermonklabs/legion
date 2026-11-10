@@ -41,6 +41,33 @@ type StreamTurnStart struct {
 // StreamTurnEnd is the agent's turn ending.
 type StreamTurnEnd struct{ Claim claim.Token }
 
+// StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
+// the frame (stream.ToolStep): the only fact on the wire that says an agent mid-turn is still
+// moving. It is what the claim's step record is built from (toolStepped), and it is no part of
+// the machine's state: the record it writes goes through the store's own narrow call, never
+// through a claim write.
+//
+// ArgsBytes is the length of the call's arguments as the start frame carried them and ArgsHash
+// their fingerprint, both measured where the frame was read (stream.ToolStep), and both zero for
+// an end, which carries no arguments. Their text reaches no queue of the daemon's and no record
+// of it: it routinely holds a credential, and the record reaches every surface an operator reads
+// (StepRecord). CallID is what pairs an end with its start, and the only thing that does; a
+// frame that carries none is a step with no call to name (the Claude Code bridge writes one).
+//
+// ConnSequence is the registration sequence of the connection the frame arrived on
+// (runtime.Conn.Sequence), as StreamLateRefusal carries it. A frame that arrived on a connection
+// the claim has since replaced is evidence of what the agent was doing and none at all of what
+// it is doing now, so it records its call and does not move the claim's last-step time.
+type StreamToolStep struct {
+	Claim        claim.Token
+	Tool         string
+	CallID       string
+	ArgsBytes    int
+	ArgsHash     string
+	End          bool
+	ConnSequence uint64
+}
+
 // StreamPromptResult is Oh My Pi saying how one prompt's work ended (shimwire.PromptResult): the
 // one frame that names the prompt a turn belonged to, where agent_start and agent_end name none.
 // It arrives on the heels of the agent_end of the turn the prompt ran, so a turn that ends with
@@ -50,11 +77,23 @@ type StreamTurnEnd struct{ Claim claim.Token }
 // AgentInvoked is false for a prompt that ran no turn at all — one a slash command or an
 // extension answered locally — which is the definitive form of what the wait for the turn
 // (TimerTurn) otherwise only times out on.
+//
+// Error is Oh My Pi's message for the failure, and Retryable, HTTPStatus, Provider and Model the
+// rest of its error object: Oh My Pi's own word for a failure that may succeed on a later try,
+// the status of the provider request that failed (zero when it had none, as a content-filter
+// refusal does), and the provider and the model that request went to. The message is prose of
+// the provider's and is never parsed, and HTTPStatus alone decides what such a failure means
+// (providerErrored); the other three are logged, and the model is named in the controller's
+// notice.
 type StreamPromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
 	AgentInvoked bool
 	Error        string
+	Retryable    bool
+	HTTPStatus   int
+	Provider     string
+	Model        string
 }
 
 // StreamClosed is the claim's connection closing. It says nothing about the process by itself.
@@ -118,6 +157,9 @@ const (
 	// runs when it fires (wakeNow). A claim with no process of its own waits launching with none
 	// until then; one whose process still runs waits exactly as the wake found it.
 	TimerWake TimerKind = "wake"
+	// TimerPromptRetry is the wait before a task a provider error took back is sent to the same
+	// session again (promptRetryDelay), armed on that task's own delivery id.
+	TimerPromptRetry TimerKind = "prompt_retry"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -142,6 +184,29 @@ type Timer struct {
 type StalePlugin struct {
 	Claim   claim.Token
 	Trigger string
+}
+
+// StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
+// a turn whose recorded last step (StepRecord) is older than its role's backstop bound, and the
+// daemon ends that turn itself (internal/daemon's backstopStalledTurns, INFRA-1274's R5). The
+// sweep posts it at every tick that finds the claim still stalled, so a stop the runtime refuses
+// is tried again without a timer of its own, exactly as StalePlugin is re-posted.
+//
+// Bound is the role's bound (config.Config.StallBackstopFor), which the machine measures the
+// claim's own record against before it acts: the sweep read the claims before this decision is
+// taken, and a claim whose record moved in between is one whose agent is moving. Deadline is the
+// moment the daemon decided it would wait no longer — that record's last step plus Bound — which
+// is already past when the sweep posts. The request carries it rather than waiting for the turn
+// to end, as a suspension held for a turn does (holdSuspension): the turn this exists for is one
+// that never ends. Step is the record the sweep read, the store's own: the machine judges the
+// moment from its own two sources (backstopStalledTurn) and reports this record to the daemon
+// when it acts, because the claim a machine holds carries the record as it stood when that
+// machine was built and the owner's notice must name the call the agent is actually in.
+type StallBackstop struct {
+	Claim    claim.Token
+	Bound    time.Duration
+	Deadline time.Time
+	Step     StepRecord
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
@@ -312,11 +377,21 @@ type RequestReady struct {
 // running in its old tree, at the old root's linger expiry, where that tree's close would have
 // ended it (the daemon's outbox, stopElsewhere). The operator's suspension sets none: it is bounded
 // at the stop timeout from its arrival.
+//
+// NeverHold is a suspension that may not be held: one a caller posts only because it read the
+// claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A
+// claim whose state moved under it — into a turn (holdSuspension), or into a launch that has not
+// registered (holdSuspendUntilReady) — refuses it with a *RefusedError naming that state, and
+// records nothing: no hold, no timer, no write. Without it the hold would stop the agent at the
+// turn's end, behind an answer that told the caller its request did nothing (api's freshSession).
+// Every other suspension leaves it false and is held as above: the outbox retries its rows until
+// the claim answers nil, and `legion claims suspend` waits the hold out.
 type RequestSuspend struct {
-	Claim    claim.Token
-	Reason   string
-	By       SuspendSource
-	Deadline time.Time
+	Claim     claim.Token
+	Reason    string
+	By        SuspendSource
+	Deadline  time.Time
+	NeverHold bool
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
@@ -369,13 +444,25 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // re-admitted after its linger stopped every claim.
 type RequestRetry struct{ Claim claim.Token }
 
-// RequestOperatorRetry is the operator relaunching a failed architect through the API: the retry
-// RequestRetry makes, fresh budgets and the same session, from failed alone, for the root and
-// sub-architects nothing else relaunches (operatorRetry). A retired claim belongs to its tree's
-// lifecycle, which the workflow decides, so the operator's retry refuses it, as it refuses every
-// claim that has not failed. It is its own event, as the closes are, so the table answers each
-// caller's retry its own way.
-type RequestOperatorRetry struct{ Claim claim.Token }
+// RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
+// makes, fresh budgets and the same session, for an architect and for a phase worker
+// (operatorRetry). It is its own event, as the closes are, so the table answers each caller's
+// retry its own way.
+//
+// It reaches a retired claim as well as a failed one. `legion claims stop` retires a claim, and
+// while the operator's retry refused that state an operator who stopped a worker could start it
+// again only by editing the claims store with the daemon stopped; that is the recovery
+// dispatch://INFRA-956 R3 asked to be made of `legion` commands alone. The claim's tree lifecycle
+// still decides whether the relaunch runs at all: a tree whose cleanup is reserved refuses the
+// launch (revive, Store.AdmitClaim), as it refuses the workflow's own retry of a retired claim.
+//
+// A caller that wants the claim to start in a new session forgets the recorded one first
+// (RequestForgetSession), as `legion claims retry --fresh-session` and the controller's
+// fresh_session both do through the api's one fresh-session effect: this retry starts whatever
+// session the claim records when it arrives, and a claim that records none is spawned fresh.
+type RequestOperatorRetry struct {
+	Claim claim.Token
+}
 
 // RequestForgetSession drops the named recorded session of a suspended, failed, or retired claim.
 // Its next resume, retry, or workflow start provisions a fresh session rather than resuming one
@@ -429,10 +516,30 @@ type RequestExit struct {
 	Reason     string
 }
 
+// RequestCompact takes the claim for a compaction of its Oh My Pi session, which is what a claim
+// whose provider keeps refusing its session needs before anything is started again
+// (Machine.Compact). It carries no instructions: the ask itself is the caller's, made with no
+// lock held, and this is only the moment the claim becomes busy.
+type RequestCompact struct{ Claim claim.Token }
+
+// CompactEnded is the compaction over, posted by whoever asked for it (Machine.Compact).
+// Generation is the generation the claim was taken at, and an end that names one the claim no
+// longer holds the compaction of is answered ErrCompactProcessGone rather than reaching a row
+// (Machine.fence, ownsCompaction). Compacted is whether Oh My Pi compacted the session: false
+// for a compaction it refused or skipped and for a wait that ran out, each of which gives the
+// claim back and sends the owed task again all the same, and only true puts the claim's run of
+// provider-error turns back to zero.
+type CompactEnded struct {
+	Claim      claim.Token
+	Generation uint64
+	Compacted  bool
+}
+
 func (RuntimeObservation) isEvent()   {}
 func (StreamHello) isEvent()          {}
 func (StreamTurnStart) isEvent()      {}
 func (StreamTurnEnd) isEvent()        {}
+func (StreamToolStep) isEvent()       {}
 func (StreamPromptResult) isEvent()   {}
 func (StreamClosed) isEvent()         {}
 func (StreamLateRefusal) isEvent()    {}
@@ -440,6 +547,7 @@ func (PromptAcked) isEvent()          {}
 func (PromptRefused) isEvent()        {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
+func (StallBackstop) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
 func (PodUpdateSignalled) isEvent()   {}
@@ -459,9 +567,11 @@ func (RequestOperatorRetry) isEvent() {}
 func (RequestForgetSession) isEvent() {}
 func (RequestDeliver) isEvent()       {}
 func (RequestExit) isEvent()          {}
+func (RequestCompact) isEvent()       {}
+func (CompactEnded) isEvent()         {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
-// by its kind, because the six waits mean six different things.
+// by its kind, because each wait means a different thing.
 type eventKind string
 
 const (
@@ -469,6 +579,7 @@ const (
 	onHello         eventKind = "stream_hello"
 	onTurnStart     eventKind = "stream_turn_start"
 	onTurnEnd       eventKind = "stream_turn_end"
+	onToolStep      eventKind = "stream_tool_step"
 	onPromptResult  eventKind = "stream_prompt_result"
 	onClosed        eventKind = "stream_closed"
 	onLateRefusal   eventKind = "stream_late_refusal"
@@ -481,6 +592,9 @@ const (
 	onSuspendTimer  eventKind = timerPrefix + eventKind(TimerSuspend)
 	onRelaunchTimer eventKind = timerPrefix + eventKind(TimerRelaunch)
 	onWakeTimer     eventKind = timerPrefix + eventKind(TimerWake)
+	// The wait a turn that ended in a provider error arms (promptResulted).
+	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
+
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
 	onReady         eventKind = "request_ready"
@@ -496,8 +610,12 @@ const (
 	onForgetSession eventKind = "request_forget_session"
 	onDeliver       eventKind = "request_deliver"
 	onExit          eventKind = "request_exit"
+	onCompact       eventKind = "request_compact"
 
-	onStalePlugin eventKind = "stale_plugin"
+	onCompactEnded eventKind = "compact_ended"
+
+	onStalePlugin   eventKind = "stale_plugin"
+	onStallBackstop eventKind = "stall_backstop"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
@@ -517,6 +635,8 @@ func kindOf(ev Event) eventKind {
 		return onTurnStart
 	case StreamTurnEnd:
 		return onTurnEnd
+	case StreamToolStep:
+		return onToolStep
 	case StreamPromptResult:
 		return onPromptResult
 	case StreamClosed:
@@ -531,6 +651,8 @@ func kindOf(ev Event) eventKind {
 		return timerPrefix + eventKind(ev.Kind)
 	case StalePlugin:
 		return onStalePlugin
+	case StallBackstop:
+		return onStallBackstop
 	case PodUpdateOpen:
 		return onPodUpdateOpen
 	case PodUpdateEnded:
@@ -569,6 +691,10 @@ func kindOf(ev Event) eventKind {
 		return onDeliver
 	case RequestExit:
 		return onExit
+	case RequestCompact:
+		return onCompact
+	case CompactEnded:
+		return onCompactEnded
 	}
 	return ""
 }
@@ -598,6 +724,8 @@ func requestName(ev Event) (string, bool) {
 		return "deliver", true
 	case RequestExit:
 		return "exit", true
+	case RequestCompact:
+		return "compact", true
 	case PodUpdateSignalled:
 		return "ready_for_update", true
 	}
@@ -644,6 +772,16 @@ func LiveStates() []ClaimState {
 // copy, so no caller changes the table's own set.
 func RunsNothingStates() []ClaimState {
 	return slices.Clone(runsNothing)
+}
+
+// TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
+// the table's own onCompact rows rather than from a second list of them: the api's refusals
+// name the states a compaction reaches, and this is what their test holds those words to
+// (api's compactOp, the onCompact rows below). An ignore is no take, so a state the table
+// names a reason for reads false here, as does a state the table does not cover at all.
+func TakesCompaction(state ClaimState) bool {
+	r, ok := table[key{state, onCompact}]
+	return ok && r.act != nil
 }
 
 const (
@@ -701,7 +839,7 @@ func fillTable(t *builder) {
 
 	// Turns.
 	t.row(onTurnStart, "a turn started", turnStarted, []ClaimState{StateWorking}, prompted...)
-	t.ignore(onTurnStart, "a turn is already in flight", StateWorking)
+	t.row(onTurnStart, "a turn is already in flight; a turn under a compaction is recorded for its end", turnStartedWhileBusy, nil, StateWorking)
 	t.ignore(onTurnStart, "the agent is not ready, so no delivery is in flight", unready...)
 	t.ignore(onTurnStart, noProcess, gone...)
 
@@ -711,6 +849,14 @@ func fillTable(t *builder) {
 	t.ignore(onTurnEnd, "no turn is in flight", prompted...)
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
+
+	// The calls of a turn, which are the one thing that says an agent mid-turn is still moving.
+	// The row writes the claim's step columns through the store's own narrow call and leaves the
+	// claim exactly where it found it (toolStepped), so it is a row of every state a process of
+	// this claim can send a frame from — a tool call before the agent registers among them, since
+	// the stream is up from the shim's hello.
+	t.row(onToolStep, "the agent stepped: record the call its stream reports", toolStepped, nil, live...)
+	t.ignore(onToolStep, noProcess, processless...)
 
 	t.row(onPromptResult, "the prompt's work ended: that names the turn it ran, and ends its delivery", promptResulted,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
@@ -732,6 +878,14 @@ func fillTable(t *builder) {
 	t.ignore(onTurnTimer, "the turn started", StateWorking)
 	t.ignore(onTurnTimer, noSend, unready...)
 	t.ignore(onTurnTimer, noSend, gone...)
+
+	// The ladder's wait after a turn that ended in a provider error. It is armed only where such
+	// a turn can end — a claim working its task, or one whose turn already ended — and is dropped
+	// with the task it is for (retirePending) and with the process it was armed under (letGo).
+	t.row(onPromptRetryTimer, "the wait after a provider error is over: the task goes to the same session again", promptRetryDue,
+		[]ClaimState{StateWorking}, StateReady, StateIdle, StateWorking)
+	t.ignore(onPromptRetryTimer, noSend, unready...)
+	t.ignore(onPromptRetryTimer, noSend, gone...)
 
 	t.row(onProbeTimer, "probe the uncertain process again", reprobe, []ClaimState{StateLaunching, StateFailed}, live...)
 	t.ignore(onProbeTimer, noProcess, processless...)
@@ -758,6 +912,17 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
+	// row of the one state a turn runs in; the machine re-reads the claim's record before it
+	// acts, so a record that moved since the sweep read it leaves the turn alone
+	// (backstopStalledTurn). A held suspension ends in a suspension rather than a relaunch
+	// (replaceProcess, endHeld), which is why suspended is among the destinations.
+	t.row(onStallBackstop, "the agent stopped stepping mid-turn: end the turn, keep the task owed, and bring the session back", backstopStall,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateWorking)
+	t.ignore(onStallBackstop, "the claim is in no turn, so its record names no turn to end",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
+	t.ignore(onStallBackstop, noProcess, gone...)
 
 	// The update round over the process holding this claim: opened and kept open by the daemon's
 	// sweep, and ended once the replacement it waited for has been made. inRound is every state a
@@ -873,13 +1038,15 @@ func fillTable(t *builder) {
 	t.ignore(onRetry, "the claim has not failed", live...)
 	t.ignore(onRetry, "a suspended claim is resumed, not retried", StateSuspended)
 
-	t.row(onOperatorRetry, "the operator's retry of an architect: fresh budgets, and the same session relaunched", operatorRetry,
-		[]ClaimState{StateLaunching, StateFailed}, StateFailed)
+	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
+	// retires a claim, and while this row refused that state the only way to start a stopped worker
+	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
+	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one", operatorRetry,
+		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onOperatorRetry, "the claim has not failed", live...)
 	t.ignore(onOperatorRetry, "a suspended claim is resumed, not retried", StateSuspended)
-	t.ignore(onOperatorRetry, "a retired claim runs again only when the workflow starts it", StateRetired)
 
 	t.row(onForgetSession, "drop the session so the next launch is fresh", forgetSession, nil,
 		StateQueued, StateSuspended, StateFailed, StateRetired)
@@ -899,6 +1066,23 @@ func fillTable(t *builder) {
 		[]ClaimState{StateRetired, StateSuspended}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.row(onExit, "the exit of a process the daemon already ended", nothingToDo, nil, gone...)
 	t.ignore(onExit, notRegistered, StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected)
+
+	// The compaction of the claim's Oh My Pi session, which reaches an agent that is running and
+	// in no turn: the claim is working for as long as it runs, and the end gives it back
+	// (internal/supervise/compact.go).
+	t.row(onCompact, "take the claim for a compaction of its session", compactStart, []ClaimState{StateWorking}, prompted...)
+	t.ignore(onCompact, "the claim is busy: a turn is running, or its session is already being compacted", StateWorking)
+	t.ignore(onCompact, "the agent is not ready, so it has no session to compact", unready...)
+	t.ignore(onCompact, "no process of this claim is running, so it has no session to compact", gone...)
+
+	t.row(onCompactEnded, "the compaction is over: reset the run of provider errors it cleared, and send the owed task", compactEnded,
+		[]ClaimState{StateReady, StateIdle, StateWorking, StateLaunching, StateFailed}, StateWorking)
+	// A claim in one of these states holds no compaction, so the fence answers the end
+	// ErrCompactProcessGone before any of them is read (Machine.fence, ownsCompaction); each is
+	// still the table's word for the state, which every event of it must have.
+	t.ignore(onCompactEnded, "the claim is not in a compaction: the process it ran on was let go first", prompted...)
+	t.ignore(onCompactEnded, "the agent is not ready, so the compaction's process is gone", unready...)
+	t.ignore(onCompactEnded, "no process of this claim is running, so the compaction's own is gone", gone...)
 }
 
 type builder struct{ rules map[key]rule }
@@ -1319,7 +1503,99 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 	// exactly that decision silent again. The delivery is named only where this start is that
 	// delivery's turn; a foreign turn is no task's and carries none.
 	m.startTurn(task)
-	return m.durableWrite(ctx, StateWorking, persist)
+	if err := m.durableWrite(ctx, StateWorking, persist); err != nil {
+		return err
+	}
+	// The turn's own start, through the store's narrow call, written only once that durable write
+	// has landed: a write the store did not take returns its error above, so no step records the
+	// start of a turn whose claim never reached working. A claim whose agent sends no tool frame
+	// at all is judged from this, so a turn that hangs before its first call reads as the turn it
+	// is rather than as a claim that has never stepped. It carries no call, which leaves the call
+	// the record names exactly as it stands — the one the agent was in when it stopped, which a
+	// recovery's own turn must not erase (Store.PutClaimStep).
+	return m.putStep(ctx, StepRecord{TurnStartedAt: m.deps.Clock.Now()})
+}
+
+// toolStepped records what the agent is doing: the call its stream just reported starting or
+// ending, stamped on receipt, because no frame carries a time of its own. It writes the claim's
+// step columns alone (Store.PutClaimStep) and touches no other field of the claim — the record
+// is built from frames that arrive between a machine's writes, and a claim write would erase
+// every step seen since that machine read it.
+//
+// The arguments were measured and hashed where the frame was read (stream.ToolStep) and their
+// text reaches neither this handler nor anything it writes: a shell command routinely holds a
+// credential, and this record reaches every surface an operator reads. The end frame repeats
+// neither the arguments nor the intent, so what is written beside an end is what its start left
+// (Machine.openCalls); an end whose start this daemon never read — a frame the shim's backlog
+// dropped, or a call open across a restart — names the call with no arguments measured, which is
+// what the daemon actually knows.
+//
+// A frame that arrived on a connection the claim has since replaced does not move the claim's
+// last-step time (staleStep). It still records its call: that is what the agent was doing, and
+// the record exists to say so after the process that was doing it is gone.
+func toolStepped(m *Machine, ctx context.Context, ev Event) error {
+	s := ev.(StreamToolStep)
+	now := m.deps.Clock.Now()
+	step := StepRecord{At: now}
+	if m.staleStep(s) {
+		step.At = time.Time{}
+	}
+	switch {
+	case s.CallID == "":
+		// A frame with no call id names no call to pair or to overwrite — the Claude Code
+		// bridge's start is one — so all it says is that the agent stepped. An empty call id
+		// is what tells the store to leave the six call columns as they stand.
+	case s.End:
+		open, held := m.takeOpenCall(s.CallID)
+		if !held {
+			m.log.Info("supervise: a tool call ended whose start this daemon never read; its arguments are unmeasured",
+				"tool", s.Tool, "call", s.CallID)
+		}
+		step.Tool, step.CallID = s.Tool, s.CallID
+		step.ArgsBytes, step.ArgsHash, step.StartedAt = open.argsBytes, open.argsHash, open.startedAt
+		step.EndedAt = now
+	default:
+		open := openCall{argsBytes: s.ArgsBytes, argsHash: s.ArgsHash, startedAt: now}
+		m.holdOpenCall(s.CallID, open)
+		step.Tool, step.CallID = s.Tool, s.CallID
+		step.ArgsBytes, step.ArgsHash, step.StartedAt = open.argsBytes, open.argsHash, open.startedAt
+	}
+	return m.putStep(ctx, step)
+}
+
+// staleStep is whether a tool frame arrived on a connection that is no longer the claim's: the
+// claim has none, or the one it has was registered after the frame's. Both are frames of a
+// replaced incarnation: the stream's own queue can hand a machine a frame of a connection that
+// was replaced while the frame waited. The shim's replay of the frames it held while no daemon
+// was attached is not one of them — it arrives on the next connection, which is the claim's live
+// one, so those frames are stamped at receipt (store's PutClaimStep). Connections are compared
+// by the order they were registered in, as a replayed refusal is (takesBackConfirmed): the order
+// the machine handles their events in says nothing.
+func (m *Machine) staleStep(s StreamToolStep) bool {
+	conn, connected := m.deps.Conns.Conn(m.claim.Token)
+	return !connected || s.ConnSequence < conn.Sequence()
+}
+
+// turnStartedWhileBusy is a turn starting in a claim that is already working. A claim working a
+// turn is in the turn it is already in and nothing moves. A claim working because its session
+// is being compacted has a turn of Oh My Pi's own starting under the compaction — a follow-up
+// an Envoy delivery queued while the session was being compacted — and that turn is recorded on
+// the compaction: its end would otherwise reach an idle claim, where it means nothing, and the
+// compaction's end would send the owed task into a running agent (compactEnded).
+//
+// That turn's start line is written here (startTurn), because its end writes the end line
+// (turnEnded): an operator reads an end with no start as a turn the daemon never saw begin, and
+// the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn and its
+// line names no delivery.
+func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
+	if m.compacting == nil {
+		return nil
+	}
+	m.startTurn("")
+	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
+		"generation", m.claim.Generation)
+	m.compacting.inTurn, m.compacting.back = true, StateIdle
+	return nil
 }
 
 // takeBackSignal takes back this claim's answer to its open round when the turn starting is not
@@ -1437,8 +1713,24 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // worker ran.
 //
 // answerByTurnEnd runs first of all, before the marks it reads are cleared (askFirst, unseenTurn).
+//
+// A claim working because its session is being compacted is left exactly where it is: a
+// compaction aborts whatever turn its session was running, so the agent_end of a background
+// turn can arrive under one, and taking that for the compaction's end would hand the claim its
+// owed task while Oh My Pi is still writing the summary. CompactEnded is the only end of a
+// compaction (compactEnded). The end is recorded on the compaction all the same: the turn it
+// ends is over, so the compaction's end has none to leave the claim working for, and a claim
+// that has had a turn goes back idle rather than ready. Its end line is written before that
+// return (endTurn), because the turn ended, and it closes a start line of its own: a turn that
+// starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
+// against ends finds the pair.
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
+	if m.compacting != nil {
+		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
+		m.compacting.inTurn, m.compacting.back = false, StateIdle
+		return nil
+	}
 	m.answerByTurnEnd()
 	m.askFirst, m.unseenTurn = false, false
 	if m.held != nil {
@@ -1576,6 +1868,11 @@ func (m *Machine) answerByTurnEnd() {
 // A result for a delivery the claim no longer holds — retired, or taken back under a new id — is
 // fenced out before this runs (fence).
 //
+// A turn that ended in a provider error does not retire its task (providerErrored): the work is
+// still owed, and the daemon owes the worker another prompt of it rather than an idle claim
+// (dispatch://INFRA-956 R2). A turn that ended with no error is the one that clears the claim's
+// run of provider-error turns.
+//
 // A turn already ended is over for its delivery here, so this is where what was held for that
 // turn runs when the end found the result still outstanding (afterTurn): settle first, so the
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
@@ -1589,6 +1886,17 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 			why += ": " + r.Error
 		}
 		return m.promptFailed(ctx, why, taskRead)
+	}
+	if r.Error != "" {
+		return m.providerErrored(ctx, r)
+	}
+	if m.claim.ProviderErrorRun != 0 {
+		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
+			"delivery", r.DeliveryID, "providerErrorRun", m.claim.ProviderErrorRun)
+		m.claim.ProviderErrorRun = 0
+		if err := m.persist(ctx); err != nil {
+			return err
+		}
 	}
 	if p := m.claim.Pending; p.ConfirmedAt.IsZero() {
 		// No turn was ever matched to this prompt — each one the claim saw was taken for another's
@@ -1772,22 +2080,22 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	return m.revive(ctx, exemptWake(ev))
 }
 
-// operatorRetry is the operator's retry of a failed claim: retry, for an architect, whether its
-// tree's root or a sub-architect, which nothing else relaunches. Any other claim has a retry of its
-// own, so it is refused, naming that retry: a phase worker's is its architect's retry_or_escalate
-// while its issue is held and the next start of its role otherwise, and the daemon's controller's is
-// its keeper. A claim's role never changes, so the refusal cannot race the decision it guards.
+// operatorRetry is the operator's retry of a claim that runs nothing: retry, for an architect —
+// its tree's root or a sub-architect, which nothing else relaunches — and for a phase worker
+// whose issue works no phase of its role, which the route has already established before it
+// reaches the machine (api's retryStart starts the phase itself for every other one). The
+// daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's role
+// never changes, so the refusal cannot race the decision it guards.
+//
+// It relaunches the session the claim records. A start that must not use that session has
+// dropped it before this runs (RequestForgetSession), so the launch spawns a fresh agent:
+// resuming a session whose turns the provider refused would be refused again.
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
-	switch m.claim.Role {
-	case claim.RoleArchitect:
-		return retry(m, ctx, ev)
-	case claim.RoleController:
+	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",
-			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryArchitectOnly)}
-	default:
-		return &RefusedError{State: m.claim.State, Request: "retry",
-			Err: fmt.Errorf("%w; a phase worker is retried by its architect's retry_or_escalate while its issue is held, and by the next start of its role otherwise", ErrRetryArchitectOnly)}
+			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryNotTheController)}
 	}
+	return retry(m, ctx, ev)
 }
 
 // stop ends one claim: the runtime releases it, and it retires. A release that fails changes
@@ -2030,10 +2338,9 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // the mark a restart armed for that ask goes in the same step (dropUpdateTask), so the new
 // round's ask is prompted rather than taken for the work of whatever turn is running.
 //
-// A claim that already holds a phase task is answered ErrDeliveryPending, which is a wait rather
-// than a fault: the update task must never displace the work in flight. The refusal is swallowed,
-// UpdateTaskedAt is left as it was, and the next tick asks again — which lands as soon as that
-// turn is over.
+// A claim that already holds a task of its own is asked nothing yet: askForUpdate holds the
+// question back and sends the task the claim holds (sendPending), UpdateTaskedAt is left as it
+// was, and the next tick asks again. askForUpdate's doc says why the question waits.
 //
 // The claim is written only where this post changed it: a round the claim was not in, reasons
 // that have grown, or a task this post actually sent. The sweep posts to every claim of every
@@ -2130,11 +2437,28 @@ func rotateTaskID(id string) string {
 	return rand.Text()
 }
 
+// dropsUpdateTask is whether the claim's pending delivery is the ask of the round the claim
+// records now that no turn has confirmed: the one delivery a round leaving the claim takes
+// back. It is a question of its own, apart from the drop, for the claim that ends in the same
+// step: the retirement reads it, clears the round's fields and then writes the claim and the
+// delete together, where a drop made first would store a retired claim that still records its
+// round (machine.go's retire).
+func (m *Machine) dropsUpdateTask() bool {
+	p := m.claim.Pending
+	return updatesRound(p, m.claim.UpdateRound) && p.ConfirmedAt.IsZero()
+}
+
 // dropUpdateTask takes back an ask of this claim's round that no turn has confirmed, which is
 // what a round leaving the claim means for the task it sent: the words name a round that is over
 // — a pod this daemon has already replaced — and until some turn reads them, every task of the
-// claim's next phase is refused behind this one (ErrDeliveryPending). A task a turn confirmed is
-// left where it is: that turn is the worker's, and its end retires the delivery (settle).
+// claim's next phase is refused behind this one (ErrDeliveryPending). An ask the claim owes is
+// one of those: a turn of it that ended in a provider error left it unconfirmed and waiting on
+// the ladder, and no session of this claim will ever answer the round it names. A task a turn
+// confirmed is left where it is: that turn is the worker's, and its end retires the delivery
+// (settle). Every end of a round for this claim runs it — the sweep's (endPodUpdate,
+// leaveRound), the round a new one replaces (openPodUpdate), and the registration's
+// (endCurrentPluginRound). The claim's own retirement makes the same drop in its one write
+// instead (machine.go's retire).
 //
 // The mark a restart armed for that ask goes in the same step, here rather than in each caller
 // (answerAskFirstAfterDrop): a drop that left it armed would make the claim's next task the
@@ -2143,9 +2467,9 @@ func rotateTaskID(id string) string {
 // caller before: the question is the pending delivery's, and a claim that still holds one is
 // answered nothing there.
 func (m *Machine) dropUpdateTask(ctx context.Context) error {
-	if p := m.claim.Pending; updatesRound(p, m.claim.UpdateRound) && p.ConfirmedAt.IsZero() {
+	if m.dropsUpdateTask() {
 		m.log.Info("supervise: the update round is over for this claim; the task it sent and nothing read is taken back",
-			"round", m.claim.UpdateRound, "delivery", p.ID)
+			"round", m.claim.UpdateRound, "delivery", m.claim.Pending.ID)
 		if err := m.retirePending(ctx); err != nil {
 			return err
 		}
@@ -2163,6 +2487,18 @@ func (m *Machine) dropUpdateTask(ctx context.Context) error {
 // work that died with that pod, and no process the claim runs after it holds any of that work,
 // so the ask would cost one turn and teach the round nothing. It is asked nothing however often
 // it is started again, and a suspension does not bring it back into the round.
+//
+// A claim that holds a task of its own is asked nothing yet: the question waits behind that
+// task, as every task of the claim waits behind the task it holds. Nothing here records an ask
+// then (UpdateTaskedAt), so the next tick asks again. This is the one place that waiting is
+// decided and the one place it is explained: the question never reaches queue's own refusal,
+// which is about the task the claim holds rather than the task being queued (replaceable).
+//
+// The task a provider error took back is such a task, and what it costs the round is the
+// ladder's wait: the pod is replaced once a turn of the owed task ends with no provider error,
+// which is the turn that frees the slot (afterTurn's takeSlotForUpdate). Going first would buy
+// the round nothing there: the question needs a model turn of its own, and the provider that is
+// failing this claim's turns would fail that one the same way (dispatch://INFRA-956 R2).
 func (m *Machine) askForUpdate(ctx context.Context, open PodUpdateOpen, now time.Time) error {
 	if m.claim.UpdateSignalledAt != nil || m.claim.LeftPodRound(m.claim.UpdateRound) {
 		return nil
@@ -2181,19 +2517,19 @@ func (m *Machine) askForUpdate(ctx context.Context, open PodUpdateOpen, now time
 	if !m.updateReaskDue(now) {
 		return nil
 	}
+	if p := m.claim.Pending; p != nil {
+		// The held task is sent here rather than left: a round that replaced another cleared
+		// the answer that was holding it back (clearUpdate), and nothing else would send it
+		// until the next periodic observation, with the new round's own ask waiting behind it.
+		// sendPending hands nothing to a claim in a turn, and nothing to a task the ladder's
+		// wait stands for, so neither the ordinary case nor a task a provider error took back
+		// costs anything here.
+		m.log.Info("supervise: the claim holds a task of its own, so the update task waits for that task's turn to end",
+			"round", open.Round, "delivery", p.ID)
+		return m.sendPending(ctx)
+	}
 	task := RequestDeliver{Claim: m.claim.Token, ID: updateTaskID(open.Round), Task: open.Task}
 	if err := m.queue(ctx, task); err != nil {
-		if errors.Is(err, ErrDeliveryPending) {
-			// The claim holds a task of its own, so the update task waits for that turn to end.
-			// The held one is sent here rather than left: a round that replaced another cleared
-			// the answer that was holding it back (clearUpdate), and nothing else would send it
-			// until the next periodic observation, with the new round's own ask waiting behind
-			// it. sendPending hands nothing to a claim in a turn, so the ordinary case costs
-			// nothing.
-			m.log.Info("supervise: the claim holds a task of its own, so the update task waits for that turn to end",
-				"round", open.Round, "delivery", pendingID(m.claim.Pending))
-			return m.sendPending(ctx)
-		}
 		return err
 	}
 	tasked := now
@@ -2498,7 +2834,7 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 // (UpdateTaskedAt), so the next sweep asks rather than waiting out the re-task bound hours away.
 // That sweep asks at once only where the claim holds no task of its own, because the answer this
 // clears is also what was holding that task back (answeredOpenRound): with it gone,
-// askForUpdate's queue meets ErrDeliveryPending and sends the task the claim holds (sendPending),
+// askForUpdate holds the question back and sends the task the claim holds (sendPending),
 // and the round's own ask takes the slot that task's turn frees (takeSlotForUpdate, run by
 // afterTurn). Holding the task back instead would deadlock the slot — nothing else sends it, and
 // the round it waits for cannot end until this worker answers — so what the re-ask costs is one

@@ -11,13 +11,19 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { isViewer } from "../refs/actor";
 import { AgentThread } from "./AgentThread";
-import { type AgentConversation, dispatchTurns, toThreadMessages } from "./conversation";
+import {
+  type AgentConversation,
+  dispatchTurns,
+  toThreadMessages,
+  turnSaysBody,
+} from "./conversation";
 import {
   type DispatchAuthor,
   dispatchMetadata,
   type KeyedMessage,
   turnKey,
 } from "./dispatch-marks";
+import { storedMessages } from "./stored-messages";
 
 /** Who wrote a stored message, when it was not the viewer: its author as Dispatch recorded it
  *  (a session's stamped title with it, for `AgentName` to name it by), and its issue if any. */
@@ -83,15 +89,17 @@ export function AgentRuntimeThread({
   viewer: string | undefined;
 }): ReactNode {
   const messages = useMemo(() => {
-    const storedMessages = stored.flatMap((read) => [read.message, ...read.replies]);
+    const messagesOfReads = storedMessages(stored);
     // A person's direct message the session took as its own user turn is in the stream too,
     // normally tagged with its Dispatch id: then it shows once, where the session took it, still
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
     // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
-    // streamed message saying exactly what that person sent replaces its stored copy.
+    // streamed message saying exactly what that person wrote - beside what the stream names of
+    // what the message carried, such as a picture's `[image]` - replaces its stored copy
+    // (`turnSaysBody`).
     const byID = new Map(
-      storedMessages
+      messagesOfReads
         .filter((message) => message.author.kind === "user")
         .map((message) => [message.id, message])
     );
@@ -100,7 +108,8 @@ export function AgentRuntimeThread({
     const streamed = toThreadMessages(conversation).map((message) => {
       const turn = turns.get(message.id ?? "");
       const source = byID.get(turn?.dispatchMessageId ?? "");
-      if (turn === undefined || source === undefined || turn.text !== source.body) return message;
+      if (turn === undefined || source === undefined || !turnSaysBody(turn, source.body))
+        return message;
       taken.add(source.id);
       // The streamed turn keeps the key the stored copy would have had, so it is one turn under
       // one key for `useLiveFollow` whether the reader sees this frame or, after a rebuild that
@@ -119,7 +128,7 @@ export function AgentRuntimeThread({
     // stream's times are whole milliseconds, so the merge below compares milliseconds; the stored
     // messages carry microseconds, so they are put in time order first, and the stable merge keeps
     // that order between two stored messages in one millisecond.
-    const dispatch: KeyedMessage[] = storedMessages
+    const dispatch: KeyedMessage[] = messagesOfReads
       .filter((message) => !taken.has(message.id))
       .sort((left, right) => compareTimestamps(left.created_at, right.created_at))
       .map((message) => {

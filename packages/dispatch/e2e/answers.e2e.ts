@@ -49,7 +49,8 @@ async function expectFocusedAskTurn(page: Page, id: string): Promise<void> {
 
 // SLOW(>=2s): Two people need two contexts: alice's answers page and bob's empty one are the same
 // claim from both sides, and each context pays its own sign-in and first load.
-test("the answers page lists a person's answers and replies, opens each ask, and changes an answer", async ({
+// @pr: Create through answer to close: the answers page opens each ask and changes an answer, read from both people's side.
+test("the answers page lists a person's answers and replies, opens each ask, and changes an answer @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -88,7 +89,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
   // The server names each issue ask by its item route, which is what Open follows.
   const listed = await listMyAnswers();
   expect(listed.total).toBe(3);
-  expect(listed.rows.map((row) => [row.kind, row.ask_id, row.ref])).toEqual([
+  expect((listed.rows ?? []).map((row) => [row.kind, row.ask_id, row.ref])).toEqual([
     ["answer", changed.id, `/issues/${changedIssue.key}/asks/${changed.id}`],
     ["answer", anchored.id, `/issues/${anchoredIssue.key}/asks/${anchored.id}`],
     ["reply", replied.id, `/issues/${repliedIssue.key}/asks/${replied.id}`],
@@ -177,7 +178,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
     await expect(card).toContainText("Freeze after the run.");
 
     const read = await getAsk(changed.id);
-    expect(read.answers.map((answer) => [answer.user, answer.selected])).toEqual([
+    expect((read.answers ?? []).map((answer) => [answer.user, answer.selected])).toEqual([
       ["alice", ["Ship"]],
       ["alice", ["Hold"]],
     ]);
@@ -272,7 +273,9 @@ test("changing a decision block's answer rewrites the block in the document", as
   await expect
     .poll(
       async () =>
-        (await getIssue(issue.key)).open_asks.some((ask) => ask.block_id === "ship-decision"),
+        ((await getIssue(issue.key)).open_asks ?? []).some(
+          (ask) => ask.block_id === "ship-decision"
+        ),
       { intervals: [50, 50, 100, 200, 500] }
     )
     .toBe(true);

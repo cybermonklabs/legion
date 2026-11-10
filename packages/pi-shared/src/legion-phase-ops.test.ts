@@ -616,6 +616,28 @@ test("read_record answers the issue's record, or names an issue the daemon has n
   expect(routes.slice(2)).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
 });
 
+test("read_record hands on the place of an issue standing in the admission line", async () => {
+  const state = daemonFixture("state.json");
+  const issues = state.issues as Record<string, Record<string, unknown>>;
+  const admission = state.admission as Record<string, unknown>;
+  const waitingLine = { place: 1, length: 1 };
+  const { ops } = runtime(implementer, {
+    ...state,
+    admission: { ...admission, waiting: ["LEGION-212"] },
+    issues: { ...issues, "LEGION-212": { ...issues["LEGION-212"], waitingLine } },
+  });
+
+  const standing = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-212" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(standing.record.waitingLine).toEqual(waitingLine);
+  // The issue holding a slot stands in no line, so its record carries no place at all.
+  const holding = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(holding.record).not.toHaveProperty("waitingLine");
+});
+
 /** A window the daemon served: three releases — one woken five minutes later, one woken three
  * hours later and one still released — three resumes of them, the last with no first turn, and
  * two holds of two reasons. */

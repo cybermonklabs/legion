@@ -135,7 +135,7 @@ async function seedTitles(): Promise<Seeded> {
     referenceAgent
   );
   await expect
-    .poll(async () => (await getArtifact(world.host.primary_artifact_id)).versions.length)
+    .poll(async () => ((await getArtifact(world.host.primary_artifact_id)).versions ?? []).length)
     .toBeGreaterThan(2);
 
   const body = [
@@ -179,7 +179,7 @@ async function seedTitles(): Promise<Seeded> {
   }
   // Each answered ask is one row of alice's Answers page, under the question the session wrote.
   const answers = await listMyAnswers({ limit: 50 });
-  expect(new Map(answers.rows.map((row) => [row.ask_id, row.question]))).toEqual(
+  expect(new Map((answers.rows ?? []).map((row) => [row.ask_id, row.question]))).toEqual(
     new Map([...written].map(([text, where]) => [where.ask, text]))
   );
   return { comment: anchored.id, missing, world, written };
@@ -303,7 +303,8 @@ async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<
   }
 }
 
-test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written", async ({
+// @pr: The reference-title family's one row on the lane: an author's own wording is kept, and an address with no target reads as written.
+test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written @pr", async ({
   browser,
 }, testInfo) => {
   const seeded = await seedTitles();

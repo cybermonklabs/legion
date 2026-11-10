@@ -1,45 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
+import { settledWithLimit } from "../../lib/settled";
 import { defineWriteKind, useWrites } from "../writes/write-store";
+import { WRITES_IN_FLIGHT } from "./issues-table-model";
+import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
 
-export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
-export interface TableAction {
-  id: string;
-  kind: "newEpic" | "startNext" | "merge";
-  project: string;
-  keys: readonly string[];
-  source?: string;
-  target?: string;
-  writes: Record<string, string>;
-}
-export function readTableAction(project: string): TableAction | undefined {
-  try {
-    const action = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}").action;
-    if (
-      action?.project === project &&
-      typeof action.id === "string" &&
-      ["newEpic", "startNext", "merge"].includes(action.kind) &&
-      Array.isArray(action.keys) &&
-      action.keys.every((key: unknown) => typeof key === "string") &&
-      action.writes &&
-      typeof action.writes === "object" &&
-      !Array.isArray(action.writes) &&
-      Object.values(action.writes).every((key) => typeof key === "string") &&
-      (action.target === undefined || typeof action.target === "string") &&
-      (action.kind !== "merge" ||
-        (typeof action.source === "string" && typeof action.target === "string"))
-    )
-      return action;
-  } catch {
-    // A malformed preference is not an action to send.
-  }
-  return undefined;
-}
-function keepAction(project: string, action: TableAction | undefined): void {
-  const saved = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}");
-  localStorage.setItem(tableStorageKey(project), JSON.stringify({ ...saved, action }));
-}
+export type { TableAction } from "./issues-table-storage";
 
 // Keep the answer's issue key even when the table that started creation is no longer mounted.
 export const tableEpicWrite = defineWriteKind<string>({
@@ -54,9 +21,14 @@ export const tableEpicWrite = defineWriteKind<string>({
       "key" in answer &&
       typeof answer.key === "string"
     ) {
-      keepAction(write.detail, { ...action, target: answer.key });
+      writeTableAction(write.detail, { ...action, target: answer.key });
     }
-    if (!awaited || answer === null) void client.invalidateQueries();
+    // What a created epic changes is this project's listings and the ancestry read that hangs
+    // off them, not every query the tab holds.
+    if (!awaited || answer === null) {
+      void client.invalidateQueries({ queryKey: ["issues", "project", write.detail] });
+      void client.invalidateQueries({ queryKey: ["issue-ancestors", write.detail] });
+    }
   },
 });
 
@@ -71,7 +43,7 @@ export function useTableRecovery(project: string, report: (text: string) => void
   const failed = useRef(new Map<number, string>());
   const remember = useCallback(
     (next: TableAction | undefined) => {
-      keepAction(project, next);
+      writeTableAction(project, next);
       current.current = next;
       if (alive.current) setAction(next);
     },
@@ -115,15 +87,36 @@ export function useTableRecovery(project: string, report: (text: string) => void
             owned.current.get(event.write.id)?.issue ?? event.write.label
           );
       } else if (failed.current.delete(event.write.id)) {
+        // Only a write of the interrupted action's own says anything about finishing it: a
+        // Move or a Rename retried beside one reports like any other change.
+        const ofAction =
+          current.current !== undefined &&
+          owned.current.get(event.write.id)?.action === current.current.id;
         reportRef.current(
           failed.current.size
             ? `Changes not saved: ${[...failed.current.values()].join(", ")}. Retry them in Pending changes.`
             : event.kind === "discarded"
               ? "The failed change was discarded."
-              : current.current
+              : ofAction
                 ? "The retried changes are saved. Finish the interrupted action to complete its remaining steps."
                 : "All changes saved."
         );
+      }
+      if (event.kind === "discarded") {
+        // A discarded write no longer exists, so the record must not go on claiming it: the
+        // step goes with it, which keeps `settle` from waiting on a row that is gone and lets
+        // the resume work that step out from the server again.
+        const owner = owned.current.get(event.write.id);
+        const held = current.current;
+        if (
+          owner?.step &&
+          held &&
+          owner.action === held.id &&
+          held.writes[owner.step] !== undefined
+        ) {
+          const { [owner.step]: _discarded, ...rest } = held.writes;
+          remember({ ...held, writes: rest });
+        }
       }
       if (event.kind !== "refused") owned.current.delete(event.write.id);
     });
@@ -139,44 +132,67 @@ export function useTableRecovery(project: string, report: (text: string) => void
     action,
     current,
     active,
-    begin: (record: Omit<TableAction, "id" | "project" | "writes">) => {
-      const next = { ...record, id: newSendKey(), project, writes: {} };
+    begin: (record: Omit<TableAction, "id" | "project" | "writes" | "startedAt">) => {
+      const next = { ...record, id: newSendKey(), project, startedAt: Date.now(), writes: {} };
       remember(next);
       return next;
     },
-    key: (step: string, id?: string) => {
-      const key = newSendKey();
-      const record = current.current;
-      if (id && record?.id === id)
-        remember({ ...record, writes: { ...record.writes, [step]: key } });
-      return key;
+    /** The keys of the writes a step of `id`'s action is about to send, kept with the record so
+     *  a resume can wait on them. One storage write and one render for the whole batch: a
+     *  250-row action records its keys once, not once per issue. */
+    record: (
+      steps: Readonly<Record<string, string>>,
+      id?: string,
+      fields?: Partial<TableAction>
+    ) => {
+      const held = current.current;
+      if (id && held?.id === id && (Object.keys(steps).length || fields))
+        remember({ ...held, ...fields, writes: { ...held.writes, ...steps } });
     },
     watch: (key: string, issue: string) => {
       const row = writes.rows().find((value) => value.key === key);
       if (row) owned.current.set(row.id, { ...owned.current.get(row.id), issue });
     },
     settle: async (record: TableAction) => {
-      await Promise.all(
-        writes
-          .rows()
-          .filter((row) => Object.values(record.writes).includes(row.key))
-          .map((row) => {
-            const { promise, resolve, reject } = Promise.withResolvers<void>();
-            const unsubscribe = writes.onOutcome((event) => {
-              if (event.write.id !== row.id) return;
-              unsubscribe();
-              if (event.kind === "landed") resolve();
-              else
-                reject(
-                  event.kind === "refused"
-                    ? event.refusal
-                    : new Error(`${row.label} was discarded.`)
-                );
-            });
-            if (row.status === "refused") writes.retry(row.id);
-            return promise;
-          })
+      const rows = writes.rows().filter((row) => Object.values(record.writes).includes(row.key));
+      const outcome = (row: (typeof rows)[number]) => {
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        const unsubscribe = writes.onOutcome((event) => {
+          if (event.write.id !== row.id) return;
+          unsubscribe();
+          if (event.kind === "landed") resolve();
+          else
+            reject(
+              event.kind === "refused" ? event.refusal : new Error(`${row.label} was discarded.`)
+            );
+        });
+        return promise;
+      };
+      // A write still in flight is only waited on; a refused one is sent again, and no more of
+      // those run at once than a bulk action sends, so Finish after a 250-row refusal is the
+      // same bounded stream the action itself was.
+      const waiting = rows.filter((row) => row.status !== "refused").map(outcome);
+      const retried = settledWithLimit(
+        rows.filter((row) => row.status === "refused"),
+        WRITES_IN_FLIGHT,
+        async (row) => {
+          // Between the read above and this row's turn the reader may have retried it in
+          // Pending changes, and a write already on its way answers no second retry: asking
+          // for one would leave Finish waiting for an outcome that never comes.
+          const now = writes.rows().find((current) => current.id === row.id);
+          if (now === undefined) return;
+          if (now.status !== "refused") {
+            await outcome(row);
+            return;
+          }
+          const landed = outcome(row);
+          writes.retry(row.id);
+          await landed;
+        }
       );
+      const [, results] = await Promise.all([Promise.all(waiting), retried]);
+      const refused = results.find((result) => result.status === "rejected");
+      if (refused?.status === "rejected") throw refused.reason;
     },
     dismiss: () => remember(undefined),
   };

@@ -16,15 +16,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
 // Every agent of a tree writes the shared clone, so everything below is what a tree agent can plant
 // there for the next provisioning of the tree, and what provisioning's credentialed clone and fetch
 // — the tmux runtime's, which name the token file in their environment — must never obey. On tmux
-// that is defence, not a boundary (config.go); a pod's boundary, two init containers of which only
-// the one that touches no tree volume holds the token, is proven by
-// internal/runtime/sandbox/boundary_test.go.
+// that is defence, not a boundary (config.go); a pod's boundary, two init containers — three with
+// a skills_repository — of which only the ones that touch no tree volume hold the token, is
+// proven by internal/runtime/sandbox/boundary_test.go, and with a skills_repository by
+// TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite (manifest_test.go).
 
 // gitHooks is every hook githooks(5) names; a planted script under each name records whether git
 // ran it.
@@ -57,7 +59,7 @@ func advanceRemote(t *testing.T, remote string) {
 	t.Helper()
 	pusher := filepath.Join(t.TempDir(), "pusher")
 	runSetup(t, filepath.Dir(pusher), "git", "clone", "--quiet", remote, pusher)
-	runSetup(t, pusher, "git", "-c", "user.name=Legion test", "-c", "user.email=legion-test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "advance")
+	runSetup(t, pusher, "git", "commit", "--quiet", "--allow-empty", "-m", "advance")
 	runSetup(t, pusher, "git", "push", "--quiet", "origin", "HEAD:main")
 }
 
@@ -270,7 +272,7 @@ func TestTheProvisioningCredentialAnswersOnlyGitHub(t *testing.T) {
 	}
 	defer func() { _ = credential.remove() }()
 	repository := t.TempDir()
-	runSetup(t, repository, "git", "init", "--quiet")
+	runSetup(t, repository, fixturegit.InitWorkTree("", "")...)
 	treeHelper := "!f() { echo username=tree; echo password=tree-planted; }; f"
 	runSetup(t, repository, "git", "config", "credential.helper", treeHelper)
 	runSetup(t, repository, "git", "config", "credential.https://github.com.helper", treeHelper)
@@ -555,7 +557,7 @@ func TestTheRunnerRefusesAWorkspaceWithNoJJOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent := filepath.Dir(ws.Dir)
-	runSetup(t, parent, "jj", "git", "init", "--no-colocate", ".")
+	runSetup(t, parent, fixturegit.JJInit(".", false)...)
 	planted := filepath.Join(parent, ".jj", "workspace-config.toml")
 	if err := os.Remove(filepath.Join(parent, ".jj", "workspace-config-id")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)

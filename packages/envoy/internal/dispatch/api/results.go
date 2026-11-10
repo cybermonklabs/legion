@@ -71,18 +71,24 @@ type resolvedCheck struct {
 // checkResultInput is the body POST /api/v1/issues/{key}/results takes.
 type checkResultInput struct {
 	Actor           *model.Actor `json:"actor"`
-	Check           string       `json:"check"`
-	Role            string       `json:"role"`
+	Check           string       `json:"check" required:"true"`
+	Role            string       `json:"role" required:"true"`
 	Surface         string       `json:"surface"`
 	Run             string       `json:"run"`
 	Observed        string       `json:"observed"`
-	Commit          string       `json:"commit"`
+	Commit          string       `json:"commit" required:"true"`
 	NegativeControl string       `json:"negative_control"`
-	Verdict         string       `json:"verdict"`
+	Verdict         string       `json:"verdict" required:"true"`
 	Failed          int          `json:"failed"`
 	Skipped         int          `json:"skipped"`
 	Excluded        int          `json:"excluded"`
 	Screenshots     []string     `json:"screenshots"`
+}
+
+// checkResultRecorded is the body POST /api/v1/issues/{key}/results answers.
+type checkResultRecorded struct {
+	Line   string            `json:"line"`
+	Result model.CheckResult `json:"result"`
 }
 
 // POST /api/v1/issues/{key}/results  (any authenticated actor)
@@ -191,10 +197,10 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The one write a closed issue takes. A check that runs after the merge, or on the default
-	// branch, can only be proved once the issue has closed, so refusing it would make the
-	// production check unrecordable; every other write on a closed issue — a comment, a
-	// document version, a result for a pre-merge check — stays refused as it was.
+	// A closed issue takes a result only for a check that runs after the merge or on the default
+	// branch: such a check can only be proved once the issue has closed, so refusing it would make
+	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
+	// document version does; a comment and a message are the other writes a closed issue takes.
 	if (!recordingOpen || !checkOpen) && check.When != checkWhenAfterMerge && check.When != checkWhenDefaultBranch {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict,
 			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.When))
@@ -239,10 +245,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// the pull request row landed would show this result older until something else happened.
 	s.readThroughPullRequests(r.Context(), check.IssueKey, result.CommitSHA, checkRepo)
 	s.publish(event)
-	WriteJSON(w, http.StatusCreated, map[string]any{
-		"result": result,
-		"line":   checkResultLine(check, result),
+	WriteJSON(w, http.StatusCreated, checkResultRecorded{
+		Line:   checkResultLine(check, result),
+		Result: result,
 	})
+}
+
+// issueCheckResults is the body GET /api/v1/issues/{key}/results answers.
+type issueCheckResults struct {
+	Checks                 []model.CheckBlock `json:"checks"`
+	Issue                  string             `json:"issue"`
+	VerificationArtifactID string             `json:"verification_artifact_id"`
 }
 
 // GET /api/v1/issues/{key}/results  (any authenticated caller)
@@ -264,7 +277,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	body := map[string]any{"issue": issueKey, "verification_artifact_id": artifact.ID, "checks": []model.CheckBlock{}}
+	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
 	if !held {
 		WriteJSON(w, http.StatusOK, body)
 		return
@@ -290,7 +303,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	body["checks"] = checks
+	body.Checks = checks
 	WriteJSON(w, http.StatusOK, body)
 }
 
@@ -324,7 +337,7 @@ func (input checkResultInput) refusal() error {
 
 // issuesOpenForResult answers whether the recording issue and the check's issue are open, in
 // one query over the rows the caller has already locked (lockIssueRows). It makes no refusal of
-// its own for a closed issue, as requireOpenIssue does: the results route decides for itself,
+// its own for a closed issue, as requireOpenOwnerStatus does: the results route decides for itself,
 // since a closed issue takes a result for an after-merge check. An issue with no row is the
 // route's 404, which is the lock's answer too: lockIssueRows skips a key nothing holds.
 func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey string) (bool, bool, error) {
@@ -797,9 +810,9 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 //
 // It refuses on nothing but GitHub's proof that the repository does not hold the commit, which
 // delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
-// commit for the SHA. No other GitHub answer can block the one write a closed issue takes, the
-// production check's after-merge result — whose merge commit is on the default branch and is
-// held anyway.
+// commit for the SHA. No other GitHub answer can block the result a closed issue takes, the
+// production check's after-merge result — whose merge commit is on the branch its pull request
+// merged into and is held anyway.
 func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha string) error {
 	if repo == nil {
 		return nil

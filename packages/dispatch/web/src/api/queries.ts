@@ -18,7 +18,7 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
   LegionBoardResponse,
@@ -114,6 +114,23 @@ export const issueResultsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "results"],
     queryFn: () => api.getIssueResults(key),
+  });
+
+/** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).
+ *  The Collaborators tab and the composer's "Not running" options read this one entry, so a tab
+ *  read within the shell's `staleTime` opens the picker with no request of its own, and what
+ *  refreshes one refreshes both. The event feed refreshes `["issue", key]` exactly, not as a
+ *  prefix, so this key has a rule of its own there (`changesCollaborators`); the write paths that
+ *  do invalidate the whole `["issue", key]` prefix reach it as well. The key takes `undefined`
+ *  for the composer, whose own `enabled` holds the read until the picker opens on an issue
+ *  owner. */
+export const issueCollaboratorsQuery = (key: string | undefined) =>
+  queryOptions({
+    queryKey: ["issue", key, "collaborators"],
+    queryFn: () => {
+      if (key === undefined) throw new Error("A collaborators read needs the issue's key.");
+      return api.getIssueCollaborators(key);
+    },
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -214,6 +231,15 @@ export const projectsQuery = () =>
     queryFn: () => api.listProjects(),
   });
 
+/** The two settings the bar reads before it offers a person's typed words as a new issue: the
+ *  label that issue carries and the session it is routed to. One read for the session: the
+ *  deployment changes it only by restarting. */
+export const newIssueSettingsQuery = () =>
+  queryOptions({
+    queryKey: ["new-issue-settings"],
+    queryFn: () => api.getNewIssueSettings(),
+  });
+
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
  *  the issue header's assignee picker and the Inbox's assignee filter choose from this one list.
  *  Each call site keeps its own `enabled` - the list is read only once a reader reaches for a
@@ -269,7 +295,7 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
       await boardMovesSettled(context, project);
       return api.listIssues({
         project,
-        ...(labels.length ? { labels } : {}),
+        ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
       });
     },
@@ -320,7 +346,7 @@ const LIVE = {
 
 /** The body each delivery view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
-  readonly timeline: DeliveryTimelineResponse;
+  readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
   readonly legion: LegionBoardResponse;

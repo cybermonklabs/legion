@@ -150,6 +150,10 @@ func (h *dispatchHolder) SetStatus(ctx context.Context, key, status string) (dis
 	return h.get().SetStatus(ctx, key, status)
 }
 
+func (h *dispatchHolder) ReleaseClaim(ctx context.Context, key string) error {
+	return h.get().ReleaseClaim(ctx, key)
+}
+
 func (h *dispatchHolder) HandOver(ctx context.Context, issue dispatch.Issue, status string) error {
 	return h.get().HandOver(ctx, issue, status)
 }

@@ -1,4 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: the chart rows dispatch pointer and change events on an ECharts canvas and on range inputs, which user-event has no form for.
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import {

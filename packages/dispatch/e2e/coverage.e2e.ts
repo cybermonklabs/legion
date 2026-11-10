@@ -20,7 +20,7 @@ A requirement nothing checks is flagged.
  *  waits for lands rather than trusting the first read. */
 async function coverageOf(issue: string, blockId: string): Promise<RequirementCoverage> {
   const coverage = await getIssueCoverage(issue);
-  const requirement = coverage.requirements.find((row) => row.block_id === blockId);
+  const requirement = (coverage.requirements ?? []).find((row) => row.block_id === blockId);
   if (requirement === undefined) {
     throw new Error(`${issue} has no requirement ${blockId}: ${JSON.stringify(coverage)}`);
   }
@@ -35,7 +35,8 @@ test.beforeEach(async () => {
 // Verification document written under that same open page and its flag watched clearing there.
 // The live refresh of the coverage read is held to the start of its first fetch plus a second
 // (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and that second is the row's third.
-test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag", async ({
+// @pr: The coverage surface's own row: an unserved requirement is flagged on the Spec tab and a check written under the open page clears it.
+test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "COV", name: "Coverage" });

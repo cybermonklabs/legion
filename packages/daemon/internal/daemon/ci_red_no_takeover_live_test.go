@@ -63,6 +63,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -147,10 +148,8 @@ func TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 func newCIRedNoTakeoverLive(t *testing.T) *ciRedNoTakeoverLive {
 	t.Helper()
 	proof := newLiveProof(t, "scripts/e2e/ci-red-no-takeover.sh")
-	// Three reds at three heads, with a counted fix-attempt push before two of them: the cap is
-	// put out of the proof's way, since what a red does at an exhausted count is another proof's
-	// (scripts/e2e/no-required-checks.sh).
-	proof.cfg.MaxFixAttempts = 10
+	// Three reds at three heads, each sending the work back: nothing counts the attempts
+	// (dispatch://INFRA-956 R4).
 	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -805,9 +804,7 @@ type ciRedGitHub struct {
 func newCIRedGitHub(t *testing.T, key string, number int) *ciRedGitHub {
 	t.Helper()
 	g := &ciRedGitHub{t: t, key: key, number: number, sha: ciRedFirstHead}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 
@@ -821,7 +818,6 @@ func (g *ciRedGitHub) head(sha string) {
 func (g *ciRedGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return

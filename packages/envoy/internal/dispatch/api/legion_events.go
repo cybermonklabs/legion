@@ -25,14 +25,24 @@ const (
 
 var errLegionEventsTooLarge = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", legionEventsRequestLimit)
 
+// legionEventsInput is POST /api/v1/legion/events's body: one daemon's push of change events for
+// one project, with the actor the caller acts as.
+type legionEventsInput struct {
+	legion.Push
+	Actor *model.Actor `json:"actor"`
+}
+
+// legionEventsResponse is what that route answers: the last sequence number the project holds
+// with no gap below it.
+type legionEventsResponse struct {
+	LastSeq int64 `json:"last_seq"`
+}
+
 // postLegionEvents stores one delivery of events and answers {last_seq}, the last sequence number
 // the project holds with no gap below it. 404 LEGION_NOT_CONFIGURED for a project with no Legion
 // setting; 400 LEGION_EVENTS_INPUT for a body it cannot store.
 func (s *server) postLegionEvents(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		legion.Push
-		Actor *model.Actor `json:"actor"`
-	}
+	var input legionEventsInput
 	if err := decodeJSONWithin(r, &input, legionEventsRequestLimit, errLegionEventsTooLarge); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -67,5 +77,5 @@ func (s *server) postLegionEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]int64{"last_seq": lastSeq})
+	WriteJSON(w, http.StatusOK, legionEventsResponse{LastSeq: lastSeq})
 }

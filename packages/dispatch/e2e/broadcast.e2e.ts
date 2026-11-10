@@ -134,7 +134,7 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     const [summary] = await listBroadcasts();
     if (summary === undefined) throw new Error("the broadcast was not recorded");
     const stored = await getBroadcast(summary.id);
-    const plannerMessage = stored.recipients.find(
+    const plannerMessage = (stored.recipients ?? []).find(
       (recipient) => recipient.session_id === planner.session_id
     );
     if (plannerMessage === undefined) throw new Error("the planner received no message");
@@ -418,7 +418,8 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
 
 // LEGION-446. The browser drops a same-tick double press itself, so the repeat here is the one a
 // proxy or a flaky connection makes: the same request, the same key, the same human.
-test("a second identical send of one composition is answered the original broadcast, so every agent hears it once", async ({
+// @pr: An idempotent repeat: the same composition sent twice is answered the original broadcast, so every agent hears it once.
+test("a second identical send of one composition is answered the original broadcast, so every agent hears it once @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
@@ -452,8 +453,8 @@ test("a second identical send of one composition is answered the original broadc
     expect((await listBroadcasts()).map((summary) => summary.id)).toEqual([first]);
     await expect
       .poll(async () =>
-        (await getBroadcast(replay.id)).recipients.every((recipient) =>
-          recipient.message.deliveries.every((attempt) => attempt.state !== "pending")
+        ((await getBroadcast(replay.id)).recipients ?? []).every((recipient) =>
+          (recipient.message.deliveries ?? []).every((attempt) => attempt.state !== "pending")
         )
       )
       .toBe(true);
@@ -547,7 +548,7 @@ async function answeredBroadcast(sessions: readonly string[]): Promise<string> {
     session_ids: [...sessions],
   });
   expect(sent.excluded).toEqual([]);
-  for (const recipient of sent.recipients) {
+  for (const recipient of sent.recipients ?? []) {
     await replyToMessageDelivery(
       recipient.message.id,
       { attempt: 1, body: `${recipient.session_id} reporting.` },

@@ -43,7 +43,7 @@ const handoffColumns = `id::text, issue_key, phase, version, author, created_at`
 
 type createHandoffInput struct {
 	Actor *model.Actor `json:"actor"`
-	Body  *string      `json:"body"`
+	Body  *string      `json:"body" required:"true"`
 }
 
 // createHandoff records one phase handoff: POST /api/v1/issues/{key}/handoffs/{phase}. Only a
@@ -113,7 +113,7 @@ func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string
 		return model.HandoffSummary{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := s.requireOpenIssue(ctx, tx, issueKey); err != nil {
+	if err := s.requireOpenOwner(ctx, tx, issueOwner(issueKey)); err != nil {
 		return model.HandoffSummary{}, err
 	}
 	handoff, err := scanHandoff(tx.QueryRow(ctx, `

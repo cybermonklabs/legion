@@ -131,6 +131,7 @@ const (
 	whyMemory   = "a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn"
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
+	whyStallBck = "the daemon's stall backstop reads each role's bound off the configuration the supervision booted on (internal/daemon's stallBackstop, supervision.cfg), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
 )
 
 // Caller is which arm asked for a change through the settings route: what that caller may set.
@@ -193,7 +194,7 @@ func (c Caller) Admits(path string) (bool, string) {
 // admits are `admission_cap`, the supervision limits (`launch_failure_limit`,
 // `prompt_failure_limit`, `prompt_retire_limit`, `tree_stop_timeout_seconds`), the workflow's
 // own bounds (`linger_hours`, `production_check_hours`, `pod_update_retask_hours`,
-// `pod_update_notice_hours`, `review_round_cap`, `max_fix_attempts`) and `capabilities` with
+// `pod_update_notice_hours`, `review_round_cap`) and `capabilities` with
 // `capabilities.decided`.
 func (r Row) Plain() bool { return r.Class == ClassDecision && !r.Secret && r.Holder == "" }
 
@@ -260,7 +261,9 @@ var Classes = []Row{
 	{Field: "Config.WorkerWakesPerMinute", Path: "worker_wakes_per_minute", Class: ClassFixed, Why: whyWakePace},
 	{Field: "Config.WorkerWakeBurst", Path: "worker_wake_burst", Class: ClassFixed, Why: whyWakePace},
 	{Field: "Config.ReviewRoundCap", Path: "review_round_cap", Class: ClassDecision},
-	{Field: "Config.MaxFixAttempts", Path: "max_fix_attempts", Class: ClassDecision},
+	// The stall backstop's bound by role, which the sweep reads off the supervision's own copy
+	// of the configuration (internal/daemon's stallBackstop).
+	{Field: "Config.WorkerStallBackstops", Path: stallBackstopKey, Class: ClassFixed, Why: whyStallBck},
 	// The capability report is built at every read of the state, from the settings holder
 	// (internal/daemon's supervision.deployment), so a decision an operator records reaches the
 	// next read with nothing rebuilt.

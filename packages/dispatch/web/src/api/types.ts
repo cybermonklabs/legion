@@ -11,6 +11,8 @@ export type {
   Anchor,
   AnchorInput,
   AnswerAskInput,
+  ApproverGrantResp,
+  ApproverGrantsResponse,
   ArchitectureSource,
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -22,13 +24,10 @@ export type {
   Artifact,
   ArtifactApproval,
   ArtifactBlock,
-  ArtifactRebuildReport,
   ArtifactReview,
   ArtifactReviewEventPayload,
-  ArtifactReviewState,
   ArtifactText,
   ArtifactUploadResponse,
-  ArtifactVersionBlob,
   ArtifactVersionContent,
   ArtifactVersionText,
   Ask,
@@ -55,7 +54,6 @@ export type {
   BlockPin,
   BlockSchema,
   BlockTypeSchema,
-  Broadcast,
   BroadcastCreated,
   BroadcastExclusion,
   BroadcastRead,
@@ -66,6 +64,8 @@ export type {
   CheckResult,
   CheckResultCurrency,
   ChildStatusEventPayload,
+  ClaimHolderLiveness,
+  CollaboratorReason,
   Comment,
   CommentDelivery,
   CommentDeliveryEventPayload,
@@ -73,24 +73,19 @@ export type {
   CommentMention,
   CommentRead,
   CreateAgentMessageInput,
-  CreateAgentTokenInput,
   CreateArtifactInput,
-  CreateAskInput,
   CreateBroadcastInput,
   CreateCommentInput,
-  CreateDeliverySessionGroupInput,
   CreatedAgentToken,
   CreateIssueInput,
-  CreateMessageInput,
   CreateProjectInput,
-  CreateVersionInput,
   CredentialPendingResponse,
   CredentialPendingRow,
-  CredentialRequestKind,
   CredentialSession,
   Decision,
   DecisionKeep,
   DecisionLink,
+  DecisionResponse,
   DeliveryCapability,
   DeliveryColorFacet,
   DeliveryComponent,
@@ -100,7 +95,6 @@ export type {
   DeliveryFacet,
   DeliveryFailingJob,
   DeliveryFlagCounts,
-  DeliveryJobConclusion,
   DeliveryJobTiming,
   DeliveryKpiStatus,
   DeliveryLeadTimeCell,
@@ -118,7 +112,6 @@ export type {
   DeliveryLiveSnapshot,
   DeliveryLiveView,
   DeliveryLiveWindow,
-  DeliveryMeasures,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryPR,
@@ -132,7 +125,7 @@ export type {
   DeliverySettingsInput,
   DeliverySpread,
   DeliveryTargets,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   DeliveryTiming,
   DeliveryTimingCell,
   DeliveryTimingDay,
@@ -141,12 +134,10 @@ export type {
   DispatchEvent,
   DispatchScope,
   DispatchUser,
-  DocEditOp,
   DocumentRead,
   DocumentReferenceSummary,
   DocumentRole,
   DuplicateCandidate,
-  EditAskInput,
   EditCommentInput,
   EditOp,
   Event,
@@ -165,15 +156,19 @@ export type {
   InboxDismissSeen,
   InboxDocument,
   InboxListState,
+  InboxReadRequest,
+  InboxReadResponse,
   InboxRow,
   Issue,
   IssueAskRow,
   IssueAskThreadRow,
-  IssueCheckResults,
   IssueChild,
   IssueClaim,
   IssueClaimEventPayload,
-  IssueClaimLiveness,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+  IssueCollaboratorPerson,
+  IssueCollaborators,
   IssueComponents,
   IssueComponentsInput,
   IssueCoverage,
@@ -182,14 +177,13 @@ export type {
   IssuePriority,
   IssueProgress,
   IssueRankInput,
-  IssueRead,
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
   IssueReferences,
-  IssueRouteReach,
   IssueSummary,
   ItemBlock,
   ItemBlocks,
+  LauncherCredentialResp,
   LegionBarRole,
   LegionBoardCard,
   LegionBoardColumn,
@@ -226,8 +220,6 @@ export type {
   LiveUnsubscribe,
   LiveView,
   MarkInboxReadPriority,
-  MarkInboxReadRequest,
-  MarkInboxReadResponse,
   Message,
   MessageDelivery,
   MessageDeliveryEventPayload,
@@ -240,29 +232,33 @@ export type {
   MyReplyAgentRow,
   MyReplyRow,
   MyReplyThreadRow,
+  NewIssueSettings,
   OpenAskOwner,
+  PersonSignInResp,
+  PersonSignInsResponse,
   ProgressCount,
   Project,
   ProjectDefaultAssignee,
-  ProjectDefaultAssigneeInput,
+  RecordResponse,
   ReferenceQuestion,
   ReferenceQuestions,
   RepoProject,
   RequirementCoverage,
   SearchArtifactRef,
   SearchAsk,
+  SearchOperator,
   SearchOwner,
   SearchResponse,
   SearchResult,
   SearchResultKind,
   SearchResultsPage,
+  StateResponse,
   Subscriber,
   SubscriptionRemovedEventPayload,
   Suggestion,
   Suggestions,
   TargetCandidate,
   TmuxPlace,
-  UpdateDeliverySessionGroupInput,
   UpdateIssueInput,
   UserAgentState,
   UserAgentStateInput,
@@ -273,7 +269,11 @@ export type {
   WriteSuggestion,
 } from "@legion/contracts";
 
-import type { CredentialRequestKind, CredentialSession } from "@legion/contracts";
+import type {
+  CredentialSession,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+} from "@legion/contracts";
 
 // Dispatch-UI-only DTOs mirroring the credential broker's JSON verbatim (its UI routes, in the
 // broker's HTTP API reference: https://cybermonklabs.github.io/legion/broker/reference/api/). These have
@@ -301,7 +301,9 @@ export interface CredentialDecisionEvent {
 }
 export interface CredentialRecord {
   record_id: string;
-  kind: CredentialRequestKind;
+  /** What the request is for, as the broker names it; a string, as the pending row's own `kind`
+   *  is on the route (`CredentialPendingRow`). */
+  kind: string;
   state: CredentialRequestState;
   approver: string;
   enrollment: CredentialEnrollment | null;
@@ -448,3 +450,10 @@ export interface LegionSettingsChangeResult {
   readonly settings: LegionSettingsChange["settings"];
   readonly recorded: boolean;
 }
+/** A collaborator session the Legion registry knows: its `legion` entry is never null. Both
+ *  readers that keep such sessions apart from the rest - the Collaborators tab's Legion sections
+ *  and the composer's "Not running" options - narrow to this with a type guard of their own, so
+ *  the narrowed shape is named once here. */
+export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
+  readonly legion: IssueCollaboratorLegion;
+};

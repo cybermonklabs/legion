@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -1034,11 +1035,20 @@ func TestSendHandler_AcceptsHumanSource(t *testing.T) {
 	}
 }
 
+// deregisterHandler is DELETE /v1/sessions/<session_id> over sessions alone. These rows
+// deregister sessions that were never in consumer delivery, so the deps carry no session
+// delivery and the route deletes no consumer: a nil sessionDelivery answers nothing
+// (sessionDelivery.deleteConsumer), as it does on a listener whose session-consumer connection
+// never opened.
+func deregisterHandler(sessions *session.SessionRegistry) http.HandlerFunc {
+	return deleteSessionHandler(&listenerDeps{sessions: sessions}, logging.New("test"))
+}
+
 // A deregistration that names no client instance deletes the registration whoever wrote it, and
 // answers 200 with no body at all, as this route always has.
 func TestDeleteSessionHandler_IsIdempotent(t *testing.T) {
 	_, sessions := setupSessionsTest(t, nil, []string{"ses_closed"})
-	handler := deleteSessionHandler(sessions, logging.New("test"))
+	handler := deregisterHandler(sessions)
 
 	for i := range 2 {
 		rr := httptest.NewRecorder()
@@ -1069,7 +1079,7 @@ func TestDeleteSessionHandler_DeletesTheSameClientInstancesRegistration(t *testi
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"?client_instance_id="+instanceID, nil)
-	deleteSessionHandler(sessions, logging.New("test")).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1096,7 +1106,7 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 		"/v1/sessions/"+sessionID+"?client_instance_id=4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a",
 		nil,
 	)
-	deleteSessionHandler(sessions, logging.New("test")).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1149,7 +1159,7 @@ func TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment(t *te
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete,
 		fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", sessionID, stop), nil)
-	deleteSessionHandler(sessions, logging.New("test")).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1190,7 +1200,7 @@ func TestDeleteSessionHandler_DeletesTheRegistrationTheStopsMomentCovers(t *test
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete,
 		fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", sessionID, dead.UpdatedAt), nil)
-	deleteSessionHandler(sessions, logging.New("test")).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1215,7 +1225,7 @@ func TestDeleteSessionHandler_RefusesAMomentThatIsNotMilliseconds(t *testing.T) 
 			rr := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodDelete,
 				"/v1/sessions/"+sessionID+"?if_not_registered_after="+url.QueryEscape(asked), nil)
-			deleteSessionHandler(sessions, logging.New("test")).ServeHTTP(rr, req)
+			deregisterHandler(sessions).ServeHTTP(rr, req)
 
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("expected 400, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1249,7 +1259,7 @@ func TestDeleteSessionHandler_RejectsOtherMethods(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/ses_closed", nil)
-	deleteSessionHandler(sessions, logging.New("test")).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
@@ -2637,12 +2647,7 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 // timeout passes.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(timeout); !cond(); {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", desc)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, 50*time.Millisecond, desc, cond)
 }
 
 // bindOutcome is what a bindListenerDurable run in a goroutine returned, and when.
@@ -3569,6 +3574,13 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
+	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
+	// lands while that first read runs is taken back out of the copy until the watcher delivers
+	// its own record, so a target registered before the reads end is one the fan-out cannot see
+	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
+	// reads are waited out here, before registerFanoutTarget's writes, as the rows above do.
+	waitForRegistry(t, harness.registry)
+	waitForSessions(t, harness.sessions)
 	harness.registerFanoutTarget(t, firstTarget, topic, nil)
 	harness.registerFanoutTarget(t, nextTarget, topic, nil)
 	// The fan-out reaches only what these two registries answer for, so they are read here: a
@@ -3792,8 +3804,10 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 }
 
 // newListenerDeliveryHarnessOn is newListenerDeliveryHarness over client, a listener's connection
-// to a server the test chose (one whose grant it sets, say).
-func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client) listenerDeliveryHarness {
+// to a server the test chose (one whose grant it sets, say), with sessionOptions on the session
+// registry it opens: a test that must cross a session window without waiting it out passes its
+// own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
+func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -3804,7 +3818,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client) listenerDeli
 	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
 	// registered in that window would be missing from what Match and Lookup answer.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

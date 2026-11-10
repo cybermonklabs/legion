@@ -823,8 +823,8 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // CAPTURE-100's gate opened at version 3 and the version written after it closed the gate
 // again, so under the children-first rule the root is waiting for its children rather than
 // working, ReconcileAwaiting can start no wait on a person for it (workflow's decideAwait, rule
-// 0), and no pass can start it while a step of its design is unapproved; the slot it still holds
-// is one admission's next pass takes back. CAPTURE-200 waits in line for its first slot, so its
+// 0), and no pass can start it while a step of its design is unapproved; it keeps the row it
+// took at its admission throughout (record.KeepsSlot). CAPTURE-200 waits in line for its first row, so its
 // architect has never run and has handed nothing back. Reading either one's event log would hold
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.
@@ -917,12 +917,13 @@ func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 	})
 }
 
-// A root already waiting on its gate's approval at the deploy returns its slot at the first boot:
+// A root already waiting on its gate's approval at the deploy keeps its row at the first boot:
 // its gate was registered by a daemon of the earlier release, so the asks' mirror holds no request
 // of its document; the boot mirrors the request Dispatch shows open and, with that request on the
-// person's turn, declares the hand-back as a registration would. A request Dispatch shows on the agent's turn hands nothing
-// back, and the root keeps its slot.
-func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
+// person's turn, declares the hand-back as a registration would. A request Dispatch shows on the
+// agent's turn hands nothing back. Either way the root keeps its row, and the root waiting in
+// line behind it takes none.
+func TestARootWaitingOnItsGateAtDeployKeepsItsRow(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		waitingOn string
@@ -959,9 +960,9 @@ func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
 			if ops := captureArchitectOps(t, pool); len(ops) != 0 {
 				t.Fatalf("architect operations = %v, want none while the root waits", ops)
 			}
-			if !slotHeld(t, pool, "CAPTURE-200") || slotHeld(t, pool, "CAPTURE-100") {
-				t.Fatalf("slot held by CAPTURE-200 %t, by CAPTURE-100 %t, want the root waiting in line to take the one slot",
-					slotHeld(t, pool, "CAPTURE-200"), slotHeld(t, pool, "CAPTURE-100"))
+			if !slotHeld(t, pool, "CAPTURE-100") || slotHeld(t, pool, "CAPTURE-200") {
+				t.Fatalf("row held by CAPTURE-100 %t, by CAPTURE-200 %t, want the waiting root to keep the one row",
+					slotHeld(t, pool, "CAPTURE-100"), slotHeld(t, pool, "CAPTURE-200"))
 			}
 		})
 	}

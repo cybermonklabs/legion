@@ -15,6 +15,14 @@ import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles"
  * Reached as `@legion/contracts/legion-api`, never from the barrel.
  */
 
+/** The controller's two claim recoveries keep their own module, and every importer reads them
+ * from here. */
+export {
+  LegionClaimRequest,
+  LegionCompactResponse,
+  LegionFreshSessionResponse,
+} from "./legion-claim-recovery";
+
 const nonEmptyString = z.string().min(1);
 const issueKey = z.string().regex(DISPATCH_KEY_PATTERN);
 /** Go emits RFC 3339 through `time.Time`; a daemon on a non-UTC clock emits an offset. */
@@ -36,7 +44,7 @@ export const LegionInstant = timestamp.regex(
 
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
  * the role working it: `workers` is keyed by role (`LEGION_ROLES`). `awaiting_person` is a root
- * that gave its admission slot up while its architect waits on a person's answer (`waitingOn` on
+ * that keeps its admission slot while its architect waits on a person's answer (`waitingOn` on
  * the issue record). `accepting` is the architect's acceptance between the reviewer's approval and
  * retro: no worker runs it. The merge closes the issue (`done`); the production check after it is
  * no phase (`check` on the issue record). */
@@ -141,6 +149,29 @@ const legionCapabilityReportView = z.object({
   open: z.array(z.object({ name: nonEmptyString, detail: nonEmptyString })),
 });
 
+/** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
+ * its worker stream (contract 57): `at`, when the daemon received that step; `turnStartedAt`,
+ * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
+ * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
+ * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
+ * that call's start and end.
+ *
+ * The arguments themselves are never on the wire: a shell command routinely holds a credential,
+ * and this record reaches every surface an operator reads. Every field is absent where the
+ * record holds nothing for it — a claim whose turn has begun and whose agent has called nothing
+ * carries `turnStartedAt` alone, and a call still open carries `startedAt` and no `endedAt`,
+ * which is the shape a stalled turn leaves behind. */
+const legionStepView = z.object({
+  at: timestamp.optional(),
+  turnStartedAt: timestamp.optional(),
+  tool: nonEmptyString.optional(),
+  callId: nonEmptyString.optional(),
+  argsBytes: z.number().int().positive().optional(),
+  argsHash: nonEmptyString.optional(),
+  startedAt: timestamp.optional(),
+  endedAt: timestamp.optional(),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), and `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does). */
@@ -160,6 +191,11 @@ const legionClaimView = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
+   * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
+   * contract below 57 is served the state with no such key at all (the daemon's
+   * `withoutStallRecord`), so every reader takes it as optional. */
+  step: legionStepView.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -183,7 +219,8 @@ const legionPhaseView = z.object({
  * when the reviewer completes. It shows from the review that decided it until the next round
  * opens or a new generation clears it, so a request for changes stays through implementing and
  * testing, and an approval through retro and every phase after it; absent until a review in a
- * round decides. `state` is always present: a recorded pull request is open, merged or closed. */
+ * round decides. `state` is always present: a recorded pull request is open, merged or closed.
+ * `fixAttempts` counted the heads pushed onto a red verdict until contract 59 removed the count. */
 const legionPullRequestView = z.object({
   /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
   repo: nonEmptyString,
@@ -199,7 +236,6 @@ const legionPullRequestView = z.object({
    * `checksVerdict`, so a reader waiting on CI reads the two together. It is `false` before the
    * daemon has read those rules, as it is for a base that requires nothing. */
   requiresChecks: z.boolean(),
-  fixAttempts: z.number().int().nonnegative(),
 });
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
@@ -238,6 +274,14 @@ const legionSlotView = z.object({
   index: z.number().int().nonnegative(),
   admittedAt: timestamp,
   lentTo: issueKey.optional(),
+});
+
+/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
+ * in the line, and `length`, how long that list was at this read. It says where the issue stands,
+ * not what holds it, which `admission.blocked` names. */
+const legionWaitingLineView = z.object({
+  place: z.number().int().positive(),
+  length: z.number().int().positive(),
 });
 
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
@@ -296,8 +340,8 @@ export const LEGION_WAIT_ANSWERS = [
 
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
- * (`answeredBy` names how, not always by a person), when the root waits at the front of
- * admission's waiting line for its slot. */
+ * (`answeredBy` names how, not always by a person), when the answered root stands in admission's
+ * waiting line, among the issues whose work came back, oldest first, until the pass that resumes it. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),
@@ -424,6 +468,10 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
+  /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
+   * list names, so every issue the line does not carry has none, and a
+   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
@@ -461,10 +509,15 @@ const legionBlockedIssue = z.object({
 
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
- * the cap counts the issues at work rather than the trees (dispatch://INFRA-980): `active` is
- * every issue holding a slot and `waiting` the admission line, children as much as roots, so one
- * tree with three working children holds three slots and a tree whose issues only wait holds
- * none. `trees` is the root of every live tree, sorted, which a reader needs because a running
+ * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
+ * `active` is every issue holding a slot and `waiting` the admission line, children as much as
+ * roots, so one tree with three started children holds three slots. An issue takes its slot when
+ * the daemon starts it and keeps it
+ * until it is done, leaves the workflow or waits only for its merge, so `active` carries an issue
+ * waiting on a person, one in `accepting`, one `held` and one whose `merging` waits on a closed
+ * design gate, while an issue in `awaiting_merge` is in neither list. An issue holding a slot is
+ * in `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
  * tree may hold no slot at all — the controller reads it where it read `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
@@ -527,11 +580,10 @@ const legionCapabilityState = z.object({
 });
 
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
- * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
- * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. */
+ * credential file path left out (contract 35). Its keys are legion.yaml's own; the one the spec
+ * names is typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
+ * contract change. `max_fix_attempts` was typed here until contract 59 removed the key. */
 const legionSettings = z.looseObject({
-  max_fix_attempts: z.number().int().positive(),
   worker_boot_timeout_seconds: z.number().int().positive(),
 });
 
@@ -950,7 +1002,8 @@ const legionDeliveryView = z.object({
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
  * the claim as its supervisor holds it, but its hashes. `forgottenSession` and
- * `forgottenSessionFile` appear only in a successful `forget-session` response. */
+ * `forgottenSessionFile` appear only in a successful `forget-session` response, and
+ * `phaseNotRestarted` only in a `retry` that asked for a fresh session. */
 export const LegionOperatorClaimResponse = z.object({
   token: nonEmptyString,
   tree: nonEmptyString,
@@ -962,6 +1015,12 @@ export const LegionOperatorClaimResponse = z.object({
   sessionFile: z.string(),
   forgottenSession: nonEmptyString.optional(),
   forgottenSessionFile: nonEmptyString.optional(),
+  /** Why nothing restarted the claim's phase, on a `retry` that asked for a fresh session
+   * (`{"freshSession":true}`) and nowhere else: the claim is back in a new session owing no
+   * task, and the workflow refused the restart that would have handed it one. The claim started
+   * either way, which is why the refusal rides a successful answer; absent when the phase was
+   * restarted, and when no restart was due. */
+  phaseNotRestarted: nonEmptyString.optional(),
   locator: legionLocator.optional(),
   budgets: z.object({
     launchFailures: z.number().int().nonnegative(),
@@ -989,6 +1048,11 @@ export const LegionOperatorClaimResponse = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
+   * begun a turn nor made a call the daemon saw. These routes are the only surface a
+   * controller's record reaches: the state puts the controller's claim on no issue, so no claim
+   * view of it carries one. */
+  step: legionStepView.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;

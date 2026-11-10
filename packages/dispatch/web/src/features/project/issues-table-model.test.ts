@@ -2,16 +2,22 @@ import { expect, test } from "bun:test";
 import type { IssueSummary, LegionBoardCard, LegionBoardResponse } from "../../api/types";
 import {
   buildItems,
+  columnFilterSpec,
+  compareGroups,
   countIssueStates,
   defaultView,
   facetCounts,
   formatPhaseTime,
+  isEpic,
+  isQueued,
   matchesFilters,
   matchesSearch,
   mergeMembers,
+  queuedInOrder,
   readUrl,
-  remainingStartNextWrites,
+  reorder,
   startNextWrites,
+  UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
 
@@ -82,8 +88,9 @@ test("facet counts apply search and every other filter, not their own", () => {
     { id: "status", value: ["todo"] },
     { id: "labels", value: ["backend"] },
   ];
+  // The project's own spelling of a label is the facet, in the table as on the Board.
   expect([...facetCounts(items, "labels", filters, "search")]).toEqual([
-    ["frontend", 1],
+    ["FrontEnd", 1],
     ["backend", 1],
     ["legion", 1],
   ]);
@@ -91,9 +98,11 @@ test("facet counts apply search and every other filter, not their own", () => {
     ["todo", 1],
     ["testing", 1],
   ]);
+  // A URL keeps the casing it carries — one spelling for the table and the Board — and the
+  // matching is what is case-insensitive.
   expect(
     readUrl(new URLSearchParams("label=FrontEnd")).filters.find(({ id }) => id === "labels")?.value
-  ).toEqual(["frontend"]);
+  ).toEqual(["FrontEnd"]);
 });
 
 test("URL round trip preserves Board status and label params plus every table control", () => {
@@ -127,37 +136,73 @@ test("URL round trip preserves Board status and label params plus every table co
   );
 });
 
-test("Start next writes before keys in reverse order to retain the selected queue order", () => {
-  const queue = buildItems(
-    ["A", "B", "C", "D"].map((key) => issue(key, { labels: ["legion"] })),
-    (actor) => actor.id
-  );
-  expect(startNextWrites(queue, ["C", "B"])).toEqual([
-    { key: "C", input: { rank: { before: "A" } } },
-    { key: "B", input: { rank: { before: "C" } } },
-  ]);
-  expect(startNextWrites(queue, ["A", "B", "C", "D"])).toEqual([]);
-});
-
-test("Finish preserves the selected order and sends only ranks still behind the queue head", () => {
+test("Start next ranks the selected rows in queue order and skips the ones already ahead", () => {
   const rows = (keys: string[]) =>
     buildItems(
       keys.map((key, index) => issue(key, { rank: String(index), labels: ["legion"] })),
       (actor) => actor.id
     );
-  expect(remainingStartNextWrites(rows(["C", "A", "B", "D"]), ["B", "C"])).toEqual([
+  const queue = rows(["A", "B", "C", "D"]);
+  expect(queuedInOrder(queue, ["C", "B"])).toEqual(["B", "C"]);
+  expect(startNextWrites(queue, queuedInOrder(queue, ["C", "B"]))).toEqual([
+    { key: "C", input: { rank: { before: "A" } } },
     { key: "B", input: { rank: { before: "C" } } },
   ]);
-  expect(remainingStartNextWrites(rows(["B", "C", "A", "D"]), ["B", "C"])).toEqual([]);
-  expect(remainingStartNextWrites(rows(["C", "B"]), ["B", "C"])).toEqual([
+  expect(startNextWrites(queue, ["A", "B", "C", "D"])).toEqual([]);
+  // The same function picks up an action a reload cut short: only the ranks still behind.
+  expect(startNextWrites(rows(["C", "A", "B", "D"]), ["B", "C"])).toEqual([
     { key: "B", input: { rank: { before: "C" } } },
   ]);
-  expect(remainingStartNextWrites(rows(["A", "C"]), ["B", "C"])).toEqual([
+  expect(startNextWrites(rows(["B", "C", "A", "D"]), ["B", "C"])).toEqual([]);
+  expect(startNextWrites(rows(["C", "B"]), ["B", "C"])).toEqual([
+    { key: "B", input: { rank: { before: "C" } } },
+  ]);
+  expect(startNextWrites(rows(["A", "C"]), ["B", "C"])).toEqual([
     { key: "C", input: { rank: { before: "A" } } },
   ]);
 });
 
-test("an epic is the open root, and equal titles never merge distinct epic groups", () => {
+// The server matches a label on `lower(label)`, so an issue labelled `Legion` is queued and one
+// labelled `Epic` is an epic, exactly as the lower-case spellings are.
+test("the legion and epic labels are matched case-insensitively", () => {
+  expect(isQueued(issue("A", { labels: ["Legion"] }))).toBe(true);
+  expect(isQueued(issue("A", { labels: ["LEGION"], status: "testing" }))).toBe(false);
+  expect(isEpic(issue("A", { labels: ["Epic"] }))).toBe(true);
+  expect(isEpic(issue("A", { labels: ["epic"], status: "done" }))).toBe(false);
+  const rows = buildItems(
+    [issue("A", { labels: ["Epic"] }), issue("B", { parent: "A", labels: ["Legion"] })],
+    (actor) => actor.id
+  );
+  expect(rows.find((row) => row.issue.key === "B")?.queue).toBe(1);
+  expect(rows.find((row) => row.issue.key === "B")?.epicKey).toBe("A");
+});
+
+test("Nobody or lapsed picks unheld and takeable claims, and ?unclaimed=1 still sets it", () => {
+  const held = issue("A", {
+    claim: { actor: { kind: "session", id: "one" }, at: "2026-09-10T00:00:00Z" },
+  });
+  const rows = buildItems(
+    [held, issue("B")],
+    (actor) => actor.id,
+    [],
+    (row) => row.key === "B"
+  );
+  const picked = [{ id: "claim", value: [UNCLAIMED_FACET] }];
+  expect(rows.filter((row) => matchesFilters(row, picked)).map((row) => row.issue.key)).toEqual([
+    "B",
+  ]);
+  expect([...facetCounts(rows, "claim", [], "")]).toEqual([
+    ["one", 1],
+    ["Nobody", 1],
+    [UNCLAIMED_FACET, 1],
+  ]);
+  const fromLink = readUrl(new URLSearchParams("unclaimed=1"));
+  expect(fromLink.filters.find(({ id }) => id === "claim")?.value).toEqual([UNCLAIMED_FACET]);
+  // And a view written back from it keeps the parameter the Board's own chip reads.
+  expect(writeUrl(new URLSearchParams(), fromLink).get("unclaimed")).toBe("1");
+});
+
+test("an open root labelled epic is a row of its own, and equal titles never merge groups", () => {
   const rows = buildItems(
     [
       issue("A", { labels: ["epic"], title: "Same" }),
@@ -168,8 +213,8 @@ test("an epic is the open root, and equal titles never merge distinct epic group
     ],
     (actor) => actor.id
   );
-  expect(rows.find((row) => row.issue.key === "A")).toBeUndefined();
-  expect(rows.find((row) => row.issue.key === "B")).toBeUndefined();
+  expect(rows.find((row) => row.issue.key === "A")?.epicKey).toBe("A");
+  expect(rows.find((row) => row.issue.key === "B")?.epicKey).toBe("B");
   expect(rows.find((row) => row.issue.key === "D")?.epicKey).toBe("A");
   expect(rows.find((row) => row.issue.key === "D")?.epic).not.toBe(
     rows.find((row) => row.issue.key === "E")?.epic
@@ -196,6 +241,71 @@ test("a merge crosses closed intermediates but does not flatten an open subtree"
     issue("G", { parent: "F" }),
   ];
   expect(mergeMembers(rows, "A")).toEqual(["C", "E", "G"]);
+});
+
+test("a dropped column lands immediately before the one it was dropped on", () => {
+  const order = ["select", "key", "title", "status", "epic"];
+  expect(reorder(order, "epic", "title")).toEqual(["select", "key", "epic", "title", "status"]);
+  expect(reorder(order, "key", "epic")).toEqual(["select", "title", "status", "key", "epic"]);
+  expect(order).toEqual(["select", "key", "title", "status", "epic"]);
+});
+
+test("a column dropped on itself, or on one the order does not hold, stays where it is", () => {
+  const order = ["select", "key", "title"];
+  expect(reorder(order, "title", "title")).toEqual(order);
+  expect(reorder(order, "title", "claim")).toEqual(order);
+  expect(reorder(order, "claim", "title")).toEqual(order);
+});
+
+// B1: a `?status=` this bundle does not know is still the reader's filter, under its own text.
+test("an unknown status keeps its own text and its place in the picks", () => {
+  const show = columnFilterSpec("status");
+  if (show?.kind !== "picks" || show.show === undefined) throw new Error("the status filter");
+  expect(show.show("bogus")).toBe("bogus");
+  expect(show.show("Done")).toBe("Done");
+  expect(show.show("done")).toBe("Done");
+  expect(readUrl(new URLSearchParams("status=bogus")).filters).toEqual([
+    { id: "status", value: ["bogus"] },
+  ]);
+});
+
+// O1: the view the table opens with says nothing in a link, and comes back when read.
+test("a shared link leaves out the default status set and reads it back", () => {
+  const params = writeUrl(new URLSearchParams(), { ...defaultView, search: "rank" });
+  expect(params.get("status")).toBeNull();
+  expect(params.get("nofilter")).toBeNull();
+  expect(readUrl(params).filters).toEqual(defaultView.filters);
+  // An empty selection is still expressible, and still means every status.
+  expect(writeUrl(new URLSearchParams(), { ...defaultView, filters: [] }).get("nofilter")).toBe(
+    "1"
+  );
+  expect(readUrl(new URLSearchParams("nofilter=1")).filters).toEqual([]);
+});
+
+// O2: Key filters by what the reader types, not by a list of every issue.
+test("the Key column filters by typed text", () => {
+  const key = columnFilterSpec("key");
+  expect(key?.kind).toBe("text");
+  const item = buildItems([issue("CORE-12")], () => "")[0];
+  if (item === undefined) throw new Error("no item");
+  expect(matchesFilters(item, [{ id: "key", value: "re-1" }])).toBe(true);
+  expect(matchesFilters(item, [{ id: "key", value: "CORE-9" }])).toBe(false);
+});
+
+// I3: a key reads as a number where it is one, and the empty group reads last.
+test("groups order by number inside a name, with the empty group last", () => {
+  expect(compareGroups("epic", "CORE-2 · Two", "CORE-10 · Ten")).toBeLessThan(0);
+  expect(compareGroups("epic", "No epic", "CORE-10 · Ten")).toBeGreaterThan(0);
+  expect(compareGroups("claim", "Nobody", "zoe")).toBeGreaterThan(0);
+  expect(compareGroups("assignee", "Unassigned", "alice")).toBeGreaterThan(0);
+});
+
+// F8: nothing typed matches every row, before any of the work a query needs.
+test("a blank search matches every row", () => {
+  const item = buildItems([issue("CORE-1")], () => "")[0];
+  if (item === undefined) throw new Error("no item");
+  expect(matchesSearch(item, "")).toBe(true);
+  expect(matchesSearch(item, "   ")).toBe(true);
 });
 
 function card(key: string, phase: string): LegionBoardCard {
@@ -253,15 +363,11 @@ const legionBoard: LegionBoardResponse = {
 
 test("the daemon queue replaces Dispatch rank, including membership, without a derived fallback", () => {
   const issues = [1, 2, 3, 4, 5].map((n) => issue(`CORE-${n}`, { labels: ["legion"] }));
-  const rows = buildItems(issues, (actor) => actor.id, [], legionBoard);
+  const rows = buildItems(issues, (actor) => actor.id, [], undefined, legionBoard);
   expect(rows.map((row) => row.queue)).toEqual([2, undefined, 1, undefined, undefined]);
-  expect(buildItems(issues, (actor) => actor.id, [], null).map((row) => row.queue)).toEqual([
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-  ]);
+  expect(
+    buildItems(issues, (actor) => actor.id, [], undefined, null).map((row) => row.queue)
+  ).toEqual([undefined, undefined, undefined, undefined, undefined]);
   expect(buildItems(issues, (actor) => actor.id).map((row) => row.queue)).toEqual([1, 2, 3, 4, 5]);
 });
 
@@ -270,6 +376,7 @@ test("phase facets and workflow ordering come from the board, not alphabetical o
     [2, 4, 3].map((n) => issue(`CORE-${n}`)),
     (actor) => actor.id,
     [],
+    undefined,
     legionBoard
   );
   expect(
@@ -294,9 +401,10 @@ test("phase facets and workflow ordering come from the board, not alphabetical o
       )
       .map((row) => row.issue.key)
   ).toEqual(["CORE-2"]);
-  const view = readUrl(new URLSearchParams("group=phase&sort=phase&f.phase=planning"));
+  const view = readUrl(new URLSearchParams("group=phase&sort=phase&phase=planning"));
   expect(view.grouping).toEqual(["phase"]);
   expect(view.sorting).toEqual([{ id: "phase", desc: false }]);
+  expect(view.filters).toContainEqual({ id: "phase", value: ["planning"] });
 });
 
 test("the bar counts each issue once, under its Legion phase or its Dispatch status", () => {
@@ -304,6 +412,7 @@ test("the bar counts each issue once, under its Legion phase or its Dispatch sta
     [1, 2, 3, 4, 5].map((n) => issue(`CORE-${n}`, { status: "todo" })),
     (actor) => actor.id,
     [],
+    undefined,
     legionBoard
   );
   expect(countIssueStates(rows)).toEqual([

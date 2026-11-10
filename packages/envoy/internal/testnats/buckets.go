@@ -20,14 +20,19 @@ import (
 // bus.OpenKeyValue, a second program looks the bucket up before it raises it, and a first put
 // writes to it. So a test that creates a bucket on a cluster and then has the code under test
 // open it, raise it, look it up or write to it creates it with CreateKeyValue, and one whose
-// code under test creates the bucket itself calls AwaitBucket after it.
+// code under test creates the bucket itself calls AwaitBucket after it, on the connection and
+// the JetStream context that code holds: the long wait here is for this fixture's own create
+// and nothing else.
 
 const (
-	// bucketCreateWait bounds each JetStream request of a context BucketJetStream opens. A
-	// bucket create on a cluster is proposed through the meta group and answered once the
-	// bucket's stream is made, the slowest thing these tests ask a JetStream client for: 25
-	// creates on an idle two-CPU machine took from 60 ms to 1.03 s. This is a hang guard, two
-	// orders of magnitude away from that, not a budget a loaded runner can use up.
+	// bucketCreateWait bounds each JetStream request of the context bucketJetStream opens, which
+	// is the one plain create Cluster.CreateKeyValue makes and nothing else. A bucket create on a
+	// cluster is proposed through the meta group and answered once the bucket's stream is made,
+	// the slowest thing these tests ask a JetStream client for: 25 creates on an idle two-CPU
+	// machine took from 60 ms to 1.03 s. This is a hang guard, two orders of magnitude away from
+	// that, not a budget a loaded runner can use up, and not a wait for code under test: a call
+	// that sends a request again rather than waiting it out, such as bus.EnsureKeyValue, would
+	// spend this wait once per send, which is minutes a call.
 	bucketCreateWait = 2 * time.Minute
 
 	// bucketLookupWait bounds one member's lookup of a bucket's stream, which that member
@@ -35,10 +40,10 @@ const (
 	bucketLookupWait = 10 * time.Second
 )
 
-// BucketJetStream is a JetStream context on conn whose requests are bounded by bucketCreateWait.
-// A test whose code under test creates a bucket on a cluster opens its context here rather than
-// with Cluster.JetStream, whose ten seconds one create can use up on a loaded machine.
-func BucketJetStream(t testing.TB, conn *natsgo.Conn) natsgo.JetStreamContext {
+// bucketJetStream is a JetStream context on conn whose requests are bounded by bucketCreateWait,
+// for the create Cluster.CreateKeyValue makes: a test fixture's own create of a bucket, which
+// Cluster.JetStream's ten seconds one create can use up on a loaded machine.
+func bucketJetStream(t testing.TB, conn *natsgo.Conn) natsgo.JetStreamContext {
 	t.Helper()
 	js, err := conn.JetStream(natsgo.MaxWait(bucketCreateWait))
 	if err != nil {
@@ -53,7 +58,7 @@ func BucketJetStream(t testing.TB, conn *natsgo.Conn) natsgo.JetStreamContext {
 // client's permissions creates the bucket as that client.
 func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
-	kv, err := BucketJetStream(t, conn).CreateKeyValue(config)
+	kv, err := bucketJetStream(t, conn).CreateKeyValue(config)
 	if err != nil {
 		t.Fatalf("create KV bucket %s: %v", config.Bucket, err)
 	}

@@ -253,7 +253,7 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
 // other failure is refused at once. It returns the review App's login: the engine judges a push by
 // its pusher against it, so one App configured for both roles would make every implementer push the
-// review App's and count no fix attempt, and is refused, as is a review App that names no login.
+// review App's and every red it leaves a planned one, and is refused, as is a review App that names no login.
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
 	logins := map[appauth.AppRole]string{}
 	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
@@ -481,7 +481,7 @@ func engineConfig(cfg *config.Config, reviewAppLogin string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
-		MaxFixAttempts: cfg.MaxFixAttempts, Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
+		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin, MergeQueueRole: project.MergeQueueRole,
 		RepositoryRenames: cfg.RepositoryRenames,
@@ -722,11 +722,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 				// earlier send released it to the tree its issue moved to, or that tree's start or
 				// catch-up claimed or told it once its issue left (this delivery's hold is void
 				// there). Either way something else answers the person, and this task names it no
-				// longer. Dropping the mark here, before any send, is also what keeps the claim
-				// store's put-back (holdKeptDecisions) to its one case: every unconfirmed write of
-				// the delivery puts back a named decision whose row is missing in this tree, and
-				// the only such row is one this delivery's own confirmation told before the
-				// machine took that confirmation back.
+				// longer. What keeps the claim store's put-back (putBackARetakenConfirmation) to
+				// its one case is that write's own reading — it puts a row back only where this
+				// claim's confirmation told it and the machine is taking that confirmation back —
+				// and not this narrowing, which runs at a send and so never at all for a task the
+				// root cannot hear yet.
 				continue
 			}
 			issue, err := w.records.Issue(scoped, tx, mark.Issue)
@@ -896,6 +896,9 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		// recorded while the daemon was down (catchUpAwaiting).
 		if boot {
 			if err := w.holdForCatchUp(scoped, tx); err != nil {
+				return err
+			}
+			if err := w.releaseParkedClaims(scoped, tx, scope); err != nil {
 				return err
 			}
 		}
@@ -1527,6 +1530,30 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		}
 		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
+		}
+	}()
+}
+
+// providerErrorRunReached tells the project's controller that a role's turns keep ending in a
+// provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run and
+// decides when to tell, and this names the notice kind, since supervise records nothing of
+// internal/record. Admission's own check stops a second notice while one still waits in the
+// outbox (TellController). The machine calls it inside its own decision, so the notice is
+// queued on a goroutine of its own, bounded as a terminal fact is; a failure is logged and is
+// not the daemon's end, since the run goes on and the task is sent again either way.
+func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
+	if c.Issue == "" || w.admission == nil {
+		return
+	}
+	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), readyReleaseTimeout)
+		defer cancel()
+		err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+			return w.admission.TellController(ctx, tx, notice, c.Issue)
+		})
+		if err != nil {
+			w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
 		}
 	}()
 }

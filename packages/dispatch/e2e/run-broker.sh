@@ -29,6 +29,21 @@ set -euo pipefail
 # and with it unset both are port 0, which cmd/broker resolves from the address it bound
 # (packages/envoy/cmd/broker/main.go).
 #
+# DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and requestseed
+# that the caller built, which this run execs instead of building them from this checkout (the
+# build below; run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). Unset, this script
+# builds them, which is what a developer's machine and an issue pod do. Its one caller is CI:
+# the shard and alone jobs of .github/workflows/dispatch-browser.yaml run in a container with
+# no Go toolchain, and that file's binaries job builds the three for them.
+#
+# It serves one directory only, packages/envoy/out/dispatch-e2e-broker under this checkout, and
+# the check below refuses every other one: e2e/real-broker.ts runs requestseed out of that path
+# alone, resolved against its own module and from no variable, so a run handed any other
+# directory would exec the two binaries this script runs from it and then fail the first row
+# that seeds a request, on a path nobody named. Saying that in this header was not enough - a
+# trap written down is still a trap - so the value is refused here, at the start of the run,
+# where the name that is wrong is still in hand.
+#
 # DATABASE_URL is the Dispatch suite's own database, which e2e/seed.ts truncates; the broker never
 # touches it, and runs instead in a database of its own on the same server, <that database>_broker,
 # dropped and created afresh on every start so each harness begins with no enrollment, request or
@@ -41,6 +56,52 @@ mode="${1:-}"
 e2e_port="${DISPATCH_E2E_PORT:-8777}"
 broker_port="${REAL_BROKER_PORT:-0}"
 e2e_dir="$(cd "$(dirname "$0")" && pwd)"
+
+# The one directory this script serves: the build below writes the three binaries into it, a
+# handed-over DISPATCH_E2E_BROKER_BIN_DIR must name it, and the fake secrets file is written in
+# it. It is resolved to an absolute path here because the check of that variable runs before the
+# `cd` to packages/envoy below, and one name for the directory is all the script needs.
+work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
+
+# The three binaries the broker's harness needs; the header above says what
+# DISPATCH_E2E_BROKER_BIN_DIR holds and who sets it. The check below reads the handed-over value
+# above the `cd` to packages/envoy, so a relative value resolves against the directory this
+# script is working in when it starts, which under the harness is packages/dispatch -
+# e2e/harness-start.ts starts every listener there - and not the directory a caller exported it
+# from. A relative value written anywhere else therefore names somewhere this script does not
+# serve, and the check below refuses it by the name it was handed rather than letting it stand
+# for whatever it happens to resolve to.
+# This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
+# requestseed: e2e/real-broker.ts runs that one itself, out of
+# packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
+# the shard and alone jobs download the binaries into. That is why the check below asks a
+# handed-over directory for requestseed too, and why it refuses a directory that is not that
+# one.
+# Unset, the build below is this checkout's, as it always was: a developer's machine and an
+# issue pod set this no more than they set DISPATCH_E2E_SERVER_BIN. The build is skipped only
+# when the caller hands the directory over, never on a comparison of what is newer than what: a
+# test like that has to be right about every input go list names, and when it is wrong it serves
+# a stale broker and the suite tests the wrong build.
+prebuilt_bin="${DISPATCH_E2E_BROKER_BIN_DIR:-}"
+if [ -n "$prebuilt_bin" ]; then
+  # The handed-over value against `$work`, which is resolved the way e2e/real-broker.ts resolves
+  # that directory: against this script's own place in the checkout, never against the caller's
+  # directory. Both sides go through `cd <dir> && pwd -P`, so a trailing slash, a `..` and a
+  # symlinked checkout compare as the one path they name, and a value naming anywhere else is
+  # refused here rather than in the first row that seeds a request, minutes later and nowhere
+  # near its cause.
+  handed=$(cd "$prebuilt_bin" 2>/dev/null && pwd -P) || handed=""
+  if [ -z "$handed" ] || [ "$handed" != "$(cd "$work" 2>/dev/null && pwd -P)" ]; then
+    echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR is not packages/envoy/out/dispatch-e2e-broker of this checkout, the one directory it serves: e2e/real-broker.ts runs requestseed out of that path alone, so a row that seeds a request would fail there whatever this script exec'd from somewhere else" >&2
+    exit 2
+  fi
+  for binary in broker dev-oidc-issuer requestseed; do
+    if [ ! -x "$work/$binary" ]; then
+      echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR holds no executable $binary" >&2
+      exit 2
+    fi
+  done
+fi
 
 # The broker's own OpenID Connect client at the issuer, whose secret both processes read from a
 # file: a throwaway value committed beside this script, as e2e/fake-broker-account-token is. Every
@@ -58,8 +119,10 @@ launcher_account=system:serviceaccount:example-system:example-launcher
 # service below: that binding is the deployment saying the launcher launches those pods, and
 # without it the launcher's own token login enrols its own pod alone and every seeded pod is
 # refused 403 POD_NOT_LAUNCHED (enroll.Service.podUnderTokenLogin). It is a different account
-# from launcher_account, which it must be: the broker refuses a BROKER_SERVICE_LOGINS account
-# that BROKER_SERVICES also binds for that service's pods.
+# from launcher_account because the launcher does not run as it: a BROKER_SERVICE_LOGINS account
+# that BROKER_SERVICES also binds for that service's pods is a pod enrolling itself, which
+# reaches the one pod whose token made the login and no other, while this stack drives the
+# launcher enrolling the worker pods.
 pod_account=system:serviceaccount:example:example-worker
 dispatch_account=system:serviceaccount:example-ns:example-dispatch
 
@@ -96,16 +159,19 @@ cd "$e2e_dir/../../envoy"
 # Built first and exec'd, as run-server.sh does its server, so the pid Playwright started is the
 # listener's. One build of the three binaries per checkout, under a lock, so the two listeners
 # starting at once build them once: the second waits, and Go rewrites nothing that did not change.
-# out/ is ignored, so nothing built here is tracked.
-bin=out/dispatch-e2e-broker
-mkdir -p "$bin"
-flock "$bin/.build.lock" go build -o "$bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+# out/ is ignored, so nothing built here is tracked. The work directory is made whether or not
+# this run builds: the fake secrets file below is written in it, and with the binaries handed
+# over it is the only thing this script still writes there.
+mkdir -p "$work"
+if [ -z "$prebuilt_bin" ]; then
+  flock "$work/.build.lock" go build -o "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+fi
 
 if [ "$mode" = issuer ]; then
   # One client, the broker's, whose secret the issuer reads from the file once at its start. An
   # authorization with nobody queued signs alice in, so every sign-in that reaches the issuer ends
   # with a person; her hd claim is signin_domain, the domain the broker requires.
-  exec "$bin/dev-oidc-issuer" \
+  exec "$work/dev-oidc-issuer" \
     --code-flow "$signin_client=$signin_secret_file" \
     --sign-in-as "alice@$signin_domain"
 fi
@@ -116,18 +182,30 @@ if ! [[ "$DATABASE_URL" =~ ^(postgres(ql)?://[^/?]+)/([^/?]+)(\?.*)?$ ]]; then
   echo "run-broker.sh: DATABASE_URL must be postgres://<user>@<host>:<port>/<database>" >&2
   exit 2
 fi
+broker_server="${BASH_REMATCH[1]}"
 broker_database="${BASH_REMATCH[3]}_broker"
-broker_database_url="${BASH_REMATCH[1]}/${broker_database}${BASH_REMATCH[4]}"
+broker_database_url="${broker_server}/${broker_database}${BASH_REMATCH[4]}"
 env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
   -c "drop database if exists \"$broker_database\" with (force)" \
   -c "create database \"$broker_database\""
 
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
 # request waits on that person to approve, and a shared one anyone signed in may approve.
-fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database.json"
+#
+# The name carries this lane's own server, and the file is renamed into place rather than written
+# in place. Each lane runs a Postgres of its own and names the database in it the same as every
+# other lane does (databaseName, e2e/harness-postgres.ts), so the database alone named one path
+# for every lane of a run while the directory they write it in is shared. A plain redirect
+# truncates first, so a broker that read between one lane's truncate and its write got an empty
+# file, which is what one of four brokers died of on run 42403409126, job 128496236572. The
+# rename is atomic within the directory, and the server's host and port differ by lane, so each
+# lane now writes and reads a file of its own and a re-run overwrites it rather than leaving
+# another behind.
+fake_secrets_lane="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
+fake_secrets_file="$work/fake-secrets-$broker_database-$fake_secrets_lane.json"
 (
   umask 077
-  cat >"$fake_secrets_file" <<EOF
+  cat >"$fake_secrets_file.$$.tmp" <<EOF
 {"secrets": [
   {"name": "${secrets_prefix}alice-deploy-key", "kms_key_id": "${secrets_kms_key_arn}",
    "tags": {"owner": "alice@${signin_domain}", "tier": "human"}, "value": "alice-deploy-value"},
@@ -137,6 +215,7 @@ fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database.json"
    "tags": {"owner": "shared", "tier": "human"}, "value": "shared-deploy-value"}
 ]}
 EOF
+  mv -f "$fake_secrets_file.$$.tmp" "$fake_secrets_file"
 )
 
 # The broker discovers its token issuer before it listens and refuses to boot without it. The
@@ -182,4 +261,4 @@ exec env \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  "$bin/broker"
+  "$work/broker"

@@ -76,7 +76,14 @@ import {
   type MessageConversation,
   matchesFilter,
 } from "./conversation-model";
-import { duplicateText, failureGuidance, isSafeRetry, MODE_LABELS, withGuidance } from "./delivery";
+import {
+  deliveryMode,
+  duplicateText,
+  failureGuidance,
+  isSafeRetry,
+  MODE_LABELS,
+  withGuidance,
+} from "./delivery";
 import {
   redirectedReplyTarget,
   useHeldReplyTo,
@@ -149,14 +156,15 @@ function threadDelivery(root: MessageConversation): ReplyTarget["thread"] | unde
   }
   let last: MessageDelivery | undefined;
   for (const attempt of [
-    ...root.root.deliveries,
-    ...root.replies.flatMap((reply) => reply.deliveries),
+    ...(root.root.deliveries ?? []),
+    ...root.replies.flatMap((reply) => reply.deliveries ?? []),
   ]) {
     if (last === undefined || compareTimestamps(attempt.created_at, last.created_at) >= 0) {
       last = attempt;
     }
   }
-  return { delivery: last?.delivery ?? "steer", target: root.root.target };
+  const mode = last === undefined ? undefined : deliveryMode(last.delivery);
+  return { delivery: mode ?? "steer", target: root.root.target };
 }
 
 /** What the composer quotes when the reader replies to `message`. */
@@ -178,11 +186,10 @@ function replyTargetFor(
 
 /** A reply in a thread as the Conversation renders it: the quoted parent links to that turn,
  *  a delivered reply (a human's follow-up on a targeted thread) shows its attempt and keeps the
- *  retry row while unanswered, and every reply can be replied to while the issue is open. */
+ *  retry row while unanswered, and every reply can be replied to, on a closed issue too. */
 function ConversationReply({
   agents,
   currentReplyId,
-  isClosed,
   issueKey,
   markRef,
   onReply,
@@ -192,7 +199,6 @@ function ConversationReply({
 }: {
   agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
   /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
   markRef?: DwellRef;
@@ -203,7 +209,7 @@ function ConversationReply({
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const targetName = recipientOf(reply.deliveries, root.root.target);
+  const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
@@ -211,7 +217,7 @@ function ConversationReply({
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
-  const lastAttempt = reply.deliveries.at(-1);
+  const lastAttempt = (reply.deliveries ?? []).at(-1);
   const answer = root.replies.find(
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
@@ -234,20 +240,18 @@ function ConversationReply({
           ? undefined
           : {
               answeredBy: answer?.author,
-              attempts: deliveryAttempts(reply.deliveries, targetName),
-              retry: isClosed
-                ? undefined
-                : {
-                    canAside: capabilities?.includes("aside") !== false,
-                    canBtw: capabilities?.includes("btw") !== false,
-                    canSteer: capabilities?.includes("steer") !== false,
-                    onRetry: retry.mutate,
-                    retrying: retry.isPending,
-                  },
+              attempts: deliveryAttempts(reply.deliveries ?? [], targetName),
+              retry: {
+                canAside: capabilities?.includes("aside") !== false,
+                canBtw: capabilities?.includes("btw") !== false,
+                canSteer: capabilities?.includes("steer") !== false,
+                onRetry: retry.mutate,
+                retrying: retry.isPending,
+              },
               targetName,
             }
       }
-      onReply={isClosed ? undefined : () => onReply(replyTargetFor(reply, root, issueKey))}
+      onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -266,7 +270,6 @@ function ConversationReply({
 function Thread({
   agents,
   currentReplyId,
-  isClosed,
   issueKey,
   onReply,
   replyDisabled,
@@ -274,7 +277,6 @@ function Thread({
 }: {
   agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
   onReply: (target: ReplyTarget) => void;
   replyDisabled: boolean;
@@ -300,7 +302,6 @@ function Thread({
         <ConversationReply
           agents={agents}
           currentReplyId={currentReplyId}
-          isClosed={isClosed}
           issueKey={issueKey}
           key={reply.id}
           markRef={reply === newest ? markRef : undefined}
@@ -322,7 +323,7 @@ function MessageTurn({
   agents,
   current,
   currentReplyId,
-  isClosed,
+
   issueKey,
   item,
   onPin,
@@ -334,7 +335,7 @@ function MessageTurn({
   agents: readonly Agent[] | undefined;
   current: boolean;
   currentReplyId: string | undefined;
-  isClosed: boolean;
+
   issueKey: string;
   item: Extract<Conversation, { kind: "message" }>;
   onPin: () => void;
@@ -364,19 +365,16 @@ function MessageTurn({
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
-          {isClosed ? null : (
-            <ReplyButton
-              disabled={replyDisabled}
-              onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
-            />
-          )}
+          <ReplyButton
+            disabled={replyDisabled}
+            onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
+          />
           <TurnPin onPin={onPin} pinned={pinned} />
         </TurnActions>
       </div>
       <Thread
         agents={agents}
         currentReplyId={currentReplyId}
-        isClosed={isClosed}
         issueKey={issueKey}
         onReply={onReply}
         replyDisabled={replyDisabled}
@@ -508,7 +506,7 @@ function commentReplyTarget(
   const targets =
     author.kind === "session"
       ? [`session:${author.id}`]
-      : comment.mentions.map((mention) => mention.target);
+      : (comment.mentions ?? []).map((mention) => mention.target);
   const mentions = [...new Set(targets)].map((target) => {
     const sessionId = sessionOfAddress(target);
     return {
@@ -532,13 +530,11 @@ function commentReplyTarget(
 function CommentDeliveryList({
   agents,
   deliveries,
-  disabled,
   onRetry,
   retrying,
 }: {
   agents: readonly Agent[] | undefined;
   deliveries: readonly CommentDeliveryAttempt[];
-  disabled: boolean;
   onRetry: (delivery: CommentDeliveryAttempt) => void;
   retrying: boolean;
 }): ReactNode {
@@ -559,11 +555,11 @@ function CommentDeliveryList({
         };
         // The same rule the targeted-message card applies: a mention's Retry re-sends its own
         // mode under its own key, so it is offered only while `isSafeRetry` holds, and the
-        // guidance beside it names that Retry or a new comment, so a closed issue, which takes
-        // neither, says nothing about one.
+        // guidance beside it names that Retry or a new comment, both of which a closed issue
+        // takes too.
         const safeRetry = isSafeRetry(outcome);
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
-        const guidance = disabled ? undefined : failureGuidance(outcome, "mention");
+        const guidance = failureGuidance(outcome, "mention");
         const recipient = targetPart(delivery.target);
         return (
           <li
@@ -578,7 +574,7 @@ function CommentDeliveryList({
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
               {delivery.error === null && guidance !== undefined ? ` · ${guidance}` : ""}
             </span>
-            {disabled || !canRetry || !safeRetry ? null : (
+            {!canRetry || !safeRetry ? null : (
               <button
                 className={`min-h-8 font-medium ${linkText}`}
                 disabled={retrying}
@@ -588,7 +584,7 @@ function CommentDeliveryList({
                 Retry
               </button>
             )}
-            {disabled || canRetry ? null : (
+            {canRetry ? null : (
               <span className={textMutedOnSurface}>
                 <AgentParts
                   parts={[recipient, ` no longer supports ${MODE_LABELS[delivery.delivery]}.`]}
@@ -774,7 +770,6 @@ function CommentTurn({
           <CommentDeliveryList
             agents={agents}
             deliveries={deliveriesFor(comment.id)}
-            disabled={isClosed}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
             retrying={retry.isPending}
           />
@@ -803,16 +798,14 @@ function CommentTurn({
           </button>
         )}
         <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
-        {isClosed ? null : (
-          <ReplyButton
-            disabled={replyDisabled}
-            onClick={() => {
-              if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
-                setExpanded(true);
-              }
-            }}
-          />
-        )}
+        <ReplyButton
+          disabled={replyDisabled}
+          onClick={() => {
+            if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
+              setExpanded(true);
+            }
+          }}
+        />
         <TurnPin onPin={onPin} pinned={pinned} />
       </div>
     </li>
@@ -823,7 +816,6 @@ function TargetedMessageTurn({
   agents,
   current,
   currentReplyId,
-  isClosed,
   issueKey,
   item,
   onReply,
@@ -833,7 +825,6 @@ function TargetedMessageTurn({
   agents: readonly Agent[] | undefined;
   current: boolean;
   currentReplyId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
   item: Extract<Conversation, { kind: "targeted-message" }>;
   onReply: (target: ReplyTarget) => void;
@@ -842,7 +833,7 @@ function TargetedMessageTurn({
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const targetName = recipientOf(item.root.deliveries, item.root.target);
+  const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
@@ -871,9 +862,8 @@ function TargetedMessageTurn({
       canBtw={capabilities?.includes("btw") !== false}
       canSteer={capabilities?.includes("steer") !== false}
       current={current}
-      deliveries={deliveryAttempts(item.root.deliveries, targetName)}
+      deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
-      isClosed={isClosed}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
       register={register}
@@ -884,7 +874,6 @@ function TargetedMessageTurn({
         <Thread
           agents={agents}
           currentReplyId={currentReplyId}
-          isClosed={isClosed}
           issueKey={issueKey}
           onReply={onReply}
           replyDisabled={replyDisabled}
@@ -1217,10 +1206,10 @@ export function ConversationTab({
       label="Conversation"
     >
       {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
-          send's refusal and its reply are all still there on Back. Mounted on a closed issue too,
-          where it shows only a send of its own still out or its refusal (`closed`), so an issue
-          closed and reopened under a send leaves that send's composer where it was. `contents`,
-          so the composer's own box stays the one that sticks. */}
+          send's refusal and its reply are all still there on Back. A closed issue takes comments
+          and message replies, so it shows and sends there as on an open one (`closed` hides only
+          the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
+          that sticks. */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
           closed={isClosed}
@@ -1297,7 +1286,7 @@ export function ConversationTab({
         {shown.map((item) => {
           const current = item.id === focus?.id;
           const currentReplyId = current ? focus?.replyId : undefined;
-          const pinned = isPinnedConversation(issueState.dismissed, item.id);
+          const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
           // A thread covering the list hides its copy of the newest card, so that copy gives
           // up the mark's ref while one is open; the thread's own card carries it below.
           const register =
@@ -1309,7 +1298,6 @@ export function ConversationTab({
                 agents={agents}
                 current={current}
                 currentReplyId={currentReplyId}
-                isClosed={isClosed}
                 issueKey={issueKey}
                 item={item}
                 key={item.id}
@@ -1326,7 +1314,6 @@ export function ConversationTab({
                 issueKey={issueKey}
                 current={current}
                 currentReplyId={currentReplyId}
-                isClosed={isClosed}
                 item={item}
                 key={item.id}
                 onPin={() => pinConversation(item.id)}
@@ -1469,7 +1456,7 @@ export function ConversationTab({
                 pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
                 onPin={() => pinConversation(phoneThread.id)}
                 onReply={phone.beginReply}
-                pinned={isPinnedConversation(issueState.dismissed, phoneThread.id)}
+                pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
                 register={phoneThreadIsNewest ? registerNewest : undefined}
                 replyDisabled={composerSending}
                 sendKey={sendKey}

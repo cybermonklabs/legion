@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  `LegionClaimRequest`, the body of the daemon's new `POST /legion/v1/claims/fresh-session`:
+  a controller grant, an issue and a role. The claim on that role of that issue leaves the session
+  it recorded behind and starts again in a new one, which is the effect
+  `legion claims retry --fresh-session` runs for an operator. It reaches a claim whose agent is
+  registered, ready or idle and one that is suspended, failed or retired, with no suspension
+  held over it: one idle
+  between the provider-error ladder's sends, one whose agent has registered and is not ready
+  yet, a suspended one, one an operator stopped, which retires it, a failed
+  one, and a root architect.
+  The daemon refuses a claim it records as working, which may be in a turn, and one left
+  working over a process the daemon's last report of it found gone, whose relaunch has not run
+  and which is in no turn
+  (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, and one
+  left working under a relaunch the wake pacing parked
+  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which
+  takes the first of those two codes where the daemon records it working and the second where it
+  does not; and the project's own controller, which is no role the request
+  may name (`INVALID_ROLE`).
+  Each refusal says what the claim is doing when it is given and which operation reaches each
+  state `legion claims list` shows, and names no turn, hold, report or relaunch to come.
+  `LegionFreshSessionResponse`, that route's answer, carries the same word for the controller:
+  it is empty wherever the claim came back and its start ran, and holds `phaseNotRestarted`
+  where the claim came back owing no task and the workflow refused the restart of its phase that
+  would have handed it one. `LegionOperatorClaimResponse` gains the same optional member, which
+  the operator's `retry` carries when it asked for a fresh session. The claim started either
+  way, so that refusal rides a successful answer rather than replacing it.

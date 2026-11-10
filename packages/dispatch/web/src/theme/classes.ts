@@ -1,3 +1,5 @@
+import type { IssueStatus } from "@legion/contracts/dispatch-tools";
+
 import type { Swatch } from "./palette";
 import * as P from "./palette";
 
@@ -273,9 +275,9 @@ const ISSUE_STATUS_ROWS = [
     P.CARBON_GRAY_100,
   ],
 ] as const;
-export const issueStatusScale: Record<string, string> = Object.fromEntries(
+export const issueStatusScale = Object.fromEntries(
   ISSUE_STATUS_ROWS.map(([status, classes]) => [status, classes])
-);
+) as Record<IssueStatus, string>;
 for (const [status, , light, lightText, dark, darkText] of ISSUE_STATUS_ROWS) {
   registerText(`issue status scale: ${status}`, pair(lightText, darkText), pair(light, dark));
 }

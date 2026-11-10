@@ -1,7 +1,7 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
 import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { LegionBoardResponse, UserState } from "../../api/types";
+import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -14,6 +14,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
@@ -23,426 +24,308 @@ import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import {
-  AGES,
-  ageOf,
+  COLUMN_MIN,
+  COLUMNS,
+  COMPACT_COLUMN_MIN,
+  type ColumnId,
   formatPhaseTime,
   type Item,
   legionPhaseLabel,
   legionRolesText,
   legionSlotText,
   matchesFilters,
-  priorityName,
+  NO_PHASE,
 } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {
   interface ColumnMeta<TData extends RowData, TValue> {
-    /** The value or values a row files under in the column's filter (and its group). */
-    facet?: (item: TData) => string | string[];
     /** A facet value as the reader sees it. */
     show?: (value: string) => string;
     /** The facet values in the order the filter lists them; by count when absent. */
     order?: readonly string[];
+    /** The values the filter offers whatever the loaded rows hold. */
+    always?: readonly string[];
     /** Filter by typed text instead of picking values: for a column of free text. */
     text?: boolean;
-    /** The type for `TValue`, so the declaration uses both parameters. */
-    value?: TValue;
+    /** The types for the declaration's own parameters, which it does not otherwise use. */
+    value?: [TData, TValue];
   }
 }
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
-export const PINNED = ["select", "priority", "key", "title"];
-export const COLUMN_SIZES: Record<string, number> = {
-  select: 44,
-  priority: 140,
-  queue: 96,
-  key: 104,
-  title: 380,
-  status: 128,
-  phase: 220,
-  slot: 96,
-  roles: 200,
-  ci: 160,
-  epic: 220,
-  assignee: 180,
-  author: 200,
-  labels: 200,
-  claim: 220,
-  asks: 96,
-  created: 120,
-  updated: 120,
-};
-// Label, sort indicator, 44px filter target, padding and a separate resize edge.
-export const COLUMN_MIN: Record<string, number> = {
-  select: 44,
-  priority: 140,
-  key: 108,
-  title: 116,
-  queue: 124,
-  status: 132,
-  phase: 132,
-  slot: 116,
-  roles: 196,
-  ci: 164,
-  epic: 116,
-  assignee: 148,
-  author: 164,
-  labels: 132,
-  claim: 164,
-  asks: 148,
-  created: 148,
-  updated: 148,
-};
-export const COMPACT_COLUMN_MIN = { key: 88, title: 120 };
-/** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
- *  and title are what identify a row, so they take most of it. */
-export const PINNED_SHARE = 0.6;
-export const PHONE_PINNED_SHARE = 0.85;
+
+/** How each column renders and sorts, for the reader `userState` describes. Keyed by the
+ *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
+ *  else about a column — whether it filters, what a row files under, what it groups by, how
+ *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
+ *  never disagree. */
+const renderings = (
+  userState: UserState | undefined
+): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
+  select: {
+    header: ({ table }) => (
+      <input
+        aria-label="Select every row on this page"
+        checked={table.getIsAllPageRowsSelected()}
+        className={checkboxAccent}
+        onChange={table.getToggleAllPageRowsSelectedHandler()}
+        type="checkbox"
+      />
+    ),
+    cell: ({ row }) => (
+      <input
+        aria-label={`Select ${row.original.issue.key}`}
+        checked={row.getIsSelected()}
+        className={checkboxAccent}
+        onChange={row.getToggleSelectedHandler()}
+        type="checkbox"
+      />
+    ),
+    enableHiding: false,
+  },
+  priority: {
+    header: "Priority",
+    accessorFn: (item) => item.issue.priority ?? undefined,
+    sortUndefined: "last",
+    sortDescFirst: false,
+    cell: ({ row }) => (
+      <PriorityControl
+        disabled={row.original.issue.status === "done"}
+        issueKey={row.original.issue.key}
+        priority={issuePriority(row.original.issue.priority)}
+      />
+    ),
+  },
+  queue: {
+    header: "Queue",
+    accessorFn: (item) => item.queue,
+    sortUndefined: "last",
+    sortDescFirst: false,
+    cell: ({ getValue }) => {
+      const place = getValue<number | undefined>();
+      return place === undefined ? null : (
+        <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
+          #{place}
+        </span>
+      );
+    },
+  },
+  key: {
+    header: "Key",
+    accessorFn: (item) => item.issue.key,
+    sortingFn: (a, b) =>
+      Number(a.original.issue.key.split("-")[1]) - Number(b.original.issue.key.split("-")[1]),
+    cell: ({ row }) => (
+      <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
+        <Link
+          className={`${linkText} ${linkHoverText}`}
+          to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
+          {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
+        >
+          {row.original.issue.key}
+        </Link>
+        {issueIsUnread(
+          row.original.issue,
+          userState?.[row.original.issue.key]?.last_read_seq ?? 0
+        ) ? (
+          <UnreadDot />
+        ) : null}
+      </span>
+    ),
+  },
+  title: {
+    header: "Title",
+    accessorFn: (item) => item.issue.title,
+    cell: ({ row }) => (
+      <div className="min-w-0 space-y-1">
+        <Link
+          aria-label={`${row.original.issue.key} ${row.original.issue.title}`}
+          data-issue-link
+          className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
+          to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
+          {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
+        >
+          <span className={`line-clamp-2 min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>
+            {row.original.issue.title}
+          </span>
+        </Link>
+        <span className="flex flex-wrap items-center gap-1">
+          {row.original.issue.open_asks > 0 ? (
+            <AttentionBadge count={row.original.issue.open_asks} />
+          ) : null}
+          <ProgressChips progress={row.original.issue.progress} />
+          <UnreachableRouteMarker issue={row.original.issue} />
+          {row.original.issue.parent ? (
+            <Link
+              className={`text-xs ${linkText} ${linkHoverText}`}
+              to={buildIssuePath({ key: row.original.issue.parent, kind: "issue" })}
+              {...referenceTriggerProps({ key: row.original.issue.parent, kind: "issue" })}
+            >
+              {row.original.issue.parent}
+            </Link>
+          ) : null}
+        </span>
+      </div>
+    ),
+  },
+  status: {
+    header: "Status",
+    accessorFn: (item) => item.issue.status,
+    sortingFn: (a, b) =>
+      issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
+      issueStatuses.indexOf(b.original.issue.status as IssueStatus),
+    cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
+  },
+  phase: {
+    header: "Phase",
+    accessorFn: (item) => item.legion?.id ?? NO_PHASE,
+    sortingFn: (a, b) =>
+      (a.original.legion?.order ?? Number.MAX_SAFE_INTEGER) -
+        (b.original.legion?.order ?? Number.MAX_SAFE_INTEGER) ||
+      (a.original.queue ?? Number.MAX_SAFE_INTEGER) - (b.original.queue ?? Number.MAX_SAFE_INTEGER),
+    sortDescFirst: false,
+    cell: ({ row }) =>
+      row.original.legion ? (
+        <LegionPhaseCell phase={row.original.legion} />
+      ) : (
+        <span className={textMutedOnCanvas}>{NO_PHASE}</span>
+      ),
+  },
+  slot: {
+    header: "Slot",
+    // A child holds its root's slot, so it sorts and reads by that slot too.
+    accessorFn: (item) =>
+      item.legion ? (item.legion.card.slot ?? item.legion.card.tree_slot ?? undefined) : undefined,
+    sortUndefined: "last",
+    sortDescFirst: false,
+    cell: ({ row }) => (
+      <span className="tabular-nums" data-legion-fact="slot">
+        {row.original.legion ? legionSlotText(row.original.legion.card) : "No slot"}
+      </span>
+    ),
+  },
+  roles: {
+    header: "Roles in a turn",
+    accessorFn: (item) => (item.legion ? legionRolesText(item.legion.card) : NO_PHASE),
+    cell: ({ getValue }) => <span data-legion-fact="roles">{getValue<string>()}</span>,
+  },
+  ci: {
+    header: "CI verdict",
+    accessorFn: (item) => item.legion?.card.checks_verdict ?? "No verdict",
+    cell: ({ getValue }) => <span data-legion-fact="checks">{getValue<string>()}</span>,
+  },
+  epic: {
+    header: "Epic",
+    accessorFn: (item) => item.epic,
+    cell: ({ getValue }) => (
+      <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+    ),
+  },
+  assignee: {
+    header: "Assignee",
+    accessorFn: (item) => item.issue.assignee ?? "Unassigned",
+    cell: ({ getValue }) => (
+      <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+    ),
+  },
+  author: {
+    header: "Created by",
+    accessorFn: (item) => item.author,
+    cell: ({ row }) =>
+      row.original.issue.created_by === null ? (
+        <span className={textSecondaryOnCanvas}>Unknown</span>
+      ) : (
+        <AgentName actor={row.original.issue.created_by} />
+      ),
+  },
+  labels: {
+    header: "Labels",
+    accessorFn: (item) => (item.issue.labels ?? []).join(", "),
+    cell: ({ row }) => (
+      <span className="flex flex-wrap gap-1">
+        {(row.original.issue.labels ?? []).map((label) => (
+          <LabelPill key={label}>{label}</LabelPill>
+        ))}
+      </span>
+    ),
+  },
+  claim: {
+    header: "Claimed by",
+    accessorFn: (item) => item.claimedBy,
+    cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
+  },
+  asks: {
+    header: "Open asks",
+    accessorFn: (item) => item.issue.open_asks,
+    sortDescFirst: true,
+    cell: ({ getValue }) =>
+      getValue<number>() === 0 ? null : <AttentionBadge count={getValue<number>()} />,
+  },
+  created: {
+    header: "Created",
+    accessorFn: (item) => item.issue.created_at,
+    sortingFn: (a, b) =>
+      compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
+    cell: ({ getValue }) => (
+      <Timestamp
+        at={getValue<string>()}
+        className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+      />
+    ),
+  },
+  updated: {
+    header: "Updated",
+    accessorFn: (item) => item.issue.updated_at,
+    sortingFn: (a, b) =>
+      compareTimestamps(a.original.issue.updated_at, b.original.issue.updated_at),
+    cell: ({ getValue }) => (
+      <Timestamp
+        at={getValue<string>()}
+        className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+      />
+    ),
+  },
+});
+
+/** The columns only a project a Legion daemon serves has. */
+export const LEGION_COLUMNS: readonly ColumnId[] = ["phase", "slot", "roles", "ci"];
 
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
-  hasLegion = false,
-  board?: LegionBoardResponse
+  hasLegion = false
 ): ColumnDef<Item>[] {
-  const columns = useMemo<ColumnDef<Item>[]>(
-    () =>
-      (
-        [
-          {
-            id: "select",
-            enableSorting: false,
-            enableHiding: false,
-            enableColumnFilter: false,
-            enableGrouping: false,
-            header: ({ table }) => (
-              <input
-                aria-label="Select every row on this page"
-                checked={table.getIsAllPageRowsSelected()}
-                className={checkboxAccent}
-                onChange={table.getToggleAllPageRowsSelectedHandler()}
-                type="checkbox"
-              />
-            ),
-            cell: ({ row }) => (
-              <input
-                aria-label={`Select ${row.original.issue.key}`}
-                checked={row.getIsSelected()}
-                className={checkboxAccent}
-                onChange={row.getToggleSelectedHandler()}
-                type="checkbox"
-              />
-            ),
-          },
-          {
-            id: "priority",
-            header: "Priority",
-            accessorFn: (item) => item.issue.priority ?? undefined,
-            sortUndefined: "last",
-            sortDescFirst: false,
-            filterFn: inPicks,
-            getGroupingValue: (item) => String(item.issue.priority ?? ""),
-            meta: {
-              show: priorityName,
-              order: ["0", "1", "2", "3", ""],
-            },
-            cell: ({ row }) => (
-              <PriorityControl
-                disabled={row.original.issue.status === "done"}
-                issueKey={row.original.issue.key}
-                priority={row.original.issue.priority}
-              />
-            ),
-          },
-          {
-            id: "queue",
-            header: "Queue",
-            accessorFn: (item) => item.queue,
-            sortUndefined: "last",
-            sortDescFirst: false,
-            filterFn: inPicks,
-            enableGrouping: false,
-            meta: {
-              order: ["Queued", "Not queued"],
-            },
-            cell: ({ getValue }) => {
-              const place = getValue<number | undefined>();
-              return place === undefined ? null : (
-                <span
-                  className="font-semibold tabular-nums"
-                  title="Legion starts issues in this order"
-                >
-                  #{place}
-                </span>
-              );
-            },
-          },
-          {
-            id: "key",
-            header: "Key",
-            accessorFn: (item) => item.issue.key,
-            sortingFn: (a, b) =>
-              Number(a.original.issue.key.split("-")[1]) -
-              Number(b.original.issue.key.split("-")[1]),
-            filterFn: inPicks,
-            enableGrouping: false,
-            cell: ({ row }) => (
-              <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
-                <Link
-                  className={`${linkText} ${linkHoverText}`}
-                  to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
-                  {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
-                >
-                  {row.original.issue.key}
-                </Link>
-                {issueIsUnread(
-                  row.original.issue,
-                  userState?.[row.original.issue.key]?.last_read_seq ?? 0
-                ) ? (
-                  <UnreadDot />
-                ) : null}
-              </span>
-            ),
-          },
-          {
-            id: "title",
-            header: "Title",
-            accessorFn: (item) => item.issue.title,
-            filterFn: "includesString",
-            enableGrouping: false,
-            meta: { text: true },
-            cell: ({ row }) => (
-              <div className="min-w-0 space-y-1">
-                <Link
-                  aria-label={`${row.original.issue.key} ${row.original.issue.title}`}
-                  data-issue-link
-                  className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
-                  to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
-                  {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
-                >
-                  <span
-                    className={`line-clamp-2 min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}
-                  >
-                    {row.original.issue.title}
-                  </span>
-                </Link>
-                <span className="flex flex-wrap items-center gap-1">
-                  {row.original.issue.open_asks > 0 ? (
-                    <AttentionBadge count={row.original.issue.open_asks} />
-                  ) : null}
-                  <ProgressChips progress={row.original.issue.progress} />
-                  <UnreachableRouteMarker issue={row.original.issue} />
-                  {row.original.issue.parent ? (
-                    <Link
-                      className={`text-xs ${linkText} ${linkHoverText}`}
-                      to={buildIssuePath({ key: row.original.issue.parent, kind: "issue" })}
-                      {...referenceTriggerProps({ key: row.original.issue.parent, kind: "issue" })}
-                    >
-                      {row.original.issue.parent}
-                    </Link>
-                  ) : null}
-                </span>
-              </div>
-            ),
-          },
-          {
-            id: "status",
-            header: "Status",
-            accessorFn: (item) => item.issue.status,
-            sortingFn: (a, b) =>
-              issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
-              issueStatuses.indexOf(b.original.issue.status as IssueStatus),
-            filterFn: inPicks,
-            meta: {
-              show: (value) => statusLabel(value as IssueStatus),
-              order: issueStatuses,
-            },
-            cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
-          },
-          ...(hasLegion
-            ? ([
-                {
-                  id: "phase",
-                  header: "Phase",
-                  accessorFn: (item: Item) => item.legion?.id ?? "No Legion phase",
-                  sortingFn: (a, b) =>
-                    (a.original.legion?.order ?? Number.MAX_SAFE_INTEGER) -
-                      (b.original.legion?.order ?? Number.MAX_SAFE_INTEGER) ||
-                    (a.original.queue ?? Number.MAX_SAFE_INTEGER) -
-                      (b.original.queue ?? Number.MAX_SAFE_INTEGER),
-                  sortDescFirst: false,
-                  filterFn: inPicks,
-                  meta: {
-                    order: [
-                      ...(board?.columns.map((column) => column.id) ?? []),
-                      "No Legion phase",
-                    ],
-                    show: (value: string) =>
-                      board?.columns.find((column) => column.id === value)?.label ?? value,
-                  },
-                  cell: ({ row }) =>
-                    row.original.legion ? (
-                      <LegionPhaseCell phase={row.original.legion} />
-                    ) : (
-                      <span className={textMutedOnCanvas}>No Legion phase</span>
-                    ),
-                },
-                {
-                  id: "slot",
-                  header: "Slot",
-                  // A child holds its root's slot, so it sorts and reads by that slot too.
-                  accessorFn: (item: Item) =>
-                    item.legion
-                      ? (item.legion.card.slot ?? item.legion.card.tree_slot ?? undefined)
-                      : undefined,
-                  sortUndefined: "last",
-                  sortDescFirst: false,
-                  filterFn: inPicks,
-                  enableGrouping: false,
-                  cell: ({ row }) => (
-                    <span className="tabular-nums" data-legion-fact="slot">
-                      {row.original.legion ? legionSlotText(row.original.legion.card) : "No slot"}
-                    </span>
-                  ),
-                },
-                {
-                  id: "roles",
-                  header: "Roles in a turn",
-                  accessorFn: (item: Item) =>
-                    item.legion ? legionRolesText(item.legion.card) : "No Legion phase",
-                  filterFn: inPicks,
-                  enableGrouping: false,
-                  cell: ({ getValue }) => (
-                    <span data-legion-fact="roles">{getValue<string>()}</span>
-                  ),
-                },
-                {
-                  id: "ci",
-                  header: "CI verdict",
-                  accessorFn: (item: Item) => item.legion?.card.checks_verdict ?? "No verdict",
-                  filterFn: inPicks,
-                  enableGrouping: false,
-                  cell: ({ getValue }) => (
-                    <span data-legion-fact="checks">{getValue<string>()}</span>
-                  ),
-                },
-              ] as ColumnDef<Item>[])
-            : []),
-          {
-            id: "epic",
-            header: "Epic",
-            accessorFn: (item) => item.epic,
-            filterFn: inPicks,
-            cell: ({ getValue }) => (
-              <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-            ),
-          },
-          {
-            id: "assignee",
-            header: "Assignee",
-            accessorFn: (item) => item.issue.assignee ?? "Unassigned",
-            filterFn: inPicks,
-            cell: ({ getValue }) => (
-              <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>
-                {getValue<string>()}
-              </span>
-            ),
-          },
-          {
-            id: "author",
-            header: "Created by",
-            accessorFn: (item) => item.author,
-            filterFn: inPicks,
-            cell: ({ row }) =>
-              row.original.issue.created_by === null ? (
-                <span className={textSecondaryOnCanvas}>Unknown</span>
-              ) : (
-                <AgentName actor={row.original.issue.created_by} />
-              ),
-          },
-          {
-            id: "labels",
-            header: "Labels",
-            accessorFn: (item) => (item.issue.labels ?? []).join(", "),
-            filterFn: inPicks,
-            enableGrouping: false,
-            cell: ({ row }) => (
-              <span className="flex flex-wrap gap-1">
-                {(row.original.issue.labels ?? []).map((label) => (
-                  <LabelPill key={label}>{label}</LabelPill>
-                ))}
-              </span>
-            ),
-          },
-          {
-            id: "claim",
-            header: "Claimed by",
-            accessorFn: (item) => item.claimedBy,
-            filterFn: inPicks,
-            cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
-          },
-          {
-            id: "asks",
-            header: "Open asks",
-            accessorFn: (item) => item.issue.open_asks,
-            sortDescFirst: true,
-            filterFn: inPicks,
-            enableGrouping: false,
-            cell: ({ getValue }) =>
-              getValue<number>() === 0 ? null : <AttentionBadge count={getValue<number>()} />,
-          },
-          {
-            id: "created",
-            header: "Created",
-            accessorFn: (item) => item.issue.created_at,
-            filterFn: inPicks,
-            sortingFn: (a, b) =>
-              compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
-            getGroupingValue: (item) => ageOf(item.issue.created_at),
-            meta: {
-              order: AGES,
-            },
-            cell: ({ getValue }) => (
-              <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-                <Timestamp at={getValue<string>()} />
-              </span>
-            ),
-          },
-          {
-            id: "updated",
-            header: "Updated",
-            accessorFn: (item) => item.issue.updated_at,
-            filterFn: inPicks,
-            sortingFn: (a, b) =>
-              compareTimestamps(a.original.issue.updated_at, b.original.issue.updated_at),
-            getGroupingValue: (item) => ageOf(item.issue.updated_at),
-            meta: { order: AGES },
-            cell: ({ getValue }) => (
-              <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-                <Timestamp at={getValue<string>()} />
-              </span>
-            ),
-          },
-        ] as ColumnDef<Item>[]
-      ).map((column) => ({
-        ...column,
-        size: COLUMN_SIZES[column.id ?? ""] ?? 140,
-        minSize:
-          compact && column.id === "key"
-            ? COMPACT_COLUMN_MIN.key
-            : compact && column.id === "title"
-              ? COMPACT_COLUMN_MIN.title
-              : (COLUMN_MIN[column.id ?? ""] ?? 116),
+  return useMemo<ColumnDef<Item>[]>(() => {
+    const rendering = renderings(userState);
+    const shown = hasLegion ? COLUMNS : COLUMNS.filter((c) => !LEGION_COLUMNS.includes(c.id));
+    return shown.map((column) => {
+      const picks = column.filter?.kind === "picks" ? column.filter : undefined;
+      return {
+        ...rendering[column.id],
+        id: column.id,
+        size: column.size,
+        minSize: (compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id],
         enableResizing: column.id !== "select",
-      })),
-    [userState, compact, hasLegion, board]
-  );
-  return columns;
+        enableSorting: column.sortable !== false,
+        enableColumnFilter: column.filter !== undefined,
+        enableGrouping: picks?.group !== undefined,
+        ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
+        ...(column.filter === undefined ? {} : { filterFn: picks ? inPicks : "includesString" }),
+        meta: {
+          ...(column.filter?.kind === "text" ? { text: true } : {}),
+          ...(picks?.order === undefined ? {} : { order: picks.order }),
+          ...(picks?.show === undefined ? {} : { show: picks.show }),
+          ...(picks?.always === undefined ? {} : { always: picks.always }),
+        },
+      };
+    });
+  }, [userState, compact, hasLegion]);
 }
 
 /** A Legion phase as the issues table writes it: the board column's label, the time in phase,
- *  what blocks it and what it waits on. The table's phase column, the project board's cards and
- *  the Legion dashboard all draw a phase through this one cell (dispatch://INFRA-979). */
+ *  what blocks it and what it waits on. The table's Phase column, the project board's cards and
+ *  the Legion tab all draw a phase through this one cell. */
 export function LegionPhaseCell({ phase }: { phase: NonNullable<Item["legion"]> }): ReactNode {
   return (
     <span className="flex flex-col gap-1" data-legion-phase={phase.id}>
@@ -452,7 +335,6 @@ export function LegionPhaseCell({ phase }: { phase: NonNullable<Item["legion"]> 
         data-legion-fact="phase-time"
         title={phase.card.phase_since ?? "Phase entry time unknown"}
       >
-        {/* No entry time known is "—", never a time counted from when Dispatch heard of it. */}
         {phase.card.phase_since === null
           ? "—"
           : `${formatPhaseTime(phase.card.phase_since, Date.now())} in phase`}

@@ -67,9 +67,9 @@ const (
 // not lingering, and one of three things —
 //
 //   - a root in awaiting_person;
-//   - a root ReconcileAwaiting could move into it — at admitted, holding the admission slot its
-//     own work takes, its design gate never opened (record.CanWaitOnPerson, which is decideAwait's
-//     rule 0);
+//   - a root ReconcileAwaiting could move into it — at admitted, with a row of its own saying the
+//     daemon started it, its design gate never opened (record.CanWaitOnPerson, which is
+//     decideAwait's rule 0);
 //   - a root whose tree this boot's own step list opens and whose work that opening releases: one
 //     standing at admitted, whose first phase the waiting line offers a slot to (record.Waiting
 //     classes it LineFirstPhase, and StartFirstPhase runs it), and one of a tree with a member in
@@ -102,7 +102,8 @@ const (
 // request for it (bindGateRequest); and the hold itself, which keeps that root out of the boot's
 // own admission pass — no pass decides whether it waits on a person, and none resumes it once
 // answered, until the catch-up applies its window and releases it, which the same boot does. It
-// keeps its place at the front of the waiting line while held, so the cost is the boot's reads
+// keeps its place in the waiting line while held,
+// among the issues whose work came back, oldest first, so the cost is the boot's reads
 // and a pass of latency, not a lost turn, and that is what buys the hold.
 func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, slotted, merging map[string]struct{}) bool {
 	if issue.Project != w.dispatchProject || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {

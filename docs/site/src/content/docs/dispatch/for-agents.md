@@ -90,10 +90,10 @@ An epic is an open root issue labelled `epic`, and the Epic column follows paren
 Moving open selected issues into or out of an epic writes `parent`; closed selections are skipped and reported.
 Merging epics moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after all moves succeed; otherwise the source stays open and the notice identifies the failed moves.
 Closed issues keep their original parent and history.
-The epic container is a linked group heading, not a counted member row.
+An epic is an ordinary table row; only while the table is grouped by epic is it the group's linked heading instead of a row inside it.
 Listings include the creator actor (`created_by`, nullable) and creation time (`created_at`).
-Bulk parent changes are ordinary independent keyed writes: a refusal does not hold the others, and each failed request retries or resumes through the shared pending-writes controls.
-New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up.
+Bulk parent changes are ordinary independent keyed writes, at most eight in flight: a refusal does not hold the others, and each failed request retries or resumes through the shared pending-writes controls.
+New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command with several problems is refused once, with every problem listed, so the next run can
 fix them all. It exits 0 when it wrote or read, 1 when Dispatch or the flags refused it, and 2 on a
@@ -279,15 +279,21 @@ recovered.
 
 A person can also message you from the Agents page:
 
-- On Oh My Pi, their **Send** or **Aside** arrives as their own message in your conversation,
-  except a message beginning with `/` runs as the session's terminal would run it. A prompt
-  template, file command or skill gives you the resulting prompt; an unknown `/name` gives you the
-  words themselves. What a command prints, or its note that it did not run because it belongs
-  only to the terminal, is already a **Reply via Dispatch**: write nothing for it. Only a command
-  that also submits a prompt, such as `/force:<tool> <prompt>`, gives you that prompt to answer.
-- A **BTW**, a broadcast, or any message to a host that takes no such turn (Claude Code) arrives as
-  a Dispatch notice with a ready-made reply command. Answer with `dispatch message` and its
-  `--in-reply-to`.
+- Their **Send** or **Aside** arrives as their own message in your conversation, except a message
+  beginning with `/`, which runs as the session's terminal would run it.
+  On Oh My Pi, a prompt template, file command or skill gives you the resulting prompt; an
+  unknown `/name` gives you the words themselves.
+  What a command prints, or its note that it did not run because it belongs only to the terminal,
+  is already a **Reply via Dispatch**: write nothing for it.
+  Only a command that also submits a prompt, such as `/force:<tool> <prompt>`, gives you that
+  prompt to answer.
+- A **BTW** is answered in a side turn that adds nothing to your main conversation, and that
+  answer is posted back as your reply, so you write no `dispatch message` for it.
+  One that arrives late, or comes back from the stream, starts no side turn: on Oh My Pi it is
+  one inert notice, and a Claude Code session passes it over.
+- A broadcast, or any message to a session that takes no such turn, arrives as a Dispatch notice
+  with a ready-made reply command.
+  Answer with `dispatch message` and its `--in-reply-to`.
 
 ## Claiming and status
 

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,10 +297,27 @@ func TestRelayedAwarenessNeitherLoadsNorKeepsARoomWithNoReaderOfItsOwn(t *testin
 	}
 }
 
-// A client state too large for one notification is dropped and counted rather than sent, and
-// what the room relays after it still crosses.
+// A client whose state is too large for one notification is dropped and counted rather than sent,
+// on every batch that carries it, and what the room relays after it still crosses. The count is
+// not always one: nothing takes an oversized client off the list this process answers queries
+// from, and a query is answered with the state of every local client (the query note at the top
+// of awareness_relay.go, answer), so the query task B sends as bob's open activates the room
+// there offers alice's state to the size check again. How many batches carry it is what
+// scheduling decides; the invariant is that every one of them was dropped, so none of them
+// reached task B.
 func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	pair := newProcessPair(t)
+	// Each batch of the room that carries alice's client as a state rather than a removal offers
+	// that state to the size check once (awarenessNotifications), so these offers are what the
+	// drops counted below are owed against. The window is opened before either reader connects,
+	// since task B queries task A as bob's open activates the room there and the answer's batch
+	// carries alice's state like any other.
+	var offered atomic.Uint64
+	pair.taskA.beforeAwarenessResolve = func(room string, batch map[uint64]awarenessEntry) {
+		if entry, carried := batch[aliceClient]; room == pair.artifactID && carried && !entry.removed {
+			offered.Add(1)
+		}
+	}
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
 	alice := pair.openReader(t, pair.serverA, "alice")
@@ -308,7 +326,7 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	oversized := map[string]any{"user": map[string]any{"name": strings.Repeat("a", roomSyncPayloadLimit)}}
 	setAwareness(t, alice, aliceClient, oversized)
 	waitFor(t, roomWait(t), "task A's relay to count the oversized state", func() bool {
-		return pair.taskA.awarenessRelay.oversized.Load() == 1
+		return pair.taskA.awarenessRelay.oversized.Load() >= 1
 	})
 	const otherClient = aliceClient + 1
 	setAwareness(t, alice, otherClient, cursorOf("alice", 1))
@@ -316,9 +334,15 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	if _, present := bob.AwarenessStates()[aliceClient]; present {
 		t.Fatal("the oversized state reached bob on task B")
 	}
-	if dropped := pair.taskA.awarenessRelay.oversized.Load(); dropped != 1 {
-		t.Fatalf("task A's relay counted %d oversized states, want 1", dropped)
+	if offered.Load() == 0 {
+		t.Fatal("no batch of task A's room carried the oversized state, so the drops below stand for nothing")
 	}
+	// The drop is counted after this window has run, so a flush already in flight leaves the two
+	// counts apart until it reaches the size check: this waits for that flush rather than for a
+	// time, and a state sent instead of dropped never closes the gap.
+	waitFor(t, roomWait(t), "task A's relay to count a drop for every batch that carried the oversized state", func() bool {
+		return pair.taskA.awarenessRelay.oversized.Load() == offered.Load()
+	})
 }
 
 // awarenessStates is one y-protocols awareness update announcing count clients from first, each at

@@ -13,10 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -173,6 +175,131 @@ type Config struct {
 	// with automatic replication takes a global key). A secret under the prefix encrypted with any
 	// other key, the provider's default one included, is refused.
 	SecretsKMSKey string
+	// BROKER_AIRLOCK_RULES_FILE: the path of the airlock's rules file, airlock.json, which says
+	// for each secret which hosts its value may reach and in which headers. The broker reads it
+	// once at start, so a change to it rolls the pods; it refuses to start on a file it cannot
+	// read, cannot parse, or whose entries it refuses, naming the file and the entry. A secret
+	// the file names is never released as a value: a session is given a placeholder, and the
+	// broker swaps the real value into the headers the entry allows. Empty (the default) is a
+	// deployment with no airlock, where every granted secret is released as its value.
+	AirlockRulesFile string
+	// BROKER_AIRLOCK_LISTEN_ADDR: the address the airlock's proxy port binds, default
+	// 127.0.0.1:13381. It is a second port of the same process, so it is bound and drained with
+	// the API's. Read only when BROKER_AIRLOCK_RULES_FILE names a file; a deployment with no
+	// airlock binds no proxy port.
+	AirlockListenAddr string
+	// BROKER_AIRLOCK_PROXY_URL: the URL a command reaches the airlock's proxy port at, which
+	// every release of a name behind the airlock carries, so the command points its HTTPS_PROXY
+	// at it. Required with BROKER_AIRLOCK_RULES_FILE, and refused at start unless it is an
+	// absolute http or https URL with a host: a value with no scheme or no host would boot and
+	// then fail every airlock run one command at a time. It is a setting of its own rather than
+	// BROKER_PUBLIC_URL with another port, because the Service port a pod dials need not be the
+	// container port the broker binds.
+	AirlockProxyURL string
+	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificate of the airlock proxy's certificate
+	// authority, the one every release hands the command to trust. Required with
+	// BROKER_AIRLOCK_RULES_FILE, and read once at start as half of that authority, with
+	// BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses the start. What a release
+	// carries is the authority's own certificate rather than this file's bytes, so a file that
+	// holds more than the certificate hands a command nothing more. Both broker pods mount the
+	// same file from one Kubernetes Secret, so a command's trust does not depend on which pod
+	// released its values.
+	AirlockCACertFile string
+	// BROKER_AIRLOCK_CA_KEY_FILE: the PEM private key of BROKER_AIRLOCK_CA_CERT_FILE's
+	// certificate authority, which the proxy port signs each host's certificate with. Required
+	// with BROKER_AIRLOCK_RULES_FILE, and mounted from the same Kubernetes Secret, which no
+	// container but the broker's mounts: it is the key that lets its holder be any host a
+	// command trusts.
+	AirlockCAKeyFile string
+	// BROKER_AIRLOCK_IDLE_SECONDS: how long one proxy connection may go with no byte in either
+	// direction before the proxy closes it, default 300, between 10 and 3600. A connection
+	// carries a grant's placeholders, so an abandoned one is state the broker holds for a
+	// command that is gone; a short bound costs a long-polling client its connection, which it
+	// opens again.
+	AirlockIdleSeconds int
+	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
+	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
+	// (internal/broker/airlock/airlocktest, cmd/dev-airlock-stands). For the broker's local
+	// stack alone: a production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is
+	// refused naming it.
+	AirlockTestGitHubAPIBase string
+	// BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL: the token endpoint a google-login secret is
+	// refreshed at, in place of https://oauth2.googleapis.com/token, so a release of one mints
+	// at a stand-in Google. For the broker's local stack alone: a production start, which is
+	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestGoogleTokenURL string
+	// BROKER_AIRLOCK_TEST_DIAL_ALLOW: whitespace-separated <host>:<port> addresses the airlock
+	// proxy may dial although the address they resolve to is one it never dials - a loopback,
+	// cluster, link-local or private address. It is a list rather than a switch for loopback
+	// because a local stack needs both at once: its stand-in services on loopback reachable,
+	// and the broker's own loopback port still refused. For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming
+	// it.
+	AirlockTestDialAllow []string
+	// BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE: a PEM file of extra roots the airlock proxy
+	// verifies a service's certificate against on its own calls upstream, beside the host's
+	// own roots, so it trusts a stand-in service's certificate. Read once at start, and a file
+	// it cannot read or that holds no certificate refuses the start. For the broker's local
+	// stack alone: a production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is
+	// refused naming it.
+	AirlockTestUpstreamCAFile string
+	// BROKER_AIRLOCK_TEST_RESOLVE: whitespace-separated <host>=<address> entries, each an IP
+	// address the airlock proxy reads that host as having and dials it at, in place of what
+	// the resolver answers. It is how a client that resolves a real name of its own - az, the
+	// AWS client - reaches a stand-in service through the proxy. A host named twice is
+	// refused. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestResolve map[string]netip.Addr
+	// BROKER_AIRLOCK_TEST_KEEP_VALUES: with it true, the airlock proxy keeps a grant's values
+	// across the reread of one of its names and past the five-minute margin before a minted
+	// token's expiry, rather than reading and minting again. It is the negative control of the
+	// check that both halves belong to. For the broker's local stack alone: a production
+	// start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestKeepValues bool
+	// BROKER_AIRLOCK_TEST_NO_KIND: with it true, the airlock proxy reads every rules entry as
+	// having no kind, so an azure entry's exchange and an aws entry's signing are off and each
+	// takes the plain header swap. It is the negative control of the check those two kinds
+	// belong to. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestNoKind bool
+	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
+	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
+	// with none of the five set there is no judge, and every human-tier request waits for the
+	// person who decides it today.
+	JudgeModelURL string
+	// BROKER_JUDGE_MODEL: the id of the model the judge asks, as the endpoint at
+	// BROKER_JUDGE_MODEL_URL names it. Required with the rest of JudgeSettings.
+	JudgeModel string
+	// BROKER_JUDGE_MODEL_PROTOCOL: the wire protocol that endpoint speaks, one of
+	// anthropic-messages (the default), openai-responses, openai-chat and azure-anthropic,
+	// which are agentloop's four Run kinds; any other value refuses the start naming the
+	// setting, the value and the four it takes. It is the one judge setting with a default, so
+	// it is never among the ones a half-configured judge is refused for; and because it says
+	// nothing on its own, setting it with the other five unset is refused as the same mistake,
+	// naming the five a judge needs, rather than read as a deployment that meant no judge.
+	JudgeModelProtocol string
+	// BROKER_JUDGE_MODEL_AUDIENCE: the audience of the Google identity token the broker
+	// presents to the endpoint at BROKER_JUDGE_MODEL_URL, minted for the broker's own machine
+	// identity. Required with the rest of JudgeSettings.
+	JudgeModelAudience string
+	// BROKER_JUDGE_DISPATCH_URL: the base URL of the Dispatch the judge reads an issue from, an
+	// absolute http(s) URL. It makes two GETs there — one for the issue a request's reason
+	// names, which answers that issue's key, title and status, and one for the whole markdown
+	// of the issue's spec document — and writes nothing: no ask, no comment, no status.
+	// Required with the rest of JudgeSettings.
+	JudgeDispatchURL string
+	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
+	// ServiceAccount token for the Dispatch at BROKER_JUDGE_DISPATCH_URL. Read when the judge
+	// calls Dispatch and not at boot, through the reader every other projected token in this
+	// binary goes through (brokertoken.AccountToken), which reads the file again once what it
+	// last read is 30 seconds old, so a rotation reaches the judge without a restart.
+	// Required with the rest of JudgeSettings.
+	JudgeDispatchTokenFile string
+	// BROKER_JUDGE_TEST_SKIP_CHECKS: with it true, the judge's checks before the model are off,
+	// so a request one of them would hold back is asked about anyway. It is the negative
+	// control of the check the judge belongs to. For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	JudgeTestSkipChecks bool
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -245,11 +372,14 @@ type Config struct {
 	// account (system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard) logs in
 	// as the one service its entry names and is given once; one service may have several accounts,
 	// one per machine. A namespace's default account is refused, since every pod there that names
-	// no account runs as it, and so is an account BROKER_SERVICES binds for a service's pods, since
-	// every such pod holds a token for it. Keyed by account, each answering its service. A token
-	// whose subject is not listed is refused, and a credential an account's login issued stops
-	// authenticating once its entry is gone. Needs BROKER_K8S_OIDC_ISSUER, whose tokens it trusts.
-	// Unset, no service logs in with a token.
+	// no account runs as it. An account BROKER_SERVICES binds for a service's pods may be listed
+	// here as well, which is a pod of that account enrolling itself: every such pod holds a token
+	// for the account, so each of them logs the service in, and what keeps one of them from
+	// enrolling another is enroll.Service.podUnderTokenLogin, which gives such a login the one pod
+	// whose token made it and answers ErrPodSelfEnrollOnly for any other pod UID. Keyed by account,
+	// each answering its service. A token whose subject is not listed is refused, and a credential
+	// an account's login issued stops authenticating once its entry is gone. Needs
+	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	ServiceLogins map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
@@ -426,21 +556,59 @@ const (
 // them names them in this order.
 var SignInSettings = []string{signInIssuerSetting, signInClientIDSetting, signInClientSecretSetting, signInDomainSetting}
 
+// airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
+// them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
+// order.
+var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
+
+// The five settings the broker's model judge needs, each read by its own name: the endpoint it
+// calls its model at, the model's id, the audience of the identity token it presents there, the
+// Dispatch it reads an issue from, and the file holding its token for that Dispatch. The
+// protocol that endpoint speaks has a default, so it is not one of them.
+const (
+	judgeModelURLSetting          = "BROKER_JUDGE_MODEL_URL"
+	judgeModelSetting             = "BROKER_JUDGE_MODEL"
+	judgeModelAudienceSetting     = "BROKER_JUDGE_MODEL_AUDIENCE"
+	judgeDispatchURLSetting       = "BROKER_JUDGE_DISPATCH_URL"
+	judgeDispatchTokenFileSetting = "BROKER_JUDGE_DISPATCH_TOKEN_FILE"
+	judgeModelProtocolSetting     = "BROKER_JUDGE_MODEL_PROTOCOL"
+)
+
+// JudgeSettings are those five settings, all-or-none: none of them set is a broker with no
+// judge, and some of them set refuses the start naming the ones missing. Every message that
+// names them names them in this order.
+var JudgeSettings = []string{judgeModelURLSetting, judgeModelSetting, judgeModelAudienceSetting, judgeDispatchURLSetting, judgeDispatchTokenFileSetting}
+
+// judgeModelProtocols are the wire protocols BROKER_JUDGE_MODEL_PROTOCOL takes, in the order
+// every refusal naming them uses. They are agentloop's four Run kinds — AnthropicMessages,
+// OpenAIResponses, OpenAIChat and AzureAnthropic, the Kind constants of
+// packages/envoy/agentloop/agentloop.go, where SystemOne is Decide's kind and no Run's — written
+// out here rather than imported: agentloop carries the Anthropic, OpenAI, Google and gRPC client
+// libraries with it, and config, which every broker command loads before anything else, imports
+// none of them. A value added there is added here.
+var judgeModelProtocols = []string{"anthropic-messages", "openai-responses", "openai-chat", "azure-anthropic"}
+
 // noUIToken is why BROKER_UI_TOKEN and its file are gone: the routes it authenticated take the
 // caller's own Kubernetes ServiceAccount token now.
 const noUIToken = "the broker's approval routes take the calling service's own Kubernetes ServiceAccount token, verified against BROKER_K8S_OIDC_ISSUER, so list that account in BROKER_API_ACCOUNTS instead of sharing a bearer with Dispatch's server"
 
-// noDispatchCredential is why the broker's Dispatch variables are gone: it asks and issues nothing
-// in Dispatch.
-const noDispatchCredential = "the broker holds no Dispatch credential"
+// noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
+// Dispatch the broker asked and issued in, which it still does not do. The one thing it reads
+// there now, whether an issue is open, is the model judge's read under its own settings, so a
+// deployment that still sets one of the five is configured for a Dispatch the broker never
+// writes to and a credential it never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; its model judge reads one thing there, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL and with the broker's own projected ServiceAccount token (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and writes nothing"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
 const noDatabasePassword = "the broker substitutes no password into BROKER_DATABASE_URL: on Amazon RDS it signs in by IAM token (https://cybermonklabs.github.io/legion/broker/operate/#signing-in-to-rds-by-iam-token), and any other database's password goes in the URL itself"
 
-// noRulesFile is why the rules file's variables are gone: each secret's own tags say who owns it
-// and its tier.
-const noRulesFile = "the broker reads each secret's owner and tier from the secret's own tags under BROKER_SECRETS_PREFIX, so there is no rules file"
+// noRulesFile is why these three variables are gone. They named a file that said who owned each
+// secret and at what tier, which the secret's own tags say now. The broker does read a rules
+// file again, BROKER_AIRLOCK_RULES_FILE, but it answers another question — where a secret's
+// value may go — so the reason names it rather than letting a deployment point the old variables
+// at it.
+const noRulesFile = "the broker reads each secret's owner and tier from the secret's own tags under BROKER_SECRETS_PREFIX; where a secret's value may go is BROKER_AIRLOCK_RULES_FILE, the airlock's rules file, and no variable names any other rules file"
 
 // noGrantCap is why BROKER_MAX_GRANT_SECONDS is gone: a request chooses its lifetime with --ttl;
 // with none its grant lasts 12 hours, or until the requesting session ends when every requested
@@ -481,8 +649,8 @@ var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9](
 const defaultServiceAccount = "default"
 
 // serviceAccountEntry is one <service>=system:serviceaccount:<namespace>:<name> entry of
-// BROKER_SERVICES or BROKER_SERVICE_LOGINS, with its text as the setting gave it.
-type serviceAccountEntry struct{ service, subject, text string }
+// BROKER_SERVICES or BROKER_SERVICE_LOGINS.
+type serviceAccountEntry struct{ service, subject string }
 
 // parseServiceAccounts reads setting's whitespace-separated <service>=<ServiceAccount subject>
 // entries, the form BROKER_SERVICES and BROKER_SERVICE_LOGINS share, in order. It refuses, naming
@@ -506,9 +674,23 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 		if err := bindOnce(seen, setting, subject, service); err != nil {
 			return nil, err
 		}
-		entries = append(entries, serviceAccountEntry{service: service, subject: subject, text: text})
+		entries = append(entries, serviceAccountEntry{service: service, subject: subject})
 	}
 	return entries, nil
+}
+
+// servicesByAccount keys parseServiceAccounts' entries by account, each answering its service,
+// the shape Config.ServicesByAccount and Config.ServiceLogins both hold. No entry, no map: a
+// setting left unset reads nil rather than an empty map.
+func servicesByAccount(entries []serviceAccountEntry) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	byAccount := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		byAccount[entry.subject] = entry.service
+	}
+	return byAccount
 }
 
 // isDefaultServiceAccount reports whether subject is a namespace's default account, the one
@@ -847,6 +1029,69 @@ func parseVMExchangeGrants(setting, value string) ([]vmExchangeGrant, error) {
 	return grants, nil
 }
 
+// parseAirlockTestDialAllow reads BROKER_AIRLOCK_TEST_DIAL_ALLOW's whitespace-separated
+// <host>:<port> addresses, in order. It refuses, naming the entry: one that is no host and
+// port, and one whose port is not a number, since an address the proxy compares a CONNECT
+// target against has to be the exact string that target becomes.
+func parseAirlockTestDialAllow(value string) ([]string, error) {
+	const setting = "BROKER_AIRLOCK_TEST_DIAL_ALLOW"
+	var allowed []string
+	for _, text := range strings.Fields(value) {
+		host, port, err := net.SplitHostPort(text)
+		if err != nil || host == "" {
+			return nil, fmt.Errorf("%s must be <host>:<port> addresses, got %q", setting, text)
+		}
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return nil, fmt.Errorf("%s: %q names no port number", setting, text)
+		}
+		allowed = append(allowed, text)
+	}
+	return allowed, nil
+}
+
+// parseAirlockTestResolve reads BROKER_AIRLOCK_TEST_RESOLVE's whitespace-separated
+// <host>=<address> entries. It refuses, naming the entry: one not of that form, one whose
+// address is no IP address, and a host named twice, since a host has one address here and the
+// second would silently replace the first.
+func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
+	const setting = "BROKER_AIRLOCK_TEST_RESOLVE"
+	var hosts map[string]netip.Addr
+	for _, text := range strings.Fields(value) {
+		host, address, ok := strings.Cut(text, "=")
+		if !ok || host == "" {
+			return nil, fmt.Errorf("%s must be <host>=<address> entries, got %q", setting, text)
+		}
+		addr, err := netip.ParseAddr(address)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q names no IP address", setting, text)
+		}
+		if _, twice := hosts[host]; twice {
+			return nil, fmt.Errorf("%s names the host %s twice; a host resolves to one address here, so name it once", setting, host)
+		}
+		if hosts == nil {
+			hosts = map[string]netip.Addr{}
+		}
+		hosts[host] = addr.Unmap()
+	}
+	return hosts, nil
+}
+
+// testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
+// the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
+// than taken as off, since a misspelled value would otherwise turn a negative control into the
+// ordinary run it is meant to be compared against.
+func testOnlySwitch(setting, value string) (bool, error) {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return false, nil
+	}
+	on, err := strconv.ParseBool(text)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false, got %q", setting, text)
+	}
+	return on, nil
+}
+
 // parseExchangeWorkflows reads setting's whitespace-separated
 // <repository>=<workflow path>=<ref>=<project>=<person>[=<session>] entries, the identities
 // BROKER_EXCHANGE_WORKFLOWS lists, in order. It refuses, naming the entry: one not of that form or
@@ -966,6 +1211,18 @@ func databaseIAM(databaseURL string) (bool, error) {
 	return true, nil
 }
 
+// httpURLSetting refuses a setting whose value is no absolute http or https URL, naming the
+// setting and quoting the value with its own credentials and query taken out (redact.URL). The
+// settings held to this form are a page a machine opens in a browser, a proxy a command dials,
+// and the two the judge calls — its model's endpoint and its Dispatch — and none of them works
+// at all as a bare host and port.
+func httpURLSetting(name, value string) error {
+	if parsed, err := url.Parse(value); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute http(s) URL: %q", name, redact.URL(value))
+	}
+	return nil
+}
+
 func Load(getenv func(string) string) (Config, error) {
 	for _, removed := range removedVars {
 		if getenv(removed.name) != "" {
@@ -976,20 +1233,54 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BROKER_DATABASE_URL names the removed %s placeholder; %s", databasePasswordPlaceholder, noDatabasePassword)
 	}
 	cfg := Config{
-		ListenAddr:         orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
-		DatabaseURL:        getenv("BROKER_DATABASE_URL"),
-		PublicURL:          getenv("BROKER_PUBLIC_URL"),
-		MachineLoginURL:    strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
-		SecretsStore:       orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
-		SecretsPrefix:      getenv("BROKER_SECRETS_PREFIX"),
-		AzureTokenFile:     orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
-		AzureLoginSecret:   getenv("BROKER_AZURE_LOGIN_SECRET"),
-		K8sOIDCIssuer:      getenv("BROKER_K8S_OIDC_ISSUER"),
-		K8sOIDCAudience:    getenv("BROKER_K8S_OIDC_AUDIENCE"),
-		GoogleOIDCIssuer:   orDefault(strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_ISSUER")), DefaultGoogleOIDCIssuer),
-		GoogleOIDCAudience: strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
-		EnvoyURL:           getenv("BROKER_ENVOY_URL"),
-		TrustedProxyHeader: getenv("BROKER_TRUSTED_PROXY_HEADER"),
+		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
+		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
+		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
+		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
+		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
+		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
+		AirlockRulesFile:          getenv("BROKER_AIRLOCK_RULES_FILE"),
+		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
+		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
+		AirlockCACertFile:         strings.TrimSpace(getenv("BROKER_AIRLOCK_CA_CERT_FILE")),
+		AirlockCAKeyFile:          strings.TrimSpace(getenv("BROKER_AIRLOCK_CA_KEY_FILE")),
+		AirlockTestGitHubAPIBase:  strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_GITHUB_API_BASE")),
+		AirlockTestGoogleTokenURL: strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL")),
+		AirlockTestUpstreamCAFile: strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE")),
+		JudgeModelURL:             strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_URL")),
+		JudgeModel:                strings.TrimSpace(getenv("BROKER_JUDGE_MODEL")),
+		JudgeModelProtocol:        orDefault(getenv("BROKER_JUDGE_MODEL_PROTOCOL"), "anthropic-messages"),
+		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
+		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
+		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
+		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
+		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
+		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
+		K8sOIDCAudience:           getenv("BROKER_K8S_OIDC_AUDIENCE"),
+		GoogleOIDCIssuer:          orDefault(strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_ISSUER")), DefaultGoogleOIDCIssuer),
+		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
+		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
+		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
+	}
+	// The local stack's test-only settings, the airlock's and the judge's: each is read
+	// whatever the rules file says, since the two minter bases are read with no airlock at all.
+	// cmd/broker refuses every one of them on a production start; what is refused here is a
+	// value the broker could not act on.
+	var testSwitchErr error
+	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestResolve, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
 	if cfg.AzureLoginSecret != "" {
 		if _, err := policy.NameToSlug(cfg.AzureLoginSecret); err != nil {
@@ -1028,8 +1319,80 @@ func Load(getenv func(string) string) (Config, error) {
 	// absolute URL for is a verification_uri no machine could follow, which is worse than the
 	// device grant the broker simply does not serve when the setting is unset.
 	if cfg.MachineLoginURL != "" {
-		if parsed, err := url.Parse(cfg.MachineLoginURL); err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
-			return Config{}, fmt.Errorf("BROKER_MACHINE_LOGIN_URL must be an absolute http(s) URL: %q", redact.URL(cfg.MachineLoginURL))
+		if err := httpURLSetting("BROKER_MACHINE_LOGIN_URL", cfg.MachineLoginURL); err != nil {
+			return Config{}, err
+		}
+	}
+	// A broker that reads the airlock's rules but cannot proxy would hold back the value of
+	// every name the file names and release nothing in its place, so the three settings the
+	// proxy cannot run without are required with the rules file, and the refusal names the ones
+	// missing. With no rules file there is no proxy and all four are ignored.
+	if cfg.AirlockRulesFile != "" {
+		// One value per airlockProxySettings entry, read in that order, so the missing ones
+		// are named in the order the message naming them uses and one list is walked rather
+		// than two that could part.
+		values := []string{cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile}
+		var missing []string
+		for i, setting := range airlockProxySettings {
+			if values[i] == "" {
+				missing = append(missing, setting)
+			}
+		}
+		if len(missing) > 0 {
+			return Config{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE names a rules file, so the broker proxies every secret the file names and needs %s; missing %s",
+				strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
+		}
+		// And the proxy's URL held to its form, as BROKER_MACHINE_LOGIN_URL above is: every
+		// release of a name the rules hold back carries this string, and a command's own
+		// client reads it as the proxy to dial. A value with no scheme or no host
+		// ("proxy:13381") boots and then fails every airlock run one command at a time, with
+		// a refusal in the CLI rather than in the pod that was configured wrong.
+		if err := httpURLSetting("BROKER_AIRLOCK_PROXY_URL", cfg.AirlockProxyURL); err != nil {
+			return Config{}, err
+		}
+	}
+	// The judge's five settings are all-or-none, as the sign-in client's four are: with none of
+	// them set the broker has no judge and every human-tier request waits for a person, and
+	// with some of them set the start is refused naming the ones missing, since a judge given
+	// four of the five would decide nothing and say so one request at a time.
+	//
+	// BROKER_JUDGE_MODEL_PROTOCOL has a default, so it is never one of the missing ones; it is
+	// still counted as naming a judge, so a deployment that sets it alone is refused rather
+	// than read as one that meant no judge. On its own it configures nothing — it says which
+	// shape an endpoint that was never named speaks — and that is the same mistake as the four
+	// of five above, which the broker refuses rather than runs past.
+	//
+	// One value per JudgeSettings entry, read in that order, so the missing ones are named in
+	// the order every message naming them uses and one list is walked rather than two that
+	// could part.
+	judgeValues := []string{cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelAudience, cfg.JudgeDispatchURL, cfg.JudgeDispatchTokenFile}
+	var judgeMissing []string
+	for i, setting := range JudgeSettings {
+		if judgeValues[i] == "" {
+			judgeMissing = append(judgeMissing, setting)
+		}
+	}
+	switch {
+	case len(judgeMissing) == len(JudgeSettings) && getenv(judgeModelProtocolSetting) == "":
+		// No judge, which is every deployment until one is configured.
+	case len(judgeMissing) > 0:
+		return Config{}, fmt.Errorf("the broker's model judge needs %s; missing %s",
+			strings.Join(JudgeSettings, ", "), strings.Join(judgeMissing, ", "))
+	default:
+		// The two URLs held to their form, as BROKER_MACHINE_LOGIN_URL and the proxy's are: a
+		// value with no scheme or no host is one no call could be made to, and a judge that
+		// boots and then fails every call decides nothing while looking configured.
+		for _, u := range []struct{ setting, value string }{
+			{judgeModelURLSetting, cfg.JudgeModelURL},
+			{judgeDispatchURLSetting, cfg.JudgeDispatchURL},
+		} {
+			if err := httpURLSetting(u.setting, u.value); err != nil {
+				return Config{}, err
+			}
+		}
+		if !slices.Contains(judgeModelProtocols, cfg.JudgeModelProtocol) {
+			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
+				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
 		}
 	}
 	switch cfg.SecretsStore {
@@ -1052,25 +1415,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range services {
-		if cfg.ServicesByAccount == nil {
-			cfg.ServicesByAccount = map[string]string{}
-		}
-		cfg.ServicesByAccount[entry.subject] = entry.service
-	}
+	cfg.ServicesByAccount = servicesByAccount(services)
 	logins, err := parseServiceAccounts("BROKER_SERVICE_LOGINS", getenv("BROKER_SERVICE_LOGINS"))
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range logins {
-		if name, bound := cfg.ServicesByAccount[entry.subject]; bound {
-			return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS names %s, the account BROKER_SERVICES binds for %q's pods, got %q: every such pod holds a token for it and would log in as %s; log the service in with an account of its own that no pod it enrolls runs as", entry.subject, name, entry.text, entry.service)
-		}
-		if cfg.ServiceLogins == nil {
-			cfg.ServiceLogins = map[string]string{}
-		}
-		cfg.ServiceLogins[entry.subject] = entry.service
-	}
+	// An account BROKER_SERVICES already binds may be listed here too, which is a pod of that
+	// service's own account logging the service in with its own projected token and enrolling
+	// itself (agent-secrets enroll --pod). What narrows such a login to one pod is
+	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
+	// doc says.
+	cfg.ServiceLogins = servicesByAccount(logins)
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}
@@ -1231,6 +1586,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{"BROKER_LAUNCHER_CREDENTIAL_SECONDS", &cfg.LauncherCredentialSeconds, 2592000, 1, 2592000},
 		{"BROKER_SWEEP_SECONDS", &cfg.SweepSeconds, 5, 1, 60},
 		{"BROKER_DRAIN_SECONDS", &cfg.DrainSeconds, 5, 0, 120},
+		{"BROKER_AIRLOCK_IDLE_SECONDS", &cfg.AirlockIdleSeconds, 300, 10, 3600},
 		{"BROKER_SIGNIN_SESSION_SECONDS", &sessionSeconds, 86400, 1, 86400},
 	}
 	for _, i := range ints {

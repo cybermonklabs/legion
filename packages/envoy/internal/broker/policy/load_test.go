@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refusedLine is the exact line the broker logs for a refused secret: the deployment's alarm
@@ -383,12 +384,8 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 
 func await(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met within 5s")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, done) {
+		t.Fatal("condition not met within 5s")
 	}
 }
 
@@ -438,6 +435,49 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 		if load(a, changed) == base {
 			t.Errorf("a changed %s left the version unchanged", name)
 		}
+	}
+}
+
+// TestTheAirlockDigestIsInTheVersion pins the three things a rules file may do to a deployment's
+// policy version. A loader with no AirlockDigest — a deployment with no rules file — gives every
+// secret an empty digest; a file naming no served secret leaves the version exactly where such a
+// deployment has it, so this release does not end a running deployment's grants; and a change to
+// one secret's entry moves it, which is what ends the grants that entry affects.
+func TestTheAirlockDigestIsInTheVersion(t *testing.T) {
+	store := secrets.NewLocal(
+		policytest.Secret("A_KEY", owner, policy.TierAgent, "v"),
+		policytest.Secret("B_KEY", policy.OwnerShared, policy.TierHuman, "v"),
+	)
+	load := func(digests map[string]string) *policy.Set {
+		t.Helper()
+		loader := policytest.Loader(store)
+		if digests != nil {
+			loader.AirlockDigest = func(name string) string { return digests[name] }
+		}
+		set, err := loader.Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return set
+	}
+	none := load(nil)
+	for _, name := range []string{"A_KEY", "B_KEY"} {
+		if d := none.Secrets[name].AirlockDigest; d != "" {
+			t.Errorf("a loader with no AirlockDigest gave %s the digest %q, want none", name, d)
+		}
+	}
+	if unnamed := load(map[string]string{"OTHER_KEY": "d1"}); unnamed.Version != none.Version {
+		t.Errorf("rules naming no served secret moved the version to %s, want %s", unnamed.Version, none.Version)
+	}
+	named := load(map[string]string{"B_KEY": "d1"})
+	if got := named.Secrets["B_KEY"].AirlockDigest; got != "d1" {
+		t.Errorf("B_KEY's digest = %q, want d1", got)
+	}
+	if named.Version == none.Version {
+		t.Error("a secret the rules name left the version unchanged")
+	}
+	if changed := load(map[string]string{"B_KEY": "d2"}); changed.Version == named.Version {
+		t.Error("a changed entry left the version unchanged")
 	}
 }
 

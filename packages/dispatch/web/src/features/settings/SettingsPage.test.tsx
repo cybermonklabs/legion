@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
@@ -17,11 +18,13 @@ function renderPage() {
   );
 }
 
-/** Every query `SettingsPage` and its child sections issue besides the credential ones,
- *  resolved with empty fixtures so the page settles past its own loading states. */
+/** Every query `SettingsPage` and its child sections issue besides the credential pending and
+ *  grants reads each test sets, resolved with empty fixtures so the page settles past its own
+ *  loading states. */
 function stubUnrelatedQueries() {
   return {
     getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
+    getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     listLegionSettings: spyOn(api, "listLegionSettings").mockResolvedValue([]),
@@ -44,7 +47,7 @@ test("hides the Live grants section on a Dispatch with no secrets broker", async
     renderPage();
 
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByText("Live grants")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Live grants")).not.toBeInTheDocument());
   } finally {
     cleanup();
     getCredentialPending.mockRestore();
@@ -55,6 +58,7 @@ test("hides the Live grants section on a Dispatch with no secrets broker", async
 });
 
 test("lists live grants once credential requests are configured, and Revoke is one plain POST", async () => {
+  const user = userEvent.setup();
   const unrelated = stubUnrelatedQueries();
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
     pending: [],
@@ -64,6 +68,7 @@ test("lists live grants once credential requests are configured, and Revoke is o
       {
         approver: "sami@example.com",
         created_at: "2026-09-30T00:00:00Z",
+        decided_by: "sami@example.com",
         enrollment: {
           kind: "session",
           operator: "sami@example.com",
@@ -85,7 +90,7 @@ test("lists live grants once credential requests are configured, and Revoke is o
 
     expect(await screen.findByText("Live grants")).toBeDefined();
     expect(await screen.findByText("DEEL_API_KEY")).toBeDefined();
-    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await user.click(screen.getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(revokeCredentialGrant).toHaveBeenCalledTimes(1));
     expect(revokeCredentialGrant).toHaveBeenCalledWith("grant-1", keyedAttempt);
   } finally {
@@ -117,6 +122,7 @@ test("names how each grant was granted: automatically, or approved by whom", asy
       {
         approver: "mallory@example.com",
         created_at: "2026-09-30T00:00:00Z",
+        decided_by: "mallory@example.com",
         enrollment,
         expires_at: "2026-09-30T01:00:00Z",
         grant_id: "grant-1",
@@ -127,6 +133,7 @@ test("names how each grant was granted: automatically, or approved by whom", asy
       {
         approver: null,
         created_at: "2026-09-30T00:00:00Z",
+        decided_by: null,
         enrollment,
         expires_at: "2026-09-30T01:00:00Z",
         grant_id: "grant-2",
@@ -164,6 +171,7 @@ test("two grants on one pod read apart by their slots", async () => {
   const grant = (grantId: string, slot: string | null) => ({
     approver: "sami@example.com",
     created_at: "2026-09-30T00:00:00Z",
+    decided_by: "sami@example.com",
     enrollment: { kind: "pod", operator: "", runtime_id: "3f9c-pod-uid", slot },
     expires_at: "2026-09-30T01:00:00Z",
     grant_id: grantId,
@@ -206,6 +214,7 @@ test("a grant with no expiry says it ends when its session ends", async () => {
   const grant = (grantId: string, expiresAt: string | null) => ({
     approver: null,
     created_at: "2026-09-30T00:00:00Z",
+    decided_by: null,
     enrollment: { kind: "session", operator: "sami@example.com", runtime_id: "box-1", slot: null },
     expires_at: expiresAt,
     grant_id: grantId,

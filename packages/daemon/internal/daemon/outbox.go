@@ -411,6 +411,16 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			r.log.Log(scoped, level, "outbox READY merge ended without a merge; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
 		}
+	case record.ClaimRelease:
+		// Nobody is told: the claim stands where it was, which is the state the daemon would
+		// have left behind had the row never run, and the issue's tree is over. The line is
+		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
+		// would end it in silence.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+				"status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -590,10 +600,19 @@ func retryBackoff(attempts int) time.Duration {
 // refuses where it still stands (ghautomerge.Refused), whose pull request GitHub has shown closed
 // or at another head than the record awaits for longer than ghautomerge.LagBound at now
 // (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
-// merge (ghautomerge.Removed), which a retry must not undo.
+// merge (ghautomerge.Removed), which a retry must not undo. The merge queue's own removal for a
+// conflict reaches this only as the *Removed the row decided it to be
+// (ghautomerge.ConflictRemoval.Ended, the daemon's conflictRemoval): the ConflictRemoval itself is
+// no *Removed and ends nothing, since a conflict with an entry ahead of it in the queue is
+// submitted once more rather than ended. A claim release is the shared
+// Dispatch rule whole: its executor answers both of Dispatch's 409s as waits of its own before
+// this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
+// purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
+// refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
+// stay permanent and end the row.
 func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	switch row.Kind {
-	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage:
+	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	case record.OutboxKindReadyMerge:
@@ -606,10 +625,12 @@ func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	}
 }
 
-// routineWait is a wait only GitHub's own rules hold back, which ends without anyone acting for
-// Legion: a pull request armed or queued at READY's head (ghautomerge.Armed), one GitHub reports not
-// mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine), or one the merge queue
-// took out to merge, which GitHub has yet to show merged (ghautomerge.Merging).
+// routineWait is a wait nobody has to act on for Legion, which ends on its own: one only GitHub's
+// own rules hold back — a pull request armed or queued at READY's head (ghautomerge.Armed), one
+// GitHub reports not mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine),
+// or one the merge queue took out to merge, which GitHub has yet to show merged
+// (ghautomerge.Merging) — and a Dispatch claim release waiting on the claim's holder or on a
+// contended answer (claimWait), which the hour claimReleaseWait caps rather than an operator.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -625,6 +646,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.status(ctx, row, value)
 	case record.MessagePost:
 		return r.message(ctx, row, value)
+	case record.ClaimRelease:
+		return r.releaseClaim(ctx, row)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:
@@ -723,7 +746,7 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 		}
 		return r.consumeHandover(ctx, row, payload)
 	}
-	// A done write's reason goes on the issue first: Dispatch refuses a message on a closed issue.
+	// A done write's reason goes on the issue first, so it is there before the status closes it.
 	// It is posted as this row's message, so a retry after a failed write finds it and posts none.
 	// A reason Dispatch refuses the same way on every attempt (dispatch.PermanentRefusal, a block
 	// over its own bound among them) must not cost the issue its status, which is the write its
@@ -1165,13 +1188,38 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
 	case "start":
-		// A tree that lingers has left the workflow, and linger holds each member where it stood: a
-		// start that reaches its claim after the close (queued before it and backing off) finishes
-		// without acting and records no start, so the close's suspend still applies. Re-admission
-		// starts the member again (admit's startMidPhaseChildren). A check start is the one start
-		// a lingering tree runs: a look of a closed issue's production check, which resumes the
-		// role that check records (record.ProductionCheck.Role) the linger suspended.
+		// An issue the workflow has taken out — closed, parked, iceboxed, sent back to triage —
+		// has had its Sandbox given back by the departure that took it out, so a start that
+		// reaches the runner behind that departure would build the pod again and pick up the
+		// claim that departure had just put down. The row returns here, above machine.StartedBy,
+		// so it records no start against the claim: the departure's own stop is not superseded by
+		// it, and the suspension that follows that stop is not dropped for a start that started
+		// nothing. admit.(*Admission).finishFencedStarts deletes an owed start of the same shape
+		// on the same predicate, so a row that never reaches a lane and one that does are
+		// declined alike.
+		//
+		// The status read is the issue's own recorded Status and not its DispatchStatus: a close
+		// the daemon authored writes Status with the rows that carry it out and leaves
+		// DispatchStatus at what the board last showed until Dispatch's echo arrives, while
+		// Engine.keepStatus writes DispatchStatus and keeps Status for a status the daemon sets
+		// back, which leaves the issue in the workflow and its start a start. It is the issue's own
+		// status and not its root's, because a child carried into a tree of its own stands in the
+		// workflow while the tree it left lingers, and the tree is what the guard below reads. A
+		// production check's look is exempt — it is the one start an issue out of the workflow
+		// still runs — which the enclosing payload.CheckLook == 0 gives it.
 		if payload.CheckLook == 0 {
+			if record.OutOfWorkflow(issue.Status) {
+				r.log.Info("outbox start of an issue that has left the workflow; finished without acting", "row", row.ID,
+					"issue", issue.Key, "status", issue.Status, "role", payload.Role)
+				return nil
+			}
+			// A tree that lingers has left the workflow, and linger holds each member where it
+			// stood: a start that reaches its claim after the close (queued before it and backing
+			// off) finishes without acting and records no start, so the close's suspend still
+			// applies. Re-admission starts the member again (admit's startMidPhaseMembers). A
+			// check start is the one start a lingering tree runs: a look of a closed issue's
+			// production check, which resumes the role that check records
+			// (record.ProductionCheck.Role) the linger suspended.
 			root, err := r.root(ctx, issue)
 			if err != nil {
 				return err
@@ -1230,29 +1278,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
-		// The relaunch half of a start brings the worker's session back while the task of the same
-		// start waits for the issue's admission slot (workflow.StartOrOwe marks it Relaunch). A
-		// claim that still holds a task of this row's phase and run is left for the row that
-		// carries that task, whatever state it is in, because every way of bringing such a claim
-		// back sends the task it kept: a retry delivers it as the claim comes back (supervise's
-		// RequestRetry), and a rule-resume sends it once the agent is ready (supervise's
-		// sendPending). Either way the held worker would be put to work with no slot — the one
-		// thing the cap counts — and the task row behind it would then find a claim no longer
-		// failed, suspended or retired, so its own guard would no longer hold and it would deliver
-		// a second prompt for the same phase. A failed claim is left whatever it holds: its retry
-		// is the task row's to make, with the fresh budgets that row's delivery needs.
-		//
-		// The retry or resume belongs to the row that carries the task: it comes when the slot
-		// does, its own delivery is held back while the claim still works that phase's task (the
-		// guard below), and so exactly one task reaches the worker, at the moment the cap allows
-		// it. A start that is nobody's half — a tree architect's, which takes no slot of its own,
-		// or a role relaunched beside the phase's worker (admit's startMidPhaseMembers) — has no
-		// task row behind it, so it brings its claim back here or that session never comes back.
-		if payload.Relaunch && (state == supervise.StateFailed || keepsStartTask(machine.Claim(), payload)) {
-			r.log.Info("outbox relaunch left for the row that carries its task", "row", row.ID, "issue", issue.Key,
-				"role", payload.Role, "phase", payload.Phase, "state", state)
-			return nil
-		}
+		// A phase worker's start is one row that carries its task, so the claim is brought back
+		// and told its work here, in that order, and nothing of the start waits on another row.
+		// Whether the row waited for the issue's admission slot before the lane took it is
+		// settled by then (workflow.StartOrOwe); by here it is a start like any other.
 		switch state {
 		case supervise.StateQueued:
 			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
@@ -1291,18 +1320,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("relaunch retired claim %s: %w", token, err)
 			}
 		}
-		// A claim that, once relaunched, still holds a task of this row's phase and run that it will
-		// work is given that task: one not yet confirmed (a failed claim keeps the task it held, and a
-		// death in a turn takes the task back unconfirmed, behind the sentence saying so), or one
-		// confirmed in the turn the claim is working. The row's own task would follow it as a second
-		// prompt for work already under way, so it is not delivered when it is the phase's resume task
-		// (promotion's) or the row relaunched a failed claim (the architect's retry of the held phase,
-		// or a later transition). A confirmed task on a claim not working is over: the relaunch's
-		// decision retired it here, or retires it first when a launch whose outcome was uncertain is
-		// released and spawned again, after this start, so the row's task goes in its place. A check
-		// start names no phase, so it is never one of these: each look's task is delivered, its row
-		// id its delivery's, and a delivery with no phase is held by nothing (supervise's
-		// phaseHolds), so the task reaches the role the check records whatever the issue's phase.
+		// A claim that, once brought back above, still holds a task of this row's phase and run that
+		// it will work is given that task: one not yet confirmed (a failed claim keeps the task it
+		// held, and a death in a turn takes the task back unconfirmed, behind the sentence saying
+		// so), or one confirmed in the turn the claim is working. The row's own task would follow it
+		// as a second prompt for work already under way, so it is not delivered when it is the
+		// phase's resume task (promotion's) or this row retried a failed claim (the architect's
+		// retry of the held phase, or a later transition), since the retry sends the kept task
+		// itself. A confirmed task on a claim not working is over: the decision above retired it
+		// here, or retires it first when a launch whose outcome was uncertain is released and
+		// spawned again, after this start, so the row's task goes in its place. A check start names
+		// no phase, so it is never one of these: each look's task is delivered, its row id its
+		// delivery's, and a delivery with no phase is held by nothing (supervise's phaseHolds), so
+		// the task reaches the role the check records whatever the issue's phase.
 		held, gave := machine.Claim(), false
 		if (payload.ResumeTask || state == supervise.StateFailed) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
@@ -1352,7 +1382,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (workflow's claimReady), and this runner writes the line that wake writes when the row
 		// runs (wakeRan). A start that launches instead took its turn at the machine's gate above
 		// (supervise's reserveWake), so one start row is one wake either way.
-		if claimTookRole(state) && claim.IsTreeArchitect(payload.Role, issue.Key, issue.Tree) {
+		if supervise.SaidReady(state) && claim.IsTreeArchitect(payload.Role, issue.Key, issue.Tree) {
 			if err := r.settleKept(ctx, row, payload, gave); err != nil {
 				return err
 			}

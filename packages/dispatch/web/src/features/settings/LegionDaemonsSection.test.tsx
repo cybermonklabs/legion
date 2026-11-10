@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: these rows type into fields and submit while a held clock and a fake live socket run, which user-event has no form for here.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -80,7 +81,13 @@ async function renderSection(server: LegionServer, human = true) {
   );
   const listLegionSettings = spyOn(api, "listLegionSettings").mockImplementation(server.list);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "ACME", name: "Acme" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: null,
+      key: "ACME",
+      name: "Acme",
+      open_asks: 0,
+    },
   ]);
   spies.push(whoAmI, listLegionSettings, listProjects);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
