@@ -1217,7 +1217,7 @@ func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
 		{"an exit code", "1792", 1792},
 		{"a kill by signal", "9", 9},
 		{"the widest status there is", strconv.FormatUint(math.MaxUint32, 10), math.MaxUint32},
-		{"the trailing newline a line carries", "1792\n", 1792},
+		{"whitespace around the number", "1792\n", 1792},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status := parseStatus([]byte(tc.raw))
