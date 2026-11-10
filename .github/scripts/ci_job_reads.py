@@ -887,7 +887,13 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-legion/extensions/legion.ts:17-26 imports @legion/pi-shared/*; both packs bundle it"),
         ("packages/envoy-client/bin/dispatch.ts", "pi-envoy pack: scripts/pi-plugin-prepack.sh:92 -> packages/envoy-client/scripts/build-dispatch-cli.sh:17"),
         (".github/actions/install-uv/**", at("test", "./.github/actions/install-uv")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-uv/action.yml:16-17 ARG UV_VERSION/UV_SHA256"),
+        (f"{DAEMON}/docker/worker.Dockerfile",
+         f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh's \"this repository's own tree\" case "
+         "runs the gate over it, where the gate holds the mise, jj and uv rows of .github/ci-tools.yaml to this "
+         "file's ARG MISE_VERSION, ARG JJ_TOOL and ARG UV_VERSION"),
+        (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
+                                        "reads the uv row's two sources"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
         (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:19-20 installs the changie row's tarball"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-changie/action.yml:18 sources it, and ci_tools_fetch "
@@ -1352,6 +1358,9 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/install-elan/**", at(AIRLOCK_JOB, "./.github/actions/install-elan")),
+        (".github/ci-tools.yaml", ".github/actions/install-elan/action.yml:29-30 installs the elan row's tarball"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-elan/action.yml:22 sources it, and ci_tools_fetch "
+                                        "reads the elan row's two sources"),
         (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                                f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),
         (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
@@ -1377,8 +1386,14 @@ GATES = [
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const Image"),
         (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
-        (f"{INFRA}/internal/pulumitest/pulumitest.go",
-         f"{at('envoy-smoke', 'Download the docker provider plugin the live tests pin')}: sed reads const DockerPluginVersion"),
+        (".github/actions/install-docker-plugin/**",
+         at("envoy-smoke", "Download the docker provider plugin the live tests install")),
+        (".github/ci-tools.yaml", ".github/actions/install-pulumi/action.yml:20-21 installs the pulumi-cli row's "
+                                  "tarball, and .github/actions/install-docker-plugin/action.yml:33-35 downloads the "
+                                  "pulumi-docker row's"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-pulumi/action.yml:19 and "
+                                        ".github/actions/install-docker-plugin/action.yml:30 source it, and "
+                                        "ci_tools_fetch reads each row's two sources"),
         (".github/scripts/repo-paths.sh",
          f"{at('envoy-smoke', SCHEMA_STEP)}: it derives the download URL the build stamps in"),
         (".github/scripts/disk_watch.py",
@@ -1500,8 +1515,8 @@ GATES = [
     # The tool-fallback job: the live proof that every tool install reads the second source
     # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
     # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
-    # the gate beside it, the rig and the fault proxy it drives, the four actions it installs
-    # through, and the two files a row's version is pinned in.
+    # the gate beside it, the rig and the fault proxy it drives, the eight actions it installs
+    # through, and the two files a row's version is pinned in that a step of it reads.
     gate("tool_fallback", "tool-fallback", reads=reads(
         (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
                                   f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
@@ -1521,6 +1536,11 @@ GATES = [
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
         (".github/actions/setup-bun/**", at("tool-fallback", "./.github/actions/setup-bun")),
+        (".github/actions/install-elan/**", at("tool-fallback", "./.github/actions/install-elan")),
+        (".github/actions/install-uv/**", at("tool-fallback", "./.github/actions/install-uv")),
+        (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
+        (".github/actions/install-docker-plugin/**",
+         at("tool-fallback", "./.github/actions/install-docker-plugin")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
                                                ".github/actions/install-jj reads that same ARG, while the mise row "
