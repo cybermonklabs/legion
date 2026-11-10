@@ -36,6 +36,8 @@ const HELD_FOR_CHILDREN: Record<string, true> = {
   awaiting_merge: true,
   awaiting_person: true,
 };
+/** A CI verdict in the Slots table's narrow column; the full word is its title. */
+const CI_SHORT: Record<string, string> = { green: "✓", failing: "✗", pending: "…" };
 const CHILD_WORK: Record<string, true> = { implementing: true, testing: true, reviewing: true };
 
 export function LegionTab({
@@ -196,7 +198,7 @@ function Slots({
               <th className="px-1 py-1 font-normal">Phase</th>
               <th className="px-1 py-1 font-normal">Roles in a turn</th>
               <th className="px-1 py-1 font-normal">Children not started</th>
-              <th className="min-w-16 px-1 py-1 font-normal">CI</th>
+              <th className="px-1 py-1 font-normal">CI</th>
               <th className="px-1 py-1 font-normal">Slot use</th>
             </tr>
           </thead>
@@ -219,7 +221,7 @@ function Slots({
                       {card.key}
                     </button>
                     <div
-                      className={`max-w-56 truncate ${textSecondaryOnCanvas}`}
+                      className={`max-w-44 truncate ${textSecondaryOnCanvas}`}
                       title={card.title}
                     >
                       {card.title}
@@ -232,10 +234,10 @@ function Slots({
                   <td className="px-1 py-1">{card.children}</td>
                   <td
                     className="px-1 py-1 whitespace-nowrap"
-                    data-legion-slot-ci
+                    data-legion-slot-ci={card.checks_verdict ?? ""}
                     title={card.checks_verdict ?? "No CI verdict"}
                   >
-                    {card.checks_verdict ?? "—"}
+                    {CI_SHORT[card.checks_verdict ?? ""] ?? card.checks_verdict ?? "—"}
                   </td>
                   <td className="px-1 py-1" data-legion-slot-state={state(card)}>
                     {state(card)}

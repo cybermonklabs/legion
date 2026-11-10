@@ -63,6 +63,8 @@ func claimedHour(t *testing.T, segments ...Segment) RoleBar {
 	t.Helper()
 	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
+		// The daemon reports the implementer's claim from the start, so every hour is observed.
+		observeString(legion.ClaimFieldPrefix+"implementer", hour(0), "idle").
 		observeString(legion.FieldPhase, hour(3), "done")
 	// The child does nothing of its own until the waiting-on-children rule gives it a phase.
 	child := newIssue("INFRA-2").under("INFRA-1")
@@ -244,5 +246,20 @@ func TestAChildMakesItsRootWaitOnlyThroughItsOwnWorkTime(t *testing.T) {
 	if bar.Hours != 12 || bar.Segments.WaitingOnChildren != 7 || bar.Segments.Idle != 5 {
 		t.Fatalf("the root's planner bar = %g hours, %+v, want seven waiting on the child's own work time and five idle",
 			bar.Hours, bar.Segments)
+	}
+}
+
+// TestHoursBeforeTheFirstClaimStateAreUnknown: a daemon that starts reporting an issue sends its
+// phase with the phase's entry time, which reaches back before the daemon reported any claim
+// state; whether a role was in a turn in those hours is unknown, so they are unknown, not idle
+// (dispatch://INFRA-979).
+func TestHoursBeforeTheFirstClaimStateAreUnknown(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(4)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.ClaimFieldPrefix+"implementer", hour(3), "idle").
+		observeString(legion.FieldPhase, hour(4), "done")
+	bar := barOf(t, Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24)), "implementer")
+	if want := (Segments{Idle: 1, Unknown: 3}); bar.Segments != want {
+		t.Fatalf("the bar is %+v, want %+v: three hours before the first claim state, one after", bar.Segments, want)
 	}
 }

@@ -68,7 +68,10 @@ const BOARD: LegionBoardResponse = {
     ...column,
     cards:
       column.id === "implementing"
-        ? [card("ACME-1", { slot: 0, roles: ["implementer"] }), card("ACME-21", { tree: "ACME-2" })]
+        ? [
+            card("ACME-1", { slot: 0, roles: ["implementer"], checks_verdict: "green" }),
+            card("ACME-21", { tree: "ACME-2" }),
+          ]
         : column.id === "accepting"
           ? [card("ACME-2", { phase: "accepting", slot: 1, children: 1, phase_since: null })]
           : column.id === "merging"
@@ -278,4 +281,12 @@ test("a holder between turns says so, never 'Nobody'", async () => {
 
   expect(document.querySelector('[data-legion-slot="2"]')?.textContent).toContain("between turns");
   expect(document.querySelector("[data-legion-slots]")?.textContent).not.toContain("Nobody");
+});
+
+test("the CI column writes a short mark with the full verdict on hover", async () => {
+  await renderTab();
+
+  const ci = document.querySelector('[data-legion-slot="0"] [data-legion-slot-ci]');
+  expect(ci?.textContent).toBe("✓");
+  expect(ci?.getAttribute("title")).toBe("green");
 });

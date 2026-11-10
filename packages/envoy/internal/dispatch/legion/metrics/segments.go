@@ -109,8 +109,8 @@ type issueView struct {
 	end         time.Time
 
 	claimed []([]Span)
-	// observed is the part of the issue's life the daemon reported on: from its first observation
-	// of a phase or a claim state to the issue's end; nil for an issue never observed.
+	// observed is the part of the issue's life the daemon reported on: from its first claim state
+	// (its first phase where it reported none) to the issue's end; nil for an issue never observed.
 	observed     []Span
 	observedRead bool
 }
@@ -154,6 +154,22 @@ func (v *issueView) splitSpans(spans []Span) map[Segment][]Span {
 	return taken
 }
 
+// firstMark is the earliest observation of the fields that match, zero for none.
+func firstMark(observed map[string][]Mark, match func(field string) bool) time.Time {
+	var first time.Time
+	for field, marks := range observed {
+		if !match(field) {
+			continue
+		}
+		for _, mark := range marks {
+			if first.IsZero() || mark.At.Before(first) {
+				first = mark.At
+			}
+		}
+	}
+	return first
+}
+
 // observedOf is how much of spans the daemon reported on.
 func (v *issueView) observedOf(spans []Span) time.Duration {
 	return totalOf(intersect(normalize(spans), v.observedSpans()))
@@ -165,18 +181,15 @@ func (v *issueView) observedSpans() []Span {
 		return v.observed
 	}
 	v.observedRead = true
-	// Only a claim state or a phase tells what the issue's roles were doing: a slot or a wait the
-	// daemon sends with its own older time says nothing of the turns around it.
-	var first time.Time
-	for field, marks := range v.issue.Observed {
-		if field != legion.FieldPhase && !strings.HasPrefix(field, legion.ClaimFieldPrefix) {
-			continue
-		}
-		for _, mark := range marks {
-			if first.IsZero() || mark.At.Before(first) {
-				first = mark.At
-			}
-		}
+	// A claim state tells what the issue's roles were doing; a phase alone does not, so where
+	// the daemon reported claim states the hours before the first of them are unknown (a phase
+	// sent with its entry time reaches back past them). An issue with no claim state at all is
+	// read from its first phase, which is all the daemon reported of it.
+	first := firstMark(v.issue.Observed, func(field string) bool {
+		return strings.HasPrefix(field, legion.ClaimFieldPrefix)
+	})
+	if first.IsZero() {
+		first = firstMark(v.issue.Observed, func(field string) bool { return field == legion.FieldPhase })
 	}
 	if !first.IsZero() && first.Before(v.end) {
 		v.observed = []Span{{From: first, To: v.end}}
