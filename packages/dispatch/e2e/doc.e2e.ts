@@ -528,8 +528,17 @@ test("moving between issue documents leaves one open document connection, not on
     const page = await alice.newPage();
     const open = openDocumentSockets(page);
     await page.goto(`/projects/NAVDOC/issues`);
-    const table = page.getByRole("table", { name: "Project issues table" });
-    await table.getByRole("link", { name: first.key, exact: true }).click();
+    // The issue a reader clicks, found in the project's issues panel rather than in one view's own
+    // markup: the page opens on whichever view that reader last used, each view draws its rows its
+    // own way, and this drive is about the editor's one connection surviving in-app navigation
+    // rather than about either drawing. The link's name carries the issue's title after its key,
+    // so it is matched from the key rather than by the key alone.
+    const issueLink = (key: string) =>
+      page
+        .locator("#project-issues-panel")
+        .getByRole("link", { name: new RegExp(`^${key}(?!\\d)`) })
+        .first();
+    await issueLink(first.key).click();
     await expect(documentEditor(page)).toContainText("First body.");
     await expect.poll(open).toBe(1);
 
@@ -542,11 +551,11 @@ test("moving between issue documents leaves one open document connection, not on
     for (let visit = 0; visit < 4; visit += 1) {
       await page.mouse.move(0, 0);
       await page.goBack();
-      await table.getByRole("link", { name: second.key, exact: true }).click();
+      await issueLink(second.key).click();
       await expect(documentEditor(page)).toContainText("Second body.");
       await page.mouse.move(0, 0);
       await page.goBack();
-      await table.getByRole("link", { name: first.key, exact: true }).click();
+      await issueLink(first.key).click();
       await expect(documentEditor(page)).toContainText("First body.");
     }
     await expect.poll(open).toBe(1);
