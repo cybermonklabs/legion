@@ -905,7 +905,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// received instead of refused as a handoff not written anew. The pull request goes with it
 	// because the cap reads it: a move made while the record holds this head as conflicting with
 	// its base is a conflict round, which review_round_cap does not count (recordRound).
-	if movesBack(issue.Phase, row.To) {
+	if phase.MovesBack(issue.Phase, row.To) {
 		if err := e.recordRound(ctx, tx, issue.Key, pr); err != nil {
 			return err
 		}
@@ -1237,18 +1237,4 @@ func (e *Engine) ownPullRequest(ctx context.Context, tx pgx.Tx, pr *record.PullR
 // never from the project's whole record.
 func (e *Engine) treeMembers(ctx context.Context, tx pgx.Tx, root record.Issue) ([]record.Issue, error) {
 	return e.store.TreeIssues(ctx, tx, root.Tree)
-}
-
-func phaseIndex(value phase.Phase) int {
-	for index, candidate := range []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, phase.AwaitingMerge} {
-		if candidate == value {
-			return index
-		}
-	}
-	return -1
-}
-
-// movesBack says whether to is a workflow phase before from.
-func movesBack(from, to phase.Phase) bool {
-	return phaseIndex(to) >= 0 && phaseIndex(to) < phaseIndex(from)
 }

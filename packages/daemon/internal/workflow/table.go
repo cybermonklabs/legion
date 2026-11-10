@@ -81,15 +81,22 @@ var Table = append([]Row{
 // backwardRows is the edge from every phase back to each phase before it. Like every other row,
 // each writes the status of the phase it enters, so a move back into planning writes in_progress,
 // the status an issue shows while Legion works it, rather than leaving Dispatch showing the phase
-// the issue left.
+// the issue left. The pairs come from phase.BackwardPairs, the one list the config loader reads
+// as well, so a pair added there becomes a row here and TestBackwardRowsMatchPhaseBackwardPairs
+// holds the two equal.
 func backwardRows() []Row {
-	ordered := []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
-	rows := make([]Row, 0, len(ordered)*(len(ordered)-1)/2)
-	for fromIndex, from := range ordered {
-		for _, to := range ordered[:fromIndex] {
-			rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
-				Effects: []EffectKind{EffectStart, EffectNotice}})
+	pairs := phase.BackwardPairs()
+	rows := make([]Row, 0, len(pairs))
+	for _, text := range pairs {
+		from, to, ok := phase.ParsePair(text)
+		// Every pair comes from BackwardPairs, so ParsePair reads each one. The AwaitingMerge pair
+		// is the single one skipped: the table above already carries it as an explicit row, with
+		// the checks_red trigger that puts a queued pull request back into implementing.
+		if !ok || from == phase.AwaitingMerge {
+			continue
 		}
+		rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
+			Effects: []EffectKind{EffectStart, EffectNotice}})
 	}
 	return rows
 }
