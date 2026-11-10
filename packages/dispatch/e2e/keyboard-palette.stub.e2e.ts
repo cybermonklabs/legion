@@ -323,7 +323,9 @@ listTest(
   "a List row's own row runs on the row that opened the palette, and its movement keys are no rows @pr",
   async ({ page, scene }) => {
     await page.goto(`/projects/${scene.project}/issues`);
-    const row = page.locator(`[data-issue-row]`, { hasText: "List palette" });
+    const row = page
+      .getByRole("table", { name: "Project issues table" })
+      .locator("[data-issue-row]", { hasText: "List palette" });
     await expect(row).toBeVisible();
     await page.locator("body").focus();
     await page.keyboard.press("j");
