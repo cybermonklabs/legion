@@ -81,7 +81,7 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await expect(page).toHaveURL(
       (url) => url.pathname === "/projects/CORE/issues" && !url.searchParams.has("label")
     );
-    await pickFilterOption(page, "Labels", "frontend");
+    await pickFilterOption(page, "Labels", "Frontend");
     await expect(page.getByText("Editable labels", { exact: true })).toBeVisible();
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
     await expect(page.getByText("Backend documentation", { exact: true })).toHaveCount(0);
