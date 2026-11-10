@@ -154,6 +154,12 @@ only=" ${only//,/ } "
 stores=${LEGION_E2E_ANSWER_LOOP_STORES:-files postgres}
 wanted() { [ "$only" = "  " ] || [[ "$only" == *" $1 "* ]]; }
 run_tag=$(((($$ + $(date +%s)) % 90000) + 10000))
+# The run's refusal marker and the reason its stand-in shared public leak check refuses it
+# (install_leak_check, A17's leak-guard leg): the marker is the run's own, so no text of another
+# run meets it, and it holds neither an apostrophe nor a glob character, because the stand-in
+# matches it with `case` and prints the reason with `echo '…'`.
+leak_marker=answer-loop-leak-$run_tag
+leak_reason='the answer loop proof stand-in refuses this call'
 proof_human_user=smoke
 dispatch_actor=
 dispatch_base=
@@ -451,6 +457,43 @@ real_tools() {
   ln -sfn "$gh" "$work/realbin/gh"
   for tool in jj git bun; do ln -sfn "$(command -v "$tool")" "$work/realbin/$tool"; done
   daemon_path="$work/bin:$work/realbin:/usr/local/bin:/usr/bin:/bin"
+}
+
+# install_leak_check writes the run's stand-in shared public leak check, $work/bin's
+# public-leak-check.sh — the name the guard looks for on PATH, and $work/bin is the first entry of
+# the PATH every daemon of this run boots with (real_tools, start_daemon). The real check is a
+# private script no clone of this repository holds (a pod installs it from a private repository),
+# and the guard refuses a write it can run no check for, so without this file every gh call of the
+# answer loop would be refused before gh started and every other gh leg of this run — A15's two
+# answers, A17's comment, A18's restart and resume, A19's review — would fail with it. It is
+# written once, before the first daemon boots.
+#
+# The shape is the one packages/daemon/internal/leakguard/leakguardtest/leakguardtest.go states
+# for the gh guard, and scripts/e2e/leak-guard-image-probe.sh writes stand-ins of its own the same
+# way: it reads its standard input, because a check that did not would leave the guard writing
+# into a pipe nobody drains; it exits 3 with a report line of its own for a call whose arguments
+# hold the run's refusal marker, which is the whole account of the refusal anyone gets; and it
+# exits 0 for every other call, so every verdict of this run but A17's leak-guard leg is the
+# daemon's own. The arguments are what it reads: the loop hands gh no standard input
+# (ghtool's Answer.runGH), so the text of a call it makes stands in the call's own arguments, and
+# the exit-4 handshake that would buffer that input is never asked for.
+install_leak_check() {
+  local check=$work/bin/public-leak-check.sh
+  mkdir -p "$work/bin"
+  cat >"$check" <<SH
+#!/bin/sh
+# The stand-in shared public leak check of one run of scripts/e2e/answer-loop.sh, written by it.
+cat >/dev/null 2>&1
+case " \$* " in
+  *$leak_marker*)
+    echo 'LEAK CHECK: refusing: $leak_reason'
+    exit 3
+    ;;
+esac
+exit 0
+SH
+  chmod 0700 "$check"
+  note "stand-in shared public leak check: $check (exit 3 for a call naming $leak_marker, exit 0 for every other)"
 }
 
 # ---- builds ----------------------------------------------------------------------------------------
@@ -1257,6 +1300,7 @@ provision_nats
 provision_claude
 resolve_omp
 real_tools
+install_leak_check
 if browser_leg; then
   provision_browser
 else
@@ -2171,12 +2215,17 @@ comment_request() {
 }
 
 check_a17() {
-  criterion A17 "the stopped implementer comments on its pull request as the implement App; the reviewer's write to another owner is refused" second-owner || return 0
-  local marker=answer-loop-a17-$run_tag-$store sent event comments gh_line reply refusal ok_impl=0 ok_review=0 id
+  criterion A17 "the stopped implementer comments on its pull request as the implement App (the control); a comment the shared leak check refuses is never written and the agent carries the check's own reason back; the reviewer's write to another owner is refused" second-owner || return 0
+  local marker=answer-loop-a17-$run_tag-$store sent event comments gh_line reply refusal listing refused_comments refusal_line
+  local ok_impl=0 ok_leak=0 ok_review=0 id
   implementer_with_pull_request || {
     record_result A17 FAIL "no implementer with a pull request could be made"
     return 0
   }
+  # The control of the leak-guard leg below, and a criterion of its own: a comment whose body is a
+  # clean marker, which the stand-in shared check clears, lands on the pull request. A stand-in
+  # that refused every call, and a path that wrote nothing at all, both fail here, so the refusal
+  # below is a refusal of this one call and not of everything.
   sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker")" "a17-$run_tag-$store")
   event=${sent#* }
   if soft_wait 300 "the implementer's reply" inbox_reply "$event"; then
@@ -2190,6 +2239,32 @@ check_a17() {
     one_comment_by "$comments" "$implement_app_login" "${agent[$store:implementer.session]}" &&
       gh_line_is "$gh_line" implement sjawhar 0 && ok_impl=1
   fi
+  # The same implementer and the same pull request, asked for a comment whose body is the run's
+  # refusal marker, which the stand-in shared check refuses (install_leak_check). Both halves are
+  # read and never the agent's answer alone — a leg that read the reply alone would pass with the
+  # guard wired to nothing at all:
+  #   (a) GitHub holds no comment carrying the marker, so the write was never made;
+  #   (b) the agent's reply to the asker carries the check's own reason, so what refused the call
+  #       is the check and not some other refusal of the tool's.
+  # The daemon's own line for it is read beside them: one refusal line naming the issue, the role,
+  # the repository and that reason.
+  sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" \
+    "$(comment_request "$leak_marker") If a tool refuses the call, quote what it answered word for word." \
+    "a17-leak-$run_tag-$store")
+  event=${sent#* }
+  if soft_wait 300 "the implementer's reply about the refused comment" inbox_reply "$event"; then
+    listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
+    refused_comments=$(jq -c --arg m "$leak_marker" \
+      '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | {id, user: .user.login}]' <<<"$listing")
+    for id in $(jq -r '.[].id' <<<"$refused_comments"); do github_writes+=("comment:$id"); done
+    reply=$(inbox_reply "$event")
+    refusal_line=$(leak_refusal_line implementer)
+    note "comments on #${agent[$store:implementer.pr]}: $(jq -r 'if type == "array" then length | tostring else "no listing at all" end' <<<"$listing"); holding $leak_marker: $refused_comments"
+    note "the guard's refusal line: $refusal_line"
+    note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
+    no_comment_holds "$listing" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
+      leak_refusal_is "$refusal_line" "${agent[$store:implementer.issue]}" implementer "$repo" "$leak_reason" && ok_leak=1
+  fi
   sent=$(envoy_ask_text session "${agent[$store:pre_change.session]}" \
     "Using your gh tool, create the file answer-loop-$marker.md on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/answer-loop-$marker.md -f message=proof -f content=cHJvb2YK). Then tell me exactly what GitHub answered." \
     "a17-review-$run_tag-$store")
@@ -2202,10 +2277,10 @@ check_a17() {
     refusal_mentioned "$reply" && refusal=yes || refusal=no
     gh_line_is "$gh_line" review "${second_repo%%/*}" nonzero && [ "$refusal" = yes ] && ok_review=1
   fi
-  if [ "$ok_impl$ok_review" = 11 ]; then
-    record_result A17 PASS "the implementer's one comment is the implement App's with its session's footer, logged with App and owner; the reviewer's write to the second owner was refused and it said so"
+  if [ "$ok_impl$ok_leak$ok_review" = 111 ]; then
+    record_result A17 PASS "the clean-marker comment is the implement App's one comment with its session's footer, logged with App and owner (the control: a check refusing everything, and a path writing nothing, fail this leg); the comment naming $leak_marker is nowhere on the pull request and the implementer's reply carries the check's own reason, with the daemon's refusal line naming the issue, the role, the repository and that reason; the reviewer's write to the second owner was refused and it said so"
   else
-    record_result A17 FAIL "implementer comment $ok_impl, reviewer refusal $ok_review (1 = shown)"
+    record_result A17 FAIL "the control's comment $ok_impl, the leak guard's refusal $ok_leak (both halves: no comment holding $leak_marker on the pull request, and the check's own reason in the reply and in the daemon's refusal line), reviewer refusal $ok_review (1 = shown)"
   fi
 }
 

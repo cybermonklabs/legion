@@ -163,6 +163,24 @@ gh_line_is() {
   esac
   jq -e --arg app "$2" --arg owner "$3" ".app == \$app and .owner == \$owner and ($exit_test)" <<<"${1:-null}" >/dev/null 2>&1
 }
+# leak_refusal_line ROLE prints the last line of this boot's daemon log where the shared leak
+# guard refused a gh call of ROLE's, and nothing where it refused none: the loop writes one
+# `answers: gh call refused by the leak guard` line before it refuses the call, carrying the
+# question, the seq, the issue, the role, the repository and the reason (internal/ghtool's Run).
+leak_refusal_line() {
+  boot_log | jq -s -c --arg r "$1" \
+    '[.[] | select(.msg == "answers: gh call refused by the leak guard" and .role == $r)] | (last // empty)'
+}
+# leak_refusal_is LINE ISSUE ROLE REPOSITORY REASON: the refusal LINE is a call of ROLE's on
+# ISSUE to REPOSITORY refused for REASON — the report the shared check printed itself, which the
+# refusal carries back word for word (leakguard's Refusal). The reason is read and not the line
+# alone: a guard that resolved no check at all refuses every call and writes this same line, with
+# a setup failure's words in `why` and nothing of any check in it. No line at all is no refusal.
+leak_refusal_is() {
+  jq -e --arg i "$2" --arg r "$3" --arg repo "$4" --arg why "$5" \
+    '.issue == $i and .role == $r and .repository == $repo and ((.why // "") | contains($why))' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
 
 # ---- the stopped agents' conversations ---------------------------------------------------------------
 # conversation_text NAME prints the agent's conversation as its store holds it: the session file
@@ -425,16 +443,27 @@ registry_replaced_by() {
 }
 
 # ---- GitHub ----------------------------------------------------------------------------------------
-# pr_comments NUMBER MARKER prints the smoke repository's comments on the pull request that hold
-# MARKER, as {id, user, body}. GitHub's error body is an object, not the array of comments, and so
-# is no comment: it prints [], as a gh call that printed nothing or failed does. The call's body is
-# read into a variable rather than piped, so a failing gh leaves one list and not two (the pipe
-# would print the empty list and the fallback another, under `pipefail`).
-pr_comments() {
+# pr_comment_listing NUMBER prints the smoke repository's comments on the pull request as GitHub
+# answered them, a JSON array, and `null` where no listing was read at all: a gh call that failed
+# or printed nothing, and GitHub's error body, which is an object and no list of comments. The
+# call's body is read into a variable rather than piped, so a failing gh leaves one answer and not
+# two (the pipe would print the empty answer and the fallback another, under `pipefail`). A half
+# that must show a write was never made reads this and not pr_comments: an empty list of matches
+# is what a listing nobody could read prints too.
+pr_comment_listing() {
   local body
   body=$(smoke_gh api "repos/$repo/issues/$1/comments?per_page=100" 2>/dev/null) || body=
-  jq -s -c --arg m "$2" '(.[0] // []) | if type == "array" then [.[] | select(.body | contains($m)) | {id, user: .user.login, body}] else [] end' <<<"$body" 2>/dev/null ||
-    printf '[]\n'
+  jq -s -c '(.[0] // null) | if type == "array" then . else null end' <<<"$body" 2>/dev/null ||
+    printf 'null\n'
+}
+# pr_comments NUMBER MARKER prints the comments of that listing which hold MARKER, as
+# {id, user, body}: a listing that is none — GitHub's error body, a gh call that printed nothing
+# or failed — holds no comment and prints [].
+pr_comments() {
+  local listing
+  listing=$(pr_comment_listing "$1") || listing=null
+  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select(.body | contains($m)) | {id, user: .user.login, body}]' \
+    <<<"$listing" 2>/dev/null || printf '[]\n'
 }
 # one_comment_by COMMENTS LOGIN SESSION: the comments holding the marker are one, posted by LOGIN,
 # and its Legion footer names SESSION.
@@ -443,8 +472,21 @@ one_comment_by() {
     'type == "array" and length == 1 and .[0].user == $login and (.[0].body | contains("\"session\":\"" + $s + "\""))' \
     <<<"${1:-null}" >/dev/null 2>&1
 }
+# no_comment_holds LISTING MARKER: GitHub answered a listing of the pull request's comments
+# (pr_comment_listing) and none of them holds MARKER — the write the leak guard refused was never
+# made. A listing that is no listing (`null`: the read failed, or GitHub answered an error body)
+# is no absence and fails here: a read nobody could make has shown nothing.
+no_comment_holds() {
+  jq -e --arg m "$2" 'type == "array" and all(.[]; ((.body // "") | contains($m)) | not)' <<<"${1:-null}" >/dev/null 2>&1
+}
 # refusal_mentioned REPLY: the agent's reply says GitHub refused its write.
 refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission' <<<"${1:-}"; }
+# leak_reason_quoted REPLY REASON: the agent's reply to the asker carries REASON, the shared
+# check's own report of why it refused the call, which the refusal handed the tool word for word.
+# It is one half of the leak-guard leg and never the whole: a reply saying a call was refused is
+# what an agent writes for any refusal, so the write that was not made is read beside it
+# (no_comment_holds). No reply at all carries nothing.
+leak_reason_quoted() { grep -qiF -- "$2" <<<"${1:-}"; }
 # reviewer_approvals NUMBER SESSION prints the approving reviews of the pull request whose Legion
 # footer names SESSION, as {id, user, commit_id, footer}. GitHub's error body is an object, not the
 # array of reviews, and so is no review: it prints [], as a gh call that printed nothing or failed

@@ -1481,7 +1481,14 @@ the registration carries no port, and the answer published on the asker's own su
 
 - A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as the implement App) posts the asked comment there as the implement App with its session's footer, logged with App and owner;
   the rig reads the comment back with a read-only implement-App token of its own (**GitHub** below), the one GitHub read its own `gh` cannot make.
+  That leg is the control of the one after it: a stand-in check refusing every call, and a path that wrote nothing at all, each fail it.
+  Then the same implementer is asked for a comment whose body is the run's refusal marker, which the stand-in shared check refuses:
+  GitHub's listing holds no comment carrying that marker, the agent's reply quotes the check's own reason, and the daemon's `answers: gh call refused by the leak guard` line names the issue, the role, the repository and that reason.
+  Both halves are read, since a case reading the reply alone passes with the guard wired to nothing.
   The pre-change reviewer asked to write to the second owner's repository gets GitHub's refusal and says so.
+
+  The stand-in is the run's own `$work/bin/public-leak-check.sh`, written before the first boot (`install_leak_check`), since the real shared check is a private script no clone of this repository holds and the guard refuses every call it can run no check for:
+  without it the loop's every `gh` call is refused before `gh` starts, so A15, A17, A18 and A19 all depend on that file.
 
 - A18: the proxy holds the loop's model call after the comment's `gh` call;
   the daemon is killed and restarted (one comment, one answer), and in a second run the claim is resumed there (the question is forwarded with the call, one comment, no reply from the loop).

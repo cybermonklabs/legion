@@ -28,6 +28,18 @@
       "body": "answer-loop-a17-4242-files (posted twice)\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
     }
   ],
+  "repos/sjawhar/legion-smoke/issues/44/comments?per_page=100": [
+    {
+      "id": 9005,
+      "user": { "login": "example-implement[bot]" },
+      "body": "answer-loop-a17-4242-files\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
+    },
+    {
+      "id": 9006,
+      "user": { "login": "example-implement[bot]" },
+      "body": "answer-loop-leak-4242\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
+    }
+  ],
   "repos/sjawhar/legion-smoke/pulls/41/reviews": [
     {
       "id": 2147483648123,

@@ -135,8 +135,8 @@ function read(body: string): { code: number; text: string } {
 
 describe("the daemon's log, boot by boot", () => {
   test("run_log reads every boot and boot_log only the current one", () => {
-    expect(read("run_log | jq -s length").text).toBe("17");
-    expect(read("boot_log | jq -s length").text).toBe("10");
+    expect(read("run_log | jq -s length").text).toBe("19");
+    expect(read("boot_log | jq -s length").text).toBe("12");
     // The line that is not JSON at all is in neither, and ends neither read.
     expect(read("run_log | grep -c 'not JSON' || true").text).toBe("0");
   });
@@ -275,6 +275,48 @@ describe("the daemon's log, boot by boot", () => {
     expect(run(`${refused}; gh_line_is "$line" review another-owner nonzero`).code).toBe(0);
     expect(run(`${refused}; gh_line_is "$line" review another-owner 0`).code).toBe(1);
     expect(run('gh_line_is "" review sjawhar any').code).toBe(1);
+  });
+
+  test("leak_refusal_line and leak_refusal_is read the guard's refusal of a gh call", () => {
+    const reason = "the answer loop proof stand-in refuses this call";
+    const line = `line=$(leak_refusal_line implementer)`;
+    expect(read("leak_refusal_line implementer | jq -r .question").text).toBe("q-ten");
+    // The role is read: another role's refusal is not this one's, and a role the guard refused
+    // nothing of prints nothing rather than ending the read.
+    expect(read("leak_refusal_line planner | jq -r .question").text).toBe("q-nine");
+    expect(read("leak_refusal_line reviewer")).toEqual({ code: 0, text: "" });
+    expect(read("daemon_log=$empty_log; leak_refusal_line implementer")).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(
+      run(`${line}; leak_refusal_is "$line" ALX-4 implementer sjawhar/legion-smoke '${reason}'`)
+        .code
+    ).toBe(0);
+    expect(
+      run(`${line}; leak_refusal_is "$line" ALX-2 implementer sjawhar/legion-smoke '${reason}'`)
+        .code
+    ).toBe(1);
+    expect(
+      run(`${line}; leak_refusal_is "$line" ALX-4 reviewer sjawhar/legion-smoke '${reason}'`).code
+    ).toBe(1);
+    expect(
+      run(`${line}; leak_refusal_is "$line" ALX-4 implementer sjawhar/legion-other '${reason}'`)
+        .code
+    ).toBe(1);
+    // Another check's report is not this check's, and the setup failure of a guard wired to no
+    // check at all — which refuses every call and writes this same line — is no refusal by one.
+    const planner = `line=$(leak_refusal_line planner)`;
+    expect(
+      run(`${planner}; leak_refusal_is "$line" ALX-2 planner sjawhar/legion-other '${reason}'`).code
+    ).toBe(1);
+    const unwired = `{"issue":"ALX-4","role":"implementer","repository":"sjawhar/legion-smoke","why":"LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found"}`;
+    expect(
+      run(`leak_refusal_is '${unwired}' ALX-4 implementer sjawhar/legion-smoke '${reason}'`).code
+    ).toBe(1);
+    expect(run(`leak_refusal_is "" ALX-4 implementer sjawhar/legion-smoke '${reason}'`).code).toBe(
+      1
+    );
   });
 });
 
@@ -651,6 +693,42 @@ describe("Dispatch", () => {
 });
 
 describe("GitHub", () => {
+  test("pr_comment_listing reads GitHub's own listing, and anything that is none as null", () => {
+    expect(read("pr_comment_listing 41 | jq length").text).toBe("2");
+    // GitHub's error body is an object and no listing; so is a gh call that printed nothing, and
+    // one that failed. None of the three is an empty list of comments.
+    expect(read("pr_comment_listing 42")).toEqual({ code: 0, text: "null" });
+    expect(read("smoke_gh() { :; }; pr_comment_listing 41")).toEqual({ code: 0, text: "null" });
+    expect(read("smoke_gh() { return 1; }; pr_comment_listing 41")).toEqual({
+      code: 0,
+      text: "null",
+    });
+  });
+
+  test("no_comment_holds reads that the refused write was never made", () => {
+    expect(run(`no_comment_holds "$(pr_comment_listing 41)" answer-loop-leak-4242`).code).toBe(0);
+    // The write was made after all: the comment carrying the marker is on the pull request.
+    expect(run(`no_comment_holds "$(pr_comment_listing 44)" answer-loop-leak-4242`).code).toBe(1);
+    // A listing nobody could read is no absence: an error body, a failed call, no listing at all.
+    expect(run(`no_comment_holds "$(pr_comment_listing 42)" answer-loop-leak-4242`).code).toBe(1);
+    expect(run(`no_comment_holds null answer-loop-leak-4242`).code).toBe(1);
+    expect(run(`no_comment_holds '' answer-loop-leak-4242`).code).toBe(1);
+  });
+
+  test("leak_reason_quoted reads the check's own reason in the agent's reply", () => {
+    const reason = "the answer loop proof stand-in refuses this call";
+    expect(
+      run(
+        `leak_reason_quoted 'The tool answered: refused: LEAK CHECK: refusing the gh call: the shared public leak check refused it; LEAK CHECK: refusing: ${reason}' '${reason}'`
+      ).code
+    ).toBe(0);
+    // A reply that says only that something refused it carries no reason of the check's.
+    expect(
+      run(`leak_reason_quoted 'My gh call was refused, so I posted nothing.' '${reason}'`).code
+    ).toBe(1);
+    expect(run(`leak_reason_quoted '' '${reason}'`).code).toBe(1);
+  });
+
   test("pr_comments reads the comments holding the marker, and an error body as none", () => {
     expect(read("pr_comments 41 answer-loop-a17-4242-files | jq length").text).toBe("1");
     expect(read("pr_comments 43 answer-loop-a17-4242-files | jq length").text).toBe("2");
