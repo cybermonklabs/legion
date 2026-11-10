@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -124,7 +123,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// one person's list and puts it into the other's, and no other reader's rows move. That is
 	// why the event does not carry the ask's thread logins (events.AskEventPayload): somebody
 	// who replied in the thread has the same rows after this write as before it.
-	payload.ThreadLogins = askedOfThreadLogins(waitedOn, &askedOf)
+	payload.ThreadLogins = movedLogins(nil, waitedOn, &askedOf)
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.asked_of", actor, payload,
 	))
@@ -138,25 +137,4 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(event)
 	WriteJSON(w, http.StatusOK, ask)
-}
-
-// askedOfThreadLogins is an ask.asked_of's thread_logins: the canonical login of the person the
-// ask waited on and of the person it waits on now, sorted and without a duplicate, which is what
-// issueWriteThreadLogins makes of an assignee move. Either may be nil - an ask on an unassigned
-// issue or on a document waited on nobody - and a hand-on to the person already holding it names
-// that person once.
-func askedOfThreadLogins(moved ...*string) []string {
-	logins := []string{}
-	for _, person := range moved {
-		if person == nil {
-			continue
-		}
-		login := model.CanonicalLogin(*person)
-		if login == "" || slices.Contains(logins, login) {
-			continue
-		}
-		logins = append(logins, login)
-	}
-	slices.Sort(logins)
-	return logins
 }

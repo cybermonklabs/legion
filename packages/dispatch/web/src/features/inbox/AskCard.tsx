@@ -69,6 +69,7 @@ import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import { askTurnHolder } from "./ask-turn";
 import { URGENCY_LABELS } from "./ask-urgency";
 import { EarlierApproval } from "./EarlierApproval";
+import { askWaitingOnPerson } from "./list-row";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
@@ -201,8 +202,12 @@ function AskHandOn({ ask }: { ask: Ask }): ReactNode {
   const want = () => setWanted(true);
   const write = useAskHandOn(ask.id);
   const assignee = ask.issue?.assignee ?? null;
-  const waitingOn = ask.waiting_on_person ?? "";
-  const logins = (people.data ?? [])
+  const waitingOn = askWaitingOnPerson(ask) ?? "";
+  // The list is drawn only once the reader reaches for the control, as it is read: the query
+  // keeps its people for the session, so a card that built its options from whatever another
+  // control had already fetched would draw one `<option>` per signed-in person for every open
+  // ask on the page.
+  const logins = (wanted ? (people.data ?? []) : [])
     .map((user) => user.login)
     .filter((login) => login !== assignee);
   // Whoever holds the ask stays selectable even where the people list does not carry them (it

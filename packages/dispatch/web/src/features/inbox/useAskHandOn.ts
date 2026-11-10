@@ -11,10 +11,6 @@ export interface AskHandOnWrite {
   /** True after a hand-on failed until the next attempt starts. */
   failed: boolean;
   pending: boolean;
-  /** Who the in-flight hand-on names, and `undefined` when none is in flight. The optimistic
-   *  update has already moved the row by the time it renders, so this - not the row's own
-   *  `waiting_on_person` - is what the reader just asked for. */
-  pendingPerson: string | undefined;
   /** Repeats the failed hand-on. */
   retry: () => void;
   /** Hands the ask to `askedOf`, the email of somebody who has signed in. */
@@ -79,7 +75,6 @@ export function useAskHandOn(askId: string): AskHandOnWrite {
     error: mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
-    pendingPerson: mutation.isPending ? mutation.variables : undefined,
     retry: () => {
       if (mutation.variables !== undefined) mutation.mutate(mutation.variables);
     },

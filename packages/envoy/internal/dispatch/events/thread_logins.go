@@ -49,7 +49,7 @@ func ThreadLogins(ctx context.Context, q Queryer, threadID string) ([]string, er
 // other; the two sets are joined by api/thread_logins.go's issueWriteThreadLogins, which is the
 // whole of what an issue event names. An ask somebody handed on waits on the person it was
 // handed to wherever its issue goes, so no assignee move touches its row; the hand-on itself
-// names the two people instead (api/ask_asked_of.go, askedOfThreadLogins).
+// names the two people instead (api/ask_asked_of.go, over api/thread_logins.go's movedLogins).
 func IssueThreadLogins(ctx context.Context, q Queryer, issueKey string) ([]string, error) {
 	logins := []string{}
 	if err := q.QueryRow(ctx, `

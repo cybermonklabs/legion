@@ -50,18 +50,29 @@ func issueWriteThreadLogins(
 		}
 		logins = moved
 	}
-	for _, assignee := range movedAssignees {
-		if assignee == nil {
+	return movedLogins(logins, movedAssignees...), nil
+}
+
+// movedLogins adds to logins the canonical login of each person a write moved an Inbox row
+// between, sorted and without a duplicate. A person may be nil - an issue nobody held, an ask
+// that waited on nobody - and naming the same person twice names them once. The result is never
+// nil, so an event that moved nobody's rows says so as [] rather than leaving the field out.
+func movedLogins(logins []string, moved ...*string) []string {
+	if logins == nil {
+		logins = []string{}
+	}
+	for _, person := range moved {
+		if person == nil {
 			continue
 		}
-		login := model.CanonicalLogin(*assignee)
+		login := model.CanonicalLogin(*person)
 		if login == "" || slices.Contains(logins, login) {
 			continue
 		}
 		logins = append(logins, login)
 	}
 	slices.Sort(logins)
-	return logins, nil
+	return logins
 }
 
 // commentThreadLogins is a written comment's thread_logins: the logins with a Replies row on the

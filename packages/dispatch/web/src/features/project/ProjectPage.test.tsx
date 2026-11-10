@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
+import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
 
@@ -58,9 +59,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
-  if (row.waiting_on_person !== undefined) return row;
-  const person = row.asked_of ?? row.issue?.assignee ?? null;
-  return person === null ? row : { ...row, waiting_on_person: person };
+  return withWaitingOnPerson(row);
 }
 
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a

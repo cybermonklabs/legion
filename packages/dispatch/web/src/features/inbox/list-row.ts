@@ -10,6 +10,7 @@
  */
 
 import type {
+  Ask,
   AskUrgency,
   InboxRow,
   IssuePriority,
@@ -76,9 +77,11 @@ export function rowProject(row: InboxListRow): string | null {
  * was handed - which the server sends as an absent field rather than an empty one.
  *
  * The web app does not work this out again: handing an ask on moves it between people without
- * touching the issue, so a second rule here would put the row in the wrong person's list.
+ * touching the issue, so a second rule here would put the row in the wrong person's list. It
+ * takes any ask, not just a row of the Inbox list, because the ask card asks the same question
+ * of the asks the other reads answer with.
  */
-export function askWaitingOnPerson(ask: InboxRow): string | null {
+export function askWaitingOnPerson(ask: Ask): string | null {
   const person = ask.waiting_on_person;
   return person === undefined || person === "" ? null : person;
 }

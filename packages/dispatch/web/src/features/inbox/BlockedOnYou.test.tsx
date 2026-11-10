@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { BlockedOnYou } from "./BlockedOnYou";
+import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {
   return { identifiers: ["DEMO_API_KEY"], kind: "agent_secret", record_id, requested_at };
@@ -45,9 +46,7 @@ function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
-  if (row.waiting_on_person !== undefined) return row;
-  const person = row.asked_of ?? row.issue?.assignee ?? null;
-  return person === null ? row : { ...row, waiting_on_person: person };
+  return withWaitingOnPerson(row);
 }
 
 // The broker's `requested_at` reaches the SPA verbatim, and the count this rule gives also drives

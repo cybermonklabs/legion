@@ -148,9 +148,7 @@ function describe(event: Event, previousStatus: string | undefined): string | Ag
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue, which is where an ask with no `asked_of` waits.
-      return event.payload.asked_of === null || event.payload.asked_of === undefined
-        ? `handed “${event.payload.question}” to the issue's assignee`
-        : `handed “${event.payload.question}” to ${event.payload.asked_of}`;
+      return `handed “${event.payload.question}” to ${event.payload.asked_of ?? "the issue's assignee"}`;
     case "ask.answered":
       return event.payload.previous_answer === undefined
         ? `answered “${event.payload.question}”`
