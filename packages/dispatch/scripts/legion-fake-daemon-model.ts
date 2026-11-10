@@ -2,12 +2,13 @@
  * The fake Legion daemon's state and outbox (dispatch://INFRA-979 prototype), apart from its
  * network loop (legion-fake-daemon.ts) so a test drives it.
  *
- * The simulation holds a steady state: each tick moves a few running issues one step through the
- * workflow's running phases, a reviewer or a red check sometimes sends one back to implementing,
- * and an issue in awaiting_merge starts over in planning, standing for the next root its slot
- * takes, rather than going to done. No issue leaves
- * the running phases and none loses its slot, so a fake that runs for days shows the slots, the
- * phases and the roles in a turn it booted with, moving.
+ * The simulation, which runs only when asked (--simulate), holds a steady state: each tick moves
+ * a few of the issues the replay shows running one step through the workflow's running phases, a
+ * reviewer or a red check sometimes sends one back to implementing, and an issue in
+ * awaiting_merge starts over in planning, standing for the next root its slot takes, rather than
+ * going to done. No issue leaves the running phases and none loses its slot. A root that enters a
+ * phase holding its slot for its children (accepting, awaiting merge) gets no turn there, so the
+ * held and idle slots stay those of a real daemon.
  */
 
 export interface DaemonIssue {
@@ -112,6 +113,8 @@ export const ROLE: Readonly<Record<string, string>> = {
   awaiting_merge: "merger",
 };
 const VERDICTS = ["green", "pending", "failing"];
+/** The phases in which a root with children holds its slot for them alone. */
+const HELD_FOR_CHILDREN = new Set(["accepting", "awaiting_merge", "awaiting_person"]);
 
 /** The phase an issue moves to from `from`: the next running phase, planning out of
  *  awaiting_merge (its slot's next root), and implementing out of reviewing when `sendBack`. */
@@ -141,6 +144,10 @@ export class FakeDaemonModel {
   private readonly now: () => Date;
   private readonly random: () => number;
   readonly log: (line: string) => void;
+  /** The issues the replay shows running: the only ones the simulation moves. */
+  private readonly running: readonly DaemonIssue[];
+  /** The issues with a child, from each issue's parent. */
+  private readonly withChildren: ReadonlySet<string>;
 
   constructor(
     state: DaemonState,
@@ -152,6 +159,8 @@ export class FakeDaemonModel {
       log?: (line: string) => void;
       /** Each issue's entry time into the phase the replay gives it (phaseEntryTimes). */
       entryTimes?: ReadonlyMap<string, string>;
+      /** Each issue's parent, by key: a parent is a root that can hold its slot for children. */
+      parents?: ReadonlyMap<string, string>;
     } = {}
   ) {
     this.state = state;
@@ -162,6 +171,10 @@ export class FakeDaemonModel {
     this.random = options.random ?? Math.random;
     this.log = options.log ?? (() => {});
     this.bootAt = this.now().toISOString();
+    this.running = Object.values(state.issues).filter((issue) =>
+      RUNNING.includes(issue.phase as (typeof RUNNING)[number])
+    );
+    this.withChildren = new Set(options.parents?.values() ?? []);
     for (const [key, at] of options.entryTimes ?? []) this.changedAt.set(`phase|${key}|`, at);
     for (const issue of Object.values(state.issues)) {
       if (issue.slot?.admittedAt) this.changedAt.set(`slot|${issue.key}|`, issue.slot.admittedAt);
@@ -247,9 +260,7 @@ export class FakeDaemonModel {
   /** One tick of simulated work: `moves` running issues one step each, a checks verdict, and the
    *  waiting line turned by one. */
   simulate(moves = 2): void {
-    const moving = Object.values(this.state.issues).filter((issue) =>
-      RUNNING.includes(issue.phase as (typeof RUNNING)[number])
-    );
+    const moving = [...this.running];
     for (let n = 0; n < moves && moving.length > 0; n++) {
       const issue = moving.splice(Math.floor(this.random() * moving.length), 1)[0];
       if (issue === undefined) break;
@@ -262,7 +273,9 @@ export class FakeDaemonModel {
       }
       issue.phase = to;
       this.emit("phase", to, issue.key);
-      const started = ROLE[to];
+      // A root held for its children has no turn of its own there.
+      const started =
+        HELD_FOR_CHILDREN.has(to) && this.withChildren.has(issue.key) ? undefined : ROLE[to];
       if (started) {
         this.setClaim(issue, started, "working");
         this.emit("claim_state", { role: started, state: "working" }, issue.key, started);

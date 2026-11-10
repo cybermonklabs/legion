@@ -162,3 +162,37 @@ test("a snapshot sends a known entry time as the phase's time, and marks an unkn
   expect(sent(known?.key)?.at_unknown).toBeUndefined();
   expect(sent(unknown?.key)?.at_unknown).toBe(true);
 });
+
+test("a simulated root held for its children never gets a turn in accepting or awaiting merge", () => {
+  const state = replay();
+  const roots = Object.values(state.issues)
+    .filter((issue) => RUNNING.includes(issue.phase as (typeof RUNNING)[number]))
+    .map((issue) => issue.key);
+  const parents = new Map(roots.map((key, index) => [`CHILD-${index}`, key]));
+  let seed = 11;
+  const model = new FakeDaemonModel(structuredClone(state), {
+    parents,
+    random: () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    },
+  });
+  for (let tick = 0; tick < 1200; tick++) model.simulate();
+
+  const held = new Set(["accepting", "awaiting_merge"]);
+  const phaseOf = new Map(roots.map((key) => [key, state.issues[key]?.phase ?? ""]));
+  let enteredHeld = 0;
+  for (const event of model.kept) {
+    const key = event.issue ?? "";
+    if (!phaseOf.has(key)) continue;
+    if (event.kind === "phase") {
+      phaseOf.set(key, event.value as string);
+      if (held.has(event.value as string)) enteredHeld++;
+    }
+    if (event.kind === "claim_state" && (event.value as { state: string }).state === "working") {
+      expect(held.has(phaseOf.get(key) ?? "")).toBe(false);
+    }
+  }
+  // Roots did enter the held phases, so the rule was exercised.
+  expect(enteredHeld).toBeGreaterThan(0);
+});
