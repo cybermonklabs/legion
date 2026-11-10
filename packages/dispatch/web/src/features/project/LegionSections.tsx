@@ -108,14 +108,24 @@ export function LegionSections({
   const [chosen, setChosen] = useState<WindowChoice>({ kind: "preset", preset: "28d" });
   const [compare, setCompare] = useState<ChartRange | null>(null);
   const [scope, setScope] = useState<LegionMetricsScope>("all");
+  // Tree roots the reader left out of every metric (the largest tree's note offers one).
+  const [excluded, setExcluded] = useState<readonly string[]>([]);
   const range = useMemo(
     () => metricsRange(chosen, Math.floor(Date.now() / 60_000) * 60_000),
     [chosen]
   );
   const against = compare ?? range;
-  const metrics = useQuery(legionMetricsQuery({ from: range.from, project, scope, to: range.to }));
+  const metrics = useQuery(
+    legionMetricsQuery({ exclude_tree: excluded, from: range.from, project, scope, to: range.to })
+  );
   const compared = useQuery({
-    ...legionMetricsQuery({ from: against.from, project, scope, to: against.to }),
+    ...legionMetricsQuery({
+      exclude_tree: excluded,
+      from: against.from,
+      project,
+      scope,
+      to: against.to,
+    }),
     enabled: compare !== null,
   });
   const source = <T,>(data: T | undefined): ChartCompareSource<T> => ({
@@ -161,7 +171,9 @@ export function LegionSections({
             table={workTimeIssueSeries}
             title="Work time to merge"
             trend={workTimeTrendSeries}
-          />
+          >
+            <LargestTreeNote excluded={excluded} onExclude={setExcluded} report={report} />
+          </TrendSection>
           <TrendSection
             compare={source(compared.data)}
             headline={`median ${report.rework.median_review_rounds.toFixed(1)} review rounds per finished issue · ${pct(report.rework.sent_back_share, 0)} sent back to implementing at least once · median ${formatHours(report.rework.median_hours_after_first_review)} implementing and testing after the first review`}
@@ -185,6 +197,52 @@ export function LegionSections({
         </>
       )}
       <DeliverySection compare={compare} onCompare={setCompare} project={project} range={range} />
+    </div>
+  );
+}
+
+/** The share of the finished issues one tree holds at or past which its note is shown. */
+const LARGE_TREE_SHARE = 0.25;
+
+/** Under the work-time chart: when one tree holds a large share of the finished issues, how many,
+ *  and their median work time against the rest's, with the one filter that sets them apart. */
+function LargestTreeNote({
+  excluded,
+  onExclude,
+  report,
+}: {
+  excluded: readonly string[];
+  onExclude: (roots: readonly string[]) => void;
+  report: LegionMetricsResponse;
+}): ReactNode {
+  const tree = report.largest_tree;
+  const button = `self-start rounded border px-2 py-1 text-xs ${borderDefault} ${textPrimaryOnCanvas}`;
+  if (excluded.length > 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-2" data-legion-tree-note>
+        <p className={`text-xs ${textSecondaryOnCanvas}`}>
+          Every number on this page leaves out {excluded.join(", ")}'s tree.
+        </p>
+        <button className={button} onClick={() => onExclude([])} type="button">
+          Count it again
+        </button>
+      </div>
+    );
+  }
+  if (tree === null || tree.finished < 2 || tree.finished < report.finished * LARGE_TREE_SHARE) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-legion-tree-note>
+      <p className={`text-xs ${textSecondaryOnCanvas}`}>
+        {tree.finished} of the {report.finished} finished issues are in {tree.root}'s tree
+        {tree.title === "" ? "" : ` (${tree.title})`}: median work time{" "}
+        {formatHours(tree.median_hours)} against {formatHours(tree.rest_median_hours)} for the rest.
+        They carry Legion phase work, so they are counted.
+      </p>
+      <button className={button} onClick={() => onExclude([tree.root])} type="button">
+        Leave out {tree.root}'s tree
+      </button>
     </div>
   );
 }
@@ -516,12 +574,16 @@ function PhaseBar({
                 aria-hidden
                 className={`inline-block h-3 w-3 shrink-0 rounded-sm ${legionPhaseScale[part.id] ?? ""}`}
               />
-              <span className={`min-w-0 flex-1 leading-tight sm:truncate ${textSecondaryOnCanvas}`}>
-                {picked === part.id ? "✓ " : ""}
-                {part.label}
-              </span>
-              <span className={`shrink-0 tabular-nums ${textPrimaryOnCanvas}`}>
-                {formatHours(part.hours)}
+              {/* On a phone the hours go under the name, so the two never run together. */}
+              <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-2">
+                <span
+                  className={`min-w-0 leading-tight sm:flex-1 sm:truncate ${textSecondaryOnCanvas}`}
+                >
+                  {part.label}
+                </span>
+                <span className={`shrink-0 tabular-nums ${textPrimaryOnCanvas}`}>
+                  {formatHours(part.hours)}
+                </span>
               </span>
               <span
                 className={`hidden w-10 text-right tabular-nums sm:inline ${textMutedOnSurface}`}

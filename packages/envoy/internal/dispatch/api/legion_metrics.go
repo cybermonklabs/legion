@@ -19,7 +19,8 @@ import (
 
 // getLegionMetrics answers GET /api/v1/legion/metrics. Its parameters are `project` (the project
 // whose issues are counted), `from` and `to` (RFC3339; with neither, the last 7 days, as
-// GET /api/v1/delivery/measures reads its window) and `scope` (all, roots or children).
+// GET /api/v1/delivery/measures reads its window), `scope` (all, roots or children) and
+// `exclude_tree` (repeatable: a tree root whose issues no metric counts).
 //
 // A call with no `project` reads the first project that names a Legion daemon, so a bare call
 // answers 200 against any deployment; a deployment where no project names one answers an empty
@@ -49,6 +50,12 @@ func (s *server) getLegionMetrics(w http.ResponseWriter, r *http.Request) {
 		if population, err = metrics.Read(r.Context(), s.deps.Store.Pool, s.deps.GitHub, project, from, to); err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+	}
+	population.ExcludeTrees = map[string]bool{}
+	for _, root := range query["exclude_tree"] {
+		if root = strings.TrimSpace(root); root != "" {
+			population.ExcludeTrees[root] = true
 		}
 	}
 	WriteJSON(w, http.StatusOK, metrics.Compute(population, scope, time.Now().UTC()))

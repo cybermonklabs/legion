@@ -777,7 +777,7 @@ function Graph({
               comparedRange={comparedRange}
               key={unit}
               label={label}
-              title={members.map(({ one }) => one.label).join(" and ")}
+              title={members.map(({ one }) => one.label).join(" vs ")}
               lines={lines}
               rows={first === undefined ? [] : rowLabels(first)}
               target={members.find(({ one }) => one.target !== undefined)?.one.target}

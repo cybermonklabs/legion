@@ -3,6 +3,8 @@ import { expect, test } from "bun:test";
 import {
   type DaemonState,
   FakeDaemonModel,
+  type HistoryRow,
+  historyMarks,
   type PushEvent,
   phaseEntryTimes,
   ROLE,
@@ -195,4 +197,56 @@ test("a simulated root held for its children never gets a turn in accepting or a
   }
   // Roots did enter the held phases, so the rule was exercised.
   expect(enteredHeld).toBeGreaterThan(0);
+});
+
+test("a restarted fake daemon reads the same entry times: its own records and later ones change nothing", () => {
+  const phases = new Map([
+    ["ACME-1", "admitted"],
+    ["ACME-2", "implementing"],
+  ]);
+  const replayAt = "2026-11-08T00:44:00Z";
+  const self = "019a1c09-0000-7000-8000-00000000da01";
+  const history: HistoryRow[] = [
+    { kind: "status", key: "ACME-1", at: "2026-11-03T10:00:00Z", value: "todo", actor: "alice" },
+    { kind: "status", key: "ACME-2", at: "2026-11-05T09:00:00Z", value: "in_progress", actor: "d" },
+    { kind: "handoff", key: "ACME-2", at: "2026-11-06T12:00:00Z", value: "plan", actor: "p" },
+  ];
+  const boot = (rows: readonly HistoryRow[]) => {
+    const { statuses, handoffs } = historyMarks(rows, { replayAt, self });
+    const model = new FakeDaemonModel(
+      {
+        issues: {
+          "ACME-1": { key: "ACME-1", phase: "admitted" },
+          "ACME-2": { key: "ACME-2", phase: "implementing" },
+        },
+      },
+      { entryTimes: phaseEntryTimes(phases, statuses, handoffs) }
+    );
+    return new Map(
+      model
+        .snapshotEvents()
+        .filter((event) => event.kind === "phase")
+        .map((event) => [event.issue, event.at])
+    );
+  };
+  const first = boot(history);
+  expect(first.get("ACME-1")).toBe("2026-11-03T10:00:00Z");
+  expect(first.get("ACME-2")).toBe("2026-11-06T12:00:00Z");
+
+  // What Dispatch holds when the fake restarts: records of its own session, and the real
+  // daemon's status writes after the replay was read.
+  const restarted = boot([
+    ...history,
+    {
+      kind: "status",
+      key: "ACME-1",
+      at: "2026-11-08T01:00:00Z",
+      value: "in_progress",
+      actor: self,
+    },
+    { kind: "status", key: "ACME-1", at: "2026-11-08T01:05:00Z", value: "todo", actor: self },
+    { kind: "status", key: "ACME-1", at: "2026-11-10T07:28:00Z", value: "todo", actor: "d" },
+    { kind: "handoff", key: "ACME-2", at: "2026-11-09T12:00:00Z", value: "plan", actor: "p" },
+  ]);
+  expect(restarted).toEqual(first);
 });

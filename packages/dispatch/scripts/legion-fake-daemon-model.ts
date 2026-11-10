@@ -60,6 +60,47 @@ const PHASE_HANDOFF: Readonly<Record<string, string>> = {
   accepting: "review",
 };
 
+/** One record of the history an entry time is read from: a status change or a handoff. */
+export interface HistoryRow {
+  kind: "status" | "handoff";
+  key: string;
+  at: string;
+  /** The status written, or the handoff's phase word. */
+  value: string;
+  /** Who wrote it: the session or person id. */
+  actor: string | null;
+}
+
+/** The status changes and handoffs the replayed daemon could have seen, by issue, in time order:
+ *  none later than the replay, and none the fake daemon wrote itself, so a restart of the fake
+ *  reads exactly what its first boot read. */
+export function historyMarks(
+  rows: readonly HistoryRow[],
+  { replayAt, self }: { replayAt: string; self: string }
+): {
+  statuses: Map<string, { at: string; status: string }[]>;
+  handoffs: Map<string, { at: string; phase: string }[]>;
+} {
+  const statuses = new Map<string, { at: string; status: string }[]>();
+  const handoffs = new Map<string, { at: string; phase: string }[]>();
+  const cutoff = Date.parse(replayAt);
+  const kept = rows
+    .filter((row) => row.actor !== self && Date.parse(row.at) <= cutoff)
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  for (const row of kept) {
+    if (row.kind === "status") {
+      const marks = statuses.get(row.key) ?? [];
+      marks.push({ at: row.at, status: row.value });
+      statuses.set(row.key, marks);
+    } else {
+      const marks = handoffs.get(row.key) ?? [];
+      marks.push({ at: row.at, phase: row.value });
+      handoffs.set(row.key, marks);
+    }
+  }
+  return { statuses, handoffs };
+}
+
 /** Each issue's entry time into the phase it holds, from Dispatch's own records: its last status
  *  change into the status that phase writes, or for implementing and accepting the last handoff
  *  after it that starts them. An issue no record places in its phase has none. */
@@ -112,7 +153,8 @@ export const ROLE: Readonly<Record<string, string>> = {
   merging: "merger",
   awaiting_merge: "merger",
 };
-const VERDICTS = ["green", "pending", "failing"];
+/** The daemon's checks verdicts (classify.HeadVerdict): green, red, or none while pending. */
+const VERDICTS = ["green", "red", ""];
 /** The phases in which a root with children holds its slot for them alone. */
 const HELD_FOR_CHILDREN = new Set(["accepting", "awaiting_merge", "awaiting_person"]);
 

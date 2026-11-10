@@ -147,6 +147,8 @@ function report(overrides: Partial<LegionMetricsResponse> = {}): LegionMetricsRe
       median_hours: 24,
       p90_hours: 36.8,
     },
+    excluded_trees: [],
+    largest_tree: null,
     phase_breakdown: {
       hours: 18,
       waiting_on_children_hours: 30,
@@ -373,7 +375,7 @@ test("splitting plots filings against finishes and lists the filings by class", 
   const section = document.querySelector('[data-legion-section="splitting"]') as HTMLElement;
   expect(
     [...section.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
-  ).toEqual(["Issues filed by Legion sessions", "Issues finished (roots and children)"]);
+  ).toEqual(["Issues filed", "Issues finished"]);
   expect(section.querySelector("[data-legion-filing-classes]")?.textContent).toContain(
     "In the filer's tree, while designing it1100%"
   );
@@ -428,5 +430,43 @@ test("a project that maps the deploy repository gets a CI and a deploys section"
   );
   expect(measures).toHaveBeenCalledWith(
     expect.objectContaining({ repo: ["acme/deploy", "acme/widgets"] })
+  );
+});
+
+test("when one tree holds a large share of the finished issues, a note under work time names it and leaves it out", async () => {
+  const { metrics } = await renderSections((query) =>
+    report(
+      (query as { exclude_tree?: string[] }).exclude_tree?.length
+        ? { excluded_trees: ["ACME-6"], finished: 1 }
+        : {
+            largest_tree: {
+              finished: 2,
+              median_hours: 1.2,
+              rest_median_hours: 16.6,
+              root: "ACME-6",
+              title: "A standing reviewer",
+            },
+          }
+    )
+  );
+
+  const note = await waitFor(() => {
+    const found = document.querySelector(
+      '[data-legion-section="work_time"] [data-legion-tree-note]'
+    );
+    if (found === null) throw new Error("no note");
+    return found;
+  });
+  expect(note.textContent).toContain(
+    "2 of the 2 finished issues are in ACME-6's tree (A standing reviewer): median work time 1.2h against 16.6h for the rest."
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Leave out ACME-6's tree" }));
+  await waitFor(() =>
+    expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }))
+  );
+  await waitFor(() =>
+    expect(document.querySelector("[data-legion-tree-note]")?.textContent).toContain(
+      "Every number on this page leaves out ACME-6's tree."
+    )
   );
 });

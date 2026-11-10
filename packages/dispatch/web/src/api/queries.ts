@@ -406,6 +406,7 @@ export const legionMetricsQuery = (query: {
   from: string;
   to: string;
   scope: LegionMetricsScope;
+  exclude_tree?: readonly string[];
 }) =>
   queryOptions({
     queryKey: ["legion", "metrics", query],

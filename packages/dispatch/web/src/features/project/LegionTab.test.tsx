@@ -79,7 +79,7 @@ const BOARD: LegionBoardResponse = {
               card("ACME-6", { phase: "accepting", slot: 3, roles: ["architect"] }),
             ]
           : column.id === "merging"
-            ? [card("ACME-3", { phase: "awaiting_merge", slot: 2 })]
+            ? [card("ACME-3", { phase: "awaiting_merge", slot: 2, checks_verdict: "red" })]
             : column.id === "queue"
               ? [
                   card("ACME-4", { phase: "admitted" }),
@@ -219,11 +219,12 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
 
   const state = (slot: number) =>
     document.querySelector(`[data-legion-slot="${slot}"] [data-legion-slot-state]`)?.textContent;
-  expect(state(0)).toBe("working");
-  expect(state(1)).toBe("held for children only");
-  expect(state(2)).toBe("held, children idle");
+  // Each slot use says why.
+  expect(state(0)).toBe("working: implementer in a turn");
+  expect(state(1)).toBe("held: for its children");
+  expect(state(2)).toBe("held: children idle");
   // An architect in a turn makes the slot working, whatever the phase.
-  expect(state(3)).toBe("working");
+  expect(state(3)).toBe("working: architect in a turn");
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toContain(
     "4 of 4 slots in use"
   );
@@ -274,7 +275,7 @@ test("an open timeline draws its phases with the table's label and colour, and i
     expect(reviewing.className).toContain(part);
   }
   expect(reviewing.title).toContain("Reviewing");
-  expect(reviewing.title).toContain("from observed events");
+  expect(reviewing.title).toContain("from the daemon's observed events");
   expect(timeline.querySelector('[data-legion-lane="Turn: implementer"]')).not.toBeNull();
   expect(timeline.querySelector('[data-legion-lane="Child ACME-21"]')).not.toBeNull();
   expect(timeline.querySelector('[data-legion-timeline-figure="Work time"]')?.textContent).toBe(
@@ -299,12 +300,14 @@ test("a holder between turns says so, never 'Nobody'", async () => {
   expect(document.querySelector("[data-legion-slots]")?.textContent).not.toContain("Nobody");
 });
 
-test("the CI column writes a short mark with the full verdict on hover", async () => {
+test("the CI column writes every verdict the daemon sends in words", async () => {
   await renderTab();
 
-  const ci = document.querySelector('[data-legion-slot="0"] [data-legion-slot-ci]');
-  expect(ci?.textContent).toBe("✓");
-  expect(ci?.getAttribute("title")).toBe("green");
+  const ci = (slot: number) =>
+    document.querySelector(`[data-legion-slot="${slot}"] [data-legion-slot-ci]`)?.textContent;
+  expect(ci(0)).toBe("passed");
+  expect(ci(2)).toBe("failed");
+  expect(ci(1)).toBe("none yet");
 });
 
 test("a root's phase hatches the hours it waited on its children, and the key names each colour", async () => {
@@ -339,7 +342,9 @@ test("the waiting line shows how long each issue has waited, and the slots show 
   await renderTab();
 
   expect(document.querySelectorAll("[data-legion-waited]").length).toBeGreaterThan(0);
-  expect(screen.getByRole("region", { name: "Slots" }).textContent).toContain("✓ green");
+  expect(screen.getByRole("region", { name: "Slots" }).textContent).toContain(
+    "CI: passed, failed, or none yet"
+  );
 });
 
 test("a narrow page stacks each slot into a card with every field the table has", async () => {
@@ -349,8 +354,59 @@ test("a narrow page stacks each slot into a card with every field the table has"
   for (const field of ["Phase", "Children not started", "CI", "Slot use"]) {
     expect(card.textContent).toContain(field);
   }
-  expect(card.textContent).toContain("held for children only");
+  expect(card.textContent).toContain("held: for its children");
   expect(screen.getByRole("region", { name: "Waiting line" }).textContent).toContain(
     "In the order the daemon starts them"
+  );
+});
+
+test("a phase's parked hours read 'parked' in grey hatch, and an unknown stretch carries no text", async () => {
+  await renderTab("ACME-2", {
+    ...TIMELINE,
+    parked: [
+      {
+        from: "2026-11-09T17:00:00Z",
+        hours: 2,
+        name: "parked",
+        source: "observed",
+        to: "2026-11-09T19:00:00Z",
+      },
+    ],
+    segments: [
+      {
+        bar: "reviewer",
+        from: "2026-11-09T10:00:00Z",
+        hours: 6,
+        name: "in_a_turn",
+        source: "observed",
+        to: "2026-11-09T16:00:00Z",
+      },
+      {
+        bar: "reviewer",
+        from: "2026-11-09T16:00:00Z",
+        hours: 4,
+        name: "unknown",
+        source: "observed",
+        to: "2026-11-09T20:00:00Z",
+      },
+    ],
+  });
+
+  const timeline = await screen.findByRole("region", { name: "ACME-2 timeline" });
+  await waitFor(() =>
+    expect(timeline.querySelector('[data-legion-hatched="parked"]')).not.toBeNull()
+  );
+  const phase = timeline.querySelector('[data-legion-lane="Phase"]') as HTMLElement;
+  expect(
+    [...phase.querySelectorAll("[data-legion-span]")].map(
+      (one) => one.getAttribute("title")?.split(":")[0]
+    )
+  ).toEqual(["Implementing", "Reviewing", "parked", "Reviewing"]);
+  expect(
+    timeline.querySelector('[data-legion-lane="Where the hours went"] [data-legion-span="unknown"]')
+      ?.textContent
+  ).toBe("");
+  expect(timeline.querySelector("[data-legion-timeline-key]")?.textContent).toContain(
+    "hatched grey: parked"
   );
 });
