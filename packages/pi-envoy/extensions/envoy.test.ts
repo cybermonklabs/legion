@@ -15798,53 +15798,96 @@ console.log(JSON.stringify(args));
       }
     });
 
-    // The picture load is the last window before the card goes out, and a switch inside it
-    // leaves the card the addressed session's too.
-    test("shows no card whose picture load overlaps a switch, and leaves its picture unshown", async () => {
-      const slug = "card-load-switch";
-      const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
-      const body = `Look:\n\n![shot.png](${address})`;
-      const picture = Promise.withResolvers<Response>();
-      const requested = Promise.withResolvers<void>();
-      const routes = pictureRoutes(slug);
-      const warnings: string[] = [];
-      const stopSink = logger.registerLogSink((entry) => {
-        if (entry.level === "warn") warnings.push(entry.message);
+    /** A person's comment on LEGION-1, as Dispatch publishes it on ses_delivery's own agent
+     *  subject: a notification carrying no delivery, so no attempt of the person's is spent on
+     *  it and the listener sends it once (`targetedCommentEnvelope` carries one). */
+    const commentNotification = (slug: string, body: string): string =>
+      JSON.stringify({
+        dedupe_key: slug,
+        event_id: `dispatch-${slug}`,
+        issued_at: 1,
+        payload: JSON.stringify({
+          actor: { id: "alice", kind: "user" },
+          issue_key: "LEGION-1",
+          notify: true,
+          payload: {
+            author: { id: "alice", kind: "user" },
+            body,
+            created_at: "2026-11-10T00:00:00Z",
+            id: "77777777-7777-4777-8777-777777777777",
+            issue_key: "LEGION-1",
+            project_key: "LEGION",
+          },
+          type: "comment.created",
+        }),
+        source: "dispatch",
+        topic: "notifications.agent.ses_delivery",
       });
-      try {
-        const { agent, fixture } = await bootDirectSession(slug, {
-          accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
-          dispatch: ((url: URL) => {
-            if (url.pathname === `/api/v1/artifacts/${slug}-id/versions/1`) {
+
+    // The picture load is the last window before a card goes out, and a `/new` or a fork inside
+    // it moves the host before the card is handed. A delivery is held to the session the person
+    // addressed: its card is handed to nobody, and the copy the listener sends that session
+    // again carries the picture. A frame that is no delivery is held to no session, on that
+    // session's own subject as anywhere else: nothing sends it again, so its card goes to the
+    // conversation the host moved to rather than to nobody (dispatch://INFRA-812).
+    for (const [kind, reason] of [
+      ["a delivery", "new"],
+      ["a comment", "new"],
+      ["a comment", "fork"],
+    ] as const) {
+      const held = kind === "a delivery";
+      test(`${held ? "holds" : "shows"} the card of ${kind} whose picture load overlaps a ${reason} switch`, async () => {
+        const slug = `card-load-${held ? "delivery" : "comment"}-${reason}`;
+        const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
+        const body = `Look:\n\n![shot.png](${address})`;
+        const moved = `ses_after_${reason}_${held ? "delivery" : "comment"}`;
+        const picture = Promise.withResolvers<Response>();
+        const requested = Promise.withResolvers<void>();
+        const routes = pictureRoutes(slug);
+        const warnings: string[] = [];
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.level === "warn") warnings.push(entry.message);
+        });
+        try {
+          const { agent, fixture } = await bootDirectSession(slug, {
+            accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
+            dispatch: ((url: URL) => {
+              if (url.pathname !== `/api/v1/artifacts/${slug}-id/versions/1`) return routes(url);
               requested.resolve();
               return picture.promise as unknown as Response;
-            }
-            return routes(url);
-          }) as (url: URL) => Response | undefined,
-        });
+            }) as (url: URL) => Response | undefined,
+          });
 
-        agent.push(directDispatchEnvelope("steer", slug, { body }));
-        await requested.promise;
-        await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_load"));
-        picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
-        const carded = () =>
-          fixture.deliveries.filter((delivery) =>
-            JSON.stringify(delivery.content).includes(address)
+          agent.push(
+            held ? directDispatchEnvelope("steer", slug, { body }) : commentNotification(slug, body)
           );
-        await until(
-          () =>
-            carded().length > 0 ||
-            warnings.some((warning) => warning.includes("a card was not shown here")),
-          "the card to be shown or reported as not shown"
-        );
+          await requested.promise;
+          await fixture.handlers.get("session_switch")?.({ reason }, sessionContext(moved));
+          picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
+          const carded = () =>
+            fixture.deliveries.filter((delivery) =>
+              JSON.stringify(delivery.content).includes(address)
+            );
+          await until(
+            () =>
+              carded().length > 0 ||
+              warnings.some((warning) => warning.includes("a card was not shown here")),
+            "the card to be shown or reported as not shown"
+          );
 
-        expect(carded()).toEqual([]);
-        expect(shownPictures("ses_after_load").size).toBe(0);
-        expect(shownPictures("ses_delivery").size).toBe(0);
-      } finally {
-        stopSink();
-      }
-    });
+          // The card, picture and all, is the moved-to conversation's for the comment, and
+          // nobody's for the delivery, whose picture is left unshown in both sessions so that
+          // the copy reaching ses_delivery carries it.
+          expect(carded().flatMap((card) => card.content as unknown[])).toEqual(
+            held ? [] : [{ type: "text", text: expect.stringContaining(address) }, image]
+          );
+          expect(shownPictures(moved).has(address)).toBe(!held);
+          expect(shownPictures("ses_delivery").size).toBe(0);
+        } finally {
+          stopSink();
+        }
+      });
+    }
 
     // An admission still holding its pictures belongs to a `sendUserInput` the host has not yet
     // asked pi-envoy's input handler about: a session change (a branch, a move-off) must leave it,

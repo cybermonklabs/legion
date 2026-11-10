@@ -84,10 +84,12 @@ interface HeldNotice extends HeldReplayNotice {
 export interface UnwrittenFramesHost {
   /** The session this instance serves now: a frame written once it is on another records nothing. */
   sessionID(): string;
-  /** Whether `id` is the conversation the host has open, which is the one a card handed now
-   *  reaches: a card for any other session is handed to nobody (`sendCard`), since the host
-   *  writes what it is handed in the conversation it has. */
-  isOpen(id: string): boolean;
+  /** Whether the host has `id` open, which is the conversation a card handed now reaches: a card
+   *  for any other session is handed to nobody (`sendCard`), since the host writes what it is
+   *  handed in the conversation it has. The host's live id alone, not the two halves the
+   *  extension's own `sessionOpen` reads: between the host's move and the event that tells the
+   *  extension of it, the session the host moved to is the one its cards reach. */
+  hostIsOn(id: string): boolean;
   /**
    * Whether the host is settled: idle, holding no message, not shutting down, and on the session
    * this instance serves. Only a settled host is handed an inert card or a replay notice, or
@@ -190,12 +192,14 @@ export class UnwrittenFrames {
    * that throws leaves nothing waiting and releases the claim, so a re-send or a sweep shows the
    * frame again.
    *
-   * `closed`: `session` is not the conversation the host has open (`UnwrittenFramesHost.isOpen`),
-   * so nothing is handed and nothing is marked shown - the host writes what it is handed in the
-   * conversation it has, under the name of the session the card is for. The claim goes back with
-   * nothing recorded (`cardNotShown`), so a relay frame is sent again by the listener to the
-   * session the frame names, and a core frame reaches that session again only through its replay
-   * sweep, as a card. Every caller is answered this, so none has to read the session for itself.
+   * `closed`: the host is not on `session` (`UnwrittenFramesHost.hostIsOn`), so nothing is handed
+   * and nothing is marked shown - the host writes what it is handed in the conversation it has,
+   * under the name of the session the card is for. The claim goes back with nothing recorded
+   * (`cardNotShown`), and the frame is shown again only by whatever sends it again: a caller
+   * names a session other than the host's own for a Dispatch delivery alone, which the listener
+   * sends again to the session it names and that session's own replay sweep shows as a card
+   * (`cardSession` in `../extensions/envoy.ts`). Every caller is answered this, so none has to
+   * read the session for itself.
    *
    * An inert card sent while the host is not settled is not handed: it waits, `queued`, and the
    * first settled moment hands it (`handBackWithdrawn`). One whose frame the ledger keeps nothing
@@ -208,7 +212,7 @@ export class UnwrittenFrames {
     identity: DedupeIdentity | undefined,
     claim: DeliveryClaim | undefined
   ): "queued" | "shown" | "closed" {
-    if (!this.#host.isOpen(session)) {
+    if (!this.#host.hostIsOn(session)) {
       this.#host.cardNotShown(session, identity);
       claim?.release();
       return "closed";

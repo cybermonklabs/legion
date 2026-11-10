@@ -204,8 +204,11 @@ Accepting it there would spend that person's attempt for the conversation the ho
 After the accept the attempt is spent, so the person is answered instead, in the words the `!` path uses for the same move.
 A typed Send is answered that the message was not sent, since this session is no longer the one open here, and the host is handed nothing.
 A BTW is refused with that sentence before its side turn, which would otherwise be the conversation the host moved to answering a question nobody asked it.
-A card is held to that session inside `UnwrittenFrames.sendCard`, which hands none to any other: a delivery whose accept Dispatch refused, one naming an attempt this session delivered, and a late BTW are each shown to nobody, and the claim goes back as it does before the accept.
+A delivery's card is held to that session inside `UnwrittenFrames.sendCard`, which hands it to no other conversation: a delivery whose accept Dispatch refused, one naming an attempt this session delivered, and a late BTW are each shown to nobody, and the claim goes back as it does before the accept.
 Nothing of such a card counts as shown, so the copy that reaches the addressed session carries its pictures.
+A frame that is no delivery — a peer's card, a Dispatch notification, a role forward — is held to no session: its card, and the notice that its delivery failed, go to the conversation the host has open as they are handed (`cardSession`).
+Nothing is certain to send such a frame again: a role forward is stored under no session's subject, and a listener that serves no replay sweeps for nothing.
+A card held back from a session the host left would therefore be handed to nobody and lost.
 
 On a host with `pi.sendUserInput` (our Oh My Pi fork, can1357/oh-my-pi#14323) the body runs as if
 typed at the session's terminal (`runTypedInput`), with the Dispatch message id as the host's `tag`

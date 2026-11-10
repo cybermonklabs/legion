@@ -68,7 +68,7 @@ function harness() {
   const recordFailures: string[] = [];
   const frames = new UnwrittenFrames({
     sessionID: () => state.session,
-    isOpen: (id) => id === state.session,
+    hostIsOn: (id) => id === state.session,
     settled: () => state.settled,
     recordDelivered: async (session, identity) => {
       recorded.push({ session, identity });

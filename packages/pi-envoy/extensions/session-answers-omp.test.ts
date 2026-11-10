@@ -686,6 +686,12 @@ test.skipIf(skipped)(
 // Each reading is a session of its own, ended before the next one starts, so no reading is taken
 // beside the stand-in and the binary of an earlier one. All three are printed with the median
 // beside them, whether or not the row passes.
+//
+// Nine sessions run here, three readings for each of the three labels, and the budget below is
+// read from what one of them costs: two runs of the row read 209 s and 191 s on this pod, about
+// 22 s a session. Nine sessions at 40 s each is 360 s, which is the timeout below - over half
+// again the longer of those two runs - so a pod that schedules each session slower fails this
+// row on the route it measures rather than on the clock.
 test.skipIf(skipped)(
   "(f) an answers route that never answers holds no request for a second, by the median of three readings: turn 1, turn 2 after a good read, and a subagent's first request",
   async () => {
@@ -776,7 +782,7 @@ test.skipIf(skipped)(
       return waitOf(sub, subFirst);
     });
   },
-  300_000
+  360_000
 );
 
 test.skipIf(skipped)(
