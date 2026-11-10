@@ -97,10 +97,13 @@ def free_kb(directory: str) -> int:
     return total_free_kb(directory)[1]
 
 
-def now_utc() -> str:
+def now_utc(epoch: float | None = None) -> str:
     """The time a reading was taken, RFC 3339 in UTC to the second: the resolution the job record
-    gives a step boundary, which is what a reader lines these readings up against."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    gives a step boundary, which is what a reader lines these readings up against.
+    The sampler passes the second the tick belongs to rather than letting this read the clock,
+    because a sleep that wakes a few milliseconds early would otherwise stamp two ticks with one
+    second and leave the next second with none."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
 def available_memory_kb() -> int | None:
@@ -321,8 +324,12 @@ def sample(path: str, state_path: str) -> int:
     each reading has reached in the state, until the report stops this process or the deadline
     above passes."""
     deadline = time.monotonic() + SAMPLE_SECONDS + SAMPLER_MAX_SECONDS
+    # The second this tick belongs to, kept rather than read again at the end of the loop: the
+    # stamp and the wait are then two readings of one number, so neither can drift from the
+    # other.
+    tick = int(time.time())
     while time.monotonic() < deadline:
-        when = now_utc()
+        when = now_utc(tick)
         try:
             free = free_kb(path)
         except OSError:
@@ -357,12 +364,16 @@ def sample(path: str, state_path: str) -> int:
         # the boundary `start` ends on, and a reader lines that boundary up against a tick. The
         # state file may not be written yet on this first pass, which costs nothing: `start`
         # seeds all three worst readings itself, and the series line is written either way.
-        # The wait is to the NEXT WHOLE SECOND rather than for a second: a fixed sleep after the
-        # work makes the period a little longer than a second, and a series that drifts skips a
-        # wall-clock second now and then. A missing second here is the shape a reader is asked
-        # to read as a machine that stopped answering, so a sampler that drifts makes that mark
-        # itself.
-        time.sleep(SAMPLE_SECONDS - (time.time() % SAMPLE_SECONDS))
+        # THE WAIT IS TO THE NEXT SECOND THIS SAMPLER HAS NOT TICKED, and the tick carries that
+        # second rather than whatever the clock says when the sleep returns. A fixed sleep after
+        # the work runs a little long and skips a wall-clock second; a sleep to the next whole
+        # second can wake a few milliseconds early and stamp two ticks with one second, leaving
+        # the next with none. Either way the series grows a hole, and a hole here is the shape a
+        # reader is asked to read as a machine that stopped answering, so a sampler that makes
+        # one is making that mark itself. The margin is what keeps an early wake on the right
+        # side of the second.
+        tick += 1
+        time.sleep(max(0.0, tick + 0.05 - time.time()))
     return 0
 
 
