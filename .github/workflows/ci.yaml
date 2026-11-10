@@ -2539,7 +2539,7 @@ jobs:
       # routed through a proxy that refuses them. The report prints and never fails the job:
       # this is the measurement, not a new gate.
       - name: Start the machine watch over every faulted install
-        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/machine-watch.json"
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
       # Case 5 of 16 of the corrupted payloads, and the one that runs here rather than with the
       # other seven: the jj binary in mise's install directory is one byte changed.
@@ -3209,7 +3209,7 @@ jobs:
       # `always()`, because the reading a reader wants most is the one from a job that failed.
       - name: Report what this job ran on
         if: always()
-        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/machine-watch.json"
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
@@ -3297,7 +3297,7 @@ jobs:
       # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
       # that job's own pair says what the series shows and what it cannot.
       - name: Start the machine watch over both halves
-        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/machine-watch.json"
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
       # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
       # fourth step holds what it installed to the row its third step read out of `uname -m`.
@@ -3336,7 +3336,7 @@ jobs:
       # `always()`, because the reading a reader wants most is the one from a job that failed.
       - name: Report what this job ran on
         if: always()
-        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/machine-watch.json"
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise

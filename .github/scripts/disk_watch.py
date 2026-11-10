@@ -32,10 +32,12 @@ the worst of each reading with the time it was read, then the line the script be
 where `ok` means the step ended with at least as much free disk as it used, that is: it started
 with at least twice the disk it went on to need.
 
-The series is what a runner that stops answering leaves behind. Each line carries the second it
-was read in, and the job record times every step boundary, so a reader lines the two up: what the
-machine had when a step began, what it had while that step ran, and what it had in the last
-second before it went.
+Each line of the series carries the second it was read in, and the job record times every step
+boundary, so a reader lines the two up: what the machine had when a step began, and what it had
+while that step ran. It does not show a runner being lost: the series reaches a reader only
+through the report step's output, and a run whose runner stopped answering stores no log at all.
+It is the headroom of every run that does store one, and the reading for a command that hangs
+while the runner is alive.
 
 The state crosses the two steps in a file rather than in $GITHUB_ENV because a step of this job
 that writes $GITHUB_ENV or $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for
@@ -275,7 +277,7 @@ def written(reading: int | str | None) -> str:
 
 
 def series_line(when: str, free: int | None, memory: int | None, load: str | None) -> str:
-    """One second of the machine, as the sampler writes it and the report prints it back."""
+    """One second of the machine, as the sampler writes it into the series."""
     return (
         f"machine: {when} free {written(free)} kB, "
         f"available memory {written(memory)} kB, load {written(load)}"
@@ -384,17 +386,17 @@ def print_worst(state: dict) -> None:
     """The worst each reading reached and the time it was read. A reading the state holds no
     number or no time for is one no tick ever made, and is named as such rather than printed as
     a number with nothing behind it."""
-    for name, worst, unit, reading in (
-        ("least_kb", "least free disk", " kB", "free disk"),
-        ("least_memory_kb", "least available memory", " kB", "available memory"),
-        ("greatest_load", "greatest one-minute load", "", "one-minute load"),
+    for name, direction, reading, unit in (
+        ("least_kb", "least", "free disk", " kB"),
+        ("least_memory_kb", "least", "available memory", " kB"),
+        ("greatest_load", "greatest", "one-minute load", ""),
     ):
         value = state.get(name)
         when = state.get(f"{name}_at")
         if value is None or when is None:
             print(f"machine: no {reading} was read")
             continue
-        print(f"machine: {worst} {value}{unit} at {when}")
+        print(f"machine: {direction} {reading} {value}{unit} at {when}")
 
 
 def report(state_path: str) -> int:

@@ -60,8 +60,9 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
 alive() { kill -0 "$1" 2>/dev/null && echo true || echo false; }
 
 # line_of <text> <regex>: the number of the first line that matches, or '' when none does. The
-# cases that read it are about the order the report prints its lines in, not their wording.
-line_of() { grep -n -- "$2" <<<"$1" | sed -n '1s/:.*//p' || true; }
+# cases that read it are about the order the report prints its lines in, not their wording. It
+# is `check-release-credentials.test.sh`'s helper of the same name, over text rather than a file.
+line_of() { grep -n -m1 -- "$2" <<<"$1" | cut -d: -f1 || true; }
 
 # The shapes the sampler writes and the report prints back: a time is RFC 3339 in UTC to the
 # second, and a tick carries three readings, each a number or the `unknown` of a reading this
