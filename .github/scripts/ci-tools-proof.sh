@@ -16,22 +16,28 @@
 #
 #   origin-start
 #       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
-#       127.0.0.1 at a port the kernel picks, and writes `github=`, `ghcr=` and `npm=` to
-#       $GITHUB_OUTPUT, the three base URLs a case hands .github/scripts/ci-tools.sh through its
-#       CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE and CI_TOOLS_NPM_BASE seams.
-#       The origin serves the three routes those seams reach — a release asset, a ghcr blob with
-#       the pull token before it, and an npm tarball — from the payload `stage` wrote, and it
-#       decides for every request, from the control file `corrupt` writes, whether to serve the
-#       row whole or with its last byte changed.
+#       127.0.0.1 at a port the kernel picks, and writes `github=`, `ghcr=`, `npm=` and `url=` to
+#       $GITHUB_OUTPUT, the four base URLs a case hands .github/scripts/ci-tools.sh through its
+#       CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE and CI_TOOLS_URL_BASE seams.
+#       The origin serves the four routes those seams reach — a release asset, a ghcr blob with
+#       the pull token before it, an npm tarball, and the address a `pypi` or `pulumi-releases`
+#       side of a row writes, whose scheme and host that last seam replaces — from the payload
+#       `stage` wrote, and it decides for every request, from the control file `corrupt` writes,
+#       whether to serve the row whole or with one byte changed.
 #       It logs every path it serves, the row it belongs to and whether it corrupted it.
 #
 #   stage
 #       Fetches the correct bytes of every row a case serves, through
-#       .github/scripts/ci-tools.sh itself, into $RUNNER_TEMP/ci-tools-proof/payload/.
+#       .github/scripts/ci-tools.sh itself, into $RUNNER_TEMP/ci-tools-proof/payload/, under
+#       every name the origin serves that row under: a row's own bytes reach one name as they
+#       are, an npm tarball and a PyPI wheel are packed around them, and for a row whose own
+#       `digest` is of a member — uv's is — the name the row's primary URL serves is staged
+#       with ci_tools_fetch_primary and the member is taken out of that one staged archive,
+#       because the primary serves the archive and not that member.
 #       It runs before the fault starts, while the network is whole, because these are the bytes
 #       the origin stands in with once no real source answers.
 #       It prints each file with its size and its sha256, and refuses the job naming the row
-#       when a fetch or a digest does not come out right.
+#       when a fetch, a digest or a repack does not come out right.
 #
 #   start-fault
 #       Starts .github/scripts/ci-fault-proxy.py --mode fail over FAULT_HOSTS below, the release
@@ -69,6 +75,16 @@
 #       Reads what one installed tool printed as its version against the row that pins it.
 #       Prints the reading and returns non-zero where the two do not agree, so the step that
 #       runs it keeps its own list of the tools that answered wrongly.
+#
+#   refusals <host>
+#       How many requests to that host the fault proxy refused since the probe marked its log,
+#       and the lines themselves, printed beside the readings of the installs that succeeded:
+#       the 504s that sent each of those installs to its second source.
+#       It refuses the job where there were none, because a job whose installs all passed with
+#       the fault refusing nothing is a job that reached its primaries after all.
+#       `installed-bun --expect-refused` takes that same reading of that same log, and both go
+#       through the one function that makes it, so neither can count a refusal the other does
+#       not.
 #
 #   installed-bun <row> [--expect-refused <host>]
 #       The bun on this job's PATH, read against that row: the machine, what `bun --version`
@@ -117,7 +133,8 @@
 #       A case that must put those bytes on the runner copies them from there, so this rig's own
 #       directory layout is named here and in no step of the job.
 #       Only a row whose second source is the ghcr copy has such a file: an npm row's payload is
-#       the tarball that registry serves, and the binary is a member inside it.
+#       the tarball that registry serves and a pypi row's is the wheel it serves, and the pinned
+#       bytes are a member inside it.
 #
 #   seed-mise-jj <file>
 #       Writes that file as the jj binary inside mise's own install directory for the tool
@@ -155,11 +172,16 @@
 # A composite action writes its refusal to the job's log, and no later step can read that log, so
 # the source a refusal named is read from what the origin served instead.
 # Each route is one source: /github/ is `github-release`, /ghcr/ is `ghcr-mirror`, /npm/ is
-# `npm`, and the origin's log says which route served this case's row.
+# `npm`, and /url/ is `pypi` and `pulumi-releases` alike — one seam for both, and the row says
+# which of the two words its own address is written in — and the origin's log says which route
+# served this case's row.
 # A case whose primary is the faulted real host asks the origin's github route for nothing, so
 # `--expect-source github-release` is read as the same statement the other way round: the origin
-# served neither second source for this row, so the bytes the step refused came from the primary
-# path and from nowhere else.
+# served this row on none of its other three routes, so the bytes the step refused came from the
+# primary path and from nowhere else.
+# The pulumi-cli row is the one row whose second source is a release asset, and a case of it the
+# origin did serve on /github/ is read as that route having served, which is the reading the
+# same branch makes.
 # A Bun already installed on the runner reads the same way, though setup-bun names it
 # `existing-install` rather than `github-release`: this rig reads the route and not the word,
 # so the word a refusal printed is read in the job's own log and not by this script.
@@ -184,7 +206,7 @@ mark="$work/mark"
 # The rows a case installs, which are the rows `stage` fetches the correct bytes of.
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
 # and no case installs them, so nothing would serve their payload.
-STAGED_ROWS="crane changie mise jj bun-linux-x64"
+STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli"
 
 # The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
 # github.com, where a release download starts, and the two githubusercontent.com hosts it ends
@@ -240,7 +262,7 @@ wait_for_file() {
 # which rows are served corrupted — is the control file, read on every request.
 write_origin() {
   cat > "$work/origin.py" <<'PY'
-"""The three sources .github/scripts/ci-tools.sh reads, served from one local origin.
+"""The four sources .github/scripts/ci-tools.sh reads, served from one local origin.
 
 Routes, each the one a seam of that helper reaches:
 
@@ -248,18 +270,22 @@ Routes, each the one a seam of that helper reaches:
   GET /ghcr/token?service=...&scope=...          {"token":"proof"}
   GET /ghcr/v2/<path>/blobs/sha256:<digest>      the payload of the row that digest pins
   GET /npm/<package>/-/<file>.tgz                the payload of that file name
+  GET /url/<the path of the row's own address>   the payload of that file name
 
 Every request is decided by the control file, read again each time: a row named in it is served
-with its last byte changed, and a row not named in it is served whole. Each request is logged
+with one byte changed, and a row not named in it is served whole. Each request is logged
 with the row it belongs to and whether it was corrupted.
 """
 
 import http.server
+import io
 import json
 import os
 import re
 import socketserver
+import struct
 import sys
+import zipfile
 from pathlib import Path
 
 import yaml
@@ -272,20 +298,61 @@ GHCR_BLOB = re.compile(r"^/ghcr/v2/(?P<path>.+)/blobs/sha256:(?P<digest>[0-9a-f]
 NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
 
 
-def basenames(row):
-    """The file names a release asset of this row is served under: its primary's and its
-    mirror_from's, which are one name where the row holds both and they agree."""
-    return {str(row.get(field) or "").rsplit("/", 1)[-1] for field in ("primary", "mirror_from")} - {""}
+# The source words each route is reached by, which is what decides the row a request is about:
+# the seam a case sets points the helper here, and the word the row writes on that side says
+# which of its two addresses it then asks for.
+# This program is started with the manifest and nothing else, so these two sets are its own
+# and not the shell's `route_of`. The places of this tree that decide a source word are listed
+# at ci_tools__source_fetch in .github/scripts/ci-tools.sh, these two sets among them, and a
+# new word moves all of them together.
+GITHUB_WORDS = {"github-release"}
+URL_WORDS = {"pypi", "pulumi-releases"}
+
+
+def base_name(url):
+    """The file name at the end of that address, and "" where the row wrote no address."""
+    return str(url or "").rsplit("/", 1)[-1]
+
+
+def served_names(row, words):
+    """The names this row's bytes are served under at the addresses written in one of those
+    words: its `primary` where `primary_source` is one of them, and its `second_url` where
+    `second_source` is.
+    Both sides are read, because a word is no longer a side: `github-release` is the pulumi-cli
+    row's second source, and the two pulumi rows write one file name at both of their
+    addresses, which is one name on two routes."""
+    names = set()
+    if row.get("primary_source") in words:
+        names.add(base_name(row.get("primary")))
+    if row.get("second_source") in words:
+        names.add(base_name(row.get("second_url")))
+    return names - {""}
+
+
+def github_names(row):
+    """The names the /github/ route serves this row under, which is the CI_TOOLS_GITHUB_BASE
+    seam's: whichever of its two addresses is written `github-release`, and its `mirror_from`,
+    the release asset .github/scripts/mirror-ci-tools.sh fills a ghcr-mirror row's copy from."""
+    return served_names(row, GITHUB_WORDS) | ({base_name(row.get("mirror_from"))} - {""})
+
+
+def url_names(row):
+    """The names the /url/ route serves this row under, which is the CI_TOOLS_URL_BASE seam's:
+    whichever of its two addresses is written `pypi` or `pulumi-releases`. That seam keeps a
+    URL's path and replaces its scheme and host, so what arrives here is the file name at the
+    end of that path."""
+    return served_names(row, URL_WORDS)
 
 
 def resolve(path):
     """The row this request is about and the payload file it is served from, or (None, None)."""
-    if path.startswith("/github/"):
-        name = path.split("?", 1)[0].rsplit("/", 1)[-1]
-        for row in ROWS:
-            if name in basenames(row):
-                return row, name
-        return None, None
+    for prefix, names_of in (("/github/", github_names), ("/url/", url_names)):
+        if path.startswith(prefix):
+            name = path.split("?", 1)[0].rsplit("/", 1)[-1]
+            for row in ROWS:
+                if name in names_of(row):
+                    return row, name
+            return None, None
     blob = GHCR_BLOB.match(path.split("?", 1)[0])
     if blob:
         for row in ROWS:
@@ -301,11 +368,45 @@ def resolve(path):
 
 
 def corrupted_rows():
-    """The rows this request must serve with their last byte changed, read again for every
+    """The rows this request must serve with one byte changed, read again for every
     request: one origin serves every case of the job, and a case says what it wants here."""
     if not control.exists():
         return set()
     return set(control.read_text().split())
+
+
+def member_data_end(body, member):
+    """Where that member's own stored bytes end inside that zip, or None where the archive
+    holds no such member. The local header is read for its two length fields, because the extra
+    field a writer puts there is not the one the central directory carries."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as held:
+            info = held.getinfo(member)
+        head = body[info.header_offset:info.header_offset + 30]
+        name_length, extra_length = struct.unpack("<HH", head[26:30])
+        return info.header_offset + 30 + name_length + extra_length + info.compress_size
+    except (KeyError, OSError, struct.error, zipfile.BadZipFile):
+        return None
+
+
+def corrupted_body(row, name, body):
+    """That body with one byte changed: the smallest edit that moves the sha256 of what the
+    reader of these bytes is held to.
+    For most names it is the last byte of the file, which is what the row's digest is of, and
+    for a gzipped tarball it is part of the framing `tar -xz` reads, so the member read refuses
+    it before any digest does.
+    A zip is the exception, measured on 2026-11-09 against this rig's own wheel: its last byte
+    is inside the end-of-directory record, which a reader taking a member out never looks at,
+    so a wheel changed there hands the pinned binary back whole and the case installs it. The
+    byte changed is the last one of the member's own stored data instead, which is what the
+    row's `digest` answers for, and python3's zipfile then hands over no member at all, because
+    the CRC the archive carries for it no longer matches what it holds.
+    """
+    if name.endswith((".whl", ".zip")):
+        end = member_data_end(body, str(row.get("second_member") or ""))
+        if end is not None:
+            return body[: end - 1] + bytes([body[end - 1] ^ 0x01]) + body[end:]
+    return body[:-1] + bytes([body[-1] ^ 0x01])
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -324,9 +425,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = file.read_bytes()
         corrupt = row["name"] in corrupted_rows()
         if corrupt:
-            # The last byte, changed: the smallest edit that moves the sha256 of the whole file,
-            # and the one that leaves an archive's own framing alone until the digest is read.
-            body = body[:-1] + bytes([body[-1] ^ 0x01])
+            body = corrupted_body(row, name, body)
         self.answer(200, body, row["name"], "yes" if corrupt else "no")
 
     def answer(self, status, body, row, corrupt):
@@ -374,33 +473,57 @@ origin_start() {
       echo "github=$base/github"
       echo "ghcr=$base/ghcr"
       echo "npm=$base/npm"
+      echo "url=$base/url"
     } >> "$GITHUB_OUTPUT"
   fi
-  note "the origin serves $base/github, $base/ghcr and $base/npm, and logs to $origin_log"
+  note "the origin serves $base/github, $base/ghcr, $base/npm and $base/url, and logs to $origin_log"
 }
 
 # ---------------------------------------------------------------- stage
 
 # payload_names <row>: every file name the origin serves this row's bytes under, one per line.
-# A release asset is served under its own file name, a ghcr blob under the digest its URL names,
-# and an npm package under the tarball name the registry serves it as.
+# A row writes a source word on each of its two sides, and the word says where those bytes are
+# served and so under what name: a release asset and a service's own address under the file name
+# at the end of that address, a ghcr blob under the digest its URL names, and an npm package
+# under the tarball name the registry serves it as.
+# The second source's word is read here and the primary's is not, because a row's `primary` is
+# one URL whichever of the words it is written in, and the name is the end of it either way.
 payload_names() {
-  local row=$1 primary mirror_from second package version
+  local row=$1 primary second route mirror_from package version second_url
   primary=$(ci_tools_field "$row" primary)
-  second=$(ci_tools_field "$row" second_source)
+  # The word and the refusal of one no fetch of that side answers to are both the helper's:
+  # ci_tools_source_name reads the row's `second_source` through the same list the fetch reads
+  # it through and refuses it in its own `::error::ci-tools:` line, which names the five. The
+  # refusal is made here rather than inside the pipeline below, where an exit would end a
+  # subshell alone, and `stage` reads these names into a variable for the same reason.
+  second=$(ci_tools_source_name "$row" second) ||
+    die "$row: the helper reads no second source for this row, so the origin cannot serve one"
+  # Which fields the names come from is a property of the route and not of the word, and
+  # route_of below answers that for this shell: /github/ and /url/ alike mean the address the
+  # row writes out in `second_url`.
+  route=$(route_of "$second" "payload_names")
   {
     [ -z "$primary" ] || printf '%s\n' "${primary##*/}"
-    if [ "$second" = ghcr-mirror ]; then
-      mirror_from=$(ci_tools_field "$row" mirror_from)
-      [ -z "$mirror_from" ] || printf '%s\n' "${mirror_from##*/}"
-      printf 'sha256:%s\n' "$(ci_tools_digest "$row")"
-    else
-      package=$(ci_tools_field "$row" npm_package)
-      version=$(ci_tools_field "$row" version)
-      printf '%s-%s.tgz\n' "${package##*/}" "$version"
-    fi
-    # A row whose `primary` is its `mirror_from` names one file twice, and the origin serves one
-    # file: the name is printed once, in the order the names were written.
+    case $route in
+      /ghcr/)
+        mirror_from=$(ci_tools_field "$row" mirror_from)
+        [ -z "$mirror_from" ] || printf '%s\n' "${mirror_from##*/}"
+        printf 'sha256:%s\n' "$(ci_tools_digest "$row")"
+        ;;
+      /npm/)
+        package=$(ci_tools_field "$row" npm_package)
+        version=$(ci_tools_field "$row" version)
+        printf '%s-%s.tgz\n' "${package##*/}" "$version"
+        ;;
+      *)
+        second_url=$(ci_tools_field "$row" second_url)
+        [ -z "$second_url" ] || printf '%s\n' "${second_url##*/}"
+        ;;
+    esac
+    # A row whose `primary` is its `mirror_from`, and a row whose two addresses end in one file
+    # name — the two pulumi rows, which Pulumi serves byte for byte at both — names one file
+    # twice, and the origin serves one file: the name is printed once, in the order the names
+    # were written.
   } | awk '!seen[$0]++'
 }
 
@@ -431,34 +554,139 @@ pack_npm() {
   rm -rf "$staging"
 }
 
+# pack_zip <row> <binary> <archive>: the binary as PyPI serves it, a zip whose one member is the
+# row's `second_member`, so the helper's own zipfile read of it takes out the same bytes it takes
+# out of the wheel. python3's zipfile writes it, because python3's zipfile is what reads it.
+# The member is stored rather than deflated, for the reason pack_npm compresses at gzip's
+# fastest level: the archive is served over 127.0.0.1 to a reader that takes either, and the
+# seconds are on the proof job's critical path.
+pack_zip() {
+  local row=$1 binary=$2 archive=$3 member
+  member=$(ci_tools_field "$row" second_member)
+  rm -f -- "$archive"
+  PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sys
+import zipfile
+
+archive, member, binary = sys.argv[1:4]
+with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as held:
+    held.write(binary, member)
+' "$archive" "$member" "$binary"
+}
+
+# packed_back <row> <archive> <member> <what that archive is called>: the round trip of what
+# this rig packed — that member taken back out and held to the row's own pinned digest. The
+# origin serves this archive and an install reads the member out of it, so a pack that does
+# not give the pinned bytes back is this rig's own defect and must not read as the install's,
+# which is why it dies rather than returning.
+# The member comes out with the helper's own ci_tools_extract, the one place this repository
+# takes a member out of an archive, and the archive's own path stands in for the address it
+# would have come from: ci_tools_extract reads the shape off that name, and the names this rig
+# packs under are the names the origin serves, so a `.tgz` goes to `tar -xzO` and a `.whl` to
+# python3's zipfile exactly as an install's would.
+# What comes out is held to the row's digest with ci_tools_verify, as stage_member below holds
+# the member it takes out: ci_tools__hold behind that call is this repository's one digest
+# comparison, so this rig writes no second reading of what a match is.
+packed_back() {
+  local row=$1 archive=$2 member=$3 what=$4 back report status=0
+  back="$work/round-trip-$row"
+  rm -f -- "$back"
+  report=$(ci_tools_extract "$archive" "$member" "$back" "$archive") || status=$?
+  [ "$status" -eq 0 ] || die "$row: the $what this rig packed did not give $member back: $report"
+  # The label is this rig, because this rig packed the archive the member came out of. No
+  # service served these bytes, so naming one — the row's own second source, say — would put
+  # a service that served nothing into the line, and a mismatch would read as that service
+  # serving bytes this row does not pin.
+  ci_tools_verify "$row" "$back" "the $what this rig packed" || status=$?
+  rm -f -- "$back"
+  [ "$status" -eq 0 ] ||
+    die "$row: the $what this rig packed does not give the bytes this row pins back"
+}
+
+# stage_member <row> <archive> <member> <file>: the row's own pinned bytes out of the archive
+# its primary served, which ci_tools_fetch_primary has already staged and held to the row's
+# `primary_digest`.
+# The member is taken out with the helper's own ci_tools_extract, so this rig reads an archive
+# the one way an install does, and it is held to the row's `digest` with ci_tools_verify, which
+# is the check ci_tools_fetch makes of the member it fetches.
+# Prints what happened and returns non-zero where either refuses, so `stage` appends the row to
+# its failures and goes on.
+stage_member() {
+  local row=$1 archive=$2 member=$3 file=$4 report status=0
+  report=$(ci_tools_extract "$archive" "$member" "$file" "$(ci_tools_field "$row" primary)") || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "::error::ci-tools-proof: $row: $report" >&2
+    return 1
+  fi
+  ci_tools_verify "$row" "$file" "$(ci_tools_source_name "$row" primary)"
+}
+
 stage() {
   [ "$#" -eq 0 ] || die "stage takes no argument, and this call gave $#"
   mkdir -p "$payload"
-  local row digest file name read_back failures=""
+  local row file name names member primary_name failures=""
   for row in $STAGED_ROWS; do
     note "staging $row"
-    digest=$(ci_tools_digest "$row")
+    # The name the row's primary URL serves its bytes under, and the member of what it serves
+    # the row's own `digest` is of, which only a row whose primary serves an archive around the
+    # pinned bytes names.
+    primary_name=$(ci_tools_field "$row" primary)
+    primary_name=${primary_name##*/}
+    member=$(ci_tools_field "$row" primary_member)
+    # Every name the origin serves this row under, read before the loop below rather than from
+    # a process substitution feeding it: a `die` inside that subshell ends the subshell alone,
+    # and this script would stage nothing for the row and walk on. Read into a variable, the
+    # refusal is this script's own exit under its `set -euo pipefail`.
+    names=$(payload_names "$row")
     file="$work/staged-$row"
     rm -f "$file"
-    # The row's own path, which the helper decides: a row with a primary is tried there first,
-    # and a row whose primary bytes a third party fetches falls straight through to the second
-    # source.
-    ci_tools_fetch "$row" "$file" || { failures="$failures $row"; continue; }
+    if [ -n "$member" ]; then
+      # The bytes the PRIMARY URL serves, staged under the name that URL ends in and held to
+      # the row's `primary_digest`, and the row's own pinned bytes taken out of that staged
+      # archive: one download for the two files, and a case whose primary meets the origin
+      # reads exactly these bytes. Fetching the row's bytes with ci_tools_fetch and then the
+      # archive with ci_tools_fetch_primary downloaded uv's 16682639-byte archive twice, and
+      # uv is the one row that names a `primary_member`.
+      # Both digests are still read: ci_tools_fetch_primary holds the archive to
+      # `primary_digest` before it places it, and stage_member holds the member to the row's
+      # own `digest`.
+      ci_tools_fetch_primary "$row" "$payload/$primary_name" &&
+        stage_member "$row" "$payload/$primary_name" "$member" "$file" ||
+        {
+          failures="$failures $row"
+          continue
+        }
+    else
+      # The row's own path, which the helper decides: a row with a primary is tried there
+      # first, and a row whose primary bytes a third party fetches falls straight through to
+      # the second source. What it leaves is the bytes the row's `digest` pins.
+      ci_tools_fetch "$row" "$file" || {
+        failures="$failures $row"
+        continue
+      }
+    fi
     while read -r name; do
-      case $name in
-        *.tgz)
-          pack_npm "$row" "$file" "$payload/$name"
-          # The round trip, because the origin serves this tarball and the helper reads the
-          # member out of it: a pack that did not come back as the pinned bytes is this rig's
-          # own defect and must not read as the install's.
-          read_back=$(tar -xzOf "$payload/$name" "$(ci_tools_field "$row" npm_member)" | sha256sum)
-          [ "${read_back%% *}" = "$digest" ] ||
-            die "$row: the tarball this rig packed holds ${read_back%% *}, not the pinned $digest"
-          ;;
-        *) cp -- "$file" "$payload/$name" ;;
-      esac
+      # The primary's own name is the archive staged above, which no destination of
+      # ci_tools_fetch ever holds and which this loop therefore neither fetches nor packs.
+      if [ -z "$member" ] || [ "$name" != "$primary_name" ]; then
+        case $name in
+          *.tgz)
+            pack_npm "$row" "$file" "$payload/$name"
+            packed_back "$row" "$payload/$name" "$(ci_tools_field "$row" npm_member)" tarball
+            ;;
+          *.whl | *.zip)
+            pack_zip "$row" "$file" "$payload/$name"
+            packed_back "$row" "$payload/$name" "$(ci_tools_field "$row" second_member)" wheel
+            ;;
+          # A hard link and not a copy, for pack_npm's reason: both files are under this rig's
+          # own directory and no payload file is ever written to, so the staged file and every
+          # name the origin serves it under are one set of bytes — the CLI's 119816773 and the
+          # plugin's 24184600 among them — rather than a copy each.
+          *) cp -fl -- "$file" "$payload/$name" ;;
+        esac
+      fi
       describe "$payload/$name"
-    done < <(payload_names "$row")
+    done <<<"$names"
     rm -f "$file"
   done
   [ -z "$failures" ] ||
@@ -637,6 +865,61 @@ version_answers() {
   return 1
 }
 
+# ---------------------------------------------------------------- refusals
+
+# proxy_refusals <host>: the fault proxy's own lines refusing a request to that host since the
+# probe marked its log, one per line and none at all where it refused nothing.
+# The proxy writes `ci-fault-proxy: 504 <verb> <target>`, where the target is `<host>:<port>`
+# for the CONNECT an https request makes and the whole URL for a plain one, so the host is read
+# off the target and compared rather than searched for in the line.
+# The probe's mark is where the reading starts, because the probe's own request names the same
+# host: a count from the top of the log would read that one request as an install's refusal.
+proxy_refusals() {
+  local host=$1 probed
+  [ -f "$fault_state" ] ||
+    die "a refusal is a line of the fault proxy's own log, and this job started no fault proxy"
+  probed=$(sed -n 's/^probed=//p' "$fault_state" | tail -n 1)
+  [ -n "$probed" ] ||
+    die "the refusals are read after the probe marked the proxy's log, and this job ran no probe under this fault"
+  awk -v skip="$probed" -v host="$host" '
+    NR > skip && $2 == "504" {
+      target = $4
+      sub(/^https?:\/\//, "", target)
+      sub(/[:\/].*$/, "", target)
+      if (target == host) print
+    }' "$fault_log"
+}
+
+# refusals_read <host>: that reading printed — how many there were and which lines they are —
+# and non-zero where there were none.
+# It is the one implementation of the reading: the `refusals` verb is this and nothing else, and
+# `installed-bun --expect-refused` takes the same reading of the same log, so the two cannot
+# count a refusal differently or print it in two shapes.
+# What an empty reading means is left to the caller, which is the one thing the two do not
+# share: for a bun it says nothing proves the second source served it, and for the verb it says
+# no install of the job met the fault at all.
+refusals_read() {
+  local host=$1 lines count=0
+  lines=$(proxy_refusals "$host")
+  [ -z "$lines" ] || count=$(wc -l <<<"$lines")
+  echo "  what the fault proxy refused for $host since the probe: $count"
+  if [ -z "$lines" ]; then
+    echo "    nothing at all"
+    return 1
+  fi
+  sed 's/^/    /' <<<"$lines"
+}
+
+# refusals <host>: that count and those lines, printed beside the readings of the installs this
+# job made — the 504s that sent each of them to its second source — and a refusal of the job
+# where the proxy refused nothing.
+refusals() {
+  [ "$#" -eq 1 ] || die "refusals takes the faulted host and nothing else, and this call gave $#"
+  note "what the fault proxy refused for $1 since the probe, beside what this job installed"
+  refusals_read "$1" ||
+    die "the fault proxy refused no request to $1 after the probe, so no install read above met the fault at all: each of them would read exactly as it does on a runner where $1 answered, and that it did not is the whole statement of this job"
+}
+
 # ---------------------------------------------------------------- installed-bun
 
 # installed_bun <row> [--expect-refused <host>]: the bun on this job's PATH read against that
@@ -660,7 +943,8 @@ version_answers() {
 # served those bytes. The version and the digest cannot say it, because a row's release asset
 # and its npm package are one binary by design and read the same whichever answered. The fault
 # proxy's own log can: a 504 for that host, logged after the probe marked the log, is the
-# refusal that sent this install to its second source.
+# refusal that sent this install to its second source. It is the reading the `refusals` verb
+# prints, taken through the one function the two go through.
 #
 # The bunx beside that bun is read as well, by the function the `installed-bunx` verb is made
 # of: the digest above holds the bun alone, and the pair is what a later step runs.
@@ -703,30 +987,13 @@ installed_bun() {
   bunx_reading "$bun" "$pinned" ||
     problems=$((problems + 1))
   if [ -n "$refused" ]; then
-    local probed refusals
-    [ -f "$fault_state" ] ||
-      die "installed-bun: --expect-refused reads the fault proxy's log, and this job started no fault proxy"
-    probed=$(sed -n 's/^probed=//p' "$fault_state" | tail -n 1)
-    [ -n "$probed" ] ||
-      die "installed-bun: --expect-refused reads the refusals logged after the probe, and this job ran no probe under this fault"
-    # The proxy writes `ci-fault-proxy: 504 <verb> <target>`, where the target is `<host>:<port>`
-    # for the CONNECT an https request makes and the whole URL for a plain one, so the host is
-    # read off the target and compared rather than searched for in the line.
-    refusals=$(awk -v skip="$probed" -v host="$refused" '
-      NR > skip && $2 == "504" {
-        target = $4
-        sub(/^https?:\/\//, "", target)
-        sub(/[:\/].*$/, "", target)
-        if (target == host) print
-      }' "$fault_log")
-    echo "  what the fault proxy refused for $refused since the probe:"
-    if [ -n "$refusals" ]; then
-      sed 's/^/    /' <<<"$refusals"
-    else
-      echo "    nothing at all"
+    # The reading the `refusals` verb is made of, taken here through the same function: which
+    # requests to that host the fault proxy refused since the probe. What an empty one means is
+    # this verb's own sentence, because it is about this row's two sources.
+    refusals_read "$refused" || {
       echo "::error::ci-tools-proof: the fault proxy refused no request to $refused after the probe, so nothing here says the second source served this bun: the two sources of the $row row are one binary with one digest by design, and a run where $refused answered after all reads exactly as this one does." >&2
       problems=$((problems + 1))
-    fi
+    }
   fi
   [ "$problems" -eq 0 ] || exit 1
   echo "  the bun on this runner is the $row row's pinned binary"
@@ -821,16 +1088,17 @@ corrupt() {
   if [ "$#" -eq 0 ]; then
     note "the origin now serves every row whole"
   else
-    note "the origin now serves $* with the last byte changed, and every other row whole"
+    note "the origin now serves $* with one byte changed, and every other row whole"
   fi
 }
 
 # ---------------------------------------------------------------- flip-last-byte
 
 # flip_last_byte <file>: that file with its last byte changed, and the sha256 it has afterwards.
-# It is the origin's own corruption rule (write_origin above) applied to a file on the runner
-# rather than to a body in memory: the smallest edit that moves the sha256 of the whole file,
-# and the one that leaves an archive's own framing alone until the digest is read.
+# It is the origin's own corruption rule for a file nothing takes a member out of (write_origin
+# above), applied to a file on the runner rather than to a body in memory: the smallest edit
+# that moves the sha256 of the whole file, and the one that leaves an archive's own framing
+# alone until the digest is read.
 # The cases whose corrupted bytes are a binary on the runner rather than a body the origin
 # serves use it.
 flip_last_byte() {
@@ -926,15 +1194,23 @@ origin_served() {
   grep -qE "^GET $1[^ ]* row=$2 corrupt=(yes|no) status=200" <<<"$lines"
 }
 
-# route_of <source>: the origin route one source serves, read from the one word that source has
-# — the name a refusal of .github/scripts/ci-tools.sh carries, which is also the manifest's own
-# `second_source` word.
+# route_of <source> <the caller a refusal names>: the origin route one source serves, read from
+# the one word that source has — the name a refusal of .github/scripts/ci-tools.sh carries,
+# which is also the manifest's own `second_source` word.
+# It is the one place in this shell that turns a source word into a route: `payload_names`
+# above decides which fields a row's second-source names come from by the route this answers,
+# so nothing in this shell holds a second mapping of them.
+# The places of this tree that decide a source word are listed at ci_tools__source_fetch in
+# .github/scripts/ci-tools.sh — this function and the origin's own GITHUB_WORDS and URL_WORDS
+# among them, the origin being a program of its own, started with the manifest and no word of
+# this shell. That comment is where a new word is read off; this one keeps no count.
 route_of() {
   case $1 in
     github-release) printf '/github/\n' ;;
     ghcr-mirror) printf '/ghcr/\n' ;;
     npm) printf '/npm/\n' ;;
-    *) die "report: '$1' is no source this rig serves (github-release, ghcr-mirror or npm)" ;;
+    pypi | pulumi-releases) printf '/url/\n' ;;
+    *) die "$2: '$1' is no source this rig serves (github-release, ghcr-mirror, npm, pypi or pulumi-releases)" ;;
   esac
 }
 
@@ -995,12 +1271,15 @@ report() {
   fi
   if [ -n "$expect_source" ]; then
     local route
-    route=$(route_of "$expect_source")
+    route=$(route_of "$expect_source" report)
     if [ "$route" = /github/ ]; then
       # The primary of this case is the faulted real host or a binary a third party installed, so
       # the origin's github route serves nothing for it. What says the bytes came from the
-      # primary path is then that neither second source served this row.
-      if ! origin_served /github/ "$row" && { origin_served /ghcr/ "$row" || origin_served /npm/ "$row"; }; then
+      # primary path is then that no second source served this row.
+      # A case whose second source is itself the release asset — the pulumi-cli row's is — the
+      # origin did serve on this route, and that is the first reading below rather than this one.
+      if ! origin_served /github/ "$row" &&
+        { origin_served /ghcr/ "$row" || origin_served /npm/ "$row" || origin_served /url/ "$row"; }; then
         echo "::error::ci-tools-proof: case $name: this case is the refusal of the bytes $expect_source served, and the origin served a second source for $row above, so the step read another source than the one this case is about." >&2
         problems=$((problems + 1))
       fi
@@ -1011,7 +1290,7 @@ report() {
   fi
   if [ -n "$expect_untried" ]; then
     local untried
-    untried=$(route_of "$expect_untried")
+    untried=$(route_of "$expect_untried" report)
     if origin_served "$untried" "$row"; then
       echo "::error::ci-tools-proof: case $name: the origin served $row on its $untried route, and this case is the rule that it must not: a digest mismatch is a supply-chain signal and never a reason to read another source." >&2
       problems=$((problems + 1))
@@ -1024,7 +1303,7 @@ report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
@@ -1033,6 +1312,7 @@ case $verb in
   stop-fault) stop_fault "$@" ;;
   probe) probe "$@" ;;
   version-answers) version_answers "$@" ;;
+  refusals) refusals "$@" ;;
   installed-bun) installed_bun "$@" ;;
   installed-bunx) installed_bunx "$@" ;;
   corrupt) corrupt "$@" ;;
@@ -1040,5 +1320,5 @@ case $verb in
   payload-path) payload_path "$@" ;;
   seed-mise-jj) seed_mise_jj "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
 esac

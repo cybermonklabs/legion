@@ -297,11 +297,9 @@ func seedAssignment(t *testing.T, h *harness, issue string, role claim.Role, ass
 
 // queuedStart is the newest start the outbox holds for role on issue, with its row id: the row the
 // outbox runner would deliver next.
-// A start of a phase worker is two rows (workflow.StartOrOwe): the relaunch, which carries no
-// task and brings the role's session back at once, and the row that carries the task and the
-// assignment and waits for the issue's admission slot. Only the second is the start these tests
-// read, and it is not always the newer of the two: a second transition before the slot replaces
-// the waiting row's payload in place, keeping its id, so the relaunch beside it is newer.
+// A phase worker's start is one row, which carries the task and the assignment and waits for the
+// issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
+// back beside it and carries no assignment, so it is not one of these.
 func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64, record.SuperviseRequest) {
 	t.Helper()
 	var id int64
