@@ -1505,7 +1505,7 @@ ladder_report() {
   # also the reading that says the appended bound applied on the runner at all.
   [ -s "$curl_log" ] ||
     die "ladder-report: there is no fetch at all in $curl_log, so the stand-in curl the shorten-ladder step above writes never ran: read that step for the directory it adds to this job's PATH, because a job that runs the runner's own curl rides the pinned ladder for every one of its refusals"
-  local problems=0 names="" longest=0 unrecognised="" rode_out="" kept measured who
+  local problems=0 names="" longest=0 unrecognised="" rode_out="" served="" kept measured who
   local seconds decision host status bypass
   note "every fetch the stand-in curl of the shorten-ladder step measured"
   # The start and the end are written in each line for a person reading the run; what this
@@ -1535,6 +1535,13 @@ ladder_report() {
       else
         unrecognised="$unrecognised $host"
       fi
+    elif [ "$decision" = shortened ] && [ "$status" -eq 0 ]; then
+      # A fetch this job arranged to fail cannot serve the bytes: the fault proxy refuses every
+      # request for a host it holds, the dead address answers none, and a dead proxy carries
+      # none. So a shortened fetch that exited 0 is a fetch this job meant to succeed, and
+      # shortening it took the retries that ride out a flap of that source off a required job,
+      # which is the opposite of what this rig claims below.
+      served="$served $host"
     fi
   done < "$curl_log"
   kept=${names# }
@@ -1561,6 +1568,10 @@ ladder_report() {
   fi
   if [ -n "$unrecognised" ]; then
     echo "::error::ci-tools-proof: the fetch of$unrecognised stayed on the pinned ladder, took at least $LADDER_FLOOR s and failed, so this job arranged a refusal whose shape the stand-in curl does not recognise and slept a whole ladder for it: read the seam that carried it against FAULT_HOSTS and DEAD_ADDRESS at the top of this script." >&2
+    problems=$((problems + 1))
+  fi
+  if [ -n "$served" ]; then
+    echo "::error::ci-tools-proof: the fetch of$served was shortened and then served the bytes, so it is no refusal this job arranged: the shortening took the pinned ladder off a fetch this job means to succeed, and a flap of that source now reddens this job where the ladder rode it out. Read the point the shorten-ladder step runs at against the fetches this job makes before its fault is up." >&2
     problems=$((problems + 1))
   fi
 
