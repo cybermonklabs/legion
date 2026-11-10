@@ -205,7 +205,9 @@ func (w *compressingWriter) pass(body []byte, compress bool) (int, error) {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		nameMediaType(w.Header(), status)
+		if answerNamesNoType(w.Header(), status) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 		w.ResponseWriter.WriteHeader(status)
 		if len(w.held) > 0 {
 			held = len(w.held)
@@ -232,19 +234,22 @@ func (w *compressingWriter) pass(body []byte, compress bool) (int, error) {
 	return max(written-held, 0), err
 }
 
-// nameMediaType names an answer's media type when its handler named none, so no answer of the
-// table reaches a browser with its type sniffed from its first bytes (a body opening with `<`
-// sniffs as text/html, and nosniff holds a browser to a type the server set rather than to none).
-// A 204 and a 304 carry no body for a type to describe. No route of the table answers without a
-// type today, so this fires for a handler that forgets one, and both of the layer's two paths
-// read it rather than each stating the rule for itself.
-func nameMediaType(header http.Header, status int) {
+// answerNamesNoType reports whether an answer of this status still needs a media type named for
+// it: one the handler left unnamed, on an answer that carries a body for a type to describe (a
+// 204 and a 304 carry none). No route of the table answers without a type today, so it is true
+// only for a handler that forgets one.
+//
+// The `Set` it leads to is written at each place that writes an answer rather than inside a
+// helper of its own, which reads as a duplication and is not one: CodeQL's reflected-XSS query
+// drops a body sink only where the content type is written on the same writer in the same
+// function (`Xss.qll`'s nonHtmlContentType through SsaWithFields.similar), so a `Set` one call
+// away leaves every `Write` of this file flagged - measured, by a round that wrote it that way
+// and saw the two new alerts. The condition is shared; the write is not.
+func answerNamesNoType(header http.Header, status int) bool {
 	if status == http.StatusNoContent || status == http.StatusNotModified {
-		return
+		return false
 	}
-	if header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "application/octet-stream")
-	}
+	return header.Get("Content-Type") == ""
 }
 
 // typedWriter is the answer's writer for a caller that takes no gzip: net/http's own, with the
@@ -261,7 +266,9 @@ type typedWriter struct {
 func (w *typedWriter) WriteHeader(status int) {
 	if !w.wrote && status >= http.StatusOK {
 		w.wrote = true
-		nameMediaType(w.Header(), status)
+		if answerNamesNoType(w.Header(), status) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
 	w.ResponseWriter.WriteHeader(status)
 }
@@ -271,7 +278,9 @@ func (w *typedWriter) WriteHeader(status int) {
 func (w *typedWriter) Write(body []byte) (int, error) {
 	if !w.wrote {
 		w.wrote = true
-		nameMediaType(w.Header(), http.StatusOK)
+		if answerNamesNoType(w.Header(), http.StatusOK) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
 	return w.ResponseWriter.Write(body)
 }
@@ -283,7 +292,9 @@ func (w *typedWriter) Write(body []byte) (int, error) {
 func (w *typedWriter) ReadFrom(body io.Reader) (int64, error) {
 	if !w.wrote {
 		w.wrote = true
-		nameMediaType(w.Header(), http.StatusOK)
+		if answerNamesNoType(w.Header(), http.StatusOK) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
 	if from, ok := w.ResponseWriter.(io.ReaderFrom); ok {
 		return from.ReadFrom(body)
@@ -294,7 +305,9 @@ func (w *typedWriter) ReadFrom(body io.Reader) (int64, error) {
 func (w *typedWriter) Flush() {
 	if !w.wrote {
 		w.wrote = true
-		nameMediaType(w.Header(), http.StatusOK)
+		if answerNamesNoType(w.Header(), http.StatusOK) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }

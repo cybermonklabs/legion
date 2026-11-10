@@ -216,7 +216,7 @@ export function dispatchSettings(
     enabled: true,
     url,
     credential,
-    ...(publicUrl === undefined ? {} : { publicUrl: publicUrl.replace(/\/+$/, "") }),
+    ...(publicUrl === undefined ? {} : { publicUrl: withoutTrailingSlashes(publicUrl) }),
   };
 }
 
@@ -329,9 +329,9 @@ function dispatchTarget(
         : `DISPATCH_URL is set and no token is: set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE, or dispatch.token in ${config.path}`
     );
   }
-  const url = (
+  const url = withoutTrailingSlashes(
     explicitUrl ?? (source.kind === "file" ? source.server : (own.serverUrl ?? DEFAULT_SERVER_URL))
-  ).replace(/\/+$/, "");
+  );
   return { enabled: true, url, source };
 }
 
