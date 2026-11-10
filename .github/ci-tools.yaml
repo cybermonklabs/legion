@@ -346,3 +346,5 @@ tools:
 # The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
 # allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.
 no_second_source:
+
+# INFRA-1413 selection probe, never merged.
