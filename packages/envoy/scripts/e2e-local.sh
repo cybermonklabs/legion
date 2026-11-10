@@ -1360,13 +1360,16 @@ wait_for_consumer_frame_count 1 "$nocursor_frames_file"
 printf 'no-cursor window: %s took the message as one frame of its own consumer and answered done\n' "$nocursor_session_id"
 
 # The clean stop, which is how most sessions end: the registration goes, and the session's
-# consumer, with the ack floor that records what this session has taken, goes with it.
+# consumer, whose ack floor the listener records on the session's resume lane before it deletes
+# it (bus.SessionResumeSubject), goes with it.
 curl -fsS -X DELETE "${listener_url}/v1/sessions/${nocursor_session_id}" >/dev/null
 wait_for_unregistered "$nocursor_session_id" "$nocursor_registry_response_file"
 printf 'no-cursor window: the clean stop removed the registration of %s\n' "$nocursor_session_id"
 
 # The relaunch sends that same body again, which carries no delivery.resume: this session kept no
-# ledger to take one from.
+# ledger to take one from. The consumer it is given starts at the sequence after the floor the
+# delete recorded, so the message it had already taken is not offered a second time - which is
+# what the recorded floor buys a session whose client keeps no ledger of its own.
 curl -fsS -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/interests/subscribe" -d "$nocursor_subscribe_body" >"$nocursor_relaunch_response_file"
 jq -e '.delivery.mode == "consumer"' "$nocursor_relaunch_response_file" >/dev/null || {
@@ -1374,24 +1377,41 @@ jq -e '.delivery.mode == "consumer"' "$nocursor_relaunch_response_file" >/dev/nu
   cat "$nocursor_relaunch_response_file" >&2
   exit 1
 }
-if ! wait_for_consumer_frame_count 2 "$nocursor_frames_file"; then
-  printf 'ERR: %s holds %s frames after a registration carrying no resume, not the two this window pins: the message it had already taken was not offered again. A clean stop deletes the session consumer with the record, so the registration that follows is given a new consumer, which starts at the first message the stream still holds on that session agent subject and offers it a second time; the ledger in packages/envoy-client/src/consumer-delivery.ts is what drops that second copy for a real session, never the listener. A consumer that outlived the clean stop reads exactly this way.\n' \
+nocursor_record="$(grep -F "notifications.envoy.resume.${nocursor_session_id} " "$resume_records_file" | tail -n 1)" || true
+if [[ -z "$nocursor_record" ]]; then
+  printf 'ERR: the clean stop of %s deleted its consumer without recording a resume floor; the records seen were:\n' "$nocursor_session_id" >&2
+  cat "$resume_records_file" >&2
+  exit 1
+fi
+nocursor_floor="$(printf '%s' "${nocursor_record#* }" | jq -r 'if (.floor | type) == "number" and (.stream_id | length) > 0 then .floor else empty end')"
+nocursor_start="$(jq -r '.delivery.consumer_start // empty' "$nocursor_relaunch_response_file")"
+if [[ -z "$nocursor_floor" || "$nocursor_start" != "$((nocursor_floor + 1))" ]]; then
+  printf 'ERR: the consumer created for %s after its clean stop starts at %s, not %s, the sequence after the floor its delete recorded (%s)\n' \
+    "$nocursor_session_id" "${nocursor_start:-none}" "$((${nocursor_floor:-0} + 1))" "$nocursor_record" >&2
+  cat "$nocursor_relaunch_response_file" >&2
+  exit 1
+fi
+# 5 seconds of the window's own: a frame offered again would arrive well inside it, since the
+# first took milliseconds, and this is the one assertion that reads an absence.
+sleep 5
+if [[ "$(wc -l <"$nocursor_frames_file")" != "1" ]]; then
+  printf 'ERR: %s holds %s frames after a registration carrying no resume, not the one this window pins: the message it had already taken was offered again. A clean stop deletes the session consumer with the record and writes its ack floor on the session resume lane first, so the registration that follows is given a consumer starting after that floor and is handed nothing it had taken.\n' \
     "$nocursor_session_id" "$(wc -l <"$nocursor_frames_file")" >&2
+  cat "$nocursor_frames_file" >&2
   exit 1
 fi
 jq -es --arg session_id "$nocursor_session_id" --arg message "$nocursor_message" '
-  length == 2
-  and (map(select(.topic == ("notifications.agent." + $session_id) and .payload_summary == $message)) | length) == 2
-  and .[0] == .[1]
+  length == 1
+  and (map(select(.topic == ("notifications.agent." + $session_id) and .payload_summary == $message)) | length) == 1
 ' "$nocursor_frames_file" >/dev/null || {
-  printf 'ERR: the no-cursor window took frames that are not two deliveries of one message to %s; the clean stop and the registration that follows it must hand this session the same stored message twice.\n' "$nocursor_session_id" >&2
+  printf 'ERR: the no-cursor window took frames that are not the one delivery of its message to %s.\n' "$nocursor_session_id" >&2
   cat "$nocursor_frames_file" >&2
   exit 1
 }
 printf 'no-cursor window frames by topic:\n'
 jq -r '.topic' "$nocursor_frames_file" | sort | uniq -c
-printf 'no-cursor window: %s was offered event %s twice, once before the clean stop and once after the registration that carried no resume; the clean stop took its consumer, and a client that keeps no ledger reads the stored message a second time\n' \
-  "$nocursor_session_id" "$(jq -rs '.[0].event_id' "$nocursor_frames_file")"
+printf 'no-cursor window: the clean stop of %s recorded floor %s, its registration carrying no resume was given a consumer starting at %s, and event %s was not offered a second time\n' \
+  "$nocursor_session_id" "$nocursor_floor" "$nocursor_start" "$(jq -rs '.[0].event_id' "$nocursor_frames_file")"
 
 # Last of all, because it ends this rig's NATS and every step above needs the bus. A send the bus
 # cannot serve has to be refused by name inside the sender's own attempt, rather than left to the
