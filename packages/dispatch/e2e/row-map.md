@@ -174,12 +174,22 @@ such a row loses is feedback on the pull request itself.
 | `e2e/accessibility.e2e.ts` | three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives |
 | `e2e/activity.e2e.ts` | pins/unpins and asserts the refetched margin; pins first, then asserts on the server's stored body |
 | `e2e/address-links.e2e.ts` | asserts in the live spec editor (`/ws/doc`) as well as the Conversation |
+| `e2e/agent-context-ring.e2e.ts` | the ring is drawn from the context frames a session publishes, which the live relay carries, and a frame published after load must reach the open page |
 | `e2e/agent-list-refilling.e2e.ts` | drives the fake Envoy listener's refusal states and asserts the page's reading of them |
+| `e2e/agent-live-layout.e2e.ts` | every row lands on a live view whose transcript is the session's own replay over the relay, and the ring and question mark beside it read frames that arrive after load |
+| `e2e/agent-live-views.e2e.ts` | a view that sleeps and comes back re-subscribes and is answered with the session's replay, which the live relay alone gives; a draft and a reading place survive that round trip |
 | `e2e/agent-name.e2e.ts` | margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page |
+| `e2e/agent-rail.e2e.ts` | a pin is the viewer's per-agent state written to the server and read back, in a second browser context as well; the word each row carries - live, live 30s, asleep - is the registry's state against the clock |
+| `e2e/agent-shell-command.e2e.ts` | a ! message is a write whose answer comes back as the session's own Dispatch reply over the relay, and the row reads what the server stored rather than what the page typed |
+| `e2e/agent-skill-completion.e2e.ts` | completion reads the session's skills from frames the live relay carries, and the message it writes is re-read from the server |
 | `e2e/agent-tokens.e2e.ts` | token mint, attribution, privacy between two contexts, revoke |
+| `e2e/agent-view-cost.e2e.ts` | counts the live views and conversations the page holds open, which is the relay's own subscription count |
 | `e2e/agent-view-settings.e2e.ts` | live session settings frames, switch round trips through fake Envoy, `page.reload()` after writes |
 | `e2e/agent-view.e2e.ts` | every row replays or streams session frames over the live relay |
+| `e2e/agent-workspace-timing.e2e.ts` | times the page against six hundred sessions of the fake registry and a limit-sized transcript the relay replays, both of which a recording would freeze |
+| `e2e/agents-groups.e2e.ts` | a session's group is its open asks and its Dispatch activity against the clock, both the server's own computation, and a recording freezes last_seen |
 | `e2e/agents-search.e2e.ts` | every row reads the Agents list, which folds a session unseen for ten minutes against the clock, and a recording freezes last_seen |
+| `e2e/agents-window.e2e.ts` | windows six hundred sessions of the fake registry, whose listing and order the server gives, and a draft survives a scroll out of the window and back |
 | `e2e/agents.e2e.ts` | sends a BTW message and asserts the exchange; Clear is a write re-read after a reload; needs a session reply delivered live |
 | `e2e/anchors.e2e.ts` | live document edits with the server's anchor state read back |
 | `e2e/answers.e2e.ts` | answers and answer changes written, then re-read on other surfaces |
