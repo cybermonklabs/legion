@@ -377,8 +377,12 @@ Every number is three times a measurement taken under load or read from the serv
 Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
 
 The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
-Prove it with a transaction held longer than that bound — a pulse of 12 s holds, and one 90 s holder for a deterministic red.
-Measured in this repository's own pod on 2026-11-10, `nproc` 2: with one 90 s holder the old 10 s deadline failed the test in 24.55 s, and the wait on the signal passed it in 80.54 s, having waited the hold out.
+Prove it with a transaction held longer than that bound, and hold it so that it is still open when the socket subscribes, not merely when `go test` starts:
+the test builds its own binary inside its own clock (`cmdtest.Build`, from `startDispatchProcessWith`), which is a second on a warm build cache and minutes on a loaded machine, so a one-shot hold started before the command can be spent before the socket exists.
+A rolling hold — a new 25 s transaction every second — does not depend on that, and is the recipe to use.
+Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loops at four times `nproc`: under a rolling hold the old 10 s deadline fails every run, and the wait on the signal passed 50 of 50.
+The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
+started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
 
 ## A writer a test holds
 
