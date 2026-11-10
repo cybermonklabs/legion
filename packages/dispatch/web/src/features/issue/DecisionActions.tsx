@@ -35,7 +35,6 @@ export function DecisionActions({
   document,
   isClosed,
   nodeReference,
-  tabIndex,
 }: {
   /** The decisions document this node is a block of, which the Keep writes against;
    *  `undefined` for a decision whose document the issue read does not carry. */
@@ -43,36 +42,22 @@ export function DecisionActions({
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
   nodeReference: string | undefined;
-  /** Whether these controls are in the tab order, which they are while the row they are drawn
-   *  in holds the focus: no key presses Keep or Change, so Tab from the row is how a reader on
-   *  the keyboard reaches them, and the tree at rest is still one tab stop (R9, WCAG 2.1.1,
-   *  `NodeRow.tsx`). */
-  tabIndex: 0 | -1;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
   const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
-  return (
-    <DecisionControls
-      decision={decision}
-      documentId={document.id}
-      issueKey={issueKey}
-      tabIndex={tabIndex}
-    />
-  );
+  return <DecisionControls decision={decision} documentId={document.id} issueKey={issueKey} />;
 }
 
 function DecisionControls({
   decision,
   documentId,
   issueKey,
-  tabIndex,
 }: {
   decision: Decision;
   documentId: string;
   issueKey: string;
-  tabIndex: 0 | -1;
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
@@ -109,11 +94,15 @@ function DecisionControls({
     <>
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         {decision.waiting_review ? (
+          // Out of the tab order, as every control inside a row is, and found by its mark: the
+          // tree is one tab stop and the row's own key presses this (R9, WCAG 2.1.1,
+          // `useTreeKeymap.ts`'s `tree-keep`).
           <button
             className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+            data-row-action="keep"
             disabled={keep.isPending}
             onClick={() => keep.mutate(documentId)}
-            tabIndex={tabIndex}
+            tabIndex={-1}
             type="button"
             {...pageChrome}
           >
@@ -124,8 +113,9 @@ function DecisionControls({
           <button
             aria-expanded={changing}
             className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+            data-row-action="change"
             onClick={() => setChanging(!changing)}
-            tabIndex={tabIndex}
+            tabIndex={-1}
             type="button"
             {...pageChrome}
           >
@@ -145,7 +135,6 @@ function DecisionControls({
           issueKey={issueKey}
           onDone={() => setChanging(false)}
           quote={quote}
-          tabIndex={tabIndex}
         />
       ) : null}
     </>
@@ -160,16 +149,12 @@ function ChangeComposer({
   issueKey,
   onDone,
   quote,
-  tabIndex,
 }: {
   decision: Decision;
   documentId: string;
   issueKey: string;
   onDone: () => void;
   quote: string;
-  /** Whether the form is in the tab order, which it is while the row it is drawn in holds the
-   *  focus: a form left open on a row the reader pinned is no second tab stop (R9). */
-  tabIndex: 0 | -1;
 }): ReactNode {
   const [body, setBody] = useState("");
   const fieldId = useId();
@@ -189,6 +174,11 @@ function ChangeComposer({
       onDone();
     },
   });
+  // The one place inside a row that takes the tab order, and only while it is open: this is a
+  // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
+  // every other form of the app. The key that opened it put the caret in the field
+  // (`useTreeKeymap.ts`'s `tree-change`), and at rest - no form open - the tree is still one
+  // tab stop (R9).
   return (
     <form
       aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
@@ -213,7 +203,6 @@ function ChangeComposer({
         id={fieldId}
         onChange={(event) => setBody(event.target.value)}
         rows={3}
-        tabIndex={tabIndex}
         value={body}
       />
       {send.error === null ? null : (
@@ -225,7 +214,6 @@ function ChangeComposer({
         <button
           className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
           disabled={send.isPending || body.trim() === ""}
-          tabIndex={tabIndex}
           type="submit"
           {...pageChrome}
         >
@@ -234,7 +222,6 @@ function ChangeComposer({
         <button
           className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
           onClick={onDone}
-          tabIndex={tabIndex}
           type="button"
           {...pageChrome}
         >

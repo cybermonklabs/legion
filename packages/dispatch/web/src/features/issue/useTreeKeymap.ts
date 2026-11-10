@@ -3,6 +3,7 @@ import { type RefObject, useRef } from "react";
 import { useKeymap } from "../shell/keymap";
 import type { TreeNode } from "./issue-tree";
 import { KEY_REPORTS } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 
@@ -23,6 +24,13 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * opens its body, scrolls it clear of the sticky identity block and leaves the tab stop on it.
  * So a key does exactly what a reader's pointer does, and the tree has one answer to where the
  * reader is.
+ *
+ * The controls a row draws are worked by keys too, and for the same reason the moves are: the
+ * tree is one tab stop (R9), so nothing inside a row takes the focus and Tab from a row leaves
+ * the tree. `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it
+ * opens, and `f` steps through the row's links, where Enter follows the one it stopped on. So
+ * every control of the focused row is reachable from the keyboard without a second tab stop
+ * (WCAG 2.1.1), and `?` names each key by what it does, as it names every other.
  */
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
@@ -104,6 +112,26 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     const { elements, rows } = drawn();
     return rows[at(elements)];
   };
+  /** The element of the focused row, or null where the focus is on no row. */
+  const rowElement = (): HTMLElement | null => {
+    const { elements } = drawn();
+    return elements[at(elements)] ?? null;
+  };
+  /** One control the focused row draws, by the mark `NodeRow.tsx` puts on it, or null where
+   *  this row draws none or it would refuse a press: a key is offered exactly while the
+   *  control it presses would take a click. */
+  const rowAction = (action: "change" | "keep"): HTMLButtonElement | null => {
+    const control = rowElement()?.querySelector<HTMLButtonElement>(
+      `button[data-row-action="${action}"]`
+    );
+    return control == null || control.disabled ? null : control;
+  };
+  /** Every link the focused row draws, in the order it draws them: a chip's target, and the
+   *  links of the body it opened. None of them is in the tab order (R9), so a key is how a
+   *  reader reaches one; Enter on the link the key left the focus on follows it. */
+  const rowLinks = (): HTMLElement[] => [
+    ...(rowElement()?.querySelectorAll<HTMLElement>("a[href]") ?? []),
+  ];
   /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported. */
   const moveTo = (index: number): void => {
     const { elements } = drawn();
@@ -249,6 +277,59 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => at(drawn().elements) !== -1,
     },
     {
+      // Keep, Change and a chip's link are the controls a row draws, and the tree is one tab
+      // stop, so no Tab reaches them (R9): each takes a key instead, and a reader on the
+      // keyboard works every control of the row they are standing on (WCAG 2.1.1). The key
+      // presses the control the row draws, which is what a pointer does, and is offered
+      // exactly while that control is drawn and would take a click.
+      id: "tree-keep",
+      keys: "Shift+K",
+      label: `${CONTROL_LABELS.keep_decision} the focused decision`,
+      run: () => {
+        const control = rowAction("keep");
+        if (control === null) return;
+        tree.onReport("");
+        control.click();
+      },
+      when: () => rowAction("keep") !== null,
+    },
+    {
+      id: "tree-change",
+      keys: "Shift+C",
+      label: `${CONTROL_LABELS.change_decision} the focused decision`,
+      run: () => {
+        const control = rowAction("change");
+        if (control === null) return;
+        tree.onReport("");
+        control.click();
+        // A reader who asked to change a decision is there to type, so the key leaves the
+        // caret in the form's field once the row has drawn it, as a pointer leaves it there.
+        // The form is the one thing inside a row that takes the tab order while it is open
+        // (`DecisionActions.tsx`), so Tab from the field reaches Send change and Cancel.
+        requestAnimationFrame(() =>
+          rowElement()?.querySelector<HTMLTextAreaElement>("form textarea")?.focus()
+        );
+      },
+      when: () => rowAction("change") !== null,
+    },
+    {
+      // Each press moves to the next link of the row and the last comes back to the first, so
+      // a row that points at several things is read through them all; Enter on the link the
+      // key left the focus on is the browser's own and follows it.
+      id: "tree-link",
+      keys: "f",
+      label: "Move to the next link on the focused row",
+      palette: false,
+      run: () => {
+        const links = rowLinks();
+        if (links.length === 0) return;
+        tree.onReport("");
+        const on = links.indexOf(document.activeElement as HTMLElement);
+        links[(on + 1) % links.length]?.focus();
+      },
+      when: () => rowLinks().length > 0,
+    },
+    {
       id: "tree-zoom-in",
       keys: ".",
       label: "Zoom into the focused node",
@@ -367,11 +448,21 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         document.activeElement?.closest('[contenteditable="true"]') != null,
     },
     {
+      // From a control the reader reached inside a row - a chip's link, Keep, Change - Escape
+      // gives the row back, because the row is where the keys that move through the tree are;
+      // from the row itself it leaves the tree.
       id: "tree-leave",
       keys: "Escape",
-      label: "Leave the tree",
+      label: "Leave the control, then the tree",
       palette: false,
-      run: () => (document.activeElement as HTMLElement | null)?.blur(),
+      run: () => {
+        const { elements } = drawn();
+        if (onRowItself(elements) !== -1) {
+          (document.activeElement as HTMLElement | null)?.blur();
+          return;
+        }
+        elements[at(elements)]?.focus();
+      },
       when: () => at(drawn().elements) !== -1,
     },
   ]);

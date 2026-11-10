@@ -149,9 +149,13 @@ function focusedRow(container: HTMLElement): string | undefined {
     ?.getAttribute("data-node-id") as string | undefined;
 }
 
-test("the whole tree is one tab stop at rest, and the focused row lends its controls to it", async () => {
+test("the whole tree is one tab stop, and the focused row's keys work its controls", async () => {
   setViewport(1440);
   const user = userEvent.setup();
+  const kept = spyOn(api, "keepDecision").mockResolvedValue({
+    ...decision,
+    waiting_review: false,
+  } as never);
   const root = node({
     children: [
       node({
@@ -176,25 +180,36 @@ test("the whole tree is one tab stop at rest, and the focused row lends its cont
     artifacts: [decisionsDocument],
     decisions: { decisions: [decision], document: null, open_questions: [] },
   });
-  const [row] = rowsFor(view.container, "decisions#b-d1");
-  if (row === undefined) throw new Error("the decision has no row");
+  try {
+    const [row] = rowsFor(view.container, "decisions#b-d1");
+    if (row === undefined) throw new Error("the decision has no row");
 
-  // At rest the tree offers one tab stop and nothing inside a row offers another, so Tab
-  // enters the tree once and leaves it again (R9).
-  const stops = [...view.container.querySelectorAll('[tabindex="0"]')];
-  expect(stops.length).toBe(1);
-  expect(stops[0]?.getAttribute("data-node-row")).toBe("");
+    // The tree offers one tab stop and nothing inside a row offers another, standing on the
+    // row included, so Tab enters the tree once and leaves it again (R9).
+    await act(async () => row.focus());
+    await waitFor(() => expect(view.getByRole("button", { name: "Keep" })).toBeTruthy());
+    const stops = [...view.container.querySelectorAll('[tabindex="0"]')];
+    expect(stops.length).toBe(1);
+    expect(stops[0]?.getAttribute("data-node-row")).toBe("");
 
-  // Standing on the row, Tab reaches what the row holds: the chip's link, then Keep, then
-  // Change, none of which any key presses (WCAG 2.1.1).
-  await act(async () => row.focus());
-  await waitFor(() => expect(view.getByRole("button", { name: "Keep" })).toBeTruthy());
-  await user.tab();
-  expect((document.activeElement as HTMLElement).textContent).toBe("The spec block");
-  await user.tab();
-  expect(document.activeElement).toBe(view.getByRole("button", { name: "Keep" }));
-  await user.tab();
-  expect(document.activeElement).toBe(view.getByRole("button", { name: "Change" }));
+    // So each control of the row takes a key instead, and the keys reach what no Tab does
+    // (WCAG 2.1.1): `f` steps to the chip's link, Escape gives the row back, Shift+K presses
+    // Keep and Shift+C presses Change and leaves the caret in the form it opens.
+    await user.keyboard("f");
+    expect((document.activeElement as HTMLElement).textContent).toBe("The spec block");
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(row);
+
+    await user.keyboard("{Shift>}K{/Shift}");
+    await waitFor(() => expect(kept).toHaveBeenCalled());
+    expect(kept.mock.calls[0]?.[1]).toBe(decision.block_id);
+
+    await user.keyboard("{Shift>}C{/Shift}");
+    const field = await view.findByRole("textbox", { name: "Your change" });
+    await waitFor(() => expect(document.activeElement).toBe(field));
+  } finally {
+    kept.mockRestore();
+  }
 });
 
 test("Enter sends the change the reader typed, instead of putting a caret in the row", async () => {
