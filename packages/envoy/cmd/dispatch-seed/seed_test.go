@@ -41,8 +41,7 @@ const testScale = 0.01
 // (dispatch://INFRA-1075).
 func TestSeedAtASmallScale(t *testing.T) {
 	t.Parallel()
-	databases, runs := seedTestDatabases(t, 2)
-	first, second, firstRun := databases[0], databases[1], runs[0]
+	first, second, firstRun := seedTestDatabasePair(t)
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -74,36 +73,29 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 }
 
-// seedTestDatabases seeds count databases of their own, all at once, and answers them with the
-// runs that filled them. The seeds share nothing - each fills a database storetest opened for it
-// alone and draws its block ids from the counter its own run holds (seedRun.blockIDs, run.go) -
+// seedTestDatabasePair seeds two databases of their own, side by side, and answers them with the
+// run that filled the first. The seeds share nothing - each fills a database storetest opened for
+// it alone and draws its block ids from the counter its own run holds (seedRun.blockIDs, run.go) -
 // so a test that wants a control pays one seed's wall rather than two.
 //
 // The databases are opened, and a seed that failed reported, on the test's own goroutine: only
 // it may call storetest.Open's t.Skip or t.Fatalf (testing.T.FailNow).
-func seedTestDatabases(t *testing.T, count int) ([]*store.Store, []*seedRun) {
+func seedTestDatabasePair(t *testing.T) (first, second *store.Store, firstRun *seedRun) {
 	t.Helper()
-	databases := make([]*store.Store, count)
-	for index := range databases {
-		databases[index] = storetest.Open(t)
-	}
-	runs := make([]*seedRun, count)
-	failures := make([]error, count)
+	first, second = storetest.Open(t), storetest.Open(t)
+	var firstErr, secondErr error
 	started := time.Now()
 	var seeds sync.WaitGroup
-	for index, database := range databases {
-		seeds.Go(func() {
-			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
-		})
-	}
+	seeds.Go(func() { firstRun, firstErr = seed(context.Background(), first, testScale, io.Discard) })
+	seeds.Go(func() { _, secondErr = seed(context.Background(), second, testScale, io.Discard) })
 	seeds.Wait()
-	for _, err := range failures {
+	for _, err := range []error{firstErr, secondErr} {
 		if err != nil {
 			t.Fatalf("seed at scale %v: %v", testScale, err)
 		}
 	}
-	t.Logf("seeded %d databases at scale %v in %s", count, testScale, time.Since(started).Round(time.Millisecond))
-	return databases, runs
+	t.Logf("seeded two databases at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	return first, second, firstRun
 }
 
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"

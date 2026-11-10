@@ -776,11 +776,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 		var verdicts [2]verdict
 		var asking sync.WaitGroup
 		for i := range settings {
-			asking.Add(1)
-			go func() {
-				defer asking.Done()
-				verdicts[i] = probe(ctx, conns[i], text, readings[i])
-			}()
+			asking.Go(func() { verdicts[i] = probe(ctx, conns[i], text, readings[i]) })
 		}
 		asking.Wait()
 		for i, setting := range settings {

@@ -4813,7 +4813,7 @@ jobs:
           # //go:build !race and raceEnabled, so a test added to either and missing here fails
           # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the
           # bus under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s,
-          # so 10 minutes each is ample.
+          # so the 6 minutes this one call takes are ample.
           #
           # One go test over the three packages rather than one per package: go builds the three
           # test binaries together and runs each package's tests as soon as its own binary is
@@ -4851,7 +4851,7 @@ jobs:
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
           # here runs against 5432. The package measured 56 s with an instance to itself on a
-          # loaded two-core pod, so 10 minutes is ample.
+          # loaded two-core pod, so the 2 minutes this call takes are ample.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # The one untagged test of cmd/dispatch that reads a live event feed, on the third

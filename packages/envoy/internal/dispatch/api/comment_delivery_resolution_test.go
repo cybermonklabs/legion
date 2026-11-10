@@ -138,13 +138,9 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending role delivery: %v", err)
 	}
-	// The role moves to s2, and every counter the retry is read by starts again from zero, the
-	// role lookups with them: what the comment's own first delivery costs in lookups is not a
-	// fixed number. A lookup the listener answers after mentionLookupTimeout (comment_delivery.go)
-	// leaves the mention unresolved, and the sender of that mention resolves the role again after
-	// the commit (mentionResolutionFor), so the creation above makes one lookup or two. Counting
-	// from zero is what makes the assertion below about the retry alone: the retry must look up
-	// no role at all.
+	// The role moves to s2, and the counters start again from zero (reset), the role lookups with
+	// them: counting from zero is what makes the assertion below about the retry alone, which
+	// must look up no role at all.
 	registry.setHolder("s2")
 	registry.reset()
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{

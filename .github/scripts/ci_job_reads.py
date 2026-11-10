@@ -420,8 +420,8 @@ def go_notices_runs():
 
 # The two jq filters a `go test -json` stream is replayed to the log through: the package result
 # lines of a green run, the whole stream of a red one. Both the steps that write one stream
-# (json_stream_script) and envoy-go's unit step, which writes four and replays each in a group of
-# its own (UNIT_TEST_SCRIPT), are built from these, so the two shapes cannot spell the replay
+# (json_stream_script) and envoy-go's unit step, which writes seven and replays each in a group
+# of its own (UNIT_TEST_SCRIPT), are built from these, so the two shapes cannot spell the replay
 # differently.
 REPLAY_GREEN = "jq -rj 'select(.Action == \"build-output\" or (.Action == \"output\" and .Test == null)) | .Output'"
 REPLAY_RED = "jq -rj 'select(.Action == \"build-output\" or .Action == \"output\") | .Output'"
@@ -430,9 +430,9 @@ REPLAY_RED = "jq -rj 'select(.Action == \"build-output\" or .Action == \"output\
 def json_stream_script(command: str, stream: str) -> str:
     """A test step whose one go command writes its `go test -json` stream to a file under
     $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
-    the whole stream of a red one (ci.yaml's envoy-go unit step says why). The race lane's two
-    reduced jobs are what is left of this shape; envoy-go's unit step runs five calls and builds
-    its own (UNIT_TEST_SCRIPT)."""
+    the whole stream of a red one (ci.yaml's envoy-go unit step says why). The race lane's
+    envoy-go-race and envoy-go-race-api are what is left of this shape; envoy-go's unit step runs
+    eight calls and builds its own (UNIT_TEST_SCRIPT)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -447,10 +447,10 @@ exit $s"""
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
-# -json` stream - envoy-go's unit step, which writes the streams of its four calls, and the race
-# lane's envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that keeps
-# the stream is a form the check reduces. envoy-go-race-docs is pinned for a reason of its own:
-# it runs the package under .github/scripts/race_memory.py, which is that step's whole line
+# -json` stream - envoy-go's unit step, which writes the streams of seven of its eight calls, and
+# the race lane's envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that
+# keeps the stream is a form the check reduces. envoy-go-race-docs is pinned for a reason of its
+# own: it runs the package under .github/scripts/race_memory.py, which is that step's whole line
 # (RACE_DOCS_SCRIPT below).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
@@ -634,7 +634,7 @@ UNIT_TEST_PATTERN = "|".join(
 # The routes call's own DSN, the envoy-go job's second Postgres service: it names 5433 on that
 # one call and nowhere else, which is what keeps the event log's safe horizon off the other
 # calls' transactions (ci.yaml's postgres_routes service). It is on the call rather than in the
-# step's env:, where it would reach the other five.
+# step's env:, where it would reach the other seven.
 ROUTES_DSN = "postgres://postgres:ci@localhost:5433/postgres?sslmode=disable"
 # The third service, 5434, and the one untagged test of cmd/dispatch that reads a live event
 # feed: it waits on events_start as the routes package does, and the horizon is instance-wide, so
@@ -851,7 +851,7 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_CALL = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The whole unit step, comments and all: seven calls started in the background longest first,
+# The whole unit step, comments and all: eight calls started in the background longest first,
 # a wait for each, and one replay group per call. It is built here rather than beside
 # UNIT_TEST_PATTERN above because the race-impossible call's -run comes from the walk over
 # packages/envoy that this file does just above. ci.yaml holds this text exactly, indentation
@@ -903,7 +903,7 @@ unit=$!
 # //go:build !race and raceEnabled, so a test added to either and missing here fails
 # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the
 # bus under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s,
-# so 10 minutes each is ample.
+# so the 6 minutes this one call takes are ample.
 #
 # One go test over the three packages rather than one per package: go builds the three
 # test binaries together and runs each package's tests as soon as its own binary is
@@ -941,7 +941,7 @@ pgmigrate=$!
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
 # its own tests'. It is on the call rather than on the step because every other call
 # here runs against 5432. The package measured 56 s with an instance to itself on a
-# loaded two-core pod, so 10 minutes is ample.
+# loaded two-core pod, so the 2 minutes this call takes are ample.
 DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
 # The one untagged test of cmd/dispatch that reads a live event feed, on the third
