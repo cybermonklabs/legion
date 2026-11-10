@@ -1027,23 +1027,23 @@ export class DispatchApiClient {
     const answer = await this.read("/api/v1/issues", {}, query);
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
-  /** `GET /api/v1/search`. `project`, `status`, `author` (an actor id: a person's login or a
-   *  session id) and `updated_since` (RFC 3339) each narrow every leg of the search rather than
-   *  striking rows out of the page it answers. `number_project` narrows nothing: it is the
-   *  project of the page the search was made from, which a query that is a bare issue number is
-   *  read in, and a request naming `project` too reads the number in that project instead.
-   *  `keywords_only` runs the keyword leg alone and makes no embedding call, whatever embedder
-   *  the deployment configured, which is what the bar sends behind a keystroke; a request
-   *  leaving it out searches by meaning too wherever an embedder is configured. The route
-   *  refuses a value it cannot read under its own code (`INVALID_PROJECT`,
-   *  `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`,
-   *  `INVALID_KEYWORDS_ONLY`). The bar searches while a person types, so it passes the `signal`
-   *  of the search it is still interested in: an aborted request ends the route's own work with
-   *  it, the embedding a search by meaning had asked for included. A request carrying any member
-   *  beyond `q`, `project`, `limit` and `offset` goes to `GET /api/v1/search/results` instead
-   *  (`everyBuildReadsSearch`), because a Dispatch released before that route refuses the path
-   *  outright rather than answering `GET /api/v1/search` with the member dropped, which is
-   *  unnarrowed rows under the filters a person chose. */
+  /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
+   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
+   *  each narrow every leg of the search rather than striking rows out of the page it answers.
+   *  `number_project` narrows nothing: it is the project of the page the search was made from,
+   *  which a query that is a bare issue number is read in, and a request naming `project` too
+   *  reads the number in that project instead. `keywords_only` runs the keyword leg alone and
+   *  makes no embedding call, whatever embedder the deployment configured, which is what the
+   *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
+   *  embedder is configured. The route refuses a value it cannot read under its own code
+   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
+   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  so it passes the `signal` of the search it is still interested in: an aborted request ends
+   *  the route's own work with it, the embedding a search by meaning had asked for included.
+   *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
+   *  results route refuses that path outright rather than answering `GET /api/v1/search` with
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
   search(
     query: string,
     options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},

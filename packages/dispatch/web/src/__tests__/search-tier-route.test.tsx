@@ -8,7 +8,7 @@ import { MEANING_PAUSE_MS, useTieredSearch } from "../features/search/useTieredS
 import { answerRequests } from "./network";
 
 // The keystroke's tier asks for the keyword leg alone (`useTieredSearch`, `keywords_only: true`),
-// which is a member beyond `q`, `project`, `limit` and `offset`, so that tier always asks for
+// which `everyBuildReadsSearch` does not keep on `/api/v1/search`, so that tier always asks for
 // `/api/v1/search/results` - whatever the reader narrowed by, even nothing. The pause's tier
 // sends the request as the chips built it, so a reader who narrowed by nothing leaves it on
 // `/api/v1/search`.

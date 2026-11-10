@@ -2011,7 +2011,13 @@ export class DispatchClient {
     );
     if (query) {
       for (const [name, value] of Object.entries(query)) {
-        if (typeof value === "string" || typeof value === "number") {
+        // A boolean is sent as `true` or `false`, the two words every route that reads one
+        // takes (`parseQueryBool` in the server). It must be sent rather than dropped: a
+        // search's path is picked from the members the request carries
+        // (`everyBuildReadsSearch`), so a dropped `keywords_only: true` would ask for
+        // `/api/v1/search/results` and then arrive with the flag gone, and the server would
+        // answer by meaning the search asked it to skip.
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
           url.searchParams.set(name, String(value));
         } else if (Array.isArray(value)) {
           for (const item of value) url.searchParams.append(name, String(item));

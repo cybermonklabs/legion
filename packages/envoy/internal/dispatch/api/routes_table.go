@@ -552,7 +552,7 @@ const searchDeclaresFour = "This route declares ?q=, ?project=, ?limit= and ?off
 
 // searchDeclaresNine is the paragraph of GET /api/v1/search/results, the route that declares
 // every member the handler reads.
-const searchDeclaresNine = "This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying any member beyond ?q=, ?project=, ?limit= and ?offset= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed."
+const searchDeclaresNine = "This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed."
 
 // routes lists every native-workspace route. Add a row here, never a mux.HandleFunc line. A
 // mutating row's write class comes from writeClasses, which Register's project-scope check

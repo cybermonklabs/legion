@@ -152,12 +152,18 @@ def measure(dispatch, case, query, limit):
     against one are what they always were; what the parameter adds is that the measurement is the
     keyword path by request rather than by the absence of a model service.
 
-    The request goes to /api/v1/search/results, as the command bar's does, because a Dispatch
-    released before keywords_only answers /api/v1/search by meaning too, and the run would then
-    report the hybrid path's numbers as the keyword path's. That route refuses the request
-    instead, 404 no route. A server built from this checkout, which is what the README has you
-    measure, serves both paths, so this only bites a run pointed at an older deployment, which
-    is exactly the run whose numbers would otherwise be wrong.
+    The request goes to /api/v1/search/results, as the command bar's does. The reason is a
+    Dispatch released before keywords_only, which answers /api/v1/search by meaning too, so the
+    run would report the hybrid path's numbers as the keyword path's; the results route refuses
+    that run, 404 no route, which dispatch_read raises as DispatchRefused.
+
+    It refuses every build released before the results route, not only those: a build between
+    keywords_only and that route reads the parameter correctly on /api/v1/search and is turned
+    away all the same. So this copy of the script measures a server built from this checkout,
+    which is what the README has you do, and a reading of an older build uses that build's own
+    copy of this script, which asks the path that build serves. That holds for the
+    base-against-head readings the README reports (its latency and floor sections) as much as
+    for a run against a deployment.
     """
     path = "/api/v1/search/results?" + urllib.parse.urlencode(
         {"q": query, "limit": limit, "keywords_only": "true"})

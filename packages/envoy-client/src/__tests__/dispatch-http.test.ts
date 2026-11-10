@@ -238,13 +238,13 @@ describe("DispatchClient", () => {
     expect(new URL(requests[0]?.url ?? "").pathname).toBe("/api/v1/search");
   });
 
-  // A member beyond `q`, `project`, `limit` and `offset` is one a Dispatch released before the
-  // results route drops, answering unnarrowed rows under the filters a person chose; that build
-  // answers the results path `404 no route` instead, which is a refusal. `SearchOptions` carries
-  // no such member today, so the test puts one on the request through a cast: the rule reads the
-  // request's own keys, so the day the command grows a filter it is routed without anyone
-  // remembering to.
-  test("a search carrying a member beyond those four asks for /api/v1/search/results", async () => {
+  // A member `everyBuildReadsSearch` does not keep on `/api/v1/search` is one a Dispatch
+  // released before the results route drops, answering unnarrowed rows under the filters a
+  // person chose; that build answers the results path `404 no route` instead, which is a
+  // refusal. `SearchOptions` carries no such member today, so the test puts one on the request
+  // through a cast: the rule reads the request's own keys, so the day the command grows a
+  // filter it is routed without anyone remembering to.
+  test("a search carrying a member everyBuildReadsSearch drops asks for /api/v1/search/results", async () => {
     const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
     const client = new DispatchClient(
       "http://dispatch.test",
@@ -261,6 +261,24 @@ describe("DispatchClient", () => {
     expect(url.pathname + url.search).toBe(
       "/api/v1/search/results?q=astrolabe&project=LEGION&status=in_progress"
     );
+  });
+
+  // `keywords_only` is the one flag among the five, and the path is picked from the members the
+  // request carries. A boolean the URL dropped would ask for the results route and arrive
+  // without the flag, so the server would answer by meaning the search asked it to skip: the
+  // harm this route exists to stop, caused by the client rather than by an older build.
+  test("a boolean member reaches the URL, so the flag the path was picked for is sent", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.search("astrolabe", { keywords_only: true } as SearchOptions);
+
+    const url = new URL(requests[0]?.url ?? "");
+    expect(url.pathname + url.search).toBe("/api/v1/search/results?q=astrolabe&keywords_only=true");
   });
 
   test("lists this session's open asks with an optional server baseline", async () => {

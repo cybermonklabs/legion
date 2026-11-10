@@ -818,7 +818,7 @@ test("a search of the members every build reads goes to /api/v1/search", async (
 // The bar's own filters ask for a path of their own: a Dispatch released before them answers it
 // `404 no route`, which is a refusal, where it answers `/api/v1/search` `200` with the filter
 // dropped, which is unnarrowed rows under the filters a person chose.
-test("a search carrying a member beyond those four goes to /api/v1/search/results", async () => {
+test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/search/results", async () => {
   const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
   const api = createApiClient(stub.fetch);
 
