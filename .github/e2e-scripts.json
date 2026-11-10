@@ -127,6 +127,14 @@
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
     },
     {
+      "script": "leak-guard-image-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
+    },
+    {
+      "script": "leak-guard-image-probe.sh",
+      "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
+    },
+    {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },

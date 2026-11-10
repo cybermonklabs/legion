@@ -20,6 +20,7 @@ import {
   type ReplaySnapshot,
   type ReplayState,
 } from "../replay";
+import type { DeliveryAnswer } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -516,6 +517,56 @@ describe("resume point", () => {
     expect(setup().delivery.registration()).not.toHaveProperty("resume");
   });
 
+  // The floor a registration answer leaves: the start the listener created the session's
+  // consumer at, less one. A consumer delivers nothing below its own start, so a session that
+  // has received nothing still holds a point, and comes back where that consumer began rather
+  // than at the stream's end.
+  const answerStarting = (consumerStart?: number): DeliveryAnswer => ({
+    mode: "consumer",
+    subject: deliverSubject(SESSION),
+    stream_id: STREAM,
+    gap: false,
+    ...(consumerStart === undefined ? {} : { consumer_start: consumerStart }),
+  });
+
+  test("the consumer's start the answer carries is the floor the next registration resumes at", () => {
+    const { delivery, persisted } = setup();
+
+    delivery.answered(answerStarting(42), [AGENT]);
+
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 41 });
+    expect(delivery.registration()).toEqual({
+      consumer: true,
+      epoch: delivery.epoch().id,
+      resume: { stream_id: STREAM, seq: 41 },
+    });
+    // `answered` persists, so the floor is in the transcript at once.
+    expect(persisted.at(-1)?.resume).toEqual({ stream_id: STREAM, seq: 41 });
+  });
+
+  test("a consumer start below the point the session already holds does not lower it", () => {
+    const { delivery, handed } = setup();
+    delivery.receive(relay({ seq: 11 }));
+    handed[0]?.done();
+
+    delivery.answered(answerStarting(5), [AGENT]);
+
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 11 });
+  });
+
+  test("an answer with no consumer start, from an earlier listener, changes nothing", () => {
+    const { delivery } = setup();
+    delivery.restore({ resume: { stream_id: STREAM, seq: 11 }, follows: {} });
+    const fresh = setup();
+
+    delivery.answered(answerStarting(), [AGENT]);
+    fresh.delivery.answered(answerStarting(), [AGENT]);
+
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 11 });
+    expect(fresh.delivery.resumePoint()).toBeUndefined();
+    expect(fresh.delivery.registration()).not.toHaveProperty("resume");
+  });
+
   test("each epoch is a new random string", () => {
     const { delivery } = setup();
     const before = delivery.epoch().id;
@@ -566,6 +617,29 @@ describe("gaps", () => {
 
     expect(gaps.map((notice) => notice.kind)).toEqual(["stream_recreated"]);
     expect(delivery.resumePoint()).toBeUndefined();
+  });
+
+  // The floor a registration answer leaves is the whole point of a session that has received
+  // nothing (`answered`), and `written` holds it like a sequence the session wrote: a frame of
+  // another stream says the stream that floor stands on was replaced, so what the session asked
+  // to resume from is gone and the notice is true of it.
+  test("a frame of another stream than the answer's floor is told once", () => {
+    const { delivery, gaps } = setup();
+    delivery.answered(
+      {
+        mode: "consumer",
+        subject: deliverSubject(SESSION),
+        stream_id: STREAM,
+        gap: false,
+        consumer_start: 42,
+      },
+      [AGENT]
+    );
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 41 });
+
+    delivery.receive(relay({ seq: 1, streamID: "stream-new" }));
+
+    expect(gaps.map((notice) => notice.kind)).toEqual(["stream_recreated"]);
   });
 
   test("a core answer tells nothing", () => {
