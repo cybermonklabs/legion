@@ -9,6 +9,7 @@ import { type ReactNode, useMemo } from "react";
 
 import { legionTimelineQuery } from "../../api/queries";
 import type { LegionTimelineSpan, LegionIssueTimeline as Timeline } from "../../api/types";
+import { InfoHint } from "../../components/InfoHint";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -31,7 +32,7 @@ const SEGMENT_LABEL: Record<string, string> = {
   ci_wait: "CI wait",
   waiting_on_children: "Waiting on children",
   idle: "Idle",
-  unknown: "Unknown (not observed)",
+  unknown: "Not observed",
 };
 const SEGMENT_FILL: Record<string, string> = {
   waiting_on_person: legionPhaseScale.awaiting_person ?? "",
@@ -161,17 +162,17 @@ export function LegionIssueTimeline({
           {query.data === undefined ? "" : ` · ${query.data.title}`}
         </h2>
         <button className={`text-xs ${textSecondaryOnCanvas}`} onClick={onClose} type="button">
-          Close timeline
+          Close
         </button>
       </header>
       {query.isError ? (
         <QueryError
-          message={`Couldn't load ${issueKey}'s timeline.`}
+          message={`Could not load the timeline of ${issueKey}.`}
           onRetry={() => void query.refetch()}
           retrying={query.isFetching}
         />
       ) : query.data === undefined ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Loading the timeline…</p>
+        <p className={`text-sm ${textMutedOnSurface}`}>Loading…</p>
       ) : (
         <TimelineBody onOpenIssue={onOpenIssue} timeline={query.data} />
       )}
@@ -297,26 +298,22 @@ function TimelineBody({
     if (span.name === "implementing" && cause !== undefined) causes[cause] += 1;
   });
   const sentBack = causes.review + causes.checks;
+  const byCause = [
+    causes.review > 0 ? `${causes.review} review` : "",
+    causes.checks > 0 ? `${causes.checks} tests or CI` : "",
+  ].filter((part) => part !== "");
   const figures = [
     ["Work time", duration(timeline.work_hours)],
     ["Parked", duration(timeline.parked_hours)],
     ["Queued", duration(timeline.queued_hours)],
     ["Review rounds", `${timeline.review_rounds}`],
+    [
+      "Sent back",
+      sentBack > 0 ? `${sentBack} (${byCause.join(", ")})` : timeline.sent_back ? "yes" : "none",
+    ],
   ];
-  const byCause = [
-    causes.review > 0 ? `${causes.review} by a review` : "",
-    causes.checks > 0 ? `${causes.checks} by tests or CI` : "",
-  ].filter((part) => part !== "");
-  const story = [
-    `Phases read from ${SOURCE_LABEL[timeline.source]}.`,
-    sentBack > 0
-      ? sentBack === 1
-        ? `Sent back to implementing once, ${causes.review === 1 ? "by a review" : "by tests or CI"}.`
-        : `Sent back to implementing ${sentBack} times: ${byCause.join(", ")}.`
-      : timeline.sent_back
-        ? "Sent back to implementing at least once."
-        : "Never sent back to implementing.",
-  ];
+  const missing = [...(split ? [] : ["time split"]), ...empty.map((name) => name.toLowerCase())];
+  const about = `Phases come from ${SOURCE_LABEL[timeline.source]}.${missing.length === 0 ? "" : ` No record of: ${missing.join(", ")}.`}`;
   const [axisRef, axisWidth] = useWidth();
   return (
     <>
@@ -348,20 +345,18 @@ function TimelineBody({
             </dd>
           </div>
         ) : null}
+        <div className="flex items-center" data-legion-timeline-about>
+          <InfoHint label="About this timeline">{about}</InfoHint>
+        </div>
       </dl>
-      <p className={`text-xs ${textSecondaryOnCanvas}`} data-legion-timeline-story>
-        {story.join(" ")}
-      </p>
-      <p className={`text-xs ${textMutedOnSurface}`} data-legion-timeline-segments>
-        {split
-          ? `The bars' hours: ${Object.entries(SEGMENT_LABEL)
-              .filter(([key]) => (hours[key as keyof typeof hours] ?? 0) > 0)
-              .map(
-                ([key, label]) => `${label} ${formatHours(hours[key as keyof typeof hours] ?? 0)}`
-              )
-              .join(" · ")}.`
-          : "Nothing recorded splits this issue's hours into turns, CI waits, asks or children, so the row of where the hours went is left out."}
-      </p>
+      {split ? (
+        <p className={`text-xs tabular-nums ${textMutedOnSurface}`} data-legion-timeline-segments>
+          {Object.entries(SEGMENT_LABEL)
+            .filter(([key]) => (hours[key as keyof typeof hours] ?? 0) > 0)
+            .map(([key, label]) => `${label} ${formatHours(hours[key as keyof typeof hours] ?? 0)}`)
+            .join(" · ")}
+        </p>
+      ) : null}
       <div
         className="grid grid-cols-1 items-center gap-x-2 gap-y-0.5 md:grid-cols-[minmax(7rem,11rem)_1fr] md:gap-y-1"
         data-legion-timeline-axis
@@ -407,7 +402,7 @@ function TimelineBody({
               className={`inline-block h-3 w-3 rounded-sm ${legionPhaseScale.planning ?? ""}`}
               style={HATCH}
             />
-            <span className={textSecondaryOnCanvas}>hatched: the root waiting on its children</span>
+            <span className={textSecondaryOnCanvas}>hatched: root waits on children</span>
           </li>
         ) : null}
         {parkedAny ? (
@@ -417,19 +412,12 @@ function TimelineBody({
               className={`inline-block h-3 w-3 rounded-sm ${chartParts[6]}`}
               style={HATCH}
             />
-            <span className={textSecondaryOnCanvas}>hatched grey: parked</span>
+            <span className={textSecondaryOnCanvas}>hatched gray: parked</span>
           </li>
         ) : null}
       </ul>
-      {empty.length === 0 ? null : (
-        <p className={`text-xs ${textMutedOnSurface}`} data-legion-timeline-empty>
-          Nothing recorded: {empty.join(", ")}.
-        </p>
-      )}
       <details>
-        <summary className={`cursor-pointer text-xs ${textSecondaryOnCanvas}`}>
-          Every stretch, with its hours and its source
-        </summary>
+        <summary className={`cursor-pointer text-xs ${textSecondaryOnCanvas}`}>Stretches</summary>
         <div className="max-h-72 overflow-auto">
           <table className="w-full text-left text-xs" data-legion-timeline-table>
             <thead className={textMutedOnSurface}>

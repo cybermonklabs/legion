@@ -19,7 +19,7 @@ test("in hours mode the bar's length is the issue's hours against the table's lo
     "reviewing",
   ]);
   expect(parts[1]?.style.width).toBe("60%");
-  expect(parts[1]?.title).toBe("Implementing: 6.0h, 60%");
+  expect(parts[1]?.title).toBe("Implementing: 6.0 h, 60%");
 });
 
 test("in share mode every bar is full length", () => {

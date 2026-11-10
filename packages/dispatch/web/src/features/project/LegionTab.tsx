@@ -1,11 +1,10 @@
-// The project's Legion efficiency dashboard, /projects/<KEY>/legion (dispatch://INFRA-979): one
-// page per project in place of the deployment-wide Delivery and Pipeline pages, one column. From
-// the top: where the finished issues' time went and each issue's own bar, work time to merge,
-// rework, splitting, CI and deploys (LegionSections); then the live slots and the waiting line
-// from the board route over /ws/live. Any issue opens in its timeline (LegionIssueTimeline) at
+// The project's Legion dashboard, /projects/<KEY>/legion (dispatch://INFRA-979), one column:
+// metrics first (LegionSections: time per phase, work time, rework, splitting, CI and deploys),
+// then the issue tables, each the Issues tab's table (IssueGrid): finished issues, slots and the
+// waiting line. An issue key opens its timeline (LegionIssueTimeline) at
 // /projects/<KEY>/legion/<ISSUE>, above the rest.
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { legionBoardQuery, legionSettingsQuery } from "../../api/queries";
@@ -16,58 +15,25 @@ import {
   surfaceBg,
   textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
+import { IssueGrid } from "./IssueGrid";
 import { LegionPhaseCell } from "./issues-table-columns";
 import { formatPhaseTime, legionPhases } from "./issues-table-model";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
-import { LegionSections } from "./LegionSections";
+import { LegionSections, SectionTitle } from "./LegionSections";
 
 const CARD = `flex min-w-0 flex-col gap-2 rounded border px-4 py-3 ${surfaceBg} ${borderDefault}`;
-const KEY_BUTTON = "font-mono text-xs underline decoration-dotted underline-offset-2";
 
-/** The phases that hold a slot for its tree's children alone, and the work under a root that
- *  keeps such a slot busy (the idle-slot rule the dashboard states). */
+/** The phases in which a root holds its slot for its children alone. */
 const HELD_FOR_CHILDREN: Record<string, true> = {
   accepting: true,
   awaiting_merge: true,
   awaiting_person: true,
 };
-/** A CI verdict in words, for every value the daemon sends: `green` when every required check
- *  passed, `red` when one failed, and none while one is pending or nothing was judged. */
-const CI_WORD: Record<string, string> = { green: "passed", red: "failed" };
-const ciWord = (verdict: string | null): string =>
-  verdict === null || verdict === "" ? "none yet" : (CI_WORD[verdict] ?? verdict);
+/** The phases of a child that keep its root's held slot busy. */
 const CHILD_WORK: Record<string, true> = { implementing: true, testing: true, reviewing: true };
-/** How many rows a live table shows before its "show all". */
-const FIRST_ROWS = 10;
-
-/** The button under a live table that shows all its rows, or the first ones again. */
-function ShowAll({
-  all,
-  count,
-  noun,
-  onToggle,
-}: {
-  all: boolean;
-  count: number;
-  noun: string;
-  onToggle: () => void;
-}): ReactNode {
-  if (count <= FIRST_ROWS) return null;
-  return (
-    <button
-      className={`self-start text-xs underline ${textSecondaryOnCanvas}`}
-      data-legion-show-all={noun}
-      onClick={onToggle}
-      type="button"
-    >
-      {all ? `Show the first ${FIRST_ROWS}` : `Show all ${count} ${noun}`}
-    </button>
-  );
-}
 
 export function LegionTab({
   issue,
@@ -93,8 +59,7 @@ export function LegionTab({
   if (!hasLegion) {
     return (
       <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-dashboard>
-        {project} names no Legion daemon, so it has no Legion dashboard. The Settings page names
-        one.
+        No Legion daemon for {project}. Set one on the Settings page.
       </p>
     );
   }
@@ -106,274 +71,228 @@ export function LegionTab({
       <LegionSections onOpenIssue={open} project={project} />
       {board.isError ? (
         <QueryError
-          message="Couldn't load the slots and the waiting line."
+          message="Could not load the slots and the waiting line."
           onRetry={() => void board.refetch()}
           retrying={board.isFetching}
         />
       ) : board.data === undefined ? (
-        <p className={textMutedOnCanvas}>Loading the slots and the waiting line…</p>
+        <p className={textMutedOnCanvas}>Loading…</p>
       ) : (
         <>
-          <Slots board={board.data} onOpenIssue={open} />
-          <WaitingLine board={board.data} onOpenIssue={open} />
+          <Slots board={board.data} project={project} />
+          <WaitingLine board={board.data} project={project} />
         </>
       )}
     </div>
   );
 }
 
-/** Each slot's holder, live: its phase as the table writes it, its roles in a turn, its children
- *  not yet started, its CI verdict, and whether the slot is held for children only or idle. */
-function Slots({
-  board,
-  onOpenIssue,
-}: {
-  board: LegionBoardResponse;
-  onOpenIssue: (key: string) => void;
-}): ReactNode {
+/** The timeline address a key on the Legion tab links to. */
+const timelineHref =
+  (project: string) =>
+  (row: { key: string }): string =>
+    buildProjectPath({ kind: "legion", project, issue: row.key });
+
+/** One slot's row: its holder's card and what the slot is used for. */
+interface SlotRow {
+  readonly key: string;
+  readonly card: LegionBoardCard;
+  readonly use: string;
+}
+
+/** Each slot's holder, live, in the Issues tab's table: slot, phase (with "between turns" when no
+ *  worker of it is in a turn), children not started, CI and what the slot is used for. */
+function Slots({ board, project }: { board: LegionBoardResponse; project: string }): ReactNode {
   const phases = useMemo(() => legionPhases(board), [board]);
-  const [all, setAll] = useState(false);
-  const cards = useMemo(() => board.columns.flatMap((column) => column.cards), [board]);
-  const holders = cards
-    .filter((card) => card.slot !== null)
-    .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
-  // The slot's use, with why: a worker in a turn (an architect's included) or the root's own
-  // phase makes it working; else a root waiting on its children holds it.
-  const state = (card: LegionBoardCard): string => {
-    if (card.roles.length > 0) return `working: ${card.roles.join(", ")} in a turn`;
-    if (!HELD_FOR_CHILDREN[card.phase]) return "working: its own phase";
-    const busy = cards.some(
-      (other) =>
-        other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
-    );
-    return busy ? "held: for its children" : "held: children idle";
-  };
-  const shown = all ? holders : holders.slice(0, FIRST_ROWS);
-  const held = holders.filter((card) => state(card).startsWith("held"));
-  const idle = holders.filter((card) => state(card) === "held: children idle");
+  const rows = useMemo((): SlotRow[] => {
+    const cards = board.columns.flatMap((column) => column.cards);
+    // A worker in a turn (an architect's included) or the root's own phase makes the slot
+    // working; else the root holds it for its children.
+    const use = (card: LegionBoardCard): string => {
+      if (card.roles.length > 0) return `working: ${card.roles.join(", ")} in a turn`;
+      if (!HELD_FOR_CHILDREN[card.phase]) return "working: own phase";
+      const busy = cards.some(
+        (other) =>
+          other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
+      );
+      return busy ? "held: for its children" : "held: children idle";
+    };
+    return cards
+      .filter((card) => card.slot !== null)
+      .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
+      .map((card) => ({ key: card.key, card, use: use(card) }));
+  }, [board]);
+  const held = rows.filter((row) => row.use.startsWith("held")).length;
+  const idle = rows.filter((row) => row.use === "held: children idle").length;
   const { header } = board;
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
-      <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>Slots, now</h2>
-      <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-slot-summary>
-        {header.slots_in_use} of {header.slot_cap ?? "?"} slots in use · {held.length} held with no
-        worker of its own in a turn · {idle.length} of those with children idle, nothing under their
-        root implementing, testing or reviewing
+      <SectionTitle
+        info="Held: the root waits on its children, and no worker of the root is in a turn. Children idle: no child of the root implements, tests or reviews."
+        title="Slots"
+      />
+      <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-slot-summary>
+        {header.slots_in_use} of {header.slot_cap ?? "?"} in use · {held} held · {idle} children
+        idle
       </p>
-      <p className={`text-xs ${textMutedOnSurface}`}>
-        A slot is working while a worker of its issue is in a turn, the architect's included, or
-        while its root is in a phase of its own work. It is held for children only while its root is
-        accepting, awaiting merge or awaiting a person with no worker in a turn; held, children idle
-        when, besides, nothing under the root is implementing, testing or reviewing. CI: passed,
-        failed, or none yet (a required check is pending, or nothing was judged).
-      </p>
-      <div className="hidden md:block">
-        <table className="w-full text-left text-xs">
-          <thead className={textMutedOnSurface}>
-            <tr>
-              <th className="px-1 py-1 font-normal">Slot</th>
-              <th className="px-1 py-1 font-normal">Issue</th>
-              <th className="px-1 py-1 font-normal">Phase</th>
-              <th className="px-1 py-1 font-normal">Children not started</th>
-              <th className="px-1 py-1 font-normal">CI</th>
-              <th className="px-1 py-1 font-normal whitespace-nowrap">Slot use</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((card) => {
-              const phase = phases.get(card.key);
-              return (
-                <tr
-                  className={`border-t align-top ${borderDefault}`}
-                  data-legion-slot={card.slot ?? ""}
-                  key={card.key}
-                >
-                  <td className="px-1 py-1">{card.slot}</td>
-                  <td className="px-1 py-1">
-                    <button
-                      className={KEY_BUTTON}
-                      onClick={() => onOpenIssue(card.key)}
-                      type="button"
+      <IssueGrid<SlotRow>
+        columns={[
+          {
+            id: "slot_index",
+            header: "Slot",
+            value: (row) => row.card.slot ?? -1,
+            cell: (row) => <span className="tabular-nums">{row.card.slot}</span>,
+            filter: false,
+            size: 72,
+          },
+          "key",
+          "title",
+          {
+            id: "slot_phase",
+            header: "Phase",
+            value: (row) => phases.get(row.key)?.order ?? Number.MAX_SAFE_INTEGER,
+            cell: (row) => {
+              const phase = phases.get(row.key);
+              return phase === undefined ? null : (
+                <span className="flex flex-col gap-1">
+                  <LegionPhaseCell phase={phase} />
+                  {row.card.roles.length === 0 ? (
+                    <span
+                      className={`text-xs ${textMutedOnSurface}`}
+                      data-legion-slot-between-turns
                     >
-                      {card.key}
-                    </button>
-                    <div
-                      className={`max-w-[13rem] truncate md:max-w-md ${textSecondaryOnCanvas}`}
-                      title={card.title}
-                    >
-                      {card.title}
-                    </div>
-                  </td>
-                  <td className="px-1 py-1">
-                    {phase === undefined ? null : <SlotPhase card={card} phase={phase} />}
-                  </td>
-                  <td className="px-1 py-1">{card.children}</td>
-                  <td
-                    className="px-1 py-1 whitespace-nowrap"
-                    data-legion-slot-ci={card.checks_verdict ?? ""}
-                  >
-                    {ciWord(card.checks_verdict)}
-                  </td>
-                  <td className="px-1 py-1" data-legion-slot-state={state(card)}>
-                    {state(card)}
-                  </td>
-                </tr>
+                      between turns
+                    </span>
+                  ) : null}
+                </span>
               );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {/* A narrow page stacks each slot into a card with every field the table has. */}
-      <ol className="flex flex-col md:hidden" data-legion-slot-cards>
-        {shown.map((card) => {
-          const phase = phases.get(card.key);
-          const facts: [string, ReactNode][] = [
-            [
-              "Phase",
-              phase === undefined ? "—" : <SlotPhase card={card} key="phase" phase={phase} />,
-            ],
-            ["Children not started", card.children],
-            ["CI", <span key="ci">{ciWord(card.checks_verdict)}</span>],
-            ["Slot use", state(card)],
-          ];
-          return (
-            <li
-              className={`flex flex-col gap-1 border-t py-2 text-xs ${borderDefault}`}
-              data-legion-slot-card={card.slot ?? ""}
-              key={card.key}
-            >
-              <div className="flex items-baseline gap-2">
-                <span className={textMutedOnSurface}>Slot {card.slot}</span>
-                <button className={KEY_BUTTON} onClick={() => onOpenIssue(card.key)} type="button">
-                  {card.key}
-                </button>
-              </div>
-              <div className={textSecondaryOnCanvas}>{card.title}</div>
-              <dl className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-x-2 gap-y-1">
-                {facts.map(([label, value]) => (
-                  <div className="contents" key={label}>
-                    <dt className={textMutedOnSurface}>{label}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </li>
-          );
-        })}
-      </ol>
-      <ShowAll all={all} count={holders.length} noun="slots" onToggle={() => setAll(!all)} />
+            },
+            filter: "picks",
+            size: 200,
+          },
+          {
+            id: "children_not_started",
+            header: "Children not started",
+            value: (row) => row.card.children,
+            cell: (row) => <span className="tabular-nums">{row.card.children}</span>,
+            filter: false,
+            size: 120,
+          },
+          "ci",
+          {
+            id: "slot_use",
+            header: "Slot use",
+            value: (row) => row.use,
+            cell: (row) => <span data-legion-slot-state={row.use}>{row.use}</span>,
+            filter: "picks",
+            size: 220,
+          },
+        ]}
+        empty="No slot in use."
+        initialSort={[{ id: "slot_index", desc: false }]}
+        keyHref={timelineHref(project)}
+        label="Slots"
+        layoutKey="legion-slots"
+        pageSize={25}
+        project={project}
+        rows={rows}
+      />
     </section>
   );
 }
 
-/** A slot's phase: the issues table's own cell, and "· between turns" under it when no worker of
- *  the issue is in a turn (the roles themselves are on the board cards and in the table). */
-function SlotPhase({
-  card,
-  phase,
-}: {
-  card: LegionBoardCard;
-  phase: Parameters<typeof LegionPhaseCell>[0]["phase"];
-}): ReactNode {
-  return (
-    <span className="flex flex-col gap-1">
-      <LegionPhaseCell phase={phase} />
-      {card.roles.length === 0 ? (
-        <span className={`text-xs ${textMutedOnSurface}`} data-legion-slot-between-turns>
-          · between turns
-        </span>
-      ) : null}
-    </span>
-  );
+/** One row of the waiting line: its place (none for an issue awaiting a person), its card and
+ *  why it waits. */
+interface WaitingRow {
+  readonly key: string;
+  readonly place: number | null;
+  readonly card: LegionBoardCard;
+  readonly why: string;
 }
 
-/** The daemon's waiting line in its own order, each root ready, held by a dependency or on a
- *  person, and the issues awaiting a person. */
+/** The daemon's waiting line, in the order it starts them, in the Issues tab's table: place, the
+ *  time each issue waited in its phase, and why it waits. */
 function WaitingLine({
   board,
-  onOpenIssue,
+  project,
 }: {
   board: LegionBoardResponse;
-  onOpenIssue: (key: string) => void;
+  project: string;
 }): ReactNode {
-  const queue = board.columns.find((column) => column.id === "queue")?.cards ?? [];
-  const awaiting = board.columns.find((column) => column.id === "awaiting_person")?.cards ?? [];
-  const [all, setAll] = useState(false);
+  const rows = useMemo((): WaitingRow[] => {
+    const queue = board.columns.find((column) => column.id === "queue")?.cards ?? [];
+    const awaiting = board.columns.find((column) => column.id === "awaiting_person")?.cards ?? [];
+    const why = (card: LegionBoardCard): string =>
+      card.blocked_by.length > 0
+        ? `held by ${card.blocked_by.join(", ")}`
+        : card.waiting_on !== null && card.waiting_on.answered_at === null
+          ? `on a person (${card.waiting_on.kind})`
+          : "ready";
+    return [
+      ...awaiting.map((card) => ({ key: card.key, place: null, card, why: "awaiting a person" })),
+      ...queue.map((card, index) => ({ key: card.key, place: index + 1, card, why: why(card) })),
+    ];
+  }, [board]);
+  const queued = rows.filter((row) => row.place !== null);
+  const ready = queued.filter((row) => row.why === "ready").length;
+  const blocked = queued.filter((row) => row.card.blocked_by.length > 0).length;
+  const awaiting = rows.length - queued.length;
   const now = Date.now();
-  const why = (card: LegionBoardCard): string =>
-    card.blocked_by.length > 0
-      ? `held by ${card.blocked_by.join(", ")}`
-      : card.waiting_on !== null && card.waiting_on.answered_at === null
-        ? `on a person (${card.waiting_on.kind})`
-        : "ready";
-  const ready = queue.filter((card) => why(card) === "ready").length;
-  const blocked = queue.filter((card) => card.blocked_by.length > 0).length;
   return (
     <section aria-label="Waiting line" className={CARD} data-legion-waiting-line>
-      <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>Waiting line, now</h2>
-      <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
-        {queue.length} roots waiting for a slot · {ready} ready · {blocked} held by a dependency ·{" "}
-        {awaiting.length} awaiting a person
+      <SectionTitle
+        info="The daemon starts the roots in this order. Waited is the time since the issue entered its phase."
+        title="Waiting line"
+      />
+      <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
+        {queued.length} waiting · {ready} ready · {blocked} held by a dependency · {awaiting}{" "}
+        awaiting a person
       </p>
-      <p className={`text-xs ${textMutedOnSurface}`}>
-        In the order the daemon starts them: the issues awaiting a person first, then the roots by
-        their place in line. Waited is the time since the issue entered its phase.
-      </p>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <thead className={textMutedOnSurface}>
-            <tr>
-              <th className="px-1 py-1 font-normal">#</th>
-              <th className="px-1 py-1 font-normal">Issue</th>
-              <th className="px-1 py-1 font-normal whitespace-nowrap">Waited</th>
-              <th className="px-1 py-1 font-normal">Waiting</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(() => {
-              const rows = [
-                ...awaiting.map((card) => ({ card, place: "person" })),
-                ...queue.map((card, index) => ({ card, place: String(index + 1) })),
-              ];
-              return all ? rows : rows.slice(0, FIRST_ROWS);
-            })().map(({ card, place }) => (
-              <tr className={`border-t align-top ${borderDefault}`} key={`${place}-${card.key}`}>
-                <td className="px-1 py-1">{place === "person" ? "—" : place}</td>
-                <td className="px-1 py-1">
-                  <button
-                    className={KEY_BUTTON}
-                    onClick={() => onOpenIssue(card.key)}
-                    type="button"
-                  >
-                    {card.key}
-                  </button>
-                  <div
-                    className={`max-w-[15rem] truncate md:max-w-xl ${textSecondaryOnCanvas}`}
-                    title={card.title}
-                  >
-                    {card.title}
-                  </div>
-                </td>
-                <td
-                  className="px-1 py-1 whitespace-nowrap tabular-nums"
-                  data-legion-waited={card.key}
-                  title={card.phase_since ?? "Entry time unknown"}
-                >
-                  {formatPhaseTime(card.phase_since, now)}
-                </td>
-                <td className="px-1 py-1">
-                  {place === "person" ? "awaiting a person" : why(card)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <ShowAll
-        all={all}
-        count={awaiting.length + queue.length}
-        noun="issues"
-        onToggle={() => setAll(!all)}
+      <IssueGrid<WaitingRow>
+        columns={[
+          {
+            id: "place",
+            header: "#",
+            value: (row) => row.place ?? 0,
+            cell: (row) => <span className="tabular-nums">{row.place ?? "—"}</span>,
+            filter: false,
+            size: 64,
+          },
+          "key",
+          "title",
+          {
+            id: "waited",
+            header: "Waited",
+            value: (row) =>
+              row.card.phase_since === null ? 0 : now - Date.parse(row.card.phase_since),
+            cell: (row) => (
+              <span
+                className="tabular-nums whitespace-nowrap"
+                data-legion-waited={row.key}
+                title={row.card.phase_since ?? "Entry time unknown"}
+              >
+                {formatPhaseTime(row.card.phase_since, now)}
+              </span>
+            ),
+            filter: false,
+            size: 110,
+          },
+          {
+            id: "waiting_why",
+            header: "Waiting",
+            value: (row) => row.why,
+            filter: "picks",
+            size: 220,
+          },
+        ]}
+        empty="Nothing waits."
+        initialSort={[{ id: "place", desc: false }]}
+        keyHref={timelineHref(project)}
+        label="Waiting line"
+        layoutKey="legion-waiting"
+        pageSize={25}
+        project={project}
+        rows={rows}
       />
     </section>
   );
