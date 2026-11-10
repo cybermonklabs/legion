@@ -234,29 +234,25 @@ func drained(t testing.TB) {
 // of what a process leaves behind on the shared server reads the server's own account rather
 // than the connections it can see from inside its own process, since a connection the process
 // has forgotten is exactly what such a test is looking for.
-func Connections(t testing.TB) []string {
+func Connections(t testing.TB) []Connection {
 	t.Helper()
 	connections, err := clientConnections()
 	if err != nil {
 		t.Fatalf("read the NATS server's connections: %v", err)
 	}
-	names := make([]string, 0, len(connections))
-	for _, c := range connections {
-		names = append(names, c.String())
-	}
-	return names
+	return connections
 }
 
-// connection is one client connection the server holds: the id it gave it, and the name the
+// Connection is one client connection the server holds: the id it gave it, and the name the
 // client gave itself (nats.Name, which natsauth.Connect and this package's own Connect make
-// every client pass). The id is what a check compares, since the server never reuses one within
+// every client pass). The CID is what a check compares, since the server never reuses one within
 // its run, and the String is what a report prints.
-type connection struct {
-	cid  uint64
-	name string
+type Connection struct {
+	CID  uint64
+	Name string
 }
 
-func (c connection) String() string { return fmt.Sprintf("%d %q", c.cid, c.name) }
+func (c Connection) String() string { return fmt.Sprintf("%d %q", c.CID, c.Name) }
 
 // monitorClient bounds each monitoring request, so one the server never answers cannot outlast the
 // drain's own bound.
@@ -268,7 +264,7 @@ var monitorClient = &http.Client{Timeout: 5 * time.Second}
 // how it answers here. A server running inside the test process answers the same question from
 // the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
 // rewrite, and then this function is the only one to re-point.
-func clientConnections() ([]connection, error) {
+func clientConnections() ([]Connection, error) {
 	response, err := monitorClient.Get(monitorURL + "/connz")
 	if err != nil {
 		return nil, err
@@ -286,9 +282,9 @@ func clientConnections() ([]connection, error) {
 	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
 		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
 	}
-	connections := make([]connection, 0, len(connz.Connections))
+	connections := make([]Connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {
-		connections = append(connections, connection{cid: c.CID, name: c.Name})
+		connections = append(connections, Connection{CID: c.CID, Name: c.Name})
 	}
 	return connections, nil
 }
@@ -317,14 +313,18 @@ func JetStream(t testing.TB) jetstream.JetStream {
 }
 
 // Connect is the client a test of the shared server takes: it dials url, the URL that server
-// gave t, named t.Name() and bounded by a second, and closes it when t ends. A test takes its
-// client from here rather than dialling itself because the name is what the leak check prints
-// when a connection outlives the test that opened it, and because the fixture closes what it
-// opened, so the test owes that close to nobody. The caller's own options come after the
-// fixture's, so a caller wanting another name or another timeout passes one and wins.
+// gave t, named t.Name(), and closes it when t ends. A test takes its client from here rather
+// than dialling itself because the name is what the leak check prints when a connection outlives
+// the test that opened it, and because the fixture closes what it opened, so the test owes that
+// close to nobody. The fixture gives the client its name and its close and leaves the dial's own
+// budget to nats.go's default or to a caller that passes one: of the fifteen sites that moved to
+// this helper ten dialled with nats.Timeout(time.Second) and five dialled with no timeout at all,
+// which is nats.go's two-second default, so a second of the fixture's own would shorten those
+// five. The caller's own options come after the fixture's, so a caller wanting another name or a
+// timeout passes one and wins.
 func Connect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
 	t.Helper()
-	conn, err := nats.Connect(url, append([]nats.Option{nats.Name(t.Name()), nats.Timeout(time.Second)}, options...)...)
+	conn, err := nats.Connect(url, append([]nats.Option{nats.Name(t.Name())}, options...)...)
 	if err != nil {
 		t.Fatalf("connect to the NATS server at %s: %v", url, err)
 	}

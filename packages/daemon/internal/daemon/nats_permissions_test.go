@@ -57,19 +57,20 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 						t.Fatalf("the first daemon creates %s: %v", name, err)
 					}
 				}
-				first.conn.Load().Close()
+				first.closeNATS()
 
 				logs := &syncBuffer{}
 				restarted := connectDaemonGrant(t, uri, daemonSeed, logs)
-				defer restarted.conn.Load().Close()
+				defer restarted.closeNATS()
+				conn := restarted.conn.Load()
 
 				exception := make(chan []byte, 1)
-				subscription, err := subscribeNoticeExceptions(restarted.conn.Load(), func(data []byte) { exception <- append([]byte(nil), data...) })
+				subscription, err := subscribeNoticeExceptions(conn, func(data []byte) { exception <- append([]byte(nil), data...) })
 				if err != nil {
 					t.Fatalf("subscribe to role-lane exceptions: %v", err)
 				}
 				defer subscription.Unsubscribe()
-				if err := restarted.conn.Load().Flush(); err != nil {
+				if err := conn.Flush(); err != nil {
 					t.Fatalf("flush the exceptions subscription: %v", err)
 				}
 

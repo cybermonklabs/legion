@@ -62,10 +62,14 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
-	// conn is the Envoy NATS connection, held atomically because two goroutines reach it: connect
-	// writes it on the boot's goroutine, and run reads it on its own, after awaitStop has returned,
-	// to close it at the stop's budget (closeNATS). internal/daemon runs under the race detector in
-	// CI (.github/workflows/ci.yaml, the step "Test the concurrent packages under the race
+	// conn is the Envoy NATS connection. It is written once, on run's own goroutine while the
+	// daemon boots: connect runs there, inside bootprobe.Run, before the serving goroutine starts
+	// (daemon.go). It is read afterwards from several others — the serving goroutine's
+	// workflowRuntime.stop, reconnectWatchdog, the intake group — and from run itself once
+	// awaitStop has returned. Two of those close it at once when the stop's budget runs out
+	// (closeNATS), so the field is held atomically rather than leaving each reader to prove its
+	// own ordering, and internal/daemon runs under the race detector in CI
+	// (.github/workflows/ci.yaml, the step "Test the concurrent packages under the race
 	// detector").
 	conn      atomic.Pointer[nats.Conn]
 	consumers *intake.Consumers

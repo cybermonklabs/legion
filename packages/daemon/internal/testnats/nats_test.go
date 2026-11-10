@@ -298,7 +298,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 		t.Fatalf("read the NATS server's connections after the leak check: %v", err)
 	}
 	for _, left := range listed {
-		if slices.ContainsFunc(open, func(c connection) bool { return c.cid == left.cid }) {
+		if slices.ContainsFunc(open, func(c Connection) bool { return c.CID == left.CID }) {
 			t.Errorf("the leak check reported connection %s and left it open: the server still lists %v", left, open)
 		}
 	}
@@ -396,11 +396,11 @@ func TestTheCheckRefusesToArmWhenItCannotSeeItsOwnClient(t *testing.T) {
 // packages/envoy/internal/bus/name_test.go holds the same for Envoy's clients.
 func TestTheFixtureNamesItsClientAfterTheTest(t *testing.T) {
 	Connect(t, URL(t))
-	var open []connection
+	var open []Connection
 	var err error
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
 		open, err = clientConnections()
-		return err == nil && slices.ContainsFunc(open, func(c connection) bool { return c.name == t.Name() })
+		return err == nil && slices.ContainsFunc(open, func(c Connection) bool { return c.Name == t.Name() })
 	}) {
 		t.Fatalf("the NATS server lists %v (%v), none of them named %s", open, err, t.Name())
 	}
@@ -410,7 +410,7 @@ func TestTheFixtureNamesItsClientAfterTheTest(t *testing.T) {
 // both open — one the fixture names after t, one its caller names ownName — and runs the leak
 // check as the end of t would. It answers what the check reported and the two connections the
 // server listed for those clients, by name.
-func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]connection) {
+func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]Connection) {
 	t.Helper()
 	url := URL(t)
 	armed := armedNow(t)
@@ -431,25 +431,21 @@ func armedNow(t *testing.T) map[uint64]bool {
 	if err != nil {
 		t.Fatalf("read the NATS server's connections to arm the leak check: %v", err)
 	}
-	armed := make(map[uint64]bool, len(open))
-	for _, c := range open {
-		armed[c.cid] = true
-	}
-	return armed
+	return cids(open)
 }
 
 // openedSince waits for the server to list the connections named want, and no others, beyond
 // those armed holds, and answers them by name. The wait is the settle the check itself gives the
 // server: a client is connected when its dial returns, but the monitoring endpoint is a reader of
 // the server's own clock.
-func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string]connection {
+func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string]Connection {
 	t.Helper()
-	var found []connection
+	var found []Connection
 	var err error
-	byName := func() map[string]connection {
-		listed := make(map[string]connection, len(found))
+	byName := func() map[string]Connection {
+		listed := make(map[string]Connection, len(found))
 		for _, c := range found {
-			listed[c.name] = c
+			listed[c.Name] = c
 		}
 		return listed
 	}

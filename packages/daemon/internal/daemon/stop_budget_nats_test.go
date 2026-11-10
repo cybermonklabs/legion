@@ -60,18 +60,27 @@ const sweepStallTick = 100 * time.Millisecond
 // than any work of the daemon's.
 const natsConnectionCloseBound = 5 * time.Second
 
-// A daemon whose stop runs out of budget returns from run with its Envoy NATS connection still
-// open, and the process that outlives run keeps it open: the only close of that connection is
-// workflowRuntime.stop (workflow.go), which the serving goroutine reaches only after
-// supervision.stop's wait for the work in flight, and that wait is unbounded, while run returns
-// through awaitStop's deadline arm as soon as the budget passes (daemon.go). Nothing else closes
-// it, because the daemon dials under natsauth.ReconnectForever (internal/natsauth/natsauth.go),
-// which never gives a connection up by itself.
+// natsConnectionClosePoll is how often the server is asked within that bound. Each question is an
+// HTTP request to the NATS monitoring endpoint, and a question that costs something must not be
+// asked a hundred times a second (internal/testwait, Holds); internal/testnats reads the same
+// endpoint at 50 ms (leakcheck.go, leakPoll).
+const natsConnectionClosePoll = 50 * time.Millisecond
+
+// run closes the workflow's Envoy NATS connection when its stop runs out of budget, so the
+// server holds nothing of the daemon's once run has returned.
+//
+// The close cannot be left to workflowRuntime.stop (workflow.go): the serving goroutine reaches
+// that stop only after supervision.stop's wait for the work in flight, and that wait is
+// unbounded, while run returns through awaitStop's deadline arm as soon as the budget passes
+// (daemon.go). Nothing else closes the connection either, because the daemon dials under
+// natsauth.ReconnectForever (internal/natsauth/natsauth.go), which never gives a connection up
+// by itself, so one run left open stays open for as long as the process does.
 //
 // The daemon's tests share one NATS server, and its fixture resets the server only once every
-// client connection to it has gone (internal/testnats, URL's drain), so the connection this stop
-// leaves open is charged to whichever test runs next — a test that had no part in it (INFRA-1964).
-func TestRunReturnsAtItsStopBudgetWithTheWorkflowsNATSConnectionOpen(t *testing.T) {
+// client connection to it has gone (internal/testnats, URL's drain), so a connection this stop
+// left open would be charged to whichever test runs next — a test that had no part in it
+// (INFRA-1964).
+func TestRunClosesTheWorkflowsNATSConnectionWhenItsStopBudgetRunsOut(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	rt := newSweepStall(t)
 	o := fakeRuntime(rt, &built{})
@@ -98,17 +107,17 @@ func TestRunReturnsAtItsStopBudgetWithTheWorkflowsNATSConnectionOpen(t *testing.
 	if logLine(stopLog, stoppedWaiting) == "" {
 		t.Fatalf("the stop did not reach its budget, so this test proved nothing about the connection run leaves open; it logged:\n%s", stopLog)
 	}
-	var left []string
+	var left []testnats.Connection
 	closed := func() bool {
 		left = nil
 		for _, connection := range testnats.Connections(t) {
-			if !slices.Contains(before, connection) {
+			if !slices.ContainsFunc(before, func(c testnats.Connection) bool { return c.CID == connection.CID }) {
 				left = append(left, connection)
 			}
 		}
 		return len(left) == 0
 	}
-	if !testwait.Holds(natsConnectionCloseBound, testwait.Poll, closed) {
+	if !testwait.Holds(natsConnectionCloseBound, natsConnectionClosePoll, closed) {
 		t.Fatalf("the daemon returned from run with its workflow connection open: %s later the NATS server still holds %d client connection(s) %v the daemon opened",
 			natsConnectionCloseBound, len(left), left)
 	}

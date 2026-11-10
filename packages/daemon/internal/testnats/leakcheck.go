@@ -51,7 +51,7 @@ var (
 	fixtureConns []*nats.Conn
 	// leftOpen is what the last test's leak check found still open once it had closed the
 	// fixture's own clients, and leftOpenBy names that test, for the next test's drain.
-	leftOpen   []connection
+	leftOpen   []Connection
 	leftOpenBy string
 )
 
@@ -72,6 +72,17 @@ func fixtureOpened(conn *nats.Conn) {
 	fixtureConns = append(fixtureConns, conn)
 }
 
+// cids is the set of connections open, by the id the server gave them, which is what the check
+// compares: the server never reuses an id within its run, while a name is the client's own and
+// two clients can carry one.
+func cids(open []Connection) map[uint64]bool {
+	ids := make(map[uint64]bool, len(open))
+	for _, c := range open {
+		ids[c.CID] = true
+	}
+	return ids
+}
+
 // armLeakCheck records which connections the server holds now and registers the check that reads
 // them again when t ends. URL calls it while the reset's own client is still open, and that
 // client is the check's positive control: a reader that answered nothing whatever the server
@@ -82,14 +93,11 @@ func armLeakCheck(t testing.TB) {
 	if err != nil {
 		t.Fatalf("read the NATS server's connections to arm the leak check: %v", err)
 	}
-	if !slices.ContainsFunc(open, func(c connection) bool { return c.name == t.Name() }) {
+	if !slices.ContainsFunc(open, func(c Connection) bool { return c.Name == t.Name() }) {
 		t.Fatalf("the leak check cannot see its own client %q among the %d connections %v the NATS server reports: an empty answer at the end of %s would prove nothing about what it left open",
 			t.Name(), len(open), open, t.Name())
 	}
-	armed := make(map[uint64]bool, len(open))
-	for _, c := range open {
-		armed[c.cid] = true
-	}
+	armed := cids(open)
 	t.Cleanup(func() { leakCheck(t, armed) })
 }
 
@@ -135,7 +143,7 @@ func closeFixtureConnections() {
 
 // recordLeft keeps what the ending test left open for drained to read at the start of the next
 // test, and forgets the last test's record when this test left nothing.
-func recordLeft(test string, left []connection) {
+func recordLeft(test string, left []Connection) {
 	leakMu.Lock()
 	defer leakMu.Unlock()
 	if len(left) == 0 {
@@ -149,18 +157,15 @@ func recordLeft(test string, left []connection) {
 // "" when the last test left none, and reports whether every connection in found is one of
 // them. The drain asks before it waits: nothing will close those connections, so waiting its
 // bound out costs the next test thirty seconds and says no more than the leaker's own failure.
-func leftByTheLastTest(found []connection) (string, bool) {
+func leftByTheLastTest(found []Connection) (string, bool) {
 	leakMu.Lock()
 	defer leakMu.Unlock()
 	if leftOpenBy == "" || len(found) == 0 {
 		return leftOpenBy, false
 	}
-	recorded := make(map[uint64]bool, len(leftOpen))
-	for _, c := range leftOpen {
-		recorded[c.cid] = true
-	}
+	recorded := cids(leftOpen)
 	for _, c := range found {
-		if !recorded[c.cid] {
+		if !recorded[c.CID] {
 			return leftOpenBy, false
 		}
 	}
@@ -169,8 +174,8 @@ func leftByTheLastTest(found []connection) (string, bool) {
 
 // settled waits up to leakSettle for the server to hold no connection that was absent when the
 // check was armed, and answers what is left with the last read's error.
-func settled(armed map[uint64]bool) ([]connection, error) {
-	var left []connection
+func settled(armed map[uint64]bool) ([]Connection, error) {
+	var left []Connection
 	var err error
 	testwait.Holds(leakSettle, leakPoll, func() bool {
 		left, err = opened(armed)
@@ -180,14 +185,14 @@ func settled(armed map[uint64]bool) ([]connection, error) {
 }
 
 // opened is what the server holds that it did not hold when the check was armed.
-func opened(armed map[uint64]bool) ([]connection, error) {
+func opened(armed map[uint64]bool) ([]Connection, error) {
 	open, err := clientConnections()
 	if err != nil {
 		return nil, err
 	}
-	var left []connection
+	var left []Connection
 	for _, c := range open {
-		if !armed[c.cid] {
+		if !armed[c.CID] {
 			left = append(left, c)
 		}
 	}
