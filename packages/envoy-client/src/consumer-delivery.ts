@@ -290,7 +290,9 @@ export interface ConsumerDelivery {
   persist(): void;
   /**
    * Below this point the session holds nothing unwritten: the lowest stream sequence received and
-   * not yet written, minus one, or, with none held, the highest written. Undefined before any.
+   * not yet written, minus one, or, with none held, the highest sequence the session wrote or the
+   * floor a registration answer left (`consumer_start - 1`, `answered`). Undefined only before
+   * either of those.
    */
   resumePoint(): ResumePoint | undefined;
   snapshot(): ConsumerDeliverySnapshot;
@@ -347,7 +349,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   // When each followed topic was first followed, on the host's clock.
   let follows = new Map<string, number>();
   // The resume point's stream, the frames of it received and not yet written, and the highest
-  // written. A `nak` leaves its frame held: it comes again and is not written yet.
+  // sequence the session wrote or the floor a registration answer's `consumer_start` left
+  // (`answered`), undefined only before either. One field holds both because `restore` puts a
+  // persisted resume point straight back here, so a floor kept beside it would not survive a
+  // restart and the two would mean the same thing from the first resume on. A `nak` leaves its
+  // frame held: it comes again and is not written yet.
   let streamID: string | undefined;
   let held = new Set<number>();
   let written: number | undefined;
@@ -543,6 +549,9 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     if (frame.gap && !gapTold) tellGap("retention_gap");
     gapTold = false;
     if (frame.streamID !== streamID) {
+      // `written` is the floor a registration answer left as well as what the session wrote
+      // (`answered`), so this fires for a session that received nothing too: the stream behind
+      // that floor was replaced, so what it asked to resume from is gone.
       if (streamID !== undefined && (written !== undefined || held.size > 0)) {
         tellGap("stream_recreated");
       } else if (streamID === undefined) {
@@ -594,6 +603,13 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     pump();
   };
 
+  // The point the next registration asks to resume at: below the lowest frame still held, else
+  // the highest sequence written. `written` is also the floor a registration answer leaves here
+  // (`answered`): the start of the session's own consumer, less one. A consumer never delivers
+  // below the sequence it starts at, so "this session holds nothing below its consumer's start"
+  // is true by construction, and resuming at `start - 1` asks for exactly what that consumer
+  // would have delivered. Without it a session that received nothing would come back with no
+  // point at all, and its next consumer would start at the stream's end.
   const resumePoint = (): ResumePoint | undefined => {
     if (streamID === undefined) return undefined;
     if (held.size > 0) return { stream_id: streamID, seq: Math.min(...held) - 1 };
@@ -666,6 +682,15 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
           tellReplacedResume(answer.stream_id);
           switchStream(answer.stream_id);
         }
+        // The floor of the resume point: the start the listener created this session's consumer
+        // at, less one (`resumePoint`). It only ever rises — a point the session already holds
+        // is at or above the start of the consumer that delivered it — and `held` keeps its own
+        // frames. An answer of an earlier listener carries no start and moves nothing, and one
+        // naming a stream this is not (`answer.stream_id` empty) says nothing about this one's
+        // sequences; the switch above has already made a replaced stream the current one, so a
+        // replacement's floor is its new consumer's own.
+        const floor = (answer.consumer_start ?? 0) - 1;
+        if (answer.stream_id === streamID && floor > (written ?? -1)) written = floor;
         if (answer.gap) {
           tellGap("retention_gap");
           gapTold = true;

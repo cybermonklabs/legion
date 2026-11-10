@@ -230,7 +230,8 @@ test("a Reply thread and an Agent thread read in the pane stay in the list after
 // Dismiss, by the row's own control and by `e`.
 // ---------------------------------------------------------------------------
 
-test("the row's Dismiss takes a thread out of the list, the counts and the Inbox number, and the selection moves on", async ({
+// @pr: A write the server settles: Dismiss takes the thread out of the list, the counts and the Inbox number, and moves the selection on.
+test("the row's Dismiss takes a thread out of the list, the counts and the Inbox number, and the selection moves on @pr", async ({
   browser,
 }) => {
   const seeded = await seedInbox();

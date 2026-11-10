@@ -115,18 +115,24 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **jj (Jujutsu)** for version control, native **Dispatch** for issue tracking
 
-- **Container images** a CI job fetches are copies in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
-  Every workflow, Dockerfile and test names its copy by digest.
-  `.github/ci-images.yaml` holds one row per image (`upstream`, `tag`, `digest`), and `.github/scripts/mirror-ci-images.sh` copies the rows the package does not hold yet with `crane copy`, which keeps the digest.
-  That copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
-  For every `library/golang` row whose upstream names a tag, that script also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
+- **Container images** a CI job fetches all live in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
+  Every workflow, Dockerfile and test names the image it runs by digest.
+  `.github/ci-images.yaml` holds one row per image, each row carrying `tag` and `digest` beside exactly one of two keys that say where its bytes came from:
+  `upstream:` is a copy of a third-party image, which `.github/scripts/mirror-ci-images.sh` makes for the rows the package does not hold yet with `crane copy`, which keeps the digest;
+  `built:` is an image this repository builds itself, from the Dockerfile of this tree that key names, which `.github/workflows/browser-image.yaml` builds and pushes and no script copies.
+  A copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
+  For every `library/golang` row whose upstream names a tag, `mirror-ci-images.sh` also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
   No read of a floating upstream tag can do that work, because it cannot tell a row labelled wrongly now from one labelled rightly long ago.
   An `oven/bun` image declares its version nowhere, so the two builds that run those bytes refuse any Bun but the one `.bun-version` pins.
-  Each row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight characters.
   `ci.yaml`'s `ci-images` job runs that copy and then the package half of the gate, in that order, and it is the one copy path:
   it runs on every event `ci.yaml` runs on — a pull request, a merge group and a dispatch — and a failed copy is re-run with `gh run rerun` where the run is a pull request's, since every job of a re-run attempt of a merge-group run skips.
-  Adding an image is one edit of that file.
-  Moving one to a new version is two commits:
+  Adding a copy is one edit of that file.
+  Adding or changing an image this repository builds is two pushes instead:
+  the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
+  The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
+  Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
   `.github/scripts/check-ci-images.sh` is the gate, and it takes one mode:
@@ -134,28 +140,52 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
 
-- **Tool assets** that `setup-bun`, `install-crane`, `install-jj` and `install-changie` install from a GitHub release have a second source, so an hour of 504s on that service does not stop those four installs.
-  `.github/ci-tools.yaml` holds one row per asset — crane, changie, mise, jj and one per Bun build variant — and each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own;
-  under a second key, `no_second_source:`, it holds one entry per URL CI fetches that is published in one place and nowhere else.
+- **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
+  Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
+  on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
+  A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
+
+- **Tool assets** that a CI job installs through one of eight actions — `setup-bun`, `install-crane`, `install-changie`, `install-jj`, `install-elan`, `install-uv`, `install-docker-plugin` and `install-pulumi` — have a second source, so an hour of 504s on one service does not stop those eight installs.
+  `.github/ci-tools.yaml` holds one row per asset, eleven of them: crane, changie, mise, jj, one per Bun build variant, elan, uv, the docker provider plugin and the Pulumi CLI.
+  Each row names the one pinned digest both of that asset's sources are checked against, so no action holds a version or a digest of its own, and it names the source of each of its two sides, `primary_source` and `second_source`, in one of five words.
+  `github-release` is the URL the row writes, read through the `CI_TOOLS_GITHUB_BASE` seam; `ghcr-mirror` is a copy in the package the images live in; `npm` is the package upstream publishes the same binary in; and `pypi` and `pulumi-releases` are the URL the row writes, read through the `CI_TOOLS_URL_BASE` seam, with the member a row names taken out of what that URL served.
+  A copy this repository fills and an npm package published beside a release are no origin of the bytes, so those two words are a second source and no row's primary, while the other three may be written on either side: `github-release` is most rows' primary and the `pulumi-cli` row's second source.
+  Under a second key, `no_second_source:`, the manifest holds one entry per URL CI fetches that is published in one place and nowhere else; that list is empty today, and the key stays for the next such URL.
   `.github/scripts/ci-tools.sh` is the one fetch helper every install goes through: it tries the primary, then the second source, and leaves only bytes of the row's digest behind.
   A transport failure of the primary sends it to the second source and a digest mismatch does not, because a checksum mismatch is a supply-chain signal rather than an outage, and every exit names the source that served the bytes.
-  Bun's second source is the npm package upstream publishes the same binary in, which needs no copy; crane, changie, mise and jj take a copy in the same package the images live in, addressed by the digest the install checks.
-  `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
-  A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
-  `ci.yaml`'s `tool-fallback` job is the live proof: it faults GitHub's release hosts for a whole job, runs the merge base's four installs as the negative control and the head's four beside them, and drives eight corrupted payloads to read every refusal.
+  A local write error of this run is the one failure that names no source: curl answers it with exit 23, and a fetch that meets it stops on whichever side it was reading, since no other address cures a file this runner will not let a fetch write.
   Raising a tool is one commit, unlike an image: a call site names a row rather than a digest, so a second row of the same tool has no name a call site can use, and a row that disagrees with its pin installs one version and verifies another, which is what the gate refuses; Bun is the exception that takes two, and its three `bun-*` rows move in the second commit, with `.bun-version`; `tool-fallback` needs `ci-images`, so the copy is filled before `tool-fallback` reads it, and the one window left is a raise merged while the asset is down and the copy is still cold, where the tool has the single source it has today
 
+- **The second source a row takes** is a second publisher where there is one and a copy where there is none: crane, changie, mise, jj and elan take a copy in the same package the images live in, addressed by the digest the install checks, elan because the search made on 2026-11-09 found no second publisher of its bytes at all.
+  Bun's second source is the npm package upstream publishes the same binary in, which needs no copy, so it serves the bytes on the day a copy would still be cold.
+  uv takes PyPI, deliberately another provider and not another GitHub host: one 504 on its single-source install ejected this repository from the merge queue twice on 2026-11-09, and a ghcr blob is served by a GitHub host.
+  PyPI's wheel and GitHub's tarball package one binary in two archives, so that row's `digest` is of the binary, and the archive's own digest rides beside it in `primary_digest`, which is the worker image's `ARG UV_SHA256`.
+  The docker provider plugin takes `get.pulumi.com`, which serves that tarball byte for byte, and the Pulumi CLI is that row reversed: `get.pulumi.com` is its primary, because that is the address its install reads, and the GitHub release of `pulumi/pulumi` is its second source.
+  `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
+  A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
+  `ci.yaml`'s `tool-fallback` job is the live proof: it faults `github.com` and the two release hosts for a whole job — and deliberately not `get.pulumi.com`, which is the docker provider plugin's second source in that same job — runs eight installs with nowhere to go as the negative control, drives the head's eight beside them, and reads every refusal with sixteen corrupted payloads
+
 - **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
-  It holds each row to its shape — every field present and not empty, one name per row, a `second_source` of `ghcr-mirror` or `npm`, a bare 64-hex lower-case `digest`, and a `primary` and a `mirror_from` that hold the row's own `version` — and to the pin that installs it (`.bun-version`, and `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile).
-  It reads every file under `.github/` as text, bar the manifest itself, which declares addresses and fetches nothing, and refuses a release-asset URL it finds there whatever repository that URL names, at three addresses and no others — on `github.com` the tag's own path and the `latest` permalink, and on `api.github.com` the endpoint `/repos/<owner>/<repo>/releases/assets/<id>`, each over `http` as well as `https` —
+  It holds each row to its shape — every field present, and not empty but for the six a row may leave empty (`primary`, `mirror_member`, `second_member` and the three `primary_*` fields), one name per row, a `primary_source` and a `second_source` each written in one of the five words the helper names a source by (`github-release`, `ghcr-mirror`, `npm`, `pypi` and `pulumi-releases`), of which a primary may take the three that are an origin of the bytes alone (`github-release`, `pypi` and `pulumi-releases`), the two further fields the second word decides (`mirror_from` and `mirror_member` for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, `second_url` and `second_member` for the other three), a bare 64-hex lower-case `digest`, and a `primary`, a `mirror_from` and a `second_url` that each hold the row's own `version` where they are not empty.
+  A member field holds that same `version` where it holds a version at all — `primary_member`, `mirror_member`, `npm_member` and `second_member` alike, a version being a dotted run of digits such as `0.13.5` — so a member that holds no such token is left alone, which is what keeps `./jj`, `package/bin/bun` and `uv-x86_64-unknown-linux-gnu/uv` right, and a member left behind at the old version while its row and its URLs move names a path the new archive does not hold, which is an install that fetches the right bytes and then finds no tool inside them.
+  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about half an hour; the gate says either in `lint` in a second.
+  `primary_digest` is bare 64-hex too where it is set, a row that sets `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets `primary_digest_of`, because a digest that does not say what it is of is how an archive comes to be checked against a binary and called equal.
+  It holds each row to the pin that installs it as well: `.bun-version`; `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile, and that same file's `ARG UV_VERSION` and `ARG UV_SHA256`, which the `uv` row's `version` and its `primary_digest` answer to; `const DockerPluginVersion` of `packages/envoy/infra/internal/pulumitest/pulumitest.go`, which the `pulumi-docker` row's `version` answers to; and the `crane`, `changie`, `elan` and `pulumi-cli` rows, which are their own pins, since their installs hold no version of their own.
+
+- **What the tool gate refuses in the tree**: it reads every file under `.github/` as text, bar the manifest itself, which declares addresses and fetches nothing, and refuses a release-asset URL it finds there whatever repository that URL names, at three addresses and no others — on `github.com` the tag's own path and the `latest` permalink, and on `api.github.com` the endpoint `/repos/<owner>/<repo>/releases/assets/<id>`, each over `http` as well as `https` —
   unless the URL names this repository itself, whose own address `.github/scripts/repo-paths.sh` derives (read with `GITHUB_REPOSITORY` out of its environment, so the name compared against is the one the tree carries and not the one a runner was handed),
   or the file's own name holds `.test.`,
-  or the URL text is exactly a row's `primary`, a row's `mirror_from`, the npm tarball URL a row derives, or the `url` of a `no_second_source` entry.
+  or the URL text is exactly a row's `primary`, a row's `mirror_from`, a row's `second_url`, the npm tarball URL a row derives, or the `url` of a `no_second_source` entry.
   It reads a host without regard to case, since a host is not case-sensitive, and takes a trailing dot (`github.com.`), an explicit `:80` or `:443`, a `user@` before the host, a missing scheme and an upper-case one as the same address; it compares a path as text, and whether github.com reads a path element without regard to case varies by element — measured against github.com, each reading between two readings of the canonical address that answered `302`: the owner, the repository and the asset's own name each answer `302` in any case, while `/RELEASES/download/`, `/releases/DOWNLOAD/` and an upper-case tag each answer `404`.
   So a URL differing from a row's only in the case of its owner or repository is READ and then refused, since nothing allows it but a row's exact text; where the gate compares two repositories rather than two URLs — an entry against the rows that cover it, and a URL against this repository's own name — it compares them without regard to case.
   A URL none of those allows and whose text holds a `$` is refused as an address the job builds rather than as an unnamed one, which is how an entry can decline such a URL: by writing that text verbatim.
   It refuses an npm URL under a scope a row's `npm_package` names, unless the URL is exactly the tarball a row derives, in a reach of its own which it claims and no more: every `*.yml` and `*.yaml` under `.github/actions` and `.github/workflows`, and nothing else, so an npm fetch written in a shell script under `.github/scripts/` is invisible to it.
   That reach is deliberate: the class this rule closes is GitHub release assets, and this repository writes the npm registry's address outside those two directories for reasons that fetch nothing (`.github/scripts/check-bun-version.sh:137` lists `registry.npmjs.org/@oven/bun` as a string to detect).
+  It refuses a URL on a download host a row names unless that text is exactly a row's `primary`, `mirror_from` or `second_url`, in the release-asset rule's reach and not the npm rule's: every file under `.github/`, this manifest and the `.test.` files left out.
+  The reaches differ because the npm rule's narrowness has the measured reason above and this rule has none: a `curl` in a script under `.github/scripts/` is exactly the install it closes.
+  Those hosts are the rows' own — `get.pulumi.com`, from the two Pulumi rows, and `files.pythonhosted.org`, from the `uv` row — so a service this manifest reads a tool from is one no file may fetch behind its back: the hole the Pulumi CLI went through, one source and no row.
+  Prose is text to it, so a comment writing one of those hosts with a path after it is refused as a fetch, and the gate's own header names them bare.
+  `github.com` and the registry host are left out of that set and to the two rules that already own them, because a blanket host rule over `ghcr.io` would refuse every image reference in the tree.
   It refuses a short `ghcr.io/cybermonklabs/legion/ci@sha256:` reference to a tool blob anywhere under `.github/` but `.github/ci-images.yaml`, whose own rows are images.
   It stops with no verdict at all, naming the file, when the manifest is missing, is not YAML, is not a mapping, names no `registry:`, holds no `tools:`, or holds a `no_second_source:` that is not a list, and when `.github/scripts/repo-paths.sh` does not answer with a release-asset address it can read this repository's name out of.
 
@@ -163,13 +193,18 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The gate compares text, and it guards against an install someone forgets to name, not against one written to slip past it: the change that does that could edit the gate in the same diff, so a reviewer reads both.
   What it cannot see, then, is every spelling its patterns do not match, and the list that follows gives the ones measured, not all of them.
   An address assembled at run time out of something the tree never writes, such as a URL read from a file a script downloads first; an install inside a file whose name holds `.test.`; spellings of those three paths that github.com or curl accepts and the patterns do not match — an extra slash before the owner, after the owner or after `releases`, a `/.` segment, `%64ownload` for `download`, `https:/` or `https:///` for `https://`, and a `user@` before a host written with no scheme; and those same bytes reached at any other host, the `release-assets.githubusercontent.com` address each redirect lands on among them, a mirror, a proxy, a copy, and `github.com` written as a path element of some other host, which the gate declines to read for the same reason.
+  The download-host rule compares text in that same way, so an address assembled at run time, an install written in a file whose name holds `.test.`, and those same bytes reached at any other host — a vendor's second domain, a redirect's destination, a proxy — are invisible to it too.
+  The rule that holds a member to its row's version reads a version as a dotted run of digits, so a member that writes one in some other shape — a date as `20260812`, a tag with its dots taken out — holds nothing that rule can see, and a member left behind in that shape passes it.
+  Its reach is `.github/`, which is what requirement R4 of dispatch://INFRA-1986 asks of it, so the worker image's own toolchain layer is outside it: `packages/daemon/docker/worker.Dockerfile` fetches uv, node, the AWS CLI, Go, kubectl, yq and Chromium from one address each, with no row and no second source, and a 500 on one of them failed this repository's `worker-image` build on 2026-11-09.
+  That gap is held by dispatch://INFRA-1865, which is why it is not a row here: a second source for seven image assets is its own change with its own digests.
   A file under `.github/` that is not valid UTF-8 is read by neither rule; a passing run's summary line names each one, and a failing run prints its problems alone.
 
 - **A decline** is how the manifest records a URL whose bytes are published in one place and nowhere else.
+  The list is empty today: it held elan, uv and the docker provider plugin, and each of the three now has a row with a second source (dispatch://INFRA-1986), which is what made those entries false and deleted them, so an empty list is a key with nothing to decline rather than a dead one.
   A `no_second_source` entry carries `url`, `digest`, `pinned_in` and `why`, and the gate refuses one whose shape it cannot read (a missing field, a `url` that is not a release-asset address, two entries for one URL),
   one whose `url` no file under `.github/` writes, one whose `digest` is not bare 64-hex, one whose `pinned_in` names a file that is missing, is not readable as text, is the manifest itself or is a `.test.` file — a file that fetches nothing and checks nothing cannot be what pins those bytes, and the manifest would satisfy the rule with the entry's own `digest:` line — one whose `digest` does not occur in that file, one whose repository a row already covers, and one whose `why` is a placeholder or is shorter than the minimum the refusal names.
   Those comparisons are text too: `pinned_in` is compared as the path the entry writes, so `..` or a symlink that reaches the manifest is not recognised as the manifest, and a repository is compared without regard to case but is not percent-decoded.
-  Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where the entries are: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://INFRA-1974).
+  Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where that key is: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://INFRA-1974).
 
 ## Commands
 
@@ -401,7 +436,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - a release build links a `@sjawhar/pi-legion`/`@sjawhar/pi-envoy` pair into the binary, so its `version` prints a second line, `plugins @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v>` (docs/kubernetes.md "Contract discipline")
 
-  - its `workspace-init` is an issue pod's two init containers
+  - its `workspace-init` is an issue pod's two init containers, three where the deployment names a `skills_repository` (`workspace-init skills --repo <owner>/<repo> --dir <dir>`, which clones that marketplace into the pod's skills volume)
     — `workspace-init fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]` fills the pod's feed on the pod's own disk:
     a fresh feed from the repository's cache alone (`--cache-url`, which defaults to LEGION_REPOSITORY_CACHE_URL, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds with its request for the tar alone;
     the runtime sets both on every issue pod, once the cache's Service is the cache's own), waiting for the cache to be ready, refusing one that names another repository or streams a pack, or a pack index, whose checksums do not hold or a history that is not whole (it takes the index the cache streams with each pack rather than building it again, which costs minutes of a pod's CPU per gigabyte), then fetching from GitHub, by exact name, the default branch GitHub names and the one the daemon recorded for the issue (LEGION_DEFAULT_BRANCH, while GitHub has it), and `refs/heads/legion/*`, after deleting every other branch of the feed that is not exactly GitHub's tip, so every branch it holds is GitHub's or absent, and a feed the disk already holds
@@ -686,7 +721,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
-  The browser suite (`dispatch-browser`) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
+  The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its lanes run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
@@ -803,23 +838,24 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
 
 **Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
 
-**Admission:** an admission slot is one issue with work, not one tree.
-Any issue, a root or a child, holds a slot while a worker of it has work:
-in `planning`, `implementing`, `testing`, `reviewing`, `retro` or `merging`, and a root at `admitted` whose design gate has never opened, whose architect is writing the spec.
-It holds none while it only waits:
-for its merge, in `accepting`, on a blocker, on its children, on a person, at `admitted` as a child or as a root whose gate has opened once, in `merging` with a READY the closed gate holds, `held`, `done`, and every issue of a lingering tree.
-The admission pass that sees such a state deletes the slot row.
+**Admission:** an admission slot is one issue the daemon has started, not one tree.
+Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase — and keeps it until it is done, leaves the workflow or waits only for its merge.
+So the row goes in four cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; it belongs to a tree whose root closed or a tree the daemon no longer runs; or its phase is `awaiting_merge`.
+Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `retro`, `merging`, `accepting`, `held` and `awaiting_person` — so an issue waiting on a person, on a blocker, on its children or on its review keeps its place against the cap and wins none back from the line when the wait ends.
+The admission pass that sees one of those four states deletes the slot row.
 `admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
+An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
 every worker of a waiting issue stays live in the issue's pod and answers questions until the issue closes.
 A transition applies at once — the phase, the Dispatch status, the new assignment, a READY withdrawal and the notices — and only the outbox row that delivers the worker's start waits for a slot;
 when a second transition happens before the slot, its start replaces the first one, so one worker starts and a completion of the earlier assignment is refused.
 The waiting line is a line of issues:
-first the issues that held a slot and have work again, and the answered `awaiting_person` roots, oldest first by the time the work came back;
-then the issues whose first phase can start, by the Dispatch rank of their tree's root, and within one root's rank that tree's own issues before the root itself.
+first the issues whose work came back, oldest first by the time it came back — one owed its worker a start, which holds no row and waits here for one, and two that hold the row they were started with: an answered `awaiting_person` root and a tree's own root at `admitted` whose design gate has opened;
+then the issues whose first phase can start, by the Dispatch rank of their tree's root and then by their own, most of which hold no row; two kinds hold one already, a root another tree handed over with the row it held there and a child the daemon started that a person set back to `todo`.
+An issue holding a row stands in `admission.active` and `admission.waiting` at once until the pass that promotes it, and that promotion takes no second row.
 A tree is live while its lifecycle is open and it does not linger, or while its root waits in the line or on a person, whether or not any issue of it holds a slot.
 `legion state` counts the slot holders against the cap and prints the live trees;
-its JSON lists the slot holders under `admission.active`, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
+its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
 So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that has no open child.
@@ -940,6 +976,8 @@ A blocked root keeps its place in the waiting line and takes no slot, so it hide
 it stays the live tree of its children, which are no orphans.
 A child is the same: `release_children` accepts the whole request whatever the links say and answers which children it released, which it started and which it held, each held one with the issues it waits on.
 A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot when the last blocker closes, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the tree's architect with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
+A child the daemon has already started holds a slot while a link holds it, which is the one case that takes capacity: a person's `todo` on such a child re-enters it at `admitted` inside its live tree, and it keeps the slot it took there, since an issue keeps its admission slot from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge.
+The state then names it under `admission.active` and under `admission.blocked` at once, and it is in no waiting line until its last blocker closes, which starts its first phase on the slot it already holds, or its tree's close hands it over as a root of its own, which releases that slot and puts it in the line.
 Work already under way is never stopped or re-checked, and those are the two exemptions:
 an issue that carries a run into a tree of its own is admitted whatever its links say, and so is a tree that ran, taken back after it finished and lingered, which starts again at its person's `todo`;
 a blocker added to a running tree's issue changes nothing for it.
@@ -948,11 +986,11 @@ the daemon's boot reads the whole project listing, and its periodic turn (`contr
 `legion state` prints the waits as `blocked on Dispatch links:`, the state's JSON carries them under `admission.blocked`, and the periodic wake to the project's controller carries the same list (the tick notice's `blocked`), for the day's report.
 The mark is a label rather than the issue's `route` because Dispatch publishes every event of a routed issue to the route's topic, where a label only marks the issue; it carries no workflow state.
 
-**Waiting on a person:** an admitted root whose architect asked a person a question, or handed its spec to a person for approval, gives its admission slot back while it waits, in its own `awaiting_person` phase.
+**Waiting on a person:** an admitted root whose architect asked a person a question, or handed its spec to a person for approval, keeps its admission slot while it waits, in its own `awaiting_person` phase.
 The daemon keeps a mirror of Dispatch's state of every ask of a root (`root_asks`:
 open or closed, whose turn, who closed it, the newest person's act on it), written from the ask events, a registration's read of the approval request and the boot catch-up, and decides from the record alone on every admission pass (a live fact, a tick, the boot read), so the same record gives the same decision.
 The mirror is the same whatever order the events arrive in, but a decision acts on the record as each event leaves it, so some orders differ (listed below).
-A root enters `awaiting_person` — gives up its slot at once, and its architect stays live and idle until the answer's task
+A root enters `awaiting_person` — keeping its slot, with its architect live and idle until the answer's task
 — when all of these hold: its architect handed something to the person since the daemon last gave it work (a question a session of its tree opened on the root, a tree session's reply leaving such a question, or an approval request of the closed gate's document, with the person, or a registration of a closed gate whose request waits on the person;
 `declared_seq`, the newest such hand-back, and `declared_at`, Dispatch's time of it);
 something is still with the person (an open tree question on the person's turn, or an approval request of the closed, armed gate's document on the person's turn);
@@ -980,7 +1018,7 @@ A boot whose read of such a root Dispatch refused leaves it with no cursor, so i
 A re-admission sets the cursor back to 0, so a new generation never replays the old one's tail.
 A daemon of an earlier release ignores the cursor, so a return to this release after one ran would replay, from the cursor this release left, events that daemon already applied live;
 before such a return, set every cursor to null (`update issues set caught_up_seq = null`), so each root's next catch-up replays nothing again.
-A gate whose document has no approval request in the mirror (one an earlier release registered before the mirror existed) has the request Dispatch shows open on that document mirrored at boot, and when that request waits on the person the boot declares the hand-back as a registration would, so a root already waiting on its approval at the deploy returns its slot.
+A gate whose document has no approval request in the mirror (one an earlier release registered before the mirror existed) has the request Dispatch shows open on that document mirrored at boot, and when that request waits on the person the boot declares the hand-back as a registration would, so a root already waiting on its approval at the deploy is recorded as waiting, keeping the slot it holds.
 A root Dispatch keeps refusing is released after a bounded number of reads and decided on the record as it stands.
 A wait on the gate is answered by the person's approval or changes request of the version it waits on or a later one, and by a newer spec version whoever wrote it once Dispatch shows the approval request waiting on the architect;
 a version the architect wrote before it handed the request back, whose event arrived late, moves the wait to that version and answers nothing, and a registration of another document moves the wait to that document at the version Dispatch shows.
@@ -1000,8 +1038,8 @@ A close of an item of the wait — a tree question, or an approval request of th
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
-the resume starts no phase worker, so a root whose design gate has already opened holds no slot and resumes at once however full the cap is, while one whose gate has never opened — its architect still writing the spec, which is work the cap counts — resumes at the next free slot;
-a phase that resume then starts waits for a slot of its own, the root's own first phase among the issues whose work came back, oldest first, by the moment its design gate opened, and a released child of it behind them, by the Dispatch rank of its tree's root;
+the resume takes no further slot, since an answered root holds the one it took when the daemon started it, so it resumes however full the cap is, whether or not its design gate has ever opened;
+the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds, while a child it releases holds none and waits in the line by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.

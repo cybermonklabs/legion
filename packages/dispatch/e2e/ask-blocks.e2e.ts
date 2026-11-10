@@ -194,7 +194,8 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
   }
 });
 
-test("a reader asks back from a decision block: the question threads under the block, the decision stays open, and the Inbox row shows the reply", async ({
+// @pr: The live document: a reader's question threads under a decision block, the decision stays open, and the Inbox row carries the reply.
+test("a reader asks back from a decision block: the question threads under the block, the decision stays open, and the Inbox row shows the reply @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
