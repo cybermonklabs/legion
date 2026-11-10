@@ -252,6 +252,8 @@ type eventPlan struct {
 	human   bool
 	quote   string
 	replyTo string
+	// mentions are the sessions a comment mentions (-mention-frac), by index.
+	mentions []int
 	// The loop mix's own draws, all zero without -loop-seed: page is where the review page a
 	// verdict writes a new version of stands in the proposal's pages, body the byte size of the
 	// write's text, and reopen makes a status change the reply-alone form that reopens a
@@ -265,14 +267,19 @@ type eventPlan struct {
 // that session watches in this population, a person or the session as author, a kind of the
 // population's mix, and the kind's quote or reply root. In the loop's population the kind's
 // draws are the loop's (planLoopEvent), which replace the watched issue with the proposal the
-// kind's own weighted draw lands on. human is the step's -human, the share of writes a person
-// makes, which both populations share.
-func planEvent(r *rand.Rand, pop *population, human float64, marker int64) eventPlan {
+// kind's own weighted draw lands on. A comment's mentions come from the write's own stream
+// (planMentions), so they leave the schedule as it is. The knobs both populations share - the
+// step's -human, -mention-frac and -mentions - come from cfg; everything else is the
+// population's own.
+func planEvent(r *rand.Rand, pop *population, cfg runConfig, marker int64) eventPlan {
 	sIdx := r.IntN(len(pop.sessions))
 	s := pop.sessions[sIdx]
 	p := eventPlan{marker: marker, session: sIdx, issue: s.watched[r.IntN(len(s.watched))]}
-	p.human = r.Float64() < human
+	p.human = r.Float64() < cfg.human
 	p.kind = pop.mix.pick(r.Float64())
+	if commentWrite(p.kind) {
+		p.mentions = planMentions(marker, sIdx, len(pop.sessions), cfg.mentionFrac, cfg.mentions)
+	}
 	if pop.loop != nil {
 		return planLoopEvent(r, pop.loop, p)
 	}
@@ -535,7 +542,7 @@ func (w *writer) loopRecord() *loopRun {
 // do sends one write and returns its record.
 func (w *writer) do(ctx context.Context, p eventPlan) writeRec {
 	is := w.sf.Issues[p.issue]
-	rec := writeRec{Marker: p.marker, Kind: p.kind, Issue: is.Key}
+	rec := writeRec{Marker: p.marker, Kind: p.kind, Issue: is.Key, Mentions: len(p.mentions)}
 	id := who{}
 	if p.human {
 		id.person = fmt.Sprintf("person-%d", p.session%7)
@@ -626,6 +633,9 @@ func (w *writer) do(ctx context.Context, p eventPlan) writeRec {
 	}
 	if !p.human {
 		body["actor"] = sessionActor(sessionID(p.session))
+	}
+	if len(p.mentions) > 0 {
+		body["mentions"] = mentionTargets(p.mentions)
 	}
 	res := w.a.call(ctx, "POST", path, id, body)
 	rec.Sent, rec.Arrival, rec.Response, rec.Status, rec.ConnWait = res.start, res.arrival(), res.end, res.status, res.connWait

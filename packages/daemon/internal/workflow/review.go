@@ -78,13 +78,31 @@ func (e *Engine) requiredChecks(ctx context.Context, tx pgx.Tx, fact intake.Requ
 // act on (GitHub runs no checks on it for a verdict to stand), and the tester or implementer
 // already at work will see it on its own pass or push. Leaving awaiting_merge is what stops a
 // repeated CONFLICTING read from withdrawing twice.
+//
+// Whatever the read decides, it is also the judgement the conflict-round exemption is read from
+// (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
+// own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN read,
+// which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it is -
+// GitHub has not computed an answer, so there is nothing to record and nothing to take back. The
+// mark is a second column rather than a reading of Mergeability because every pass rewrites that
+// one from GitHub's answer: an UNKNOWN two minutes after the conflict was found would lose it,
+// and the next round at the conflicting head would count.
 func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	if pr.Mergeability != fact.Mergeable {
-		pr.Mergeability = fact.Mergeable
+	conflicting := pr.ConflictingHead
+	switch fact.Mergeable {
+	case record.MergeabilityConflicting:
+		conflicting = pr.HeadSHA
+	case record.MergeabilityMergeable:
+		if conflicting == pr.HeadSHA {
+			conflicting = ""
+		}
+	}
+	if pr.Mergeability != fact.Mergeable || pr.ConflictingHead != conflicting {
+		pr.Mergeability, pr.ConflictingHead = fact.Mergeable, conflicting
 		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
@@ -109,19 +127,12 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // (withdrawReady). A red the tester planned - its own failing tests, pushed for the implementer
 // to make pass - sends nothing back (PlannedRed), and neither does a red in implementing, where
 // the implementer is already at work. The implementer's task and the architect's checks-red
-// notice name the red required checks and workflows, and the implementer's next push is a counted
-// fix attempt, as any new head on a red verdict is (classify.AdvancePullRequestHead).
+// notice name the red required checks and workflows.
 //
-// At an exhausted fix-attempt count, a red within the attempt the count last counted - the counted
-// head, or a head pushed on top of it until a push lands on a green verdict or on a settled head
-// whose base branch requires nothing - sends nothing back before awaiting_merge
-// (classify.FixAttemptCapHolds): the architect decides what follows. A red at a head pushed onto
-// green, or onto such a head, moves the issue as below the cap. In awaiting_merge a red always
-// withdraws the READY, whatever the count: no implementer loops there for the cap to bound, and a
-// READY must not stand on a head GitHub will not merge. The count is posted and told to the
-// architect once (classify.BlockFixAttempt), by the first red at that count that sent nothing back:
-// a red that sent the work back is told by its checks-red, and the next push onto it raises the
-// count.
+// A red sends the work back however often it returns. Nothing counts the attempts: the daemon
+// stopped at a `max_fix_attempts` cap, which marked the pull request and left the issue standing
+// where no `legion` command moved it, and the architect decides when to stop instead
+// (dispatch://INFRA-956 R4).
 func (e *Engine) decideChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, requiredRead bool) error {
 	e.noteLapse(ctx, pr)
 	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
@@ -131,7 +142,6 @@ func (e *Engine) decideChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReq
 	if err != nil {
 		return err
 	}
-	moved := false
 	switch {
 	case issue == nil:
 	case issue.Phase == phase.AwaitingMerge:
@@ -143,23 +153,20 @@ func (e *Engine) decideChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReq
 		// which reads no run, withdraws only a red a required check makes. A red only the workflows
 		// make is left to the pass's next read, which the cleared head the runs were read at makes a
 		// change (record.RequiredReadUnchanged), so it withdraws the READY if the run is still red,
-		// and leaves it if the run passed; that read decides the count's report too.
+		// and leaves it if the run passed.
 		if !requiredRead && classify.RedOnlyByWorkflows(*pr) {
 			*pr = classify.ClearWorkflowsHead(*pr)
 			return e.store.PutPullRequest(ctx, tx, *pr)
 		}
-		if moved, err = e.sendBack(ctx, tx, *issue, pr); err != nil {
+		if _, err = e.sendBack(ctx, tx, *issue, pr); err != nil {
 			return err
 		}
 	default:
-		if moved, err = e.standingRed(ctx, tx, *issue, pr); err != nil {
+		if _, err = e.standingRed(ctx, tx, *issue, pr); err != nil {
 			return err
 		}
 	}
-	if moved {
-		return nil
-	}
-	return e.reportExhaustedCount(ctx, tx, issue, pr)
+	return nil
 }
 
 // sendBack moves issue back to implementing on the red standing for pr's head (TriggerChecksRed),
@@ -173,34 +180,6 @@ func (e *Engine) sendBack(ctx context.Context, tx pgx.Tx, issue record.Issue, pr
 		return false, err
 	}
 	return after.Phase != issue.Phase, nil
-}
-
-// reportExhaustedCount posts an exhausted fix-attempt count on the issue and tells the architect,
-// once per count (classify.BlockFixAttempt). Linger holds a member of a closed tree where it stood
-// (record.TreeLingers): the count is recorded on the pull request, and nothing is posted on the
-// issue or told to its architect. While a red is held (holdsRed) the count is not yet the one every
-// push arriving first would give, so it is reported once the hold ends (push, requiredChecks).
-func (e *Engine) reportExhaustedCount(ctx context.Context, tx pgx.Tx, issue *record.Issue, pr *record.PullRequest) error {
-	if e.holdsRed(*pr) {
-		return nil
-	}
-	var blocked bool
-	if *pr, blocked = classify.BlockFixAttempt(*pr, e.cfg.MaxFixAttempts); !blocked {
-		return nil
-	}
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
-		return err
-	}
-	if issue != nil {
-		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-			return err
-		}
-	}
-	message := fmt.Sprintf("Pull request #%d reached max_fix_attempts=%d.", pr.Number, e.cfg.MaxFixAttempts)
-	if err := e.enqueue(ctx, tx, pr.Issue, record.MessagePost{Body: message}); err != nil {
-		return err
-	}
-	return e.notice(ctx, tx, pr.Issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message})
 }
 
 // redAt is what the red verdict standing for the pull request's head says: the head, and each check
@@ -484,11 +463,10 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 
 // standingRed is the CI rule, applied to pr's head, and says whether it moved the issue: a red that
 // stands for the head (classify.RedSendsBack) sends the work back to implementing, whatever the
-// tester has found, the round holds or the merger is doing, unless the fix-attempt cap holds the
-// red (classify.FixAttemptCapHolds): then nothing moves on it, and the architect decides what
-// follows (decideChecks's count report), a review round's own decision governing meanwhile. The
-// rule runs before awaiting_merge: there the head's red withdraws the READY
-// (classify.RedWithdrawsReady, decideChecks's AwaitingMerge case). The invariant is that the rule is
+// tester has found, the round holds or the merger is doing, and however many reds came before it:
+// nothing counts them (dispatch://INFRA-956 R4). The rule runs before awaiting_merge: there the
+// head's red withdraws the READY (classify.RedWithdrawsReady, decideChecks's AwaitingMerge case).
+// The invariant is that the rule is
 // applied by whichever fact makes a red stand for the head, in whatever phase the issue is when it
 // does, and never by a review, which changes nothing about the verdict and reads none. A red comes
 // to stand by a settlement or a read of the required set, the facts that change the verdict
@@ -508,9 +486,6 @@ func (e *Engine) standingRed(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if e.holdsRed(*pr) {
 		e.logOnCommit(ctx, "workflow: a red is held while its head waits for the push that reached it; the push, or the pass once the hold lapses, decides it",
 			"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "heldSince", heldSince(*pr), "lapses", heldSince(*pr).Add(redHold))
-		return false, nil
-	}
-	if classify.FixAttemptCapHolds(*pr, e.cfg.MaxFixAttempts) {
 		return false, nil
 	}
 	return e.sendBack(ctx, tx, issue, pr)
@@ -540,8 +515,8 @@ func heldSince(pr record.PullRequest) time.Time {
 
 // holdsRed says whether pr's red is held: a head run is open (record.PullRequest.Run) - a head
 // arrived before every push of its move - and the head arrived less than redHold ago. While it
-// holds, whether the red is planned, and the count it stands at, are not yet what every push
-// arriving first would make them, and a send-back cannot be taken back; the push that closes the
+// holds, whether the red is planned is not yet what every push arriving first would make it, and
+// a send-back cannot be taken back; the push that closes the
 // run, or whose replay changes the judgement, decides the checks (push), and so does the pass once
 // the hold lapses (HoldLapsed).
 func (e *Engine) holdsRed(pr record.PullRequest) bool {
@@ -677,19 +652,45 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return false, nil
 }
 
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string) error {
+// recordRound counts the implementer one round for a move back to an earlier phase, and, when the
+// round is one the cap counts, posts the cap's message and its pr-blocked notice once the counted
+// rounds reach review_round_cap.
+//
+// Rounds rises for every backward move, whatever its cause: a completion's key is built from it
+// (api/handoff.go's handoffPosition), so two passes through one phase that counted the same
+// number would collide, and the second's completion would be answered as already received. What
+// the cap reads is Rounds less the rounds a conflict with the base caused (classify.ConflictRound,
+// record.PhaseRow.ConflictRounds). A head that stopped merging into its base is the daemon's own
+// news, answered by a forward merge: nobody rejected the work for it, and an issue whose base
+// branch moves under it often enough would otherwise reach the cap without a single review
+// round, which is what dispatch://INFRA-1442 found on a tree that reached it on three rounds of
+// which two were conflicts. The message names both numbers, so an architect woken by it reads
+// how many rounds were counted against the cap and how many were excused.
+//
+// A move that raised the conflict count posts neither the message nor the notice, whatever the
+// counted rounds stand at: it leaves that number as the round before it left it, and a notice is
+// itself a way of counting, waking the architect to decide a round nobody spent. The counted
+// round that reached the cap posted it, and the next counted round posts it again, naming the
+// conflict rounds as they stand then.
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Rounds++
+	conflict := pr != nil && classify.ConflictRound(*pr)
+	if conflict {
+		row.ConflictRounds++
+	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
-	if row.Rounds < e.cfg.ReviewRoundCap {
+	counted := row.Rounds - row.ConflictRounds
+	if conflict || counted < e.cfg.ReviewRoundCap {
 		return nil
 	}
-	message := fmt.Sprintf("Issue reached review_round_cap=%d.", e.cfg.ReviewRoundCap)
+	message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
+		e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
 	if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
 		return err
 	}

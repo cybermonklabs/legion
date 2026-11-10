@@ -707,7 +707,7 @@ func TestLoopEventPlanDrawsItsShares(t *testing.T) {
 	kinds, reopens, statuses := map[string]int{}, 0, 0
 	const draws = 100_000
 	for i := range draws {
-		p := planEvent(r, pop, 0.1, int64(i+1))
+		p := planEvent(r, pop, runConfig{human: 0.1}, int64(i+1))
 		kinds[p.kind]++
 		pr := &ls.Proposals[p.issue]
 		switch p.kind {

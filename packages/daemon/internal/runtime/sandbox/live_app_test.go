@@ -84,7 +84,7 @@ func (t implementTokens) repositories() []ghrepo.Repository { return t.repos }
 // resolveApp mints the implement App's tokens through the token command the script hands the
 // harness (LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND): lib/github-apps.sh's own app_token_command,
 // which asks the secrets broker's github-app secret for a release of installation tokens, so the
-// broker client's argv lives in the lib alone, as real_github_test.go's liveProofApps runs the same
+// broker client's argv lives in the lib alone, as real_github_test.go's liveProofImplementApp runs the same
 // lib's output. The token manager runs it in token mode (appauth's TokenCommand) for each of the
 // run's two repositories' owners, and with those tokens reads each repository's default branch as
 // GitHub names it, the base every launch on it provisions at. No key reaches the harness.

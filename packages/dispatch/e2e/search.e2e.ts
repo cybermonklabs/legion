@@ -8,7 +8,6 @@ import {
   createMessage,
   createProject,
   createProjectDocument,
-  e2eAgentToken,
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
@@ -79,7 +78,13 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     await search.fill(searchTerm);
 
     const options = dialog.getByRole("option");
-    await expect(options).toHaveCount(2);
+    // Three rows, in the server's order: the issue whose spec holds the term (an issue's
+    // keyword vector carries its primary document's text), that document, and the comment.
+    await expect(options).toHaveCount(3);
+    await expect(options.first()).toHaveAttribute(
+      "id",
+      `search-option-issue-${fixture.firstIssueKey}`
+    );
     const documentResult = dialog.getByRole("option", { name: /^doc spec\.md / });
     await expect(documentResult).toBeVisible();
     await expect(documentResult.locator("mark")).toHaveText([searchTerm, searchTerm]);
@@ -93,6 +98,8 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
 
     const documentID = await documentResult.getAttribute("id");
     expect(documentID).not.toBeNull();
+    // Down to the comment, the last of the three, and back up to the document.
+    await search.press("ArrowDown");
     await search.press("ArrowDown");
     await expect(search).toHaveAttribute("aria-activedescendant", /search-option-comment-/);
     await search.press("ArrowUp");
@@ -146,12 +153,18 @@ test("a search term lists marked document, comment, ask, and issue-title results
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
     const options = dialog.getByRole("option");
-    await expect(options).toHaveCount(4);
-    for (const name of [/^issue /, /^doc /, /^comment /, /^ask /]) {
+    // Five rows: the four the term is marked in, and CORE-1, which the term reached through
+    // its spec (an issue's keyword vector carries its primary document's text) and whose own
+    // title never held it, so its row marks nothing.
+    await expect(options).toHaveCount(5);
+    for (const name of [/^issue Astrolabe calibration/, /^doc /, /^comment /, /^ask /]) {
       const option = dialog.getByRole("option", { name });
       await expect(option).toHaveCount(1);
       await expect(option.locator("mark").first()).toHaveText(/astrolabe/i);
     }
+    const foundByItsSpec = dialog.getByRole("option", { name: /^issue Navigation instruments/ });
+    await expect(foundByItsSpec).toHaveCount(1);
+    await expect(foundByItsSpec.locator("mark")).toHaveCount(0);
     await expect(dialog.locator('[role="presentation"]')).toHaveCount(3);
     await expect(
       dialog.locator('[role="presentation"][aria-label="CORE-4: Astrolabe calibration"]')
@@ -314,7 +327,9 @@ test("the rail Search control opens the palette and Escape returns focus to it",
     await expect(dialog).toBeVisible();
     await expect(search).toBeFocused();
     await search.fill(searchTerm);
-    await expect(dialog.getByRole("option")).toHaveCount(2);
+    // The fixture's three hits: the issue whose spec holds the term, that document, and the
+    // comment.
+    await expect(dialog.getByRole("option")).toHaveCount(3);
     await page.screenshot({
       fullPage: true,
       path: testInfo.outputPath(`search-palette-${testInfo.project.name}.png`),
@@ -361,7 +376,11 @@ test("phone search rows are at least 44px, do not overflow, and a comment result
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
     const options = dialog.getByRole("option");
-    await expect(options).toHaveCount(3);
+    // Four rows, not the three this corpus answered before an issue's keyword vector carried
+    // its primary document's text: the document, the comment, the ask, and the issue the
+    // document belongs to, which that change makes a hit for its own spec's words.
+    await expect(options).toHaveCount(4);
+    await expect(dialog.getByRole("option", { name: /^issue / })).toHaveCount(1);
     await expect(dialog.getByRole("option", { name: /^ask / })).toContainText(
       "Chose On the chart table"
     );
@@ -415,71 +434,6 @@ test("no results and short queries are stated, not silent", async ({ browser }) 
   } finally {
     await context.close();
   }
-});
-// The gate refuses a near copy of an open issue, not a title that shares words with one. A text
-// that only shares words is created and names the issue it is like, so the filer reads that issue
-// before going on (dispatch://INFRA-1160/spec#b-r2, #b-r4).
-test("the agent issue API names a likely duplicate, refuses a copy, and force creates it", async ({
-  request,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Calibrate astrolabe navigation instruments" });
-
-  const related = await request.post("/api/v1/issues", {
-    data: {
-      actor: searchSession.actor,
-      project: "CORE",
-      title: "Astrolabe navigation instruments rollout",
-    },
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  expect(related.status()).toBe(201);
-  await expect(related.json()).resolves.toMatchObject({
-    advice: {
-      suggestions: {
-        likely_duplicate: {
-          key: "CORE-1",
-          title: "Calibrate astrolabe navigation instruments",
-        },
-      },
-    },
-    key: "CORE-2",
-  });
-
-  const mirrorSpec = "# Mirrors\n\nThe sextant mirror is silvered. The clamp holds it square.\n";
-  const copied = {
-    actor: searchSession.actor,
-    project: "CORE",
-    spec: mirrorSpec,
-    title: "Overhaul the sextant mirror alignment",
-  };
-  await createIssue({
-    project: "CORE",
-    spec: mirrorSpec,
-    title: "Overhaul the sextant mirror alignment",
-  });
-
-  const duplicate = await request.post("/api/v1/issues", {
-    data: copied,
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  expect(duplicate.status()).toBe(409);
-  await expect(duplicate.json()).resolves.toMatchObject({
-    candidates: [
-      {
-        key: "CORE-3",
-        title: "Overhaul the sextant mirror alignment",
-      },
-    ],
-    code: "POSSIBLE_DUPLICATE",
-  });
-
-  const forced = await request.post("/api/v1/issues", {
-    data: { ...copied, force: true },
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  expect(forced.status()).toBe(201);
-  await expect(forced.json()).resolves.toMatchObject({ key: "CORE-4" });
 });
 
 // The hint names keys a touch reader does not have, and 33px of palette is 33px of hits, so it

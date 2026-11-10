@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -122,11 +123,12 @@ func podQOS(spec corev1.PodSpec) corev1.PodQOSClass {
 // and memory and bursts past neither: each has a non-zero request for both, equal to its limit,
 // which is the kubelet's rule for the Guaranteed class — judged over every container of the pod,
 // the init containers included — and each is bounded on the node's disk, an ephemeral-storage
-// request under its limit. An issue pod's one container and its two init containers carry the
-// issue pod's reservation, whichever role's launch creates it; the controller's pod carries the
-// controller's on its one container; and the image probe's one container carries the probe's own,
-// which the daemon hands it. A deployment with no `resources` block therefore runs only Guaranteed
-// pods.
+// request under its limit. An issue pod's one container and its two init containers — three where
+// the deployment names a `skills_repository`, which TestASkillsRepositoryAddsTheSkillsInitContainer
+// proves — carry the issue pod's reservation, whichever role's launch creates it; the controller's
+// pod carries the controller's on its one container; and the image probe's one container carries
+// the probe's own, which the daemon hands it. A deployment with no `resources` block therefore runs
+// only Guaranteed pods.
 func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -717,20 +719,11 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 		"GIT_AUTHOR_NAME=a", "GIT_AUTHOR_EMAIL=a@example.invalid", "GIT_COMMITTER_NAME=a", "GIT_COMMITTER_EMAIL=a@example.invalid"}
 	run := func(env []string, args ...string) {
 		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir, cmd.Env = clone, env
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
+		fixturegit.Runner{TB: t, Env: env}.Run(clone, append([]string{git}, args...)...)
 	}
-	initialise := exec.Command(git, "init", "--quiet", clone)
 	// The init creates the clone, so it runs in the directory holding it rather than in the one
 	// the test process happens to have; every later command runs in the clone itself.
-	initialise.Dir = dir
-	initialise.Env = fixtureenv.Isolated(home)
-	if output, err := initialise.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, output)
-	}
+	fixturegit.Isolated(t, home).Run(dir, append([]string{git}, fixturegit.InitWorkTree(clone, "")[1:]...)...)
 	if err := os.WriteFile(filepath.Join(clone, ".git", "config"), append(mustRead(t, filepath.Join(clone, ".git", "config")), planted...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1041,8 @@ func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
 // reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
 // (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
 // keeps is that no review role ever holds the implement App's token, which is what lets the
-// daemon's fix-attempt counting read a push's App from the App that made it.
+// daemon read a push's App from the App that made it, and so tell the review App's red tests
+// from the implementer's code.
 func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testing.T) {
 	for options, skills := range map[string]bool{"no skills repository": false, "a skills repository": true} {
 		t.Run(options, func(t *testing.T) {
@@ -1468,29 +1462,36 @@ func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
 	}
 }
 
-// The four stall limits a phase worker's reminder runs on reach a pod as ordinary entries of the
+// The seven stall limits a Legion session's turn runs on reach a pod as ordinary entries of the
 // worker process's environment: the daemon merges the ones it holds into the spec's Env (the
-// daemon package's workerSpawnSpec), and Env travels verbatim as plain pairs of the generation's
-// start command (launchEnvironment), so nothing of them is this runtime's own — they are no part
-// of runtimeOwned, which a spec may not set.
+// daemon package's SpawnSpec, after its fork), and Env travels verbatim as plain pairs of the
+// generation's start command (launchEnvironment), so nothing of them is this runtime's own — they
+// are no part of runtimeOwned, which a spec may not set — and the controller's pod is told them
+// exactly as a phase worker's is.
 func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	limits := map[string]string{
-		"LEGION_STALL_REMINDER_MS":     "45000",
-		"LEGION_STALL_WAITING_MS":      "900000",
-		"LEGION_STALL_RESUME_MS":       "15000",
 		"LEGION_STALL_ARCHITECT_AFTER": "3",
+		"LEGION_STALL_CALL_BOUND_MS":   "3600000",
+		"LEGION_STALL_CALL_GRACE_MS":   "300000",
+		"LEGION_STALL_REMINDER_MS":     "45000",
+		"LEGION_STALL_RESUME_MS":       "15000",
+		"LEGION_STALL_STEP_MS":         "120000",
+		"LEGION_STALL_WAITING_MS":      "900000",
 	}
-	spec := workerSpec(t)
-	maps.Copy(spec.Env, limits)
-	env := envOf(workerOf(t, r, spec))
-	for name, want := range limits {
-		if env[name] != want {
-			t.Errorf("the worker container's %s = %q, want %q", name, env[name], want)
-		}
+	for kind, spec := range map[string]runtime.SpawnSpec{"a phase worker": workerSpec(t), "the controller": controllerSpec(t)} {
+		t.Run(kind, func(t *testing.T) {
+			maps.Copy(spec.Env, limits)
+			env := envOf(workerOf(t, r, spec))
+			for name, want := range limits {
+				if env[name] != want {
+					t.Errorf("%s's container is told %s=%q, want %q", kind, name, env[name], want)
+				}
+			}
+		})
 	}
 }
 

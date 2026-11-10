@@ -100,6 +100,17 @@ credential-request feature is on, and tests seed its pending requests with
 deployment that configures none (`AGENTS.md` has the switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
+`DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
+server's meaning search at it: the server calls it as it calls Bedrock, and it counts the calls
+it was asked for, so a row reads back how many embeddings a stretch of typing cost. The rows of
+`e2e/search-tiers.e2e.ts` need it and are skipped without it, since a suite whose assertions
+count search hits counts the keyword answers Dispatch gives a deployment with no embedder:
+
+```bash
+cd packages/dispatch
+DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
+```
+
 Run the local harness with its isolated database available:
 
 ```bash
@@ -125,10 +136,13 @@ its lane's database before every row. A worker finds its lane by
 A lane's Postgres comes from one of two variables, and a run of more than one
 lane that sets neither is refused. On a machine with Docker and no Postgres
 binaries, `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest you
-name, which is what CI does. On a machine with a Postgres installation and no
-Docker, such as an issue pod, `DISPATCH_E2E_PG_BIN` is a directory holding
-`initdb` and `pg_ctl`. Each lane's data lives under the run's own temporary
-directory and goes with the run.
+name; CI's visual job uses it too, since it runs on the runner with only its
+Playwright command in a container. On a machine with a Postgres installation
+and no Docker, such as an issue pod or CI's shard and alone jobs, which run in
+a container carrying PostgreSQL 18 with `vector`, `DISPATCH_E2E_PG_BIN` is a
+directory holding `initdb` and `pg_ctl`.
+Each lane's data lives under the run's own temporary directory and goes with
+the run.
 
 ```bash
 cd packages/dispatch
@@ -313,6 +327,7 @@ Its `A9` section needs a server with an embedder, so the harness is started with
 (`e2e/run-server.sh`); without one that section prints its `SKIP:` line and every other section
 runs. The harness leaves the embedder off by default, so that a suite whose assertions count
 search hits counts the keyword answers Dispatch gives a deployment with no embedder.
+
 Against `bun run dispatch:local`:
 
 ```bash

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -72,7 +73,7 @@ func startedAgainDispatch(t *testing.T, project string) string {
 // ever. Every other call is answered 404, as repositoriesGitHub answers one.
 func startedAgainGitHub(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {
@@ -94,9 +95,7 @@ func startedAgainGitHub(t *testing.T) string {
 		}
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // startedAgainDaemon is the daemon each subtest boots: the rig the stop's own tests use

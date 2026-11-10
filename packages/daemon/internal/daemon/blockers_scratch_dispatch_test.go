@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"reflect"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -77,12 +77,12 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	cfg.Project = "B" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
 	cfg.PostgresDSN = blockersDatabase(t)
-	// The cap counts the issues at work, not the trees (dispatch://INFRA-980), and this run puts
-	// ten issues of one project through the workflow, a tree's children among them. It is set
-	// above every count this run reaches so that no step here is ever the cap's doing: the slot
-	// the blocked root of step 1 does not take stands free because its link holds it, and the
-	// child of step 4 starts at its release because it reaches the front of a line nothing is
-	// waiting in. Each step that needs a free slot says so against the cap itself.
+	// The cap counts the issues the daemon has started, not the trees (dispatch://INFRA-980), and
+	// this run puts ten issues of one project through the workflow, a tree's children among them.
+	// It is set above every count this run reaches so that no step here is ever the cap's doing:
+	// the slot the blocked root of step 1 does not take stands free because its link holds it,
+	// and the child of step 4 starts at its release because it reaches the front of a line
+	// nothing is waiting in. Each step that needs a free slot says so against the cap itself.
 	cfg.AdmissionCap = 16
 	// The controller tick admits a root whose blocker is done whatever the event did, so it must
 	// not be what step 6 sees: an hour before the runtime's first tick (o.controllerFirstWake,
@@ -737,8 +737,17 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	})
 
 	setDispatchStatus(t, baseURL, free, "done")
+	// The hand-over is read off the record, as the tree the child stands in: it becomes a tree of
+	// its own. A place in `admission.waiting` or `admission.active` no longer marks it. The child
+	// re-entered its tree at admitted when a person set it back to todo, and an issue keeps its
+	// admission slot from the moment the daemon starts it until it is done, leaves the workflow or
+	// waits only for its merge (record.KeepsSlot), so it holds the row of that re-entry and stands
+	// in `admission.active` from then until its tree's linger releases it. That list says the
+	// daemon has started the issue, and no longer says it was admitted as a root of its own, so a
+	// predicate reading it would be true before the close of `free` was consumed at all and would
+	// judge the state before the hand-over.
 	state, body = settled(t, d, "hand "+child+" over as a root of its own once "+free+" closed", func(s api.State) bool {
-		return slices.Contains(s.Admission.Waiting, child) || slices.Contains(s.Admission.Active, child)
+		return s.Issues[child].Tree == child
 	})
 	t.Logf("the state once %s closed and its tree finished, handing over %s, held in it on %s:\n%s", free, child, elsewhere, body)
 	checked(child, "once its finished tree handed it over", state, body)
@@ -818,27 +827,23 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 // last poll read — what Legion was doing instead.
 func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (api.State, string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-20*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-20 * time.Second)
-	}
-	for {
-		status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
+	var state api.State
+	var body []byte
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
+		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
+		body = read
 		if status != http.StatusOK {
 			t.Fatalf("GET the state = %d; body %s", status, body)
 		}
-		var state api.State
+		state = api.State{}
 		if err := json.Unmarshal(body, &state); err != nil {
 			t.Fatalf("decode the state %s: %v", body, err)
 		}
-		if want(state) {
-			return state, string(body)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Legion did not %s; its state is %s", what, body)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return want(state)
+	}) {
+		t.Fatalf("Legion did not %s; its state is %s", what, body)
 	}
+	return state, string(body)
 }
 
 // blockedOn is what the state says issue waits on, and whether it names it at all.
@@ -928,7 +933,7 @@ func blockersDatabase(t *testing.T) string {
 func blockersGitHub(t *testing.T) string {
 	t.Helper()
 	const head = "c0ffee0123456789abcdef0123456789abcdef01"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.SplitN(rest, "/", 3)
 		if !isRepository || len(parts) < 2 {
@@ -953,9 +958,7 @@ func blockersGitHub(t *testing.T) string {
 			t.Logf("the GitHub stand-in answered 404 to %s %s", r.Method, r.URL.Path)
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // scratchDispatchClient is the test's own client of the scratch Dispatch server; the daemon has

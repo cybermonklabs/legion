@@ -55,7 +55,7 @@ func runPlannerCounts(cfg runConfig, sf seedFile) map[string]docVersions {
 	openLoop(context.Background(), cfg.rngSeed, eventStream, cfg.events, st.start, st.winStart, st.winEnd,
 		func(r *rand.Rand, in bool) {
 			marker++
-			p := planEvent(r, st.pops[0], cfg.human, marker)
+			p := planEvent(r, st.pops[0], cfg, marker)
 			if !in || (p.kind != kindEdit && p.kind != kindUpload) {
 				return
 			}

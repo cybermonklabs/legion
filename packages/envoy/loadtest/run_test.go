@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -366,13 +367,13 @@ func TestLoopStepPlansTheSameWritesAndReadsTwice(t *testing.T) {
 		t.Fatalf("the step plans %d writes and %d reads", len(writes), len(reads))
 	}
 	again, againReads := plan(cfg)
-	if !slices.Equal(writes, again) || !slices.Equal(reads, againReads) {
+	if !reflect.DeepEqual(writes, again) || !slices.Equal(reads, againReads) {
 		t.Fatal("one -rng-seed gave two plans")
 	}
 	other := cfg
 	other.rngSeed = 6
 	otherWrites, otherReads := plan(other)
-	if slices.Equal(writes, otherWrites) || slices.Equal(reads, otherReads) {
+	if reflect.DeepEqual(writes, otherWrites) || slices.Equal(reads, otherReads) {
 		t.Fatal("another -rng-seed gave the same plan")
 	}
 	// What it planned is the loop's: the three kinds, on proposals the kind can be sent to, and
@@ -591,7 +592,7 @@ func TestBothSeedsPlanEachPopulationFromItsOwnSeed(t *testing.T) {
 		t.Fatalf("a step given one seed drives %d populations", len(one.pops))
 	}
 	aloneWrites, aloneReads := stepPlan(one, one.pops[0])
-	if !slices.Equal(baseWrites, aloneWrites) || !slices.Equal(baseReads, aloneReads) {
+	if !reflect.DeepEqual(baseWrites, aloneWrites) || !slices.Equal(baseReads, aloneReads) {
 		t.Fatalf("the baseline population of a two-population step planned %d writes and %d reads, and a step of seed.json alone at its rates planned %d and %d",
 			len(baseWrites), len(baseReads), len(aloneWrites), len(aloneReads))
 	}

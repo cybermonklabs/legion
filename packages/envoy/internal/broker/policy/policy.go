@@ -844,6 +844,12 @@ func (s *Set) ServiceOwned(name string) bool {
 // secret's list, so it is refused whatever its owner and tier would have given them.
 const ReasonRequesterNotListed = "requester-not-listed"
 
+// ReasonNoReason is the Reason of a Deny the request machine decided: the request named a
+// credential that would wait for a person's approval and carried no reason, so it is refused
+// rather than put to anyone. Set.Evaluate never answers it, since the reason is not the
+// policy's to see.
+const ReasonNoReason = "a reason is necessary; ask again with --reason"
+
 // Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
 // whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
 // requester the list does not name, before owner and tier are read at all. A name withheld from r

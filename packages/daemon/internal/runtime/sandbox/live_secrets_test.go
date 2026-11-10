@@ -35,7 +35,7 @@ func secretsBlocked(r *liveRig) string {
 	if r.secretsBlockReason != "" {
 		return r.secretsBlockReason
 	}
-	return agentSecretsBlockReason(r.env.agentSecretsURL, r.env.agentSecretsOperator, r.env.agentSecretsAutoSHA, r.env.agentSecretsBin, r.env.agentSecretsTokenFile)
+	return agentSecretsBlockReason(r.env.agentSecretsURL, r.env.agentSecretsAutoSHA, r.env.agentSecretsBin, r.env.agentSecretsTokenFile)
 }
 
 // ensureEnrolled enrolls c's running role process unless the harness already did for this
@@ -305,12 +305,23 @@ func (r *liveRig) checkSecretsSelfEnrollNegative() error {
 	return nil
 }
 
+// anyoneApprover is the approver of a credential record anyone signed in to Dispatch may decide —
+// a request for a shared human-tier secret. It is record.AnyoneApprover
+// (packages/envoy/internal/broker/record/record.go), which this module cannot import: that package
+// lives under github.com/sjawhar/envoy/internal/..., and Go's internal rule refuses this module
+// any import under it (internal/agentsecrets/contract_test.go says the same of the broker's test
+// rig, which is why the public brokertest facade exists). So this compares against the same
+// literal the broker writes into the wire field it is read from, "approver": "anyone".
+const anyoneApprover = "anyone"
+
 // secrets-approval-ask: a request for the approval-gated secret comes back pending with a
 // credential-request record id (ruling 16: the secret's owner and tier pick the approver at
-// request time, naming no issue); the harness prints it for the operator to approve on the
-// Dispatch credential page and polls until it settles granted (success), denied, or expired (both
-// failures).
-func (r *liveRig) checkSecretsApprovalAsk() error {
+// request time, naming no issue), and the approver that pick produced is a single owner, not
+// anyoneApprover — LEGION_E2E_APPROVAL is human tier under one owner no person holds, so its card
+// sits on that owner's page alone and on no signed-in person's. The step then cancels the request
+// it made and reads it back cancelled, and a failing assertion cancels it too: it waits for
+// nobody, prompts nobody, and leaves no pending card behind on the production broker.
+func (r *liveRig) checkSecretsApprovalAsk() (rerr error) {
 	worker := r.claim("worker")
 	if err := r.ensureRunning(worker); err != nil {
 		return err
@@ -322,42 +333,61 @@ func (r *liveRig) checkSecretsApprovalAsk() error {
 	if err != nil || code != 75 {
 		return fmt.Errorf("the worker's approval request: exit %d (want 75, pending): %s (%v)", code, stderr, err)
 	}
+	// POST /v1/requests's body verbatim, which --json prints as it came: approver is a nullable
+	// JSON string — a login, or the shared marker — never an object
+	// (packages/envoy/internal/broker/api/handlers_requests.go, createRequestResponse).
 	var pending struct {
 		RequestID string  `json:"request_id"`
 		State     string  `json:"state"`
 		RecordID  *string `json:"record_id"`
+		Approver  *string `json:"approver"`
 	}
 	if err := json.Unmarshal([]byte(out), &pending); err != nil || pending.State != "pending" || pending.RecordID == nil || *pending.RecordID == "" {
 		return fmt.Errorf("pending request %q, want state pending with a non-empty record_id", out)
 	}
-	note("runtime", "worker: request LEGION_E2E_APPROVAL → pending, request %s, record %s", pending.RequestID, *pending.RecordID)
-	fmt.Printf("STAGE4A: approve credential request %s for LEGION_E2E_APPROVAL on the Dispatch credential page as %s\n", *pending.RecordID, r.env.agentSecretsOperator)
-	var state struct {
+	// From here the request exists, so every path settles it: the assertions below are the very
+	// regressions this step exists to catch, and a request left pending puts a card on a person's
+	// page until it expires. The success path cancels and reads the request back cancelled, which
+	// clears this fallback.
+	settledByCheck := false
+	defer func() {
+		if settledByCheck {
+			return
+		}
+		out, code, stderr, err := r.agentSecrets(worker, "cancel", pending.RequestID)
+		if err == nil && code == 0 {
+			return
+		}
+		failed := fmt.Errorf("cancelling request %s on the way out: exit %d: %s%s (%v); the request is still pending until it expires", pending.RequestID, code, out, stderr, err)
+		if rerr == nil {
+			rerr = failed
+			return
+		}
+		rerr = fmt.Errorf("%w (and %w)", rerr, failed)
+	}()
+	if pending.Approver == nil || *pending.Approver == "" {
+		return fmt.Errorf("pending request %s names no approver; a pending human-tier request waits on one", pending.RequestID)
+	}
+	if *pending.Approver == anyoneApprover {
+		return fmt.Errorf("request %s for LEGION_E2E_APPROVAL waits on %q: the secret reads as shared, so its card is on every signed-in person's page instead of its one owner's", pending.RequestID, *pending.Approver)
+	}
+	note("runtime", "worker: request LEGION_E2E_APPROVAL → pending, request %s, record %s, approver %s (not %q: one owner's page, not everyone's)", pending.RequestID, *pending.RecordID, *pending.Approver, anyoneApprover)
+	if out, code, stderr, err := r.agentSecrets(worker, "cancel", pending.RequestID); err != nil || code != 0 {
+		return fmt.Errorf("cancelling request %s: exit %d: %s%s (%v)", pending.RequestID, code, out, stderr, err)
+	}
+	settledByCheck = true
+	out, code, stderr, err = r.agentSecrets(worker, "status", pending.RequestID, "--json")
+	if err != nil || code != 0 {
+		return fmt.Errorf("status %s after the cancel: exit %d %s (%v)", pending.RequestID, code, stderr, err)
+	}
+	var settled struct {
 		State string `json:"state"`
 	}
-	pollErr := r.poll(10*time.Minute, "credential request "+pending.RequestID+" to be approved", func() (bool, error) {
-		out, code, stderr, err := r.agentSecrets(worker, "status", pending.RequestID, "--json")
-		if err != nil || code != 0 {
-			return false, fmt.Errorf("status %s: exit %d %s (%v)", pending.RequestID, code, stderr, err)
-		}
-		if err := json.Unmarshal([]byte(out), &state); err != nil {
-			return false, fmt.Errorf("decode status %s: %v", pending.RequestID, err)
-		}
-		return state.State != "pending", nil
-	})
-	switch {
-	case pollErr != nil:
-		return pollErr
-	case state.State == "granted":
-		note("runtime", "worker: request %s → granted", pending.RequestID)
-		return nil
-	case state.State == "denied":
-		return fmt.Errorf("credential request %s was denied", pending.RequestID)
-	case state.State == "expired":
-		return fmt.Errorf("credential request %s expired before approval", pending.RequestID)
-	default:
-		return fmt.Errorf("credential request %s ended in unexpected state %q", pending.RequestID, state.State)
+	if err := json.Unmarshal([]byte(out), &settled); err != nil || settled.State != "cancelled" {
+		return fmt.Errorf("after the cancel, request %s reads %q, want state cancelled", pending.RequestID, out)
 	}
+	note("runtime", "worker: cancelled request %s; it reads cancelled, so the run leaves no pending card behind", pending.RequestID)
+	return nil
 }
 
 // secrets-old-uid-negative and secrets-revoke-on-death: a separate issue pod is deleted and its

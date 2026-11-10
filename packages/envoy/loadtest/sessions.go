@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -106,9 +107,10 @@ func (ns *natsSessions) handler(session int, agent bool, nonce int64) nats.MsgHa
 		if !ok {
 			return
 		}
-		key := typ
+		// A payload with no event type is a listener send (a mention), not a Dispatch event.
+		key := cmp.Or(typ, "send")
 		if agent {
-			key = "agent." + typ
+			key = "agent." + key
 		}
 		ns.envelopes.offer(key, m.Data, nonce)
 		ns.receipts.add(receipt{EventID: id, Recv: now, Agent: agent})
@@ -240,26 +242,32 @@ func (r *registrar) register(ctx context.Context, i int) error {
 
 // registrationFields is one session's registration with the listener: its directory, title and
 // the topics it watches, which are the issue topics it follows in each of the step's
-// populations. registerSessions adds a delivery field under consumer delivery
-// (registrar.register).
+// populations. With -mention-frac, it advertises the default mention delivery, so Dispatch
+// delivers a mention of the session. registerSessions adds a delivery field under consumer
+// delivery (registrar.register).
 func (st *step) registrationFields(i int) map[string]any {
 	topics := []string{}
 	for _, p := range st.pops {
 		topics = append(topics, p.topics(p.sessions[i])...)
 	}
-	return registrationFieldsOf(st.ids[i], topics)
+	return registrationFieldsOf(st.ids[i], topics, st.cfg.mentionFrac > 0)
 }
 
 // registrationFieldsOf is that registration for a session id and the topics it follows, which
-// the replay's roster builds one of before the session is laid out (newReplayStep).
-func registrationFieldsOf(id string, topics []string) map[string]any {
+// the replay's roster builds one of before the session is laid out (newReplayStep). mentions
+// advertises the default mention delivery, which is what -mention-frac needs of a session.
+func registrationFieldsOf(id string, topics []string, mentions bool) map[string]any {
+	capabilities := []string{}
+	if mentions {
+		capabilities = []string{mentionDelivery}
+	}
 	return map[string]any{"session_id": id, "dir": "/work/" + id, "title": "load " + id,
-		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": []string{}}
+		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": capabilities}
 }
 
 // registrationBody is registrationFieldsOf encoded, as the listener receives it.
-func registrationBody(id string, topics []string) []byte {
-	b, _ := json.Marshal(registrationFieldsOf(id, topics))
+func registrationBody(id string, topics []string, mentions bool) []byte {
+	b, _ := json.Marshal(registrationFieldsOf(id, topics, mentions))
 	return b
 }
 

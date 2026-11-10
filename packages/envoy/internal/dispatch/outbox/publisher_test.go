@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // answered is a channel already holding err, the outcome of a test publisher that answers each
@@ -89,8 +90,9 @@ type unfenced struct{}
 
 func (unfenced) Deadline() time.Time { return time.Now().Add(time.Hour) }
 
-// errMentionPending is what publish returns when the event's destinations held a mentioned
-// session's copy back for a mention still being sent (destinations.leftToMention), and nothing
+// errMentionPending is what publish returns when the event's destinations held a copy back for a
+// mention still being sent - a mentioned session's own (destinations.leftToMention), or a role
+// route's copy waiting for the mention its key comes from (resolveRoleHolders) - and nothing
 // else kept the event from finishing: the batch blocks such an event for mentionPendingDelay
 // (settleEvent).
 var errMentionPending = errors.New("a mention's delivery is still undecided")
@@ -107,23 +109,40 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err != nil {
 		return err
 	}
+	single := &batchEvent{
+		pendingEvent: pendingEvent{event: event, slug: slug, routing: routing},
+		item:         item,
+		delivered:    delivered,
+	}
 	want := newWanted()
-	_, _, _ = eventDestinations(event, item.Topic, routing, want)
+	_, _, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
 	}
-	list, mentionPending, resolveErr := eventDestinations(event, item.Topic, routing, found)
-	single := &batchEvent{item: item, destinationsOf: list}
-	resolveRoleHolders(ctx, deps, []*batchEvent{single})
+	// As a batch does before it reads any destination, and the roles it resolved there are the
+	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
+	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
+	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = list, mentionPending
+	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
 	for _, dest := range single.destinationsOf {
 		if _, ok := delivered[dest.subject]; ok {
 			continue
 		}
+		if dest.waiting {
+			// A role copy waiting on a mention sends nothing this read, as a batch's own plan
+			// sends nothing for it (destination.waiting, planChains); it holds its key there,
+			// which one event has nothing to hold.
+			continue
+		}
 		routed := item
 		routed.Topic = dest.subject
+		if dest.dedupeKey != "" {
+			routed.DedupeKey = dest.dedupeKey
+		}
 		var answer <-chan error
 		switch {
 		case dest.forward == nil:
@@ -142,7 +161,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err := errors.Join(append(failures, resolveErr)...); err != nil {
 		return err
 	}
-	if mentionPending {
+	if single.mentionPending {
 		return errMentionPending
 	}
 	return nil
@@ -1848,14 +1867,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 func waitFor(t *testing.T, timeout time.Duration, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testwait.WithinPolling(t, timeout, testwait.Poll, what, condition)
 }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {

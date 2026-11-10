@@ -371,7 +371,27 @@ func pushRemoteBranch(t *testing.T, remote, branch, file string) string {
 		t.Fatal(err)
 	}
 	runSetup(t, other, "git", "add", file)
-	runSetup(t, other, "git", "-c", "user.email=legion-test@example.invalid", "-c", "user.name=Legion test", "commit", "--quiet", "-m", "pushed from another clone")
+	runSetup(t, other, "git", "commit", "--quiet", "-m", "pushed from another clone")
+	runSetup(t, other, "git", "push", "--quiet", "origin", branch)
+	return strings.TrimSpace(runSetup(t, other, "git", "rev-parse", "HEAD"))
+}
+
+// pushOrphanBranch pushes branch to the bare remote on a root commit of its own, holding file
+// alone: the branch shares no history with the remote's default branch, as an integration branch
+// a repository carries beside main does. It returns the commit's id.
+func pushOrphanBranch(t *testing.T, remote, branch, file string) string {
+	t.Helper()
+	scratch := t.TempDir()
+	runSetup(t, scratch, "git", "clone", "--quiet", remote, "other")
+	other := filepath.Join(scratch, "other")
+	// --orphan on `git switch` leaves the index and the working copy empty, where `git checkout
+	// --orphan` would stage the default branch's whole tree for the orphan commit to carry.
+	runSetup(t, other, "git", "switch", "--quiet", "--orphan", branch)
+	if err := os.WriteFile(filepath.Join(other, file), []byte("pushed on a history of its own\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t, other, "git", "add", file)
+	runSetup(t, other, "git", "-c", "user.email=legion-test@example.invalid", "-c", "user.name=Legion test", "commit", "--quiet", "-m", "the integration branch's root")
 	runSetup(t, other, "git", "push", "--quiet", "origin", branch)
 	return strings.TrimSpace(runSetup(t, other, "git", "rev-parse", "HEAD"))
 }
@@ -478,6 +498,57 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 			parents := strings.TrimSpace(runSetup(t, req.StateDir, "git", "--git-dir="+run.remote, "log", "-1", "--format=%P", "legion/WIDGETS-42"))
 			if parents != pushed {
 				t.Errorf("after the push the remote branch's head has parents %q, want the adopted %s", parents, pushed)
+			}
+		})
+	}
+}
+
+// An issue branch GitHub holds on a commit that shares no history with the repository's default
+// branch — an integration branch, whose root commit is its own, which is what one consumer of
+// Legion has — is where the workspace starts, as any other branch only the remote has:
+// provisioning tracks legion/<KEY>@origin and adds the workspace at that commit, on the host's
+// path and on a pod's feed, so the workspace holds the branch's files and none of main's.
+// TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas says nothing about this shape: its branch is
+// pushed from the remote's default branch, so its commit is a descendant of main, and a
+// provisioning that walked main's history instead would still reach it.
+func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T) {
+	for _, path := range []string{"host", "feed"} {
+		t.Run(path, func(t *testing.T) {
+			run := newLocalRunner(t)
+			// seedRemote's main is one empty commit, so main carries a file of its own here: a
+			// workspace started from main would hold it, and this one must not.
+			onMain := pushRemoteBranch(t, run.remote, "main", "main.txt")
+			orphan := pushOrphanBranch(t, run.remote, "legion/WIDGETS-42", "integration.txt")
+			req := provisionRequest(t)
+			if path == "feed" {
+				req = feedRequest(t, run, req)
+			}
+			working, err := Provision(context.Background(), run, req)
+			if err != nil {
+				t.Fatalf("Provision: %v", err)
+			}
+			if parent := commitOf(t, working.Dir, "@-"); parent != orphan {
+				t.Errorf("the workspace's @- is %s, want the orphan branch's %s", parent, orphan)
+			}
+			if _, err := os.Stat(filepath.Join(working.Dir, "integration.txt")); err != nil {
+				t.Errorf("the workspace does not hold the orphan branch's file: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(working.Dir, "main.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the workspace holds main's file, so it did not start at the orphan branch: %v", err)
+			}
+			if local := commitOf(t, working.Dir, `bookmarks(exact:"legion/WIDGETS-42")`); local != orphan {
+				t.Errorf("the local legion/WIDGETS-42 is %q, want the remote's %s", local, orphan)
+			}
+			// What the neighbouring test's fixture cannot be: on the remote, main's tip is no
+			// ancestor of the issue branch. That the two share no commit at all is
+			// pushOrphanBranch's root commit.
+			ancestry := exec.Command("git", "--git-dir="+run.remote, "merge-base", "--is-ancestor", onMain, orphan)
+			ancestry.Dir = req.StateDir
+			ancestry.Env = setupEnvironment()
+			output, err := ancestry.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Errorf("git merge-base --is-ancestor %s %s on the remote: %v, want exit 1, main's tip no ancestor of the issue branch\n%s", onMain, orphan, err, output)
 			}
 		})
 	}

@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// nonTransactionalHeader is deliberately an exact first-line marker, not a word found in a
+// function body or a later comment. The loader validates the statement before accepting it.
+func nonTransactionalHeader(sql string) bool {
+	line, _, _ := strings.Cut(sql, "\n")
+	return strings.TrimSuffix(line, "\r") == "-- pgmigrate:non-transactional"
+}
+
 // The scanner here reads SQL text as Postgres 18 reads it. It does not reason about the grammar:
 // scanl.go is a transcription of src/backend/parser/scan.l, rule by rule and state by state, and
 // everything in this file is a reader of the tokens that transcription hands out. A reading takes

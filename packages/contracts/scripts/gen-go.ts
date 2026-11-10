@@ -34,6 +34,9 @@ import {
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
+  SEARCH_OPERATOR_EXCLUDE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_PHRASE,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -79,6 +82,7 @@ import {
   GOING_WORDS_MAX,
 } from "../src/going";
 import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
+import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
@@ -93,6 +97,7 @@ type Prop = {
   properties?: Record<string, Prop>;
   required?: string[];
   items?: Prop;
+  additionalProperties?: Prop | false;
   "x-go-type"?: string;
 };
 
@@ -214,6 +219,17 @@ const SearchKindDepth = ${SEARCH_KIND_DEPTH}
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = ${JSON.stringify(SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE)}
+
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = ${JSON.stringify(SEARCH_OPERATOR_PHRASE)}
+	SearchOperatorOr      = ${JSON.stringify(SEARCH_OPERATOR_OR)}
+	SearchOperatorExclude = ${JSON.stringify(SEARCH_OPERATOR_EXCLUDE)}
+)
 
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
@@ -547,12 +563,26 @@ function name(key: string) {
   return key.split("_").map(title).join("");
 }
 
+// mapValues is the value shape of a map property - an object whose keys are the data, declared
+// with `additionalProperties` and no properties of its own - and undefined for every other
+// property, an object with named properties among them, which is rendered as a struct of its own
+// (renderEnvelopeObject).
+function mapValues(prop: Prop): Prop | undefined {
+  if (prop.type !== "object" || prop.properties) return undefined;
+  return prop.additionalProperties === false ? undefined : prop.additionalProperties;
+}
+
 function envelopeKind(prop: Prop, req: Set<string>, key: string) {
   // A property whose Go type is hand-written beside the generated file holds it whole: the type
   // decides what the field reads off the wire and writes back, and validates itself.
   const goType = prop["x-go-type"];
   if (goType) return goType;
   if (prop.type === "object") {
+    const values = mapValues(prop);
+    if (values) {
+      if (values.type !== "string") throw new Error(`unsupported map values for ${key}`);
+      return "map[string]string";
+    }
     if (!prop.properties) throw new Error(`missing object properties for ${key}`);
     return `*Envelope${name(key)}`;
   }
@@ -682,16 +712,19 @@ function renderEnvelope(schema: Schema) {
     .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
-  const nestedChecks = keys
-    .filter((key) => schema.properties[key].type === "object")
+  // A map property is the Go map envelopeKind names it, so it has neither a struct of its own nor
+  // required keys to check.
+  const objects = keys.filter(
+    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
+  );
+  const nestedChecks = objects
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
     .join("\n");
   const validate = [checks, optionalStringChecks, propertyChecks, nestedChecks, "\treturn nil"]
     .filter(Boolean)
     .join("\n");
-  const nested = keys
-    .filter((key) => schema.properties[key].type === "object")
+  const nested = objects
     .map((key) => renderEnvelopeObject(key, schema.properties[key]))
     .join("\n\n");
   return `type Envelope struct {
@@ -955,6 +988,11 @@ const outputs = [
   {
     path: resolve(import.meta.dir, "../../envoy/internal/dispatch/pmdoc/schema_generated.go"),
     rendered: renderBlockSchemaGo(blockSchema),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_tools_generated.go"),
+    rendered: renderDispatchTools(),
     language: "go",
   },
   {

@@ -133,14 +133,14 @@ func newReplayStep(cfg runConfig, lg *log.Logger, nonce int64) *step {
 			home = index[k]
 		}
 		s := session{home: home, watched: []int{home}}
-		size := len(registrationBody(id, p.topics(s)))
+		size := len(registrationBody(id, p.topics(s), cfg.mentionFrac > 0))
 		for k := 1; k < n && size < replayRosterEntryBytes; k++ {
 			w := (home + k*37) % n
 			if slices.Contains(s.watched, w) {
 				continue
 			}
 			next := append(slices.Clone(s.watched), w)
-			nb := len(registrationBody(id, p.topics(session{watched: next})))
+			nb := len(registrationBody(id, p.topics(session{watched: next}), cfg.mentionFrac > 0))
 			if nb > replayRosterEntryBytes+20 {
 				break
 			}

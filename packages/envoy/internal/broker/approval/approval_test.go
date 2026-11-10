@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/policy"
 )
 
 // TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn pins A1: a person with no session is sent to
@@ -197,18 +198,21 @@ func TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn(t *testing.T) {
 		}
 	})
 
-	t.Run("a request with no reason says so, and says what Approve gives for its own lifetime", func(t *testing.T) {
-		silent := r.request(t, enrollmentID, key, "", &lifetime, "", "THIRD_SECRET")
-		block := pageText(t, recordBlock(t, b.Page(t, silent.recordID).Body, silent.recordID))
+	t.Run("a request says what Approve gives for its own lifetime, and one with no reason never becomes a record", func(t *testing.T) {
+		third := r.request(t, enrollmentID, key, "read the third key once", &lifetime, "", "THIRD_SECRET")
+		block := pageText(t, recordBlock(t, b.Page(t, third.recordID).Body, third.recordID))
 		for _, want := range []string{
-			"Reason No reason given",
+			"Reason read the third key once",
 			"Lasts once approved for 1h0m0s",
 			"Approve gives this session the value of these secrets for 1h0m0s.",
 			"Deny refuses them, and so does leaving the request until it expires.",
 		} {
 			if !strings.Contains(block, want) {
-				t.Errorf("the block of a request with no reason does not say %q:\n%s", want, block)
+				t.Errorf("the block of the request does not say %q:\n%s", want, block)
 			}
+		}
+		if detail := r.requestDenied(t, enrollmentID, key, "", "THIRD_SECRET"); !strings.Contains(detail, policy.ReasonNoReason) {
+			t.Errorf("the same request with no reason was denied %q, want it to say %q", detail, policy.ReasonNoReason)
 		}
 	})
 }
