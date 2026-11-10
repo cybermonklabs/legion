@@ -71,7 +71,7 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await page.goto("/projects/CORE?label=docs");
     await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=docs$/);
     await filterPicker(page, "Labels").click();
-    await expect(page.getByRole("option", { exact: true, name: "docs" })).toHaveAttribute(
+    await expect(page.getByRole("option", { exact: true, name: "docs, 2 issues" })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -79,7 +79,9 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await expect(page.getByText("Backend documentation", { exact: true })).toBeVisible();
     await expect(page.getByText("Editable labels", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Labels", "docs");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(
+      (url) => url.pathname === "/projects/CORE/issues" && !url.searchParams.has("label")
+    );
     await pickFilterOption(page, "Labels", "Frontend");
     await expect(page.getByText("Editable labels", { exact: true })).toBeVisible();
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
@@ -87,6 +89,7 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await pickFilterOption(page, "Labels", "docs");
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
     await expect(page.getByText("Editable labels", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Backend documentation", { exact: true })).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -129,7 +132,7 @@ test("the label controls keep touch-sized targets and the filtered list fits the
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
     await filterPicker(page, "Labels").click();
     await expectTouchTarget(filterPicker(page, "Labels"));
-    await expectTouchTarget(page.getByRole("option", { exact: true, name: "docs" }));
+    await expectTouchTarget(page.getByRole("option", { exact: true, name: "docs, 1 issue" }));
     await expectTouchTarget(page.getByRole("button", { name: "Clear labels" }));
     await expect(
       page.evaluate(

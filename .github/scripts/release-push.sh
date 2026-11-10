@@ -131,8 +131,8 @@
 #            ('## ' and a title), the one shape a later run finds again, and the
 #            content must be a file that is not empty, or the heading would
 #            stand over nothing: either is an ::error:: naming it, with nothing
-#            written. It runs gh, awk and the shell alone, as every caller is a
-#            job holding a credential.
+#            written. It runs gh, awk, the shell and the leak guard below
+#            alone, as every caller is a job holding a credential.
 # push-tag:  push the local tag <tag> to $GITHUB_REPOSITORY on GitHub over SSH
 #            with the deploy key in $DEPLOY_KEY, for a job whose checkout keeps
 #            no credential. The key and GitHub's host keys, pinned below, go
@@ -263,7 +263,19 @@
 #            and refuses naming it where it is not on PATH. ci.yaml's test job
 #            runs it over .github/changelog-packages, beside the changie its
 #            release-push.test.sh cases need.
+# leak guard: every write this script makes to a public GitHub repository
+#            passes this repository's own private-name rules before it is made,
+#            and is refused when they match: `release`'s create, its upload to
+#            a draft, that draft's publish and its upload to a published
+#            release, `release-section`'s edit of a release body, and
+#            `push-tag`'s push of a tag. leak_guard below is the whole of it,
+#            and says what each write is checked over, what a refusal prints
+#            and why it prints no more, and how the engine is pinned, fetched
+#            and stood in for.
 set -euo pipefail
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
 
 command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
 
@@ -305,6 +317,141 @@ exit_removes=()
 on_exit_remove() {
   exit_removes+=("$1")
   trap 'rm -rf "${exit_removes[@]}"' EXIT
+}
+
+# The leak guard's engine: gitleaks, the version packages/daemon/go.mod holds
+# for github.com/zricethezav/gitleaks/v8 (8.30.1), so the binary this script
+# runs and the library the daemon's leakguard links are one release. The
+# archive is pinned by the sha256 its own gitleaks_8.30.1_checksums.txt gives
+# for it. It is fetched here, by this script, rather than installed by a step or
+# an action of the publish job, because .github/scripts/check-release-credentials.sh
+# refuses a credentialed job that runs any `scripts/` program but this one and
+# every `uses:` outside its five-action allow-list, while curl, tar and
+# sha256sum are not dependency commands.
+leak_engine_url=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+leak_engine_sha256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+# gitleaks exits 0 for a scan that found nothing and the --exit-code value for
+# one that found something; a failure of its own, a rule file it cannot load
+# among them, is a 1. So the finding status is a value of its own here, and
+# every other non-zero status is a setup failure rather than a clean scan.
+leak_found=7
+# Filled by the first guarded write: the rule file and the engine this run uses.
+leak_rules=''
+leak_engine=''
+
+# leak_guard <write> [<asset>...] -- <text>...: refuse <write>, and with it the
+# command, unless every <text> and every <asset> passes this repository's own
+# private-name rules, the rule file
+# packages/daemon/internal/leakguard/private-names.toml as this checkout holds
+# it. That rule file alone is run, and no shared check: this job holds no
+# credential for the private repository that publishes the shared one and needs
+# none, since every refusal of the measured window was of this repository's own
+# four classes.
+#
+# <write> names the write in the refusal. It is a fixed phrase, never anything
+# read from the release, so the refusal carries no private name of its own. An
+# <asset> is checked by its own file name and by the member names of the archive
+# it is, which is the shared check's policy for a compressed file; an asset that
+# is no archive this lane lists - the releases ship SHA256SUMS - is checked by
+# its bytes.
+#
+# A refusal says that it refused and which write it refused, and neither the
+# line that matched nor the class that matched it: a public repository's Actions
+# log is world-readable, and the engine's own output, which carries both, is
+# discarded. For the same reason an asset is named by its position and not by
+# its name. A setup failure - the engine cannot be fetched or verified, the rule
+# file is absent, the rule file does not parse, an asset cannot be listed - says
+# it is one, names what it met, and refuses the write just the same.
+#
+# The engine is fetched once per run, by the first write that needs it, into a
+# directory of its own that the EXIT trap removes. $RELEASE_PUSH_LEAK_ENGINE
+# names a gitleaks binary to run instead of fetching one: that seam is what
+# release-push.test.sh fills with stand-ins of its own, so no case of it reaches
+# the network. Every real run leaves it unset and fetches the pin above.
+leak_guard() {
+  local write=$1 assets=() texts=() asset listed material='' dir status=0 index=0
+  local setup="the leak guard could not run, so $write is refused and nothing was written:"
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --) shift; texts=("$@"); break ;;
+      *) assets+=("$1"); shift ;;
+    esac
+  done
+  if [ -z "$leak_engine" ]; then
+    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../../packages/daemon/internal/leakguard/private-names.toml"
+    [ -f "$leak_rules" ] ||
+      fail_error "$setup the rule file packages/daemon/internal/leakguard/private-names.toml is not in this checkout"
+    if [ -n "${RELEASE_PUSH_LEAK_ENGINE:-}" ]; then
+      leak_engine=$RELEASE_PUSH_LEAK_ENGINE
+    else
+      dir=$(mktemp -d)
+      on_exit_remove "$dir"
+      # The leak engine is a release asset like any other this repository fetches, so it
+      # comes down through the one helper at the release-asset bound of .github/ci-budgets.md:
+      # 5 x 60 + 150 = 450 s. Written as `--retry 3 --max-time 120` it sat below that floor,
+      # and rule 8 of check-download-retry.sh charges every step that calls this script the
+      # arithmetic of the floor it would have to meet, once per call site: 6522 s on 46 steps,
+      # 13044 on five and 26088 on one, which no `timeout-minutes` can hold under GitHub's
+      # 360-minute job ceiling (review round 17 of dispatch://INFRA-1545).
+      retry_fetch "the leak engine" 60 -- \
+        curl --fail --silent --show-error --location \
+        --output "$dir/gitleaks.tar.gz" "$leak_engine_url" ||
+        fail_error "$setup $leak_engine_url could not be fetched"
+      printf '%s  %s\n' "$leak_engine_sha256" "$dir/gitleaks.tar.gz" > "$dir/SHA256SUMS"
+      sha256sum --check --strict "$dir/SHA256SUMS" > /dev/null ||
+        fail_error "$setup the fetched archive is not the pinned bytes, sha256 $leak_engine_sha256"
+      tar -xzf "$dir/gitleaks.tar.gz" -C "$dir" gitleaks ||
+        fail_error "$setup the fetched archive holds no gitleaks binary"
+      leak_engine=$dir/gitleaks
+    fi
+    # The probe: a text no rule of the file matches must scan clean. A rule file
+    # the engine cannot read is met here, once, instead of passing as a clean
+    # scan at every write.
+    printf 'release-push.sh leak guard probe\n' |
+      "$leak_engine" stdin --config "$leak_rules" --no-banner \
+        --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
+      status=$?
+    [ "$status" = 0 ] ||
+      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file packages/daemon/internal/leakguard/private-names.toml does not parse, or this gitleaks refused it"
+  fi
+  for asset in "${texts[@]}"; do material+=$asset$'\n'; done
+  for asset in "${assets[@]}"; do
+    index=$((index + 1))
+    material+=$asset$'\n'
+    case $asset in
+      *.tgz | *.tar.gz)
+        listed=$(tar -tzf "$asset" 2> /dev/null) ||
+          fail_error "$setup asset $index of ${#assets[@]} could not be listed as a gzipped tar" ;;
+      *.zip)
+        listed=$(unzip -Z1 "$asset" 2> /dev/null) ||
+          fail_error "$setup asset $index of ${#assets[@]} could not be listed as a zip" ;;
+      *)
+        listed=$(cat -- "$asset" 2> /dev/null) ||
+          fail_error "$setup asset $index of ${#assets[@]} is no archive this lane lists and could not be read" ;;
+    esac
+    material+=$listed$'\n'
+  done
+  status=0
+  # --ignore-gitleaks-allow turns off the engine's own inline escape. gitleaks
+  # drops every finding of a line holding `gitleaks:allow`, and
+  # .github/scripts/check-private-names.sh, the script these rules are ported
+  # from, honours no such thing: left on, a release note or an archive member
+  # name carrying that comment would publish a private name this lane is here
+  # to refuse. The daemon's own engine is turned off the same way
+  # (packages/daemon/internal/leakguard/rules.go). The cost is that a
+  # legitimate text holding those two words beside a name of one of the four
+  # classes is refused like any other, and its writer rewrites the name.
+  printf '%s' "$material" |
+    "$leak_engine" stdin --config "$leak_rules" --no-banner \
+      --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
+    status=$?
+  case $status in
+    0) ;;
+    "$leak_found")
+      fail_error "this repository's private-name rules refused $write, so nothing was written. Neither the text that matched nor the class it matched is printed here: this repository's Actions log is world-readable. Run .github/scripts/check-private-names.sh over what this step publishes, where a person alone reads it, to find it." ;;
+    *) fail_error "$setup gitleaks exited $status over the material of $write" ;;
+  esac
 }
 
 # deploy_key_env's directory, empty until it made one.
@@ -864,6 +1011,9 @@ case "$command" in
       exit 1
     fi
     next=$((lost + 1))
+    # This `gh workflow run` is deliberately outside the leak guard, and stays
+    # there: its whole payload is lost_races, the count of 0 to 99 checked
+    # above, and nothing of this checkout reaches the run it starts.
     # gh prints the new run's URL: gh 2.102.0 on ubuntu-24.04 did on 2026-10-25.
     started=$(gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$branch" -f "lost_races=$next")
     echo "::notice title=Release run started::another run took this run's version first, so a new run on $branch, ${started:-the newest run of $workflow}, releases this commit (lost_races $next)" >&2
@@ -896,15 +1046,30 @@ case "$command" in
     shift 2
     repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
     if ! is_draft=$(gh release view "$tag" --repo "$repo" --json isDraft -q .isDraft 2>/dev/null); then
+      # What the create publishes: the tag, the assets, the title, and the notes
+      # where this lane wrote them itself. Where it passes --generate-notes,
+      # GitHub composes that body server-side from the merged pull requests'
+      # titles after this call, so no read before the create can see it, and
+      # .github/scripts/check-pr-text.sh at the merge is what holds that half.
+      leak_guard 'the release create' "$@" -- "$tag" "$title" "${notes[@]}"
       gh release create "$tag" "$@" --repo "$repo" --title "$title" "${notes[@]}" --verify-tag
       exit 0
     fi
     case $is_draft in
       true)
+        leak_guard 'the asset upload to the draft release' "$@" --
         gh release upload "$tag" "$@" --repo "$repo" --clobber || {
           echo "::error::Uploading this run's assets to the draft release $tag failed; the draft is left unpublished."
           exit 1
         }
+        # The draft as GitHub holds it now, which publishing it makes public: an
+        # earlier attempt wrote that title and body, and this run has not read
+        # them before.
+        draft=$(gh release view "$tag" --repo "$repo" --json name,body -q '.name, .body') || {
+          echo "::error::Reading the draft release $tag back before publishing it failed; it is left unpublished."
+          exit 1
+        }
+        leak_guard 'the draft release publish' -- "$draft"
         gh release edit "$tag" --repo "$repo" --draft=false || {
           echo "::error::Publishing the draft release $tag failed; it holds this run's assets and is still a draft."
           exit 1
@@ -913,6 +1078,7 @@ case "$command" in
         ;;
       false)
         if [ "$upload_to_published" = true ]; then
+          leak_guard 'the asset upload to the published release' "$@" --
           gh release upload "$tag" "$@" --repo "$repo" --clobber || {
             echo "::error::Uploading this run's assets to the published release $tag failed."
             exit 1
@@ -981,11 +1147,16 @@ case "$command" in
       echo "Release $tag already holds this $heading section"
       exit 0
     fi
+    # The bytes of $new are the release's public body after this edit.
+    leak_guard 'the release-section body write' -- "$(<"$new")"
     gh release edit "$tag" --repo "$repo" --notes-file "$new"
     echo "Wrote the $heading section into the body of release $tag"
     ;;
   push-tag)
     tag=${2:?tag}
+    # Before the deploy key is written at all: a refused push needs no key, and
+    # the tag name is the whole of what this write puts on GitHub.
+    leak_guard 'the tag push' -- "$tag"
     deploy_key_env
     git push "$remote" "refs/tags/$tag"
     ;;

@@ -116,6 +116,7 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "envoy-infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # The paths a version is cut from, as the build defines them: every directory of the
@@ -284,6 +285,7 @@ jobs:
           path: assets/
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Checks what build hands over, writes SHA256SUMS, tags the commit, attests build's archives and
@@ -297,7 +299,7 @@ jobs:
     # says; a skipped build gives `result == 'skipped'`, false.
     if: always() && needs.build.result == 'success' && needs.build.outputs.skip != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 91
     # contents: write creates the GitHub release (`release-push.sh release`, below); id-token and
     # attestations: write are for the archives' provenance attestation (id-token is the Sigstore
     # signing certificate's OIDC token). The tag push uses the deploy key, not either scope.
@@ -325,6 +327,7 @@ jobs:
       # tag. publish then writes SHA256SUMS over them, for a consumer that pins an archive by digest,
       # and hands the tag and the explicit lists to the steps below.
       - name: Check build's archives and write SHA256SUMS
+        timeout-minutes: 46
         id: assets
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -352,6 +355,7 @@ jobs:
       # The only step that holds the deploy key. release-push.sh push-tag writes it to a directory
       # of its own, pushes the tag over SSH to GitHub's pinned host keys, and removes the key again.
       - name: Tag release
+        timeout-minutes: 91
         env:
           VERSION: ${{ needs.build.outputs.version }}
           TAG: ${{ steps.assets.outputs.tag }}
@@ -370,6 +374,7 @@ jobs:
         with:
           subject-path: ${{ steps.assets.outputs.subjects }}
       - name: Create GitHub release
+        timeout-minutes: 46
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.assets.outputs.tag }}
