@@ -725,6 +725,20 @@ def go_code_only(text: str) -> str:
     return "".join(out)
 
 
+# A test of a Go file: `go help test`'s Test, Fuzz and Example functions, whose name goes on with
+# no lower-case letter. TestMain is the package's entry point, not a test. The signature is no
+# part of this: a Fuzz takes a *testing.F, an Example takes nothing, a test may take its
+# *testing.T under an aliased import of the package, and gofmt keeps a signature its author wrote
+# over more than one line - so a test is its name and the `(` that opens its parameters, in
+# column 0, which a method (`func (s *suite) TestX(`) and a `func TestX` gofmt indents inside
+# another function are not. Both lanes below read this one pattern, so a shape one of them learns
+# the other has too.
+GO_TEST_FUNC = re.compile(r"^func ((?:Test|Fuzz|Example)(?:[^\Wa-z]\w*)?)\(", re.M)
+# A file's build constraint. A step that passes no -tags does not compile a file that carries
+# one, so a test declared only there is a test that step can neither run nor name.
+GO_BUILD_LINE = re.compile(r"^//go:build +(.+?) *$", re.M)
+
+
 # ---------------------------------------------------------------- the text checks
 # The package each of the three modules keeps the tests whose subject is text in: a guide's
 # wording, a file copied from one tree to another, the imports a package may have. The
@@ -846,14 +860,6 @@ if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
 DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
-# A top-level test of a Go test file, in the one shape read here: `func TestName(t *testing.T) {`
-# beginning in column 0, which is the shape `go test` runs a test of a package by. A method
-# (`func (s *suite) TestName(`), a declaration with any other signature, and a `func Test…` inside
-# another function - which gofmt indents - are none of them this and are read as no test. The
-# parameter's name is the file's own, or absent; TestMain takes a *testing.M and is the package's
-# entry point rather than a test. A test written in a shape this does not know is one the check
-# below cannot see, so teach this pattern that shape rather than leaving the test unseen.
-GO_TOP_LEVEL_TEST = re.compile(r"^func (Test(?:[^\Wa-z]\w*)?)\((?:\w+ )?\*testing\.T\) *\{", re.M)
 PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
 # The one file of that package this job took whole, so the list above speaks for the file and not
 # only for the tests it happens to name.
@@ -862,7 +868,7 @@ PLUGIN_PACK_WHOLE_FILE = f"{PLUGIN_PACK_SOURCE}/agentmodels_omp_test.go"
 
 def hold_plugin_pack_tests():
     """Refuse a PLUGIN_PACK_TESTS that is no longer the truth about internal/daemon's tests: a
-    name this list holds that no top-level test of the package declares, and a top-level test of
+    name this list holds that no test of the package declares, and a test of
     agentmodels_omp_test.go this list does not hold. Held to nothing, both pass every other check
     green while a test leaves this job: the -run matches the names that are left, the -skip stops
     naming the test, so the daemon-go race step runs it - and daemon_go_tests' filter names
@@ -873,10 +879,20 @@ def hold_plugin_pack_tests():
     promptreferences_omp_test.go is not such a file - only its pack test moved, and its other
     test, TestThePromptReferenceProbeOnTheRealOhMyPi, runs in the daemon-go race step and reads no
     file of the repository - so widening the rule to it would refuse a test that belongs where it
-    is. What this guard does not see is a new test elsewhere in the package that packs a plugin
+    is. A test here is what `go test` runs as one and what the two steps' patterns therefore have
+    to name: every top-level Test, Fuzz or Example of GO_TEST_FUNC, whatever its signature and
+    however many lines it is written over, less TestMain, which is the package's entry point. A
+    Fuzz is one of them because a plain run runs its seed corpus, and an Example with an output
+    comment because a plain run checks that output. A declaration counts only where the file
+    carries no //go:build line (GO_BUILD_LINE): neither step passes -tags, so a name behind a
+    constraint is one the -run cannot reach and the -skip need not skip, and a listed name left
+    only in such a file is refused by the first rule below.
+    What this guard does not see is a new test elsewhere in the package that packs a plugin
     (packedPlugin): it would run in the race step with none of this gate's reads on that job's
-    filter, and a reader of such a test moves it here. The files are read as text
-    (GO_TOP_LEVEL_TEST over go_code_only, so a `func Test…` in a comment or a string counts for
+    filter, and a reader of such a test moves it here. Nor does it see a subtest - t.Run names no
+    declaration, and both patterns match a top-level test whole - or a tagged test some other
+    step's own -tags run compiles, which is that step's to declare. The files are read as text
+    (GO_TEST_FUNC over go_code_only, so a `func Test…` in a comment or a string counts for
     nothing), since this script runs where no Go toolchain is guaranteed. A file of the package
     that writes none of these names and is not the whole-file one can declare none of them, so it
     is not scanned: the package's tests are 3.8 MB and go_code_only walks a file character by
@@ -885,19 +901,27 @@ def hold_plugin_pack_tests():
     for path in sorted(Path(PLUGIN_PACK_SOURCE).glob("*_test.go")):
         text = path.read_text()
         here = path.as_posix()
-        if here != PLUGIN_PACK_WHOLE_FILE and not any(name in text for name in PLUGIN_PACK_TESTS):
+        whole = here == PLUGIN_PACK_WHOLE_FILE
+        if not whole and not any(name in text for name in PLUGIN_PACK_TESTS):
             continue
-        names = GO_TOP_LEVEL_TEST.findall(go_code_only(text))
+        # A file neither step compiles declares no name either step can use, so it is read as
+        # declaring none - the whole-file one included, whose listed tests the first rule then
+        # reports as gone.
+        names = [] if GO_BUILD_LINE.search(text) else [m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text))
+                                                       if m.group(1) != "TestMain"]
         declared.update(names)
-        if here == PLUGIN_PACK_WHOLE_FILE:
+        if whole:
             whole_file = names
     gone = ", ".join(name for name in sorted(PLUGIN_PACK_TESTS) if name not in declared)
     if gone:
-        raise ValueError(f"PLUGIN_PACK_TESTS names {gone}, which no top-level `func Test…(t *testing.T)` of "
-                         f"{PLUGIN_PACK_SOURCE} declares: the -run matches nothing of that name, and the -skip "
-                         f"skips nothing, so a test renamed out of this list runs in the daemon-go race step with "
-                         f"none of this gate's reads on that job's filter. Follow the rename here, or take the "
-                         f"name out and give the test's reads back to a RULES row keyed on the file it is in")
+        raise ValueError(f"PLUGIN_PACK_TESTS names {gone}, which no untagged file of {PLUGIN_PACK_SOURCE} declares "
+                         f"as a test `go test` runs (a top-level `func Test…`, `func Fuzz…` or `func Example…`, "
+                         f"TestMain apart): the -run matches nothing of that name, and the -skip skips nothing, so "
+                         f"a test renamed out of this list runs in the daemon-go race step with none of this "
+                         f"gate's reads on that job's filter. Neither step passes -tags, so a declaration behind a "
+                         f"//go:build line is no declaration here. Follow the rename, take the constraint off the "
+                         f"file the test is in, or take the name out and give the test's reads back to a RULES row "
+                         f"keyed on the file it is in")
     if whole_file is None:
         raise ValueError(f"PLUGIN_PACK_TESTS is the whole truth about {PLUGIN_PACK_WHOLE_FILE}, which is not there "
                          f"to read; follow the file here, or, where its tests have moved out of this job, take "
@@ -907,10 +931,12 @@ def hold_plugin_pack_tests():
     if unnamed:
         raise ValueError(f"{PLUGIN_PACK_WHOLE_FILE} declares {unnamed}, which PLUGIN_PACK_TESTS does not name: "
                          f"this job took that file whole, so the plugin-pack gate's reads are all of the file's "
-                         f"reads only while this list names every test of it. A test of it this list leaves out "
-                         f"runs in the daemon-go race step instead, whose filter names neither skills/** nor "
-                         f"scripts/pi-plugin-prepack.sh. Add the name to this list, or move the test to a file of "
-                         f"its own and give its reads a RULES row keyed on that file")
+                         f"reads only while this list names every test of it - every top-level Test, Fuzz and "
+                         f"Example a plain `go test` runs, a Fuzz for its seed corpus and an Example for its "
+                         f"output comment. A test of it this list leaves out runs in the daemon-go race step "
+                         f"instead, whose filter names neither skills/** nor scripts/pi-plugin-prepack.sh. Add "
+                         f"the name to this list, or move the test to a file of its own and give its reads a "
+                         f"RULES row keyed on that file")
 
 
 hold_plugin_pack_tests()
@@ -979,15 +1005,11 @@ UNIT_TEST_PATTERN = "|".join(
 UNIT_TEST_SCRIPT = f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | xargs go test -count=1 -timeout 20m"
 
 
-# A test of a Go file: `go help test`'s Test, Fuzz and Example functions, whose name goes on with
-# no lower-case letter. TestMain is the package's entry point, not a test.
-GO_TEST_FUNC = re.compile(r"^func ((?:Test|Fuzz|Example)(?:[^\Wa-z]\w*)?)\(", re.M)
 # Every top-level function declaration, test or not: a gofmt'd file puts the `func` of one in
 # column 0. Where its body ends is not a line pattern - a one-line body writes no closing brace
 # in column 0 - so go_top_level_spans() counts braces from the declaration's own `{`.
 GO_TOP_FUNC = re.compile(r"^func\b", re.M)
 GO_BRACE = re.compile(r"[{}]")
-GO_BUILD_LINE = re.compile(r"^//go:build +(.+?) *$", re.M)
 RACE_ENABLED = re.compile(r"\braceEnabled\b")
 RACE_ENABLED_DECLARATION = re.compile(r"^const +raceEnabled\b|^\t*raceEnabled +=", re.M)
 
