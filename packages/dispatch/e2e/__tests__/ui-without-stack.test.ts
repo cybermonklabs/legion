@@ -117,3 +117,58 @@ test(
   },
   probeTimeout
 );
+
+test(
+  "`--ui-port` after `--grep` is that option's value, and the run loads",
+  async () => {
+    // The second of the three UI flags, in the same separate spelling and the same position.
+    // Measured against a configuration that refuses nothing, `bunx playwright test --grep
+    // --ui-port --list` lists 2 rows, exits 0 and starts no UI server.
+    const { code, stderr } = await loadConfig(["--project=chromium", "--grep", "--ui-port"]);
+    expect(code, stderr).toBe(0);
+  },
+  probeTimeout
+);
+
+test(
+  "`--ui` after `-g`, the short spelling of `--grep`, is that option's value, and the run loads",
+  async () => {
+    // `playwright test --help` prints both spellings of an option on one line, `-g, --grep
+    // <grep>`, and both take the next argument. A rule that read the long names alone would
+    // refuse this run. Measured the same way: `bunx playwright test -g --ui --list` lists 2
+    // rows, exits 0 and starts no UI server.
+    const { code, stderr } = await loadConfig(["--project=chromium", "-g", "--ui"]);
+    expect(code, stderr).toBe(0);
+  },
+  probeTimeout
+);
+
+test(
+  "`--ui` after `--project chromium`, whose value is taken, is a flag, and the run is refused",
+  async () => {
+    // The other half of the pair above, and the row that says the fix reads positions rather
+    // than dropping the separate spelling: the same `--ui`, in the same separate spelling, after
+    // an option whose value is the token before it. Measured: `bunx playwright test --project
+    // chromium --ui --list` enters UI mode, and `--project chromium --ui-port 0 --list` prints
+    // `Listening on http://localhost:35679`. This head already refuses it, so this row locks
+    // what is true rather than asking for a change.
+    const { code, stderr } = await loadConfig(["--project", "chromium", "--ui"]);
+    expect(code, stderr).not.toBe(0);
+    expect(stderr).toContain("bun e2e/harness-up.ts");
+  },
+  probeTimeout
+);
+
+test(
+  "`--grep=--ui` is one argument, and no UI flag",
+  async () => {
+    // The joined spelling is self-contained and needs no lookahead: the argv element is the one
+    // string `--grep=--ui`, which is neither exactly `--ui` nor a `--ui-` prefix. This head
+    // already loads it, so this row locks what is true. It is asked of the config here rather
+    // than of a real command line on purpose: `bunx playwright test --grep=--ui` meets
+    // Playwright's own `No tests found` and exits 1, which is nothing this config decided.
+    const { code, stderr } = await loadConfig(["--project=chromium", "--grep=--ui"]);
+    expect(code, stderr).toBe(0);
+  },
+  probeTimeout
+);

@@ -140,10 +140,13 @@ when the run ends, a Ctrl-C included, and exits with its own status.
 
 Playwright's UI mode is refused unless a stack is already up beside it, and all
 three flags that enter it are refused alike: `--ui`, `--ui-host <host>` and
-`--ui-port <port>`. UI mode runs no `globalSetup` that starts servers, so a
-session with nothing up has no stack to run against. Its tree holds the
-`global-setup.ts` node alone, Run all runs no row, and nothing says why. Start
-one stack, apply the variables it prints, and start the UI in that environment:
+`--ui-port <port>`. Each is matched as a whole argument that is no other
+option's value, the way Playwright's own parser reads argv, so `--grep --ui`
+runs as usual: Playwright reads that `--ui` as `--grep`'s value. UI mode runs
+no `globalSetup` that starts servers, so a session with nothing up has no
+stack to run against. Its tree holds the `global-setup.ts` node alone, Run
+all runs no row, and nothing says why. Start one stack, apply the variables
+it prints, and start the UI in that environment:
 
 ```bash
 cd packages/dispatch
@@ -185,14 +188,31 @@ DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin \
   bun run e2e -- --workers 4
 ```
 
-`DATABASE_URL`, `PLAYWRIGHT_BASE_URL`, `DISPATCH_E2E_PROCESSES=2`,
-`DISPATCH_E2E_REUSE_SERVERS` and a harness port you set yourself each name one
-database, one set of servers or one port, so each of them belongs to a run of
-one worker: a second stack would share what they name, and a shared one is one
-stack emptying another's rows. `e2e/global-setup.ts` refuses a run of more than
-one worker whose caller set any of them, before it starts anything, naming the
-variable and what one stack owns it for. Unset that variable, or run the one
-worker the config defaults to: `--workers` is how a run asks for more.
+A run of more than one worker is one stack per worker, each with a Postgres, a
+file-store bucket and ports of its own, so five variables that name one of
+those are refused before anything starts:
+
+- `DATABASE_URL`, because each stack runs its own Postgres, whose URL the
+  harness hands its servers and its psql,
+- `PLAYWRIGHT_BASE_URL`, because a deployed run has one server every stack
+  would share,
+- `DISPATCH_E2E_REUSE_SERVERS`, because the servers a person started are one
+  set,
+- `DISPATCH_E2E_PROCESSES=2`, because two-process mode is two servers on one
+  stack's database,
+- any harness port you set yourself, because a port is one listener's.
+
+Run instead a Postgres provider with those five unset: `DISPATCH_E2E_PG_BIN`, a
+directory holding `initdb` and `pg_ctl`, or `DISPATCH_E2E_PG_IMAGE`, each of
+which is a Postgres per stack. The other way is one worker, which the config
+defaults to and the one case that takes a `DATABASE_URL`.
+`e2e/global-setup.ts` refuses the run before it starts anything, naming the
+variable and the reason, so you meet a sentence rather than an `EADDRINUSE`.
+The deleted wrapper refused the same five, and this is where that rule is
+written down now. CI's shard leg already sets `DISPATCH_E2E_PG_BIN` and none of
+the five, so the refusal changes no job of this repository and only a run by
+hand.
+
 Every other mode runs on the default one worker, and so one stack: the deployed
 run, two-process mode,
 a run against servers you started (`DISPATCH_E2E_REUSE_SERVERS=1`) and

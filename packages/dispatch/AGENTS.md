@@ -1634,9 +1634,13 @@ seeded and signed in, and leaves it running (below, after the port rules).
 
 Playwright's UI mode is refused unless a stack is already up beside it, and the
 three flags that enter it are refused alike: `--ui`, `--ui-host <host>` and
-`--ui-port <port>` (`e2e/playwright.config.ts`, which matches each as a whole
-argument). UI mode runs no `globalSetup` that starts servers, so a session with
-nothing up has no stack to run against. Its tree holds the `global-setup.ts`
+`--ui-port <port>`. Each is matched as a whole argument that is no other
+option's value, the way Playwright's own parser reads argv: `--grep --ui` hands
+Playwright that `--ui` as `--grep`'s value, so the run is an ordinary one and
+loads (`e2e/ui-argv.ts`, which holds the options that take the next argument
+and the measurement behind them). UI mode runs no `globalSetup` that starts
+servers, so a session with nothing up has no stack to run against. Its tree
+holds the `global-setup.ts`
 node alone, Run all runs no row, and nothing says why, which is the silence
 this refusal replaces. The way to run it is three steps, from
 `packages/dispatch`:
@@ -1705,20 +1709,36 @@ the server's dev sign-in requires of its database. With one worker and
 `DATABASE_URL` set, the run uses that database as stack 0's and starts no
 Postgres, exactly as it always has.
 
-`DATABASE_URL`, `PLAYWRIGHT_BASE_URL`, `DISPATCH_E2E_PROCESSES=2`,
-`DISPATCH_E2E_REUSE_SERVERS` and every harness port variable each name one
-database, one set of servers or one port, so each of them belongs to a run of
-one worker: a second stack would share what they name, and a shared one is one
-stack emptying another's rows. `e2e/global-setup.ts` refuses a run of more than
-one worker whose caller set any of them, before it starts anything and before
+A run of more than one worker is one stack per worker, and each stack has a
+Postgres, a file-store bucket and ports of its own, so five variables that name
+one of those are refused before anything starts. `DATABASE_URL` is refused
+because each stack runs its own Postgres, whose URL the harness hands its
+servers and its psql. `PLAYWRIGHT_BASE_URL` is refused because a deployed run
+has one server every stack would share. `DISPATCH_E2E_REUSE_SERVERS` is refused
+because the servers a person started are one set. `DISPATCH_E2E_PROCESSES=2` is
+refused because two-process mode is two servers on one stack's database. Any
+harness port variable is refused because a port is one listener's: a shared one
+of these is one stack emptying another's rows mid-row, and that failure reads
+as the product's rather than the run's.
+
+`e2e/global-setup.ts` makes that refusal before it starts anything and before
 its own return on `DISPATCH_E2E_REUSE_SERVERS=1`, naming the first such
 variable and what one stack owns it for (`refuseStackConflicts`,
-`e2e/harness-ports.ts`). A run of the stubbed layer alone is out of that rule,
-since it addresses no stack. The config's `workers` is 1 for that reason, and
-a run asks for more with Playwright's own `--workers <n>`. `fullyParallel` is
-on, since a row empties its own stack before it runs: rows of one file may run
-in different stacks, and a file whose rows must run in order says so itself,
-with `test.describe.configure({ mode: "serial" })` and the reason.
+`e2e/harness-ports.ts`). A person meets that sentence rather than an
+`EADDRINUSE`. The deleted wrapper refused the same five, and this is where that
+rule is written down now. CI's shard leg already sets `DISPATCH_E2E_PG_BIN` and
+none of the five, so the refusal changes no job of this repository and only a
+run by hand. A run of the stubbed layer alone is out of the rule, since it
+addresses no stack.
+
+Run instead a Postgres provider with those five unset: `DISPATCH_E2E_PG_BIN`, a
+directory holding `initdb` and `pg_ctl`, or `DISPATCH_E2E_PG_IMAGE`, each of
+which is a Postgres per stack. The other way is one worker, which is this
+config's own `workers` default and the one case that takes a `DATABASE_URL`. A
+run asks for more with Playwright's own `--workers <n>`. `fullyParallel` is on,
+since a row empties its own stack before it runs: rows of one file may run in
+different stacks, and a file whose rows must run in order says so itself, with
+`test.describe.configure({ mode: "serial" })` and the reason.
 
 Every other mode runs on that default one worker, and so one stack: the deployed
 run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode

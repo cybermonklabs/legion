@@ -8,6 +8,7 @@ import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
+import { namesUiSession } from "./ui-argv";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -141,16 +142,17 @@ const stub = stubSelection({
 // would not start either, and `e2e/harness-up.ts` with that variable set starts exactly the
 // subset such a run needs.
 //
-// All three UI flags are matched, and matched as whole arguments. The runner declares `--ui`,
-// `--ui-host <host>` and `--ui-port <port>` (node_modules/.bun/playwright@1.64.1/node_modules/
-// playwright/lib/program.js:223-225) and enters UI mode on any of them (`opts.ui ||
-// opts.uiHost || opts.uiPort`, lib/cli/testActions.js:60). A bare substring would be a trap of
-// its own, the one the deleted `--list` reading carried: Playwright reads the `--list` of
-// `--grep --list` as that option's VALUE, and `--grep --ui` would read the same way, so only an
-// argument that is exactly `--ui` or begins `--ui-` counts.
-const uiSession = process.argv.some(
-  (argument) => argument === "--ui" || argument.startsWith("--ui-")
-);
+// All three UI flags are matched, and matched as whole arguments that are no other option's
+// value. The runner declares `--ui`, `--ui-host <host>` and `--ui-port <port>`
+// (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/program.js:223-225) and
+// enters UI mode on any of them (`opts.ui || opts.uiHost || opts.uiPort`,
+// lib/cli/testActions.js:60). A bare substring would be a trap of its own, the one the deleted
+// `--list` reading carried, and so is a flat `some()` over the three spellings: Playwright reads
+// the `--ui` of `--grep --ui` as that option's VALUE, exactly as it reads the `--list` of
+// `--grep --list`, so the run is an ordinary one and must load. `e2e/ui-argv.ts` reads argv the
+// way the runner's parser reads it, holds the options that take the next argument, and carries
+// the measurement each half of that rule rests on.
+const uiSession = namesUiSession(process.argv);
 if (uiSession && !reusingServers && !stub.onlyStub) {
   throw new Error(
     "Playwright's UI mode starts no stack of its own: it runs no `globalSetup` that would, so " +
