@@ -66,7 +66,8 @@ import (
 //     takes back and nothing else, so step 8 cannot pass by checking everything;
 //  10. the roots of step 8 are admitted when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
-	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
+	t.Parallel()
+	// The NATS server is started first: it is this test's own (testnats.URL), and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
 	natsURL := testnats.URL(t)
@@ -106,6 +107,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	rt.InPod = true
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = blockersGitHub(t)
 	o.controllerFirstWake = time.Hour
 	d := startDaemon(t, cfg, o)
@@ -914,12 +916,12 @@ func registerLaunch(t *testing.T, d *daemon, launch runtime.SpawnSpec) (string, 
 	return session, registered.Secret
 }
 
-// blockersDatabase is a Postgres database of this daemon's own, dropped when the test ends. The
-// daemon migrates it itself at boot. It matters because of one table: processed_events, keyed by
-// (source, event_id) alone. The scratch Dispatch numbers its own events from one in a database of
-// its own, so every run publishes `dispatch-1` again, and a daemon sharing the test server's
-// database with every other test would take this run's events for ones already processed and skip
-// them. The admission slot index, unique across the whole database, is a second reason.
+// blockersDatabase is an empty Postgres database, dropped when the test ends, which this test's
+// daemon migrates itself at boot: the schema it carries is Legion's own, not the scratch
+// Dispatch's, which keeps a database of its own (startScratchDispatchOn). Every test of this
+// package already has a database to itself (testDSN), so what this fixture adds is that
+// migration: the daemon here comes up on a database nothing has shaped, as a deployment's daemon
+// does, rather than on a clone of the package's migrated template.
 func blockersDatabase(t *testing.T) string {
 	t.Helper()
 	return testdb.Database(t, "legion_blockers_test")
@@ -963,7 +965,7 @@ func blockersGitHub(t *testing.T) string {
 
 // scratchDispatchClient is the test's own client of the scratch Dispatch server; the daemon has
 // its own.
-var scratchDispatchClient = &http.Client{Timeout: 10 * time.Second}
+var scratchDispatchClient = &http.Client{Timeout: serverReplyTimeout}
 
 // dispatchCall sends one request to the scratch Dispatch server as the person `smoke` — the
 // trusted identity header the harness starts the server with — and decodes its answer into `into`

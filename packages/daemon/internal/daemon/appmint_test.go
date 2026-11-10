@@ -137,6 +137,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			listen:         heldListen,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
+			environ:        workflowEnviron(t),
 			workflowTokens: tokens,
 			githubAPI:      repositoriesGitHub(t),
 		})
@@ -152,7 +153,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			if err != nil {
 				t.Errorf("run after the test: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(arrivalBound(t)):
 			t.Error("daemon did not stop")
 		}
 	})
@@ -189,6 +190,9 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 // again and comes up. Before, the one request ran until the boot budget ran out, and the daemon
 // exited (a Stage 3 restart died exactly so: "mint implement GitHub App token at boot: GitHub App
 // installation discovery: ... context deadline exceeded", #1347).
+//
+// Not parallel: it assigns the production package variables appMintAttempt and appMintRetry,
+// which every test of the process shares.
 func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
@@ -207,6 +211,9 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 }
 
 // A definitive answer (the App's key refused) is refused at once, naming it: no retry changes it.
+//
+// Not parallel: it assigns the production package variables appMintAttempt and appMintRetry,
+// which every test of the process shares.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
@@ -226,6 +233,9 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 // and then answers, and the review App's never does: the budget's three attempts are spent before
 // the review token is asked for more than once. With a budget per App the boot would wait both out,
 // twice as long, which is what outlasted Stage 3's wait for /healthz.
+//
+// Not parallel: it assigns the production package variables appMintAttempt and appMintRetry,
+// which every test of the process shares.
 func TestABootGivesBothAppTokensOneRetryBudget(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {

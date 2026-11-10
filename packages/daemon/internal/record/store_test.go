@@ -30,7 +30,7 @@ var _ Store = NewStore()
 // is skipped (testdb.Database).
 func emptyStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(context.Background(), testdb.Database(t, "legion_record_test"))
+	st, err := testpg.OpenStore(context.Background(), testdb.Database(t, "legion_record_test"))
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}

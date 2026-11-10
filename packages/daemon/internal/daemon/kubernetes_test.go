@@ -42,7 +42,14 @@ import (
 // configuration holds them.
 func kubernetesConfig(t *testing.T, server string) config.Config {
 	t.Helper()
-	cfg := testConfig(t)
+	return kubernetesConfigOn(t, server, testDSN(t))
+}
+
+// kubernetesConfigOn is kubernetesConfig on a database the caller already holds, for a
+// table-driven test whose rows share one clone and empty it between them (tableDatabase).
+func kubernetesConfigOn(t *testing.T, server, dsn string) config.Config {
+	t.Helper()
+	cfg := testConfigOn(t, dsn)
 	cfg.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Kubeconfig: writeKubeconfig(t, server, "test"),
@@ -103,6 +110,7 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 // A cluster without Agent Sandbox is refused by name (LEGION-206 Requirement 10) before the boot
 // is recorded: the CRD and the controller's Deployment are each named, and nothing is launched.
 func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var requested []string
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +155,7 @@ func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *tes
 // after the store opened, or after a migration, would be refused for the store instead. The
 // cluster is only read.
 func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *testing.T) {
+	t.Parallel()
 	const legacy = "legion-test-legion-208-tester"
 	var mu sync.Mutex
 	var requested []string
@@ -178,7 +187,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	}))
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
-	cfg.PostgresDSN = "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
+	cfg.PostgresDSN = unreachablePostgres
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -198,6 +207,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 // The worker image is proven after the runtime is built and before the boot is recorded; a refusal
 // refuses the boot.
 func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
@@ -228,12 +238,14 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 // machinery never runs: no pane launcher is installed, no Dispatch token file is written, and the
 // workflow's boot has no worker-bin stage.
 func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	tokens := &workflowTokenRecorder{}
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
 	o.workflowTokens, o.githubAPI = tokens, repositoriesGitHub(t)
+	o.environ = workflowEnviron(t)
 	var logged syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -319,12 +331,15 @@ func bootField(t *testing.T, logged, field string) string {
 // testConfig's own port is always 0 — this does, by configuring a nonzero one and checking
 // prepare()'s plan directly, with no listener bound.
 func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct{ name, bind, advertiseHost string }{
 		{"no advertise_host", "192.0.2.30", ""},
 		{"advertise_host set", "0.0.0.0", "legion-daemon-legsmoke.legion.svc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -347,6 +362,7 @@ func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) 
 // listener's bound address before handing it to the runtime factory. An address it cannot split
 // beside an advertise_host is refused rather than handed to pods.
 func TestShimAddressSubstitutesAdvertiseHostsHostKeepingTheBoundPort(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, bound, advertiseHost, want string }{
 		{"no advertise_host, a real bind", "tcp://192.0.2.30:13371", "", "tcp://192.0.2.30:13371"},
 		{"no advertise_host, a unix socket", "unix:///run/legion/stream.sock", "", "unix:///run/legion/stream.sock"},
@@ -375,6 +391,7 @@ func TestShimAddressSubstitutesAdvertiseHostsHostKeepingTheBoundPort(t *testing.
 // name resolves nowhere here, but the listener binds every interface, so 127.0.0.1 at the advertised
 // port reaches it: the port is the stream listener's own.
 func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-legsmoke.legion.svc"
@@ -383,6 +400,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
 	o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
+	o.environ = workflowEnviron(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
@@ -411,6 +429,8 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 // prepare refuses what the cluster would refuse only later: a kubeconfig with no current context
 // when runtime.kubernetes.context names none, or a context the kubeconfig does not have.
 func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		change func(*config.Kubernetes, *testing.T)
@@ -432,7 +452,8 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			tc.change(cfg.Runtime.Kubernetes, t)
 			if _, err := prepare(cfg, quietLogger(), overrides{}); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("prepare = %v, want a refusal containing %q", err, tc.want)
@@ -450,6 +471,7 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 // translated the same way and no pod's share — a probe that reserved the controller's 1 CPU and
 // 4Gi could not boot the daemon on a pool with room for less.
 func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.Resources = config.PodResources{
 		Issue:      config.Reservation{CPU: "4", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "20Gi", EphemeralStorageRequest: "1Gi"},
@@ -518,6 +540,7 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 // the skills init container and every role installs from the volume it fills, while leaving the
 // setting out keeps the runtime skills-free.
 func TestKubernetesSkillsRepositoryReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
@@ -545,6 +568,7 @@ func TestKubernetesSkillsRepositoryReachesTheSandboxRuntime(t *testing.T) {
 // runtime.kubernetes.setup reaches sandbox.Options unchanged: every role's launcher receives this
 // argv, while leaving the setting out keeps the runtime setup-free.
 func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
@@ -573,6 +597,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 // runtime.kubernetes.repository_cache reaches the runtime's Options as its volume, its intervals and
 // its container's requirements, a settled reservation's lower memory request under its limit.
 func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	reservation := config.Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"}
 	cfg.Runtime.Kubernetes.RepositoryCache = config.RepositoryCacheConfig{Volume: "50Gi", RefreshMinutes: 5, RetainHours: 24, Resources: reservation}
@@ -602,6 +627,7 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 // container takes ImageProbe.Resources as it is (TestManifestGoldens, probe.json), and a boot-level
 // run needs a cluster.
 func TestAnImpossibleControllerReservationLeavesTheImageProbeItsOwn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	body := fmt.Sprintf(`project: DEMO
 postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
@@ -683,6 +709,8 @@ current-context: legion-daemon
 // or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's) — so
 // no pod is ever built with it.
 func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		change func(*config.Config)
@@ -737,7 +765,8 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -756,6 +785,7 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 // builds from them are the sandbox package's to test, and this is the one place the daemon hands
 // them over.
 func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "ANTHROPIC_API_KEY", Secret: "anthropic"}}
 	pod := config.PodConfig{
@@ -783,7 +813,9 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 // NATS_NKEY_SEED — it is a launch secret the runtime reads from the providers mount, and with none
 // it is neither.
 func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) {
+	t.Parallel()
 	seedFile := testnats.SeedFile(t, testnats.UserSeed(t))
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		key  string
@@ -796,7 +828,8 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 		{"no seed", "", nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.NatsNkeySeedFile = tc.key
 			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(tc.env), quietLogger())
 			if err != nil {
@@ -842,6 +875,7 @@ func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
 // worker_stop_timeout_seconds in particular has no other test: it is tmux's stop grace and the
 // sandbox's termination grace.
 func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.WorkerStopTimeout, cfg.WorkerBootTimeout, cfg.ProbeInterval, cfg.SlowCommandTimeout = 11*time.Second, 22*time.Second, 33*time.Second, 44*time.Second
 
@@ -872,6 +906,7 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 // nil when the configuration sets no block, and the worker image's agent-secrets binary is
 // always the tools path (Task 11 mounts it there whether or not the deployment enrolls).
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800,
@@ -898,6 +933,7 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 // launches as LEGION_SLACK_CHANNELS and compares with the list a running controller was launched
 // under (sandbox's address record), so a changed list relaunches it; no channel is no list.
 func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	project := cfg.Projects[cfg.Project]
 	project.SlackChannels = []string{"C00000000", "G00000001"}
@@ -922,6 +958,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 // carry no field for at all. newSecretsLogin hands the runtime only the broker URL, audience and
 // pod token lifetime, and no launch's secrets ever name an AGENT_SECRETS_* variable.
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://s", TokenFile: filepath.Join(t.TempDir(), "token"), Audience: "agent-secrets", TokenExpirySeconds: 3600,
@@ -954,6 +991,7 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 // newSecretsLogin logs in at boot with the token token_file holds, posting it to the broker's token
 // route, and logs that it did; no confirmation code exists, so nothing waits for a person.
 func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var tokens []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1009,6 +1047,7 @@ type lockedBuffer = testlog.Buffer
 // A hello carrying an agent-secrets identity maps to the machine's StreamHello with it; a hello
 // with none maps to one with no identity.
 func TestAHelloWithAnIdentityMapsToTheMachinesEvent(t *testing.T) {
+	t.Parallel()
 	ev, err := superviseEvent(stream.Hello{Claim: "legion-LEGION-209-implementer", Generation: 2,
 		AgentSecrets: &stream.AgentSecretsIdentity{Thumbprint: "tp", PodToken: "a.b.c"}})
 	if err != nil {
@@ -1031,6 +1070,7 @@ func TestAHelloWithAnIdentityMapsToTheMachinesEvent(t *testing.T) {
 // worker_boot_timeout_seconds reached slow_command_timeout_seconds never got there). imageProbe
 // carries the same budget onto its ImageProbe.
 func TestProbeBudgetIsTheLargerOfTheTwoTimeoutsPlusAMargin(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		bootTimeout, slowCommand time.Duration
 		wantBudget               time.Duration
@@ -1061,6 +1101,7 @@ func TestProbeBudgetIsTheLargerOfTheTwoTimeoutsPlusAMargin(t *testing.T) {
 // above slow_command_timeout_seconds; a daemon whose worker_boot_timeout_seconds leaves it under
 // that bound logs nothing of it.
 func TestTheBootLogNamesTheDerivedProbeBudgetOnlyWhenItIsDerived(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		bootTimeout time.Duration

@@ -26,6 +26,7 @@ import (
 // GitHub's spelling beside its own, so the boot subscribes from the database, not from a read a
 // restart forgets. The workspace keeps the clone's spelling.
 func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -106,10 +107,11 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 // repository GitHub cannot read refuses the boot, naming the issue, rather than subscribing in a
 // spelling its events are not published under.
 func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
+	pool, reset := tableDatabase(t)
 	seed := func(t *testing.T) (*workflowRuntime, projectRecords) {
 		t.Helper()
-		pool := isolatedOutboxPool(t)
 		records := projectRecords{Store: record.NewStore(), project: "LEGION"}
 		if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
 			values ('LEGION-301', 'LEGION-301', 'LEGION', 'running', 'implementing', 1, 'in_progress', 'A', 1, 'acme/widgets', 'main')`); err != nil {
@@ -124,6 +126,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 	}
 
 	t.Run("GitHub names it", func(t *testing.T) {
+		reset(t)
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
@@ -144,6 +147,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 	})
 
 	t.Run("GitHub cannot read it", func(t *testing.T) {
+		reset(t)
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)

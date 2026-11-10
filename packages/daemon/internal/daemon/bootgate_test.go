@@ -82,6 +82,7 @@ func link(t *testing.T, unpacked, installed string) {
 // plugins: the profile OMP_PROFILE (else PI_PROFILE) names, under HOME's .omp, unless an XDG data
 // root already holds that profile's state.
 func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
+	t.Parallel()
 	passwdHome := ""
 	if u, err := user.Current(); err == nil {
 		passwdHome = u.HomeDir
@@ -258,6 +259,7 @@ func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
 
 // Oh My Pi refuses a profile name it cannot use, and so does the gate, naming it.
 func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"Work", "..", "work.", "-work", "con", "nul.txt"} {
 		_, _, err := pluginManifestPath(map[string]string{"HOME": t.TempDir(), "OMP_PROFILE": name}, t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), `Invalid OMP profile "`+name+`"`) {
@@ -393,6 +395,7 @@ const (
 // A manifest that declares another contract — or none, or one that is not a number — is refused
 // naming the manifest, the package version, and both numbers, before any Oh My Pi is run.
 func TestTheGateRefusesAPluginOfAnotherContractBeforeRunningOhMyPi(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, legion, declared string
 	}{
@@ -427,6 +430,7 @@ func TestTheGateRefusesAPluginOfAnotherContractBeforeRunningOhMyPi(t *testing.T)
 // read then and the TypeScript daemon's 9 under the one it reads now: it is refused, naming the 9,
 // however the old field reads.
 func TestTheGateRefusesAPluginFromBeforeTheRename(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, `{"daemonApiVersion":9,"goDaemonApiVersion":3}`)
 
@@ -446,6 +450,7 @@ func TestTheGateRefusesAPluginFromBeforeTheRename(t *testing.T) {
 }
 
 func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	manifest := manifestAt(filepath.Join(gate.env["HOME"], ".omp", "profiles", "gate"))
@@ -469,9 +474,16 @@ func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
 // The load probe is the embedded probe extension handed to `omp models`, through the launch
 // prefix, under the pane's environment and nothing of the daemon's own. A pass is logged in the
 // words the e2e stages grep for, naming the Envoy plugin's interface and where it loaded from.
+//
+// Not parallel: it sets a variable in this process's own environment, which is what it asserts
+// the probe does or does not inherit, and Go's testing package refuses t.Setenv beside
+// t.Parallel.
 func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	f := newFakeOmp(t, "yes")
 	gate, logged := gateUnder(t, f, contractCurrent)
+	// This process's own environment, which every test of the package shares: the probe's is the
+	// gate's map alone (pluginGate.run sets cmd.Env), and only a variable the daemon itself holds
+	// proves the probe inherited none of it.
 	t.Setenv("LEGION_DAEMON_ONLY_SECRET", "the daemon's own")
 
 	if err := gate.verify(context.Background()); err != nil {
@@ -530,6 +542,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // own exit on a loaded box. An exit inside the budget whose pipe is held past it is
 // TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
@@ -560,6 +573,7 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 // inside the last WaitDelay of slow_command_timeout_seconds would be retried, and refused once its
 // retries ran out.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t *testing.T) {
+	t.Parallel()
 	pidFile := filepath.Join(t.TempDir(), "lingering.pid")
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
@@ -598,6 +612,7 @@ func killPIDFile(t *testing.T, pidFile string) {
 // another plugin root than the pane environment names, and the contract probe would have vouched
 // for a plugin no pane runs.
 func TestTheLoadProbeRefusesAPluginLoadedFromAnotherRoot(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		step string
 		want []string
@@ -634,6 +649,7 @@ func TestTheLoadProbeRefusesAPluginLoadedFromAnotherRoot(t *testing.T) {
 // A probe that ran and did not see the plugin load is an answer, not a failure to retry: the
 // plugin is installed and disabled, or not registered.
 func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
+	t.Parallel()
 	for _, step := range []string{"no", "silent", "no-then-hang"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step)
@@ -655,6 +671,7 @@ func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
 // A pi-legion loaded with no pi-envoy has nothing to claim its role through: the gate refuses,
 // naming the pi-envoy release to install into the pane's profile.
 func TestTheLoadProbeRefusesAPluginWithoutTheEnvoyPlugin(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-no-envoy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -673,6 +690,7 @@ func TestTheLoadProbeRefusesAPluginWithoutTheEnvoyPlugin(t *testing.T) {
 // from different commits: the gate refuses, naming both versions, where pi-envoy loaded from, and
 // the remedy of installing both releases.
 func TestTheLoadProbeRefusesAPluginAtAnotherEnvoyInterface(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-envoy-mismatch")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -692,6 +710,7 @@ func TestTheLoadProbeRefusesAPluginAtAnotherEnvoyInterface(t *testing.T) {
 // Legion entries against the same pane: the gate refuses, naming the uninstall under the pane's
 // profile, before any word on pi-envoy.
 func TestTheLoadProbeRefusesAPluginBesideTheOldPackage(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-legacy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -710,6 +729,7 @@ func TestTheLoadProbeRefusesAPluginBesideTheOldPackage(t *testing.T) {
 // reads no pi-envoy manifest of its own to hold it to, so one loaded from another root passes,
 // and one no @sjawhar/pi-envoy manifest owns is refused.
 func TestTheLoadProbeHoldsTheEnvoyPluginToAManifestOfItsName(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		owned bool
@@ -741,6 +761,7 @@ func TestTheLoadProbeHoldsTheEnvoyPluginToAManifestOfItsName(t *testing.T) {
 // loaded, the skills it ships are missing too, and the gate names the missing plugin, never the
 // missing skill.
 func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-no-envoy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.roleReferences = promptrefs.New()
@@ -762,6 +783,7 @@ func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
 // A launch that fails before Oh My Pi says anything — the launch prefix refusing, a binary that is
 // not Oh My Pi — is its own refusal, with the command and what it printed.
 func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "denied")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -783,6 +805,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // Oh My Pi dying after it loaded the plugin, or a probe the budget cut off before it answered, says
 // nothing about the plugin: the gate waits it out and asks again.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
+	t.Parallel()
 	for _, step := range []string{"yes-then-die", "hang"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes")
@@ -803,6 +826,7 @@ func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 
 // A daemon stopped while its gate waits kills the probe it is running and starts no other.
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "hang")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.timeout = time.Minute
@@ -841,9 +865,11 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 // stops cleanly, having served nothing. The plugin is held to this daemon's own number, so the
 // contract below it — the one the previous release pins — is refused like any other.
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
+	t.Parallel()
 	// The daemon holds the plugin to its own DaemonAPIVersion.
 	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion) + `}`
 	previous := strconv.Itoa(api.DaemonAPIVersion - 1)
+	pool, reset := tableDatabase(t)
 	for _, testCase := range []struct {
 		name, legion, step, want string
 	}{
@@ -853,14 +879,17 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 		{"stopped while the probe runs", thisDaemons, "hang", ""},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("OMP_PROFILE", "gate")
 			writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")), testCase.legion)
 			f := newFakeOmp(t, testCase.step)
 			o := fakeRuntime(fake.NewRuntime(), &built{})
 			o.runtime = nil
+			// The daemon's own environment, which the pane environment the gate probes under is
+			// read from (gateEnvironment): the home holding the profile's installed plugin, and
+			// the profile that names it.
+			o.environ = append(os.Environ(), "HOME="+home, "OMP_PROFILE=gate")
 			o.getenv = func(name string) string {
 				if name == "LEGION_OMP_PATH" {
 					return f.path
@@ -891,15 +920,17 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 // The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name,
 // beside the plugin's own: legion-controller is loaded by roles/controller-root.md alone.
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("OMP_PROFILE", "gate")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
 		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
+	// The home and profile of the daemon's own environment, which the gate's pane environment is
+	// read from (gateEnvironment).
+	o.environ = append(os.Environ(), "HOME="+home, "OMP_PROFILE=gate")
 	o.getenv = func(name string) string {
 		if name == "LEGION_OMP_PATH" {
 			return f.path
@@ -926,6 +957,7 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 // resolves under the gate as it will in a pane. The daemon's own value of the variable, which no
 // pane carries, never reaches the probe.
 func TestTheGateProbesWithTheProviderKeysAPaneGets(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "GEMINI_API_KEY", Secret: "GEMINI_API_KEY_TESTS"}}
 	stub := t.TempDir()
@@ -940,15 +972,17 @@ esac
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("OMP_PROFILE", "gate")
-	t.Setenv("PATH", stub+":"+os.Getenv("PATH"))
-	t.Setenv("GEMINI_API_KEY", "the-daemons-own")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
 		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
+	// The daemon's own environment: the home and profile the gate's pane environment is read
+	// from, the PATH the key's `secrets` is found on (config.MaterializeProviderKeys), and the
+	// daemon's own value of the key, which the pane environment drops and the probe below must
+	// not see.
+	o.environ = append(os.Environ(), "HOME="+home, "OMP_PROFILE=gate",
+		"PATH="+stub+":"+os.Getenv("PATH"), "GEMINI_API_KEY=the-daemons-own")
 	o.getenv = func(name string) string {
 		if name == "LEGION_OMP_PATH" {
 			return f.path

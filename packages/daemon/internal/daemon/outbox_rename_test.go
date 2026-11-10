@@ -198,8 +198,11 @@ func (g *renameGitHub) assertAddressed(t *testing.T, app appauth.AppRole, repo s
 // with no pair configured the same record is minted for and addressed at sjawhar/legion, as it
 // always was.
 func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range transferStates {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			merges := 0
 			var mu sync.Mutex
 			github := newRenameGitHub(t, func(_ *http.Request, body string) string {
@@ -211,7 +214,6 @@ func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHub
 				}
 				return pullJSON("OPEN", "ready-head", "CLEAN")
 			})
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedTransferredREADY(t, pool, records)
 			runner := renameOutbox(t, pool, records, github.url, tc.served, tc.renames)
@@ -233,8 +235,11 @@ func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHub
 // A disarm of the same tree's pull request reads and writes the same repository: readyMerge and
 // autoMergeDisable share the one client (graphQL), so both follow the transfer together.
 func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range transferStates {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			var mu sync.Mutex
 			disables := 0
 			github := newRenameGitHub(t, func(_ *http.Request, body string) string {
@@ -246,7 +251,6 @@ func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositor
 				}
 				return armedPullJSON("other-head", disables == 0)
 			})
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedTransferredREADY(t, pool, records)
 			runner := renameOutbox(t, pool, records, github.url, tc.served, tc.renames)
@@ -285,6 +289,7 @@ func (t identityTokens) Token(ctx context.Context, role appauth.AppRole, repo gh
 // (adoptIdentity), hand it the recorded repository and leave the owner to it. With no pair
 // configured the same record is minted for sjawhar, as it always was.
 func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwnerGitHubServes(t *testing.T) {
+	t.Parallel()
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	for _, tc := range transferStates {
 		t.Run(tc.name, func(t *testing.T) {
@@ -316,6 +321,7 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 // branch created under the name the repository moved away from is created nowhere and every
 // role of the tree would push to a branch that does not exist.
 func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"}
 	for _, tc := range transferStates {

@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
@@ -81,7 +80,7 @@ func (r *startMidRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tra
 func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *testing.T) {
 	ctx := context.Background()
 	dsn := testpg.Clone(t, "legion_record_test")
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the cloned database: %v", err)
 	}

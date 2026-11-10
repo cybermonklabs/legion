@@ -221,14 +221,21 @@ func idleRigSessionFile(issue, role string) string {
 // argv>`; this stand-in is that whole process, Oh My Pi included: it speaks the worker stream's
 // frames, registers with the daemon, reports ready, claims its role on the Envoy listener, and
 // records every message it is given.
-func idleRigLegionTool(t *testing.T, dir string) string {
+//
+// The script exports the rig it serves (idleRigURLVariable, rig) into that child's own
+// environment, which is where the role process and this binary's TestMain both read it: the
+// launcher starts the child with this process's environment merged under the generation's own
+// (manager.start), so naming it here reaches the child without the test process, which every
+// other test of the package shares, holding it.
+func idleRigLegionTool(t *testing.T, dir, rig string) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "legion")
-	script := "#!/bin/sh\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
+	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rig) + "\nexport " + idleRigURLVariable +
+		"\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
 		"-test.timeout=0 -test.count=1 \"$@\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the rig's legion stand-in: %v", err)

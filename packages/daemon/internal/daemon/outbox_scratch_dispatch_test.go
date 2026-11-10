@@ -21,7 +21,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
@@ -30,6 +29,7 @@ import (
 )
 
 func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -83,6 +83,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 // so the row run again after a crash before its finish finds its own marker and posts nothing,
 // and the issue holds exactly one message.
 func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -129,112 +130,15 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 	if !truncated || strings.Contains(cut, record.MessageMarker(id)) {
 		t.Fatalf("the message.created event carries %d characters (truncated=%v), want a cut body with no marker in it", len(cut), truncated)
 	}
-}
 
-// A post Dispatch refuses the same way on every attempt — one block of the body over Dispatch's
-// own block bound — is no retry's to repair. The row finishes and its issue's architect is told
-// Dispatch's own refusal, rather than the row climbing its backoff for ever and telling nobody.
-func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDispatch(t *testing.T) {
-	baseURL, token := startScratchDispatch(t)
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := createScratchDispatchIssue(t, baseURL)
-	now := time.Now().UTC()
-	over := record.MessagePost{Body: "READY #42 at head for " + issue + "\n\n" + strings.Repeat("x", 32001)}
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, over, now))
-	runner := &outbox{
-		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
-		now: func() time.Time { return now },
-	}
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run the outbox: %v", err)
-	}
-
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
-	if err != nil {
-		t.Fatalf("read real Dispatch messages: %v", err)
-	}
-	if len(bodies) != 0 {
-		t.Fatalf("Dispatch messages = %#v, want the refused post on no issue", bodies)
-	}
-	var kind string
-	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
-		t.Fatalf("read the row left behind: %v", err)
-	}
-	if kind != string(record.OutboxKindNotice) {
-		t.Fatalf("the one row left is a %s row, want the refused post finished and its architect's notice in its place", kind)
-	}
-	var notice record.Notice
-	if err := json.Unmarshal(payload, &notice); err != nil {
-		t.Fatalf("decode the notice: %v", err)
-	}
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, issue) || !strings.Contains(notice.Reason, "CAP_EXCEEDED") ||
-		!strings.Contains(notice.Reason, "READY #42 at head for "+issue) {
-		t.Fatalf("the notice = %+v, want message-refused to the architect naming %s, the message's first line and Dispatch's refusal", notice, issue)
-	}
-}
-
-// A done write posts its reason on the issue before it writes the status, and the reason here is
-// one block over Dispatch's own block bound, which Dispatch refuses on every attempt. Against the
-// real server: no message is on the issue, the status is set all the same, and the issue's
-// architect is told what was refused and that the status stands. Without that, the daemon's
-// record would read done while the Dispatch issue kept the status it had, and nobody would know.
-func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDispatch(t *testing.T) {
-	baseURL, token := startScratchDispatch(t)
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := createScratchDispatchIssue(t, baseURL)
-	client := dispatch.New(baseURL, token)
-	before, err := client.GetIssue(context.Background(), issue)
-	if err != nil {
-		t.Fatalf("read the scratch issue: %v", err)
-	}
-	now := time.Now().UTC()
-	reason := "Closed by its architect before its first phase: " + strings.Repeat("x", 32001)
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue,
-		record.StatusWrite{ObservedStatus: before.Status, Status: "done", Reason: reason}, now))
-	runner := &outbox{
-		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
-		now: func() time.Time { return now },
-	}
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run the outbox: %v", err)
-	}
-
-	bodies, err := client.MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
-	if err != nil {
-		t.Fatalf("read real Dispatch messages: %v", err)
-	}
-	if len(bodies) != 0 {
-		t.Fatalf("Dispatch messages = %#v, want the refused reason on no issue", bodies)
-	}
-	after, err := client.GetIssue(context.Background(), issue)
-	if err != nil {
-		t.Fatalf("read the scratch issue after the run: %v", err)
-	}
-	if after.Status != "done" {
-		t.Fatalf("the issue stands at %q, want done written though its reason was refused", after.Status)
-	}
-	var kind string
-	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
-		t.Fatalf("read the row left behind: %v", err)
-	}
-	if kind != string(record.OutboxKindNotice) {
-		t.Fatalf("the one row left is a %s row, want the status row finished and its architect's notice in its place", kind)
-	}
-	var notice record.Notice
-	if err := json.Unmarshal(payload, &notice); err != nil {
-		t.Fatalf("decode the notice: %v", err)
-	}
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, issue) || !strings.Contains(notice.Reason, "CAP_EXCEEDED") ||
-		!strings.Contains(notice.Reason, "The status done was set on the issue all the same") {
-		t.Fatalf("the notice = %+v, want message-refused to the architect naming %s, Dispatch's refusal and the status it set", notice, issue)
+	// The other side of that bound, read from the server rather than from a hand-built error: a
+	// block one character over it is refused 400 CAP_EXCEEDED, which is what the runner reads as
+	// a refusal no retry repairs (dispatch.PermanentRefusal) and what the refusals outbox_test.go
+	// builds by hand stand on.
+	refused := dispatch.New(baseURL, token).PostMessage(context.Background(), issue, strings.Repeat("x", 32001))
+	refusal, permanent := dispatch.PermanentRefusal(refused)
+	if !permanent || refusal.Status != http.StatusBadRequest || refusal.Code != "CAP_EXCEEDED" {
+		t.Fatalf("Dispatch answered a block one character over its bound with %v, want the 400 CAP_EXCEEDED a retry cannot repair", refused)
 	}
 }
 
@@ -247,7 +151,7 @@ func messageCreatedEvent(t *testing.T, baseURL, token, issue string) (string, bo
 		t.Fatalf("create the events request: %v", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := (&http.Client{Timeout: serverReplyTimeout}).Do(request)
 	if err != nil {
 		t.Fatalf("GET the issue's events: %v", err)
 	}
@@ -290,10 +194,9 @@ func startScratchDispatch(t *testing.T) (string, string) {
 }
 
 // startScratchDispatchWithNATS is startScratchDispatch with its events turned on: the same server,
-// publishing every issue event on natsURL, which is the NATS server the test holds
+// publishing every issue event on natsURL, which is the NATS server the test started
 // (testnats.URL). Dispatch reconciles the ENVOY_NOTIFICATIONS stream there on its first
-// connection, which it makes in the background once it starts, so the caller creates none — and
-// must take the NATS server before this call, since testnats.URL empties it of every stream.
+// connection, which it makes in the background once it starts, so the caller creates none.
 func startScratchDispatchWithNATS(t *testing.T, natsURL string) (string, string) {
 	t.Helper()
 	if natsURL == "" {
@@ -337,8 +240,10 @@ type scratchDispatch struct {
 	output   *syncBuffer
 }
 
-// startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
-// Postgres (testdb.Database) and starts the cmd/dispatch this process built.
+// startScratchDispatchOn gives the server an empty scratch database of its own on the test DSN's
+// Postgres (testdb.Database) and starts the cmd/dispatch this process built. The database stays
+// empty rather than being a clone of the package's template: Dispatch migrates its own schema
+// into it at startup, and the template this package migrates carries the daemon's.
 func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scratchDispatch {
 	t.Helper()
 	database := testdb.Database(t, "dispatch_scratch_test")
@@ -495,7 +400,7 @@ func (d *scratchDispatch) stop() {
 		if err != nil {
 			d.t.Errorf("scratch Dispatch stopped: %v\n%s", err, d.output.String())
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(d.t)):
 		_ = command.Process.Kill()
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
@@ -504,7 +409,7 @@ func (d *scratchDispatch) stop() {
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 	t.Helper()
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: testwait.Bounded(t, serverReplyTimeout, time.Second)}
 	request := func(path string, body any) *http.Response {
 		t.Helper()
 		encoded, err := json.Marshal(body)

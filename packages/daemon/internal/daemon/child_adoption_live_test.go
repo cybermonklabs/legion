@@ -138,6 +138,7 @@ func newChildAdoptionLive(t *testing.T) *childAdoptionLive {
 	r.seedTrees()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = childAdoptionGitHub(t)
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
 	r.architect = r.registerArchitect()

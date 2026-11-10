@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -36,6 +36,7 @@ import (
 // This fake serves none of them, so every one of those reads answers not-found — an issue
 // Dispatch no longer serves is no error, and the tick is applied all the same.
 func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -64,6 +65,7 @@ func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
 // Nothing waiting is almost every turn, and it reads nothing from Dispatch at all: the mirror
 // alone answers, and the tick applied is the tick as it always was.
 func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -86,6 +88,7 @@ func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T)
 // blocker, the mirror handler writes what Dispatch answered ahead of the handlers that judge in
 // the same transaction, and the root is admitted on this very tick.
 func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{issues: map[string]dispatch.Issue{
 		"EXT-1": {Key: "EXT-1", Status: "done", LastSeq: 7},
@@ -113,6 +116,7 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 // only wake a tree waiting on a refused root claim gets, so the turn logs the failure and applies
 // the tick with what it has — here nothing, which leaves the blocked root exactly where it was.
 func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	registerTickController(t, pool)
 	client := &tickDispatch{err: errors.New("dispatch is unreachable")}
@@ -135,8 +139,10 @@ func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T)
 // one at a time, and above it the project is listed once instead — one request rather than the
 // twenty-six single reads the waiting set would otherwise ask for.
 func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	t.Run("at the bound, one read per key", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{}
 		w := tickRuntime(t, pool, client)
 		seedBlockedRoots(t, pool, blockerReadFanout)
@@ -148,7 +154,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		}
 	})
 	t.Run("above the bound, one listing", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "done", LastSeq: 7})
@@ -171,11 +177,27 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 	})
 }
 
+// The bound between the turn's two shapes of re-read: up to blockerReadFanout keys are read one
+// at a time, and above it the project is listed once instead, so the fan-out a waiting set can
+// ask for is bounded on both sides of the choice. A turn with nothing waiting reads neither.
+func TestWhenTheTurnListsTheProjectRatherThanReadingEachBlocker(t *testing.T) {
+	t.Parallel()
+	for _, keys := range []int{0, 1, blockerReadFanout - 1, blockerReadFanout, blockerReadFanout + 1, 500} {
+		t.Run(fmt.Sprintf("%d blockers", keys), func(t *testing.T) {
+			if got := readsAsListing(keys); got != (keys > blockerReadFanout) {
+				t.Fatalf("readsAsListing(%d) = %t, want %t: the bound is %d", keys, got, keys > blockerReadFanout, blockerReadFanout)
+			}
+		})
+	}
+}
+
 // The turn's re-read carries the claim Dispatch shows on each issue it reads, by a single read
 // and by the listing alike, and the mirror writes it.
 func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	t.Run("a single read", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
 			"EXT-1": {Key: "EXT-1", Status: "in_progress", LastSeq: 7, Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
 		}}
@@ -191,7 +213,7 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 		}
 	})
 	t.Run("the listing", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})
@@ -363,7 +385,7 @@ func seedTickMirror(t *testing.T, pool *pgxpool.Pool, key, status string, seq in
 // project token (api/controller.go). Without one, a tick's wake is queued for nobody.
 func registerTickController(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	st, err := store.Open(context.Background(), pool.Config().ConnString())
+	st, err := testpg.OpenStore(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

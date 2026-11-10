@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -82,9 +83,8 @@ const idleRigTick = 250 * time.Millisecond
 //   - the scripted Oh My Pi: packages/daemon/internal/capabilities/image_test.go's fakeOmp, grown
 //     a registration, a role claim and a record of every delivery (idle_rig_agent_test.go);
 //   - Postgres through internal/testpg's database (isolatedOutboxPool) and NATS through
-//     internal/testnats. This pod has no Docker, so testnats serves the nats-server
-//     LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name rather than a container, which is
-//     what that package does when both are set;
+//     internal/testnats, which runs a nats-server with JetStream in this test process rather
+//     than a container, so the rig needs no container runtime for it;
 //   - the real Envoy listener, built from packages/envoy/cmd/listener and run as its own process
 //     (idle_rig_listener_test.go).
 type idleWakeRig struct {
@@ -187,7 +187,10 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	t.Setenv(idleRigURLVariable, rig.agents.url)
+	// The rig's URL reaches each role child through the `legion` stand-in's own script
+	// (idleRigLegionTool), not through this process's environment: a test that set it here could
+	// not run beside its neighbours, since Go's testing package refuses t.Setenv under
+	// t.Parallel.
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -350,7 +353,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 		r.t.Fatal(err)
 	}
 	ctx := context.Background()
-	st, err := store.Open(ctx, r.cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, r.cfg.PostgresDSN)
 	if err != nil {
 		r.t.Fatalf("open the store: %v", err)
 	}
@@ -534,7 +537,7 @@ func (r *idleWakeRig) stopDaemon() {
 		if err != nil {
 			r.t.Errorf("run: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(arrivalBound(r.t)):
 		r.t.Error("the daemon did not stop")
 	}
 }
@@ -590,7 +593,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.Mapped = func() []ghrepo.Repository { return nil }
-	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
+	opts.Tools.Legion = idleRigLegionTool(r.t, tools, r.agents.url)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL

@@ -29,7 +29,9 @@ var daemonTools = []string{"git", "jj", "gh"}
 func toolEnv(tool string) string { return "LEGION_" + strings.ToUpper(tool) + "_PATH" }
 
 // resolveTools resolves each daemon tool (resolveTool). It names every missing tool with its
-// override in one error, and refuses a jj older than the oldest the daemon runs (checkJJVersion).
+// override in one error, and refuses a jj older than the oldest the daemon runs (checkJJVersion),
+// which it runs under this process's own environment: lookupEnv says where the tools are, and the
+// daemon starts its children with the environment it was started with.
 func resolveTools(lookupEnv func(string) (string, bool)) (map[string]string, error) {
 	tools := map[string]string{}
 	var missing []string
@@ -47,7 +49,7 @@ func resolveTools(lookupEnv func(string) (string, bool)) (map[string]string, err
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required daemon tools: %s", strings.Join(missing, ", "))
 	}
-	if err := checkJJVersion(tools["jj"]); err != nil {
+	if err := checkJJVersion(tools["jj"], os.Environ()); err != nil {
 		return nil, err
 	}
 	return tools, nil
@@ -124,14 +126,16 @@ const jjVersionTimeout = 30 * time.Second
 var jjVersion = regexp.MustCompile(`^jj (\d+)\.(\d+)\.\d+`)
 
 // checkJJVersion runs jj --version and refuses a jj older than minimumJJ, or one whose version it
-// cannot read, naming the path, what it found and LEGION_JJ_PATH.
-func checkJJVersion(jj string) error {
+// cannot read, naming the path, what it found and LEGION_JJ_PATH. environ is the environment of
+// the daemon this check runs for, which jj is started with less the raw NATS seeds the daemon
+// holds, as every command the daemon starts is (runtime.WithoutNATSSeeds).
+func checkJJVersion(jj string, environ []string) error {
 	override := toolEnv("jj")
 	floor := fmt.Sprintf("%d.%d", minimumJJ[0], minimumJJ[1])
 	ctx, cancel := context.WithTimeout(context.Background(), jjVersionTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, jj, "--version")
-	command.Env = runtime.WithoutNATSSeeds(os.Environ())
+	command.Env = runtime.WithoutNATSSeeds(environ)
 	command.WaitDelay = time.Second
 	output, err := command.Output()
 	if err != nil {

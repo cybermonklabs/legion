@@ -22,8 +22,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -85,6 +85,7 @@ func resumesOf(rt *fake.Runtime, token claim.Token) []fake.Call {
 // rather than retrying the failed claim with fresh budgets (RequestRetry), so the owner is launched
 // exactly the budget's times however many ticks follow, and stays failed for the boot report.
 func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -124,14 +125,19 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 // at the stop timeout cuts off what the turn was doing. The linger's own expiry, which closes the
 // tree whatever its claims are doing, bounds the wait.
 func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	until := time.Now().Add(time.Hour)
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}
 	putOutboxIssue(t, pool, records, root)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	// Real timers, so the held suspension's stop timeout runs as it does in a daemon.
-	sup.deps.Clock = supervise.RealClock{}
+	// The machines' clock is held, and the stop timeout is a wait no other timer of this test is
+	// armed for, so firing it fires a held suspension's deadline and nothing else — and the
+	// daemon's own suspension of a lingering tree arms none, which is the point below.
+	const stopTimeout = 7 * time.Second
+	clock := &heldClock{at: time.Now().UTC()}
+	sup.deps.Clock, sup.deps.Timeouts.Stop = clock, stopTimeout
 	architect := launchedClaim(t, sup, root.Key, root.Key, claim.RoleArchitect)
 	machine, _ := sup.Machine(architect)
 	ctx := context.Background()
@@ -146,7 +152,13 @@ func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the linger's suspend: %v", err)
 	}
-	time.Sleep(3 * sup.deps.Timeouts.Stop)
+	// Three stop timeouts into the turn, with every timer armed for one fired: the suspension
+	// waits for the turn, bounded by the linger's expiry rather than by a timeout, so there is
+	// nothing armed to fire and the architect is left in its turn.
+	clock.advance(3 * stopTimeout)
+	if fired := clock.fire(stopTimeout); fired != 0 {
+		t.Fatalf("firing the stop timeout ran %d timers, want none: the linger's suspension waits for the turn to end", fired)
+	}
 	if got := machine.Claim().State; got != supervise.StateWorking || len(rt.CallsOf("Suspend")) != 0 {
 		t.Fatalf("three stop timeouts into the turn the architect is %s after %d suspensions, want its turn still running",
 			got, len(rt.CallsOf("Suspend")))
@@ -175,6 +187,7 @@ func operatorSuspend(t *testing.T, sup *supervisor, token claim.Token) {
 // Stage 4b's child-reentered control reads), and once the operator resumes the claim, its task is
 // given.
 func TestAStartWaitsForTheOperatorToResumeAClaimItSuspended(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -239,6 +252,7 @@ func suspendedBefore0038(t *testing.T, sup *supervisor, tree, issue string, role
 // rows are the daemon's own (a lingering tree, a parked child, a re-entry's interrupted worker), so
 // holding them for the operator would leave the trees main ran again parked.
 func TestAStartResumesAClaimSuspendedBeforeItsSourceWasRecorded(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -267,6 +281,7 @@ func TestAStartResumesAClaimSuspendedBeforeItsSourceWasRecorded(t *testing.T) {
 // 0038 recorded who suspended it is relaunched, as main relaunched it; one the operator suspended
 // stays suspended until the operator resumes it.
 func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		by      supervise.SuspendSource
@@ -365,6 +380,7 @@ func readmissionRig(t *testing.T, suspend func(*supervisor, claim.Token)) (rt *f
 // root's architect, and the worker of the child's own phase, each relaunch their sessions, rather
 // than the tree inheriting claims that never run again.
 func TestReadmissionResumesTheClaimsTheTreesCloseSuspended(t *testing.T) {
+	t.Parallel()
 	rt, sup, architect, implementer, readmit, _ := readmissionRig(t, func(sup *supervisor, token claim.Token) {
 		machine, _ := sup.Machine(token)
 		if err := machine.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "the tree of LEGION-208 lingers", By: supervise.SuspendedByDaemon}); err != nil {
@@ -387,6 +403,7 @@ func TestReadmissionResumesTheClaimsTheTreesCloseSuspended(t *testing.T) {
 // so the architect's own launch is read out of the calls by its claim rather than counted
 // against their number.
 func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T) {
+	t.Parallel()
 	rootArchitect := mustClaimToken(t, "LEGION-208", claim.RoleArchitect)
 	var rt *fake.Runtime
 	var sup *supervisor
@@ -445,6 +462,7 @@ func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T)
 // operator resumes each claim, and then go on, the child's worker given the task to carry its
 // phase on.
 func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T) {
+	t.Parallel()
 	rt, sup, architect, implementer, readmit, tick := readmissionRig(t, func(sup *supervisor, token claim.Token) { operatorSuspend(t, sup, token) })
 	readmit()
 	for _, token := range []claim.Token{architect, implementer} {
@@ -474,7 +492,7 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -519,6 +537,7 @@ func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, clai
 // else will, since the phase's start already ran before the restart. The resumed worker relaunches
 // its own session and is told to carry its phase on.
 func TestABootResumesASuspendedClaimThatOwnsItsIssuesPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -540,6 +559,7 @@ func TestABootResumesASuspendedClaimThatOwnsItsIssuesPhase(t *testing.T) {
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 
 	startDaemon(t, cfg, o)
 

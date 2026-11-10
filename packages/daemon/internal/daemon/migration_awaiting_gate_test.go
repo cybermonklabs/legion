@@ -26,6 +26,7 @@ import (
 // So the member test leaves the root's own row out, and only a member below it says the gate
 // opened.
 func TestTheMigrationLeavesTheGateOfARootWaitingOnItsFirstApprovalUnopened(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()
@@ -65,6 +66,7 @@ func TestTheMigrationLeavesTheGateOfARootWaitingOnItsFirstApprovalUnopened(t *te
 // A member below the root in a phase the workflow reaches only after the gate opened still says
 // the gate opened: the clause the fix narrows keeps the case it exists for.
 func TestTheMigrationReadsAMemberInAPhaseAsAGateThatOpened(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()

@@ -54,6 +54,7 @@ func (n *fixtureName) UnmarshalJSON(data []byte) error {
 // on one side and not the other fails one of the two. Each run is decoded as githubrest decodes
 // GitHub's check-runs answer.
 func TestThePassSettlesCheckRunsAsEnvoysListenerDoes(t *testing.T) {
+	t.Parallel()
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "checks-settlement", "listener-rules.json"))
 	if err != nil {
 		t.Fatalf("read the shared fixture: %v", err)
@@ -233,7 +234,9 @@ func lateSettlementChangesOnlyTheFence(t *testing.T, pool *pgxpool.Pool, w *work
 // and the listener's own settlement of the same runs arriving afterwards changes nothing but the
 // fence.
 func TestThePassSettlesAHeadWhoseSettlementWasLost(t *testing.T) {
+	t.Parallel()
 	long := time.Now().Add(-time.Hour)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name       string
 		conclusion string
@@ -245,7 +248,7 @@ func TestThePassSettlesAHeadWhoseSettlementWasLost(t *testing.T) {
 		{"a green check lets the tester's verdict move it", "success", phase.Testing, "green", []string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedLostSettlement(t, pool, "pr-checks-result")
 			runs := []string{
 				checkRunJSON(5, "pr-checks-result", "success", long.Add(-time.Hour), "15368"),
@@ -294,7 +297,9 @@ func TestThePassSettlesAHeadWhoseSettlementWasLost(t *testing.T) {
 // the pass waits as long: a run still going, or a newest run that completed less than an interval
 // ago, applies nothing, and the issue keeps no verdict until a later pass or the listener settles it.
 func TestThePassAppliesNoSettlementWhileAChecksRunIsGoingOrJustCompleted(t *testing.T) {
+	t.Parallel()
 	long := time.Now().Add(-time.Hour)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		runs []string
@@ -305,7 +310,7 @@ func TestThePassAppliesNoSettlementWhileAChecksRunIsGoingOrJustCompleted(t *test
 		{"no run at all", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedLostSettlement(t, pool, "pr-checks-result")
 			var reads pathReads
 			w := requiredRuntime(pool, settlementStandIn(t, []string{"pr-checks-result"}, tc.runs, &reads).URL, quietLogger())
@@ -326,6 +331,7 @@ func TestThePassAppliesNoSettlementWhileAChecksRunIsGoingOrJustCompleted(t *test
 // settlement, so another App's failing tester run on a base that requires tester makes nothing red,
 // and the review App's own passing one stands.
 func TestThePassDropsTesterAndArchitectChecksRunsFromAnotherApp(t *testing.T) {
+	t.Parallel()
 	long := time.Now().Add(-time.Hour)
 	pool := isolatedOutboxPool(t)
 	seedLostSettlement(t, pool, "pr-checks-result", "tester")

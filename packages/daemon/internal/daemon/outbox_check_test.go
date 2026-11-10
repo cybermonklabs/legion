@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,7 @@ func sameCheckFact(got, want intake.Fact, check record.ProductionCheck) bool {
 // without acting. The delivery names no phase, so nothing drops it for the phase the issue has left,
 // and the row's id is its delivery's.
 func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -138,7 +140,9 @@ func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing
 // bound, a report), a later look started, or the check closed. The implementer stays as it was, and
 // no start is recorded against it.
 func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
+	t.Parallel()
 	closed := time.Now()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		check func(record.ProductionCheck) record.ProductionCheck
@@ -151,7 +155,7 @@ func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			root := checkRoot()
 			putOutboxIssue(t, pool, records, root)
@@ -175,6 +179,7 @@ func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
 // row would start would resume the implementer and relaunch the Sandbox under the run. The row's
 // check is still open at its look, so the check alone would let it start.
 func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -201,6 +206,7 @@ func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
 // ends the look as one nobody reported, with the hold as its cause, of the check the row's issue
 // holds.
 func TestACheckStartOnAnOperatorHeldImplementerEndsTheLook(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -230,6 +236,7 @@ func TestACheckStartOnAnOperatorHeldImplementerEndsTheLook(t *testing.T) {
 // implementer stays as it was, with no start recorded against it, since the look the row would
 // start is the first check's, ended long before, and the second's look 1 has a start row of its own.
 func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -277,6 +284,7 @@ func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
 // and the look, so the row run again is a duplicate, and the bound's under the row's, so a bound
 // the workflow deferred as a new row applies afresh.
 func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -319,48 +327,28 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 	}
 }
 
-// A check_look row of no open check — none recorded, or one closed since — and one of a check a
-// later merge replaced (its OpenedAt another than the issue's check's) each finish without acting:
-// the look they would end is not the issue's check's.
-func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		recorded bool
-		closed   bool
-		replaced bool
-	}{
-		{name: "no check"},
-		{name: "a closed check", recorded: true, closed: true},
-		{name: "a replaced check", recorded: true, replaced: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			root := checkRoot()
-			putOutboxIssue(t, pool, records, root)
-			check := openCheck(root, "a1b2c3d4")
-			if tc.closed {
-				closed := time.Now().UTC().Truncate(time.Microsecond)
-				check.LookOpen, check.ClosedAt, check.Outcome = false, &closed, record.CheckRecorded
-			}
-			if tc.recorded {
-				putProductionCheck(t, pool, records, check)
-			}
-			named := check.OpenedAt
-			if tc.replaced {
-				named = named.Add(-24 * time.Hour)
-			}
-			facts := &outboxFactHandler{}
-			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
-			row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: named}, time.Now())
-			row.ID = 61
-			if err := runner.execute(context.Background(), row); err != nil {
-				t.Fatalf("check_look row = %v, want finished without acting", err)
-			}
-			if got := facts.facts(); len(got) != 0 {
-				t.Fatalf("facts applied = %+v, want none", got)
-			}
-		})
+// A check_look row whose check is not the issue's open one finishes without acting: the look it
+// would end is not that check's. Which readings leave a row nothing to end — no check recorded,
+// one closed since, one a later merge replaced — is TestWhyACheckRowFindsNoCheckToActOn's; that
+// such a row applies no fact is here, on the replaced check, the one reading a row can meet with
+// an open check in front of it.
+func TestACheckLookRowOfAReplacedCheckAppliesNothing(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	check := openCheck(root, "a1b2c3d4")
+	putProductionCheck(t, pool, records, check)
+	facts := &outboxFactHandler{}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
+	row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt.Add(-24 * time.Hour)}, time.Now())
+	row.ID = 61
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("check_look row = %v, want finished without acting", err)
+	}
+	if got := facts.facts(); len(got) != 0 {
+		t.Fatalf("facts applied = %+v, want none", got)
 	}
 }
 
@@ -371,6 +359,7 @@ func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
 // row applies under must tell the two checks apart. Otherwise a silent implementer keeps its pod
 // for the whole of the rerun's check, the cost the look bound exists to remove.
 func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -413,7 +402,9 @@ func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
 // member's production check, bounded at a time the record holds) runs again at that moment rather
 // than on its backoff; a moment already past is the backoff's.
 func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		at   time.Time
@@ -423,7 +414,7 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 		{name: "a moment past", at: now.Add(-time.Minute), want: now.Add(time.Second)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 1}, now))
 			waiting := &outboxFactHandler{err: wait.Until(tc.at, "tree LEGION-208 lingers past its deadline; member LEGION-209's production check is open")}
@@ -445,12 +436,75 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 	}
 }
 
+// The moment a failure names for its row to run again: a wait that knows when it ends
+// (wait.Until) names its own, in UTC, while that moment is still ahead; one already past names
+// nothing, so the row takes its backoff; and a failure that is no such wait names nothing
+// either, however long it has waited.
+func TestTheMomentAFailureNamesForItsRowToRunAgain(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	bound := now.Add(3 * time.Hour).In(time.FixedZone("CET", 3600))
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  time.Time
+	}{
+		{name: "a moment ahead", cause: wait.Until(now.Add(3*time.Hour), "member LEGION-209's production check is open"), want: now.Add(3 * time.Hour)},
+		{name: "a moment ahead in another zone", cause: wait.Until(bound, "member LEGION-209's production check is open"), want: now.Add(3 * time.Hour)},
+		{name: "a moment just past", cause: wait.Until(now.Add(-time.Minute), "member LEGION-209's production check is open")},
+		{name: "the moment now", cause: wait.Until(now, "member LEGION-209's production check is open")},
+		{name: "a wait that names no moment", cause: wait.Errorf("the architect's pod is coming back")},
+		{name: "an ordinary failure", cause: errors.New("Dispatch is unreachable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at, waits := answersTheWait(tc.cause, now)
+			if waits != !tc.want.IsZero() {
+				t.Fatalf("answersTheWait(%v) names a moment = %t, want %t", tc.cause, waits, !tc.want.IsZero())
+			}
+			if waits && (!at.Equal(tc.want) || at.Location() != time.UTC) {
+				t.Fatalf("the row runs again at %s, want %s in UTC", at, tc.want)
+			}
+		})
+	}
+}
+
+// Why a row of a production check finds no check to act on, which both the look's bound row and
+// the check start read first: no check is recorded for the issue, the check closed since, or the
+// one the row names was replaced by a later merge's. A check open at the moment the row names is
+// the issue's own, and the row goes on.
+func TestWhyACheckRowFindsNoCheckToActOn(t *testing.T) {
+	t.Parallel()
+	check := openCheck(checkRoot(), "a1b2c3d4")
+	closed := check
+	ended := check.OpenedAt.Add(time.Hour)
+	closed.LookOpen, closed.ClosedAt, closed.Outcome = false, &ended, record.CheckRecorded
+	for _, tc := range []struct {
+		name     string
+		check    *record.ProductionCheck
+		openedAt time.Time
+		want     string
+	}{
+		{name: "no check recorded", openedAt: check.OpenedAt, want: "the issue has no production check"},
+		{name: "a check closed since", check: &closed, openedAt: check.OpenedAt, want: "the check closed as " + string(record.CheckRecorded)},
+		{name: "a check a later merge replaced", check: &check, openedAt: check.OpenedAt.Add(-24 * time.Hour),
+			want: "the check it names was replaced by the one opened " + check.OpenedAt.UTC().Format(time.RFC3339)},
+		{name: "the issue's own open check", check: &check, openedAt: check.OpenedAt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := checkRowStale(tc.check, tc.openedAt); got != tc.want {
+				t.Fatalf("checkRowStale = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A check_wake row applies the wake it carries — the look it was named at, the check instance it
 // names and its reason — through the workflow's handlers. The same row run again is a duplicate
 // and applies nothing; the row the workflow queues again while the issue runs is a row of its
 // own, so its apply is fresh rather than this one's duplicate, as a deferred bound's is
 // (checkBound).
 func TestACheckWakeRowAppliesItsWakeAndARequeuedRowAppliesAfresh(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -492,6 +546,7 @@ func TestACheckWakeRowAppliesItsWakeAndARequeuedRowAppliesAfresh(t *testing.T) {
 // row names is the check's, with no look open, so the next look opens with a start row of its
 // own, woken by the row's reason. A row of a check a later merge replaced starts nothing.
 func TestACheckWakeRowStartsTheNextLookAndAReplacedChecksStartsNone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -534,6 +589,7 @@ func TestACheckWakeRowStartsTheNextLookAndAReplacedChecksStartsNone(t *testing.T
 // compared against an open production check, so the boot reads neither its own revision nor
 // Dispatch's.
 func TestTheBootFactCarriesTheBootAlone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	facts := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", handlers: []intake.Handler{facts}, log: quietLogger()}

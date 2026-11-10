@@ -19,8 +19,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -52,6 +52,10 @@ func stoppedWorkerDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides,
 	// than reach the runtime, and the launch the way back reads for would never be asked for.
 	rt.InPod = true
 	o := fakeRuntime(rt, &built{})
+	// The daemon these tests boot names a project, so its boot resolves the daemon's tools, and
+	// the first gh on a Legion pod's PATH is the role wrapper, which the resolve refuses by rule.
+	// workflowEnviron names the real one, as every other workflowConfig boot of the package does.
+	o.environ = workflowEnviron(t)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.controllerFirstWake = stopTickInterval
 	return pool, cfg, o, rt
@@ -213,6 +217,7 @@ func outOfTheLine(t *testing.T, d *daemon, issue, when string) {
 // with nobody in it, until a start of the workflow's own — the held phase's retry, the tree's
 // re-admission — or a person moves it. TestAStopEndsTheOwedStartOfAWaitingIssue drives that retry.
 func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -286,7 +291,7 @@ func workingPane(token claim.Token) *runtime.Locator {
 func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim, owed record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -370,6 +375,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 // line, takes the free slot, and its tester is launched — so what the stop ended is one start, not
 // the issue's ability to run again.
 func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)
@@ -452,6 +458,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 // take it once the test lets it go is the pass this test is about: one pass, with the retired
 // claim and the free slot both in front of it.
 func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)

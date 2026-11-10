@@ -24,6 +24,7 @@ func (r *idleRig) records(t *testing.T) store.PodReleaseRecords {
 // it suspended and the size of the bundle it saved, so a deployment can count what release did
 // without reading the daemon's log.
 func TestAReleaseRecordsItsRolesAndTheBundleItSaved(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -62,6 +63,7 @@ func TestAReleaseRecordsItsRolesAndTheBundleItSaved(t *testing.T) {
 // would charge this release with a role it never touched — and charge a reader of the records
 // for the hours that role's pod was gone twice over.
 func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.releasedArchitect(t)
@@ -83,10 +85,13 @@ func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
 // not: the idle rule reports a hold for every working pod on every tick, and recording those
 // would drown the ones that mean something.
 func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
+	pool, reset := tableDatabase(t)
 
 	t.Run("quiet and held", func(t *testing.T) {
-		rig := newIdleRig(t)
+		reset(t)
+		rig := newIdleRigOn(t, pool)
 		// The session reported background work of its own: the pod is quiet, and the rule keeps it.
 		if _, err := rig.pool.Exec(ctx, `update claims set activity_background = true, activity_kinds = 'async-job'
 			where issue = $1`, rig.issue.Key); err != nil {
@@ -127,7 +132,8 @@ func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 	})
 
 	t.Run("not idle yet", func(t *testing.T) {
-		rig := newIdleRig(t)
+		reset(t)
+		rig := newIdleRigOn(t, pool)
 		if _, err := rig.pool.Exec(ctx, `update claims set updated_at = now(), activity_at = now()
 			where issue = $1`, rig.issue.Key); err != nil {
 			t.Fatalf("bring the pod back to now: %v", err)
@@ -145,6 +151,7 @@ func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 // A release the teardown could not finish keeps the pod, and the reason it read is recorded as a
 // hold in the same vocabulary the tick uses.
 func TestAReleaseThatCouldNotFinishRecordsItsHold(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.rt.bundleErr = errors.New("the launcher is gone")

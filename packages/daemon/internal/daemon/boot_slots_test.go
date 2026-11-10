@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -110,10 +111,11 @@ func deliverableStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // rule, which is exactly what the boot resumes. The resume's task therefore waits, and what the
 // test watches is a durable row rather than a decision the daemon could make again for free.
 func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -191,9 +193,12 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 // so the one every test of the first boot watches Store.Migrate apply.
 const issueSlotsMigration = 20261103183833
 
-// preReleaseStore is a database of this test's own carrying every embedded migration except
+// preReleaseStore is an empty database of this test's own (testdb.Database, not the migrated
+// clone testDSN hands every other test) carrying every embedded migration except
 // issueSlotsMigration, each applied as Store.Migrate applies it — the migration's SQL, the
-// widening of schema_version for a timestamped version, and the version row.
+// widening of schema_version for a timestamped version, and the version row. Its subject is
+// what Store.Migrate does from the schema that precedes this release, so it has to start from a
+// database carrying nothing.
 //
 // It withholds that one migration rather than cutting the series at its version because the two
 // halves of a pre-release store are wanted at once: the schema must take this release's own
@@ -212,7 +217,7 @@ const issueSlotsMigration = 20261103183833
 func preReleaseStore(t *testing.T) *store.Store {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, testdb.Database(t, "legion_first_boot"))
+	st, err := testpg.OpenStore(ctx, testdb.Database(t, "legion_first_boot"))
 	if err != nil {
 		t.Fatalf("open the pre-release store: %v", err)
 	}
@@ -261,6 +266,7 @@ func preReleaseStore(t *testing.T) *store.Store {
 // the root that never ran takes nothing while the count stands at or above the cap, and takes
 // a row at the first pass where the count is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()

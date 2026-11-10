@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -55,7 +55,7 @@ func loggedLines(t *testing.T, logs, text string) []map[string]any {
 // daemon boots, as a registration an earlier boot took leaves the record.
 func recordControllerSession(t *testing.T, cfg config.Config, project, session string) {
 	t.Helper()
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	st, err := testpg.OpenStore(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,9 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 // to start one — once per worker boot timeout, and never about a controller the registry holds
 // alive. The line names the mode.
 func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_controller"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		register bool
@@ -108,7 +110,8 @@ func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 		{"the role has no live holder", true, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			envoy, lookups := envoyRoleRegistry(t, session, tc.alive)
 			cfg.EnvoyURL = envoy.URL
 			project, err := claim.ProjectToken(cfg.Project)
@@ -174,7 +177,9 @@ func checkDaemonModeLine(t *testing.T, line map[string]any) {
 // reader tells a launch in flight or a backoff from a death. A controller that holds the role is
 // not reported, neither the session recorded before its launch registers nor the launch once it has.
 func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_controller"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		// recorded is session registered before this boot, as a launch an earlier boot ran leaves
@@ -192,7 +197,8 @@ func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 		{name: "its launch registered and holds the role", recorded: true, alive: true, register: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			cfg.ControllerLaunch = config.ControllerLaunchDaemon
 			envoy, lookups := envoyRoleRegistry(t, session, tc.alive)
 			cfg.EnvoyURL = envoy.URL
@@ -284,6 +290,7 @@ func (r stalledLaunches) Spawn(ctx context.Context, spec runtime.SpawnSpec) (run
 // The machines' timers never fire here (stillClock), so a short worker boot timeout spaces the line
 // a few sweeps apart and nothing else; one line after the launch began shows the sweep did not wait.
 func TestTheDaemonSaysItsControllerIsNotRegisteredWhileItsLaunchHangs(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	cfg.WorkerBootTimeout = 100 * time.Millisecond

@@ -36,7 +36,9 @@ import (
 // neither does one in a tree that lingers after its root left the workflow, which beginLinger
 // disarms.
 func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
+	t.Parallel()
 	const byHand = "MANUAL_MERGE_REQUIRED: pull request #42 matches a by_hand merge rule; do not auto-arm it"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		seed readyMergeSeed
@@ -49,6 +51,7 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 		{"awaiting its merge at the READY head in a lingering tree", awaitingREADY.with(func(s *readyMergeSeed) { s.lingers = true }), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			var mu sync.Mutex
 			var bearers []string
 			disables := 0
@@ -68,7 +71,6 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 				}
 				_, _ = w.Write([]byte(armedPullJSON("ready-head", disables == 0)))
 			}})
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", tc.seed)
 			runner := mergeRunner(pool, records, api, quietLogger(), time.Now)
@@ -95,6 +97,7 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 // keeping nothing and disabling that legitimate arm. Here the READY commits while GitHub answers
 // the row's read, and the arm it reports is kept.
 func TestAnAutoMergeDisableRowReadsGitHubBeforeTheRecord(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging,
@@ -137,7 +140,9 @@ func TestAnAutoMergeDisableRowReadsGitHubBeforeTheRecord(t *testing.T) {
 // tree that lingers, and a pull request the record holds closed are stale; GitHub's expected-head
 // check guards the head between the row's read and its mutation.
 func TestAREADYMergeRowSubmitsOnlyTheAwaitedREADYHead(t *testing.T) {
+	t.Parallel()
 	const byHand = "MANUAL_MERGE_REQUIRED: pull request #42 matches a by_hand merge rule; do not auto-arm it"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		seed   readyMergeSeed
@@ -151,8 +156,8 @@ func TestAREADYMergeRowSubmitsOnlyTheAwaitedREADYHead(t *testing.T) {
 		{"awaiting its merge on a pull request the record holds closed", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, mergedAnswer)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", tc.seed)
 			runner := mergeRunner(pool, records, github.url, quietLogger(), time.Now)
@@ -180,6 +185,8 @@ func TestAREADYMergeRowSubmitsOnlyTheAwaitedREADYHead(t *testing.T) {
 // a re-push between the read and the mutation is refused by GitHub ("Head branch was modified").
 // Either way the issue stays in awaiting_merge and no merge is recorded.
 func TestAREADYMergeNeverLandsAHeadReplacedAfterTheREADY(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		read   func(int) string
@@ -194,8 +201,8 @@ func TestAREADYMergeNeverLandsAHeadReplacedAfterTheREADY(t *testing.T) {
 		}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, tc.read, refusedAnswer("Head branch was modified. Review and try the merge again."))
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			runner := mergeRunner(pool, records, github.url, quietLogger(), time.Now)
@@ -220,7 +227,9 @@ func TestAREADYMergeNeverLandsAHeadReplacedAfterTheREADY(t *testing.T) {
 // with GitHub's message, and the row ends rather than retrying forever. A transient failure
 // (GitHub's server error) tells nobody and keeps the row on its backoff.
 func TestAPermanentREADYMergeRefusalTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
 	const squash = "Squash merges are not allowed on this repository."
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
 		answer         func(http.ResponseWriter)
@@ -231,8 +240,8 @@ func TestAPermanentREADYMergeRefusalTellsTheArchitectOnce(t *testing.T) {
 		{"a server error", func(w http.ResponseWriter) { http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway) }, 1, 0, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, tc.answer)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now()))
@@ -254,6 +263,7 @@ func TestAPermanentREADYMergeRefusalTellsTheArchitectOnce(t *testing.T) {
 // row stays leased; once its lease expires, the row runs again and leaves exactly one notice and no
 // ready_merge row. Writing the notice first and finishing later would send it twice.
 func TestARetriedPermanentREADYMergeRefusalPostsOneNotice(t *testing.T) {
+	t.Parallel()
 	github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, refusedAnswer("Squash merges are not allowed on this repository."))
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -283,6 +293,7 @@ func TestARetriedPermanentREADYMergeRefusalPostsOneNotice(t *testing.T) {
 // permanent refusal rolls its notice back with its finish, which no longer holds the lease; only
 // the worker holding the lease leaves the one architect notice.
 func TestOnlyTheOwningREADYMergeLeasePostsAPermanentRefusal(t *testing.T) {
+	t.Parallel()
 	github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, refusedAnswer("Squash merges are not allowed on this repository."))
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -308,13 +319,15 @@ func TestOnlyTheOwningREADYMergeLeasePostsAPermanentRefusal(t *testing.T) {
 // requires sees no warning flood. One waiting on a branch update (BEHIND) or a draft (DRAFT) waits
 // on someone, so it warns once it has waited long.
 func TestAWaitingREADYMergeWarnsOnlyWhenItWaitsOnSomeone(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for state, level := range map[string]string{"BLOCKED": "DEBUG", "UNKNOWN": "DEBUG", "BEHIND": "WARN", "DRAFT": "WARN", "armed": "DEBUG"} {
 		t.Run(state, func(t *testing.T) {
+			reset(t)
 			url := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", state) }, mergedAnswer).url
 			if state == "armed" {
 				url = newArmableGitHub(t).url
 			}
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			row := mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now())
@@ -343,6 +356,51 @@ func TestAWaitingREADYMergeWarnsOnlyWhenItWaitsOnSomeone(t *testing.T) {
 	}
 }
 
+// How long a READY merge has waited and whether the architect is told of it once: the wait runs
+// from the moment the row was queued, or from the row's own creation for a row a daemon before
+// record.ReadyMerge.Queued enqueued, which carries none and whose zero time would otherwise read
+// as an infinite wait. The architect is told only past mergeWaitWarn, only once
+// (record.ReadyMerge.Warned), and only where GitHub has yet to complete the merge Legion asked
+// for: a disagreement between GitHub and the record is a wait too, but its one telling is
+// finishRefused's, and the daemon's own trouble is no wait of GitHub's at all.
+func TestWhenAWaitingREADYMergeTellsItsArchitect(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	queued := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now.Add(-2 * mergeWaitWarn)}
+	fresh := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now.Add(-time.Minute)}
+	for _, tc := range []struct {
+		name    string
+		payload record.ReadyMerge
+		created time.Time
+		cause   error
+		waited  time.Duration
+		warn    bool
+	}{
+		{name: "a long wait on GitHub's merge", payload: queued, created: now.Add(-3 * mergeWaitWarn),
+			cause: &ghautomerge.Armed{}, waited: 2 * mergeWaitWarn, warn: true},
+		{name: "a long wait on a pull request GitHub does not report mergeable", payload: queued, created: now,
+			cause: &ghautomerge.Unmergeable{}, waited: 2 * mergeWaitWarn, warn: true},
+		{name: "a long wait on the queue's own merge", payload: queued, created: now,
+			cause: &ghautomerge.Merging{}, waited: 2 * mergeWaitWarn, warn: true},
+		{name: "a short wait", payload: fresh, created: now, cause: &ghautomerge.Armed{}, waited: time.Minute},
+		{name: "an architect told already", payload: record.ReadyMerge{Queued: queued.Queued, Warned: true}, created: now,
+			cause: &ghautomerge.Armed{}, waited: 2 * mergeWaitWarn},
+		{name: "a disagreement with the record", payload: queued, created: now,
+			cause: &ghautomerge.Lagging{}, waited: 2 * mergeWaitWarn},
+		{name: "the daemon's own trouble", payload: queued, created: now,
+			cause: errors.New("read the record of LEGION-208: the pool is closed"), waited: 2 * mergeWaitWarn},
+		{name: "a row queued before the queue time was recorded", payload: record.ReadyMerge{Number: 42, Head: "ready-head"},
+			created: now.Add(-2 * mergeWaitWarn), cause: &ghautomerge.Armed{}, waited: 2 * mergeWaitWarn, warn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			waited, warn := readyMergeStale(tc.payload, tc.created, now, tc.cause)
+			if waited != tc.waited || warn != tc.warn {
+				t.Fatalf("readyMergeStale = %s waited, warn %t; want %s and %t", waited, warn, tc.waited, tc.warn)
+			}
+		})
+	}
+}
+
 // A ready_merge row ends as stale only on the record's word. While the record still awaits READY's
 // head on an open pull request, GitHub showing the pull request closed or at another head is a
 // webhook the record has not applied yet, or a GitHub read behind the record: the row waits and
@@ -355,9 +413,11 @@ func TestAWaitingREADYMergeWarnsOnlyWhenItWaitsOnSomeone(t *testing.T) {
 // longer than a webhook takes, and then tells the architect once (merge-stalled). So one
 // disagreement after a long routine wait never ends it.
 func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, waited := range []int{0, waitWarnAttempts} {
 		t.Run(fmt.Sprintf("a reopen lands while a row that waited %d times reads the close", waited), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }))
 			github := newMergeGitHub(t, func(read int) string {
@@ -389,7 +449,7 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		})
 	}
 	t.Run("a reopen lands between the row's record read and its finish", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }))
 		github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, mergedAnswer)
@@ -414,7 +474,7 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		}
 	})
 	t.Run("one disagreement after a long routine wait", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		now := time.Now().UTC()
@@ -437,8 +497,8 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		assertMergeRows(t, pool, 1, "merge-stalled", 0)
 	})
 	t.Run("GitHub and the record both hold the pull request closed", func(t *testing.T) {
+		reset(t)
 		github := newMergeGitHub(t, func(int) string { return pullJSON("CLOSED", "ready-head", "UNKNOWN") }, mergedAnswer)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }))
 		enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now()))
@@ -448,10 +508,10 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		assertMergeRows(t, pool, 0, "merge-stalled", 0)
 	})
 	t.Run("a disagreement that has stood on GitHub past the bound", func(t *testing.T) {
+		reset(t)
 		now := time.Now().UTC()
 		closed := now.Add(-9 * time.Minute)
 		github := newMergeGitHub(t, func(int) string { return pullJSONAt("CLOSED", "ready-head", "UNKNOWN", closed) }, mergedAnswer)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		// However many times the row tried before, only GitHub's clock bounds the disagreement.
@@ -484,6 +544,7 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 // still waits, the issue stays in awaiting_merge, and every later run of the same row, however
 // much longer it waits, tells nobody again.
 func TestAREADYMergeGitHubLeavesWaitingTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
@@ -533,6 +594,7 @@ func TestAREADYMergeGitHubLeavesWaitingTellsTheArchitectOnce(t *testing.T) {
 // rows of this shape are the ones the upgrade found already queued, and the fallback drains with
 // the release that carries them off.
 func TestAREADYMergeQueuedBeforeTheQueueTimeWarnsFromItsCreatedAt(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
@@ -572,6 +634,7 @@ func TestAREADYMergeQueuedBeforeTheQueueTimeWarnsFromItsCreatedAt(t *testing.T) 
 // the row's read with a server error for the first hour, then answers as a pull request it will not
 // merge, and the architect is told once: of the wait.
 func TestAREADYMergeFailureThatIsNoWaitSpendsNoWaitingNotice(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	broken := true
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -628,6 +691,7 @@ func TestAREADYMergeFailureThatIsNoWaitSpendsNoWaitingNotice(t *testing.T) {
 // genuine wait that follows. Here GitHub answers the row's read as a pull request closed just
 // now, then as one a required check holds back, and the architect is told once: of the wait.
 func TestAREADYMergeDisagreementSpendsNoWaitingNotice(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	disagreeing := true
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -695,6 +759,7 @@ func TestAREADYMergeDisagreementSpendsNoWaitingNotice(t *testing.T) {
 // (wait.ErrWaiting), is no ghautomerge.Lagging, and is no permanentRefusal, so every term of that
 // gate held and the notice was written on it.
 func TestAREADYMergeArmGoneFromGitHubSpendsNoWaitingNotice(t *testing.T) {
+	t.Parallel()
 	github := newArmableGitHub(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -747,6 +812,7 @@ func TestAREADYMergeArmGoneFromGitHubSpendsNoWaitingNotice(t *testing.T) {
 // which the reopen's payload carries, the architect hears again only once the reopened submission
 // has itself waited mergeWaitWarn, and hears of that hour rather than of the row's whole life.
 func TestAReopenedREADYMergeWaitsItsOwnHourBeforeWarningAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
@@ -801,6 +867,7 @@ func TestAReopenedREADYMergeWaitsItsOwnHourBeforeWarningAgain(t *testing.T) {
 // the arm is gone while the record still awaits READY it arms READY's head again, ending only once
 // GitHub reports the pull request merged at that head.
 func TestADelayedDisarmNeverLosesTheREADYMerge(t *testing.T) {
+	t.Parallel()
 	github := newArmableGitHub(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -844,6 +911,7 @@ func TestADelayedDisarmNeverLosesTheREADYMerge(t *testing.T) {
 // ends without enqueueing the head again, which would rebuild every entry queued behind it and fail
 // the same way.
 func TestAMergeTheQueueFailsSendsTheIssueBackToImplementing(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "CLEAN")
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -901,6 +969,7 @@ func TestAMergeTheQueueFailsSendsTheIssueBackToImplementing(t *testing.T) {
 // A merge failure whose fact the workflow already applied (intake.ApplyFact's Duplicate) changes
 // nothing, and the row's log says so rather than that the issue goes back to implementing.
 func TestAMergeFailureAlreadyAppliedIsNotLoggedAsSendingTheIssueBack(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "CLEAN")
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -952,6 +1021,7 @@ func TestAMergeFailureAlreadyAppliedIsNotLoggedAsSendingTheIssueBack(t *testing.
 // run again at the same head — reads no log a second time for a decision already made, and
 // tells nobody twice.
 func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "CLEAN")
 	github.set(func(g *armableGitHub) { g.jobLogs = map[int64]string{failedMergeGroupJob: failedMergeGroupLog} })
 	pool := isolatedOutboxPool(t)
@@ -1041,6 +1111,7 @@ func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
 // own below (TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone); which states those are is read
 // off the entry alone, in ghautomerge, since each is this one branch of the row.
 func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                  string
 		queueState, queueBase string
@@ -1168,6 +1239,7 @@ func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t
 // (ghautomerge's TestAnUnmergeableEntryOnItsBaseBranchesTipIsTheHeadsOwnConflict); what stands
 // here is the one branch of the row on the database (INFRA-1442).
 func TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                  string
 		queueState, queueBase string
@@ -1247,6 +1319,8 @@ func unmergeableMark(t *testing.T, pool *pgxpool.Pool) (mark time.Time, base str
 // ends, submitting nothing more, and tells the architect once (merge-removed), naming what was
 // removed, GitHub's reason and who removed it. The issue stays in awaiting_merge.
 func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		github  func(*testing.T) *armableGitHub
@@ -1262,8 +1336,8 @@ func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
 		}, manuallyDisabledEvent("a-maintainer"), []string{"#42", "auto-merge", "manually_disabled", "a-maintainer", "ready-head"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := tc.github(t)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			clock := time.Now().UTC()
@@ -1304,6 +1378,7 @@ func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
 // no removal and no refusal: nothing is told, nothing is marked, and the row reads the same
 // removal from GitHub when the daemon comes back (INFRA-1442).
 func TestARemovalWhoseLogReadsADaemonStopCutShortTellsNobody(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "CLEAN")
 	arrived := make(chan struct{})
 	github.set(func(g *armableGitHub) {
@@ -1357,6 +1432,7 @@ func TestARemovalWhoseLogReadsADaemonStopCutShortTellsNobody(t *testing.T) {
 // passed from the first such read. The issue stays in awaiting_merge at its recorded head on
 // every path, with no round counted against anyone.
 func TestAMergeTheQueueTookOutForAConflictIsSubmittedOnceMoreOrEnded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// mergeState is what GitHub answers for the pull request once its entry is gone, and gap
@@ -1526,6 +1602,7 @@ func messagePosts(t *testing.T, pool *pgxpool.Pool) []string {
 // runs (BLOCKED), and enters the queue once GitHub reports the pull request mergeable: auto-merge is
 // never armed.
 func TestAREADYMergeOnAMergeQueueBaseNeverArmsAutoMerge(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "BLOCKED")
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1572,6 +1649,7 @@ func TestAREADYMergeOnAMergeQueueBaseNeverArmsAutoMerge(t *testing.T) {
 // A READY merge row waiting on an arm at READY's head ends once the merged pull request's webhook
 // moves the record past awaiting its merge, even while GitHub's read still shows the arm.
 func TestAREADYMergeRowWaitingOnAnArmEndsOnceTheMergeMovesTheRecord(t *testing.T) {
+	t.Parallel()
 	github := newArmableGitHub(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1816,6 +1894,7 @@ const failedMergeGroupWithJob = `{"oid":"group-sha","statusCheckRollup":{"contex
 // the row afterwards tells the architect, so the refusal is told once. The worker whose finish
 // rolled back logs the refusal it could not record beside its finish's failure.
 func TestAReopenDuringAPermanentRefusalTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
 	const squash = "Squash merges are not allowed on this repository."
 	github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, refusedAnswer(squash))
 	pool := isolatedOutboxPool(t)
@@ -1899,6 +1978,8 @@ func (s *reopensBeforeFinish) reopenOnce() {
 // A rate-limited ready_merge waits as long as GitHub asks, longer than the outbox's own backoff,
 // whether GitHub answers the GraphQL mutation with RATE_LIMITED and 200 or with a 429.
 func TestARateLimitedREADYMergeWaitsGitHubsRetryAfter(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		answer func(http.ResponseWriter)
@@ -1914,8 +1995,8 @@ func TestARateLimitedREADYMergeWaitsGitHubsRetryAfter(t *testing.T) {
 		}, 120 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, tc.answer)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			now := time.Date(2026, 10, 16, 5, 0, 0, 0, time.UTC)
@@ -1937,10 +2018,12 @@ func TestARateLimitedREADYMergeWaitsGitHubsRetryAfter(t *testing.T) {
 // (a Retry-After) covers every call the token makes. A deferred row is not run in the batch at all,
 // and its last error names the row whose limit deferred it.
 func TestARateLimitDefersOnlyTheRowsThatSpendItsBudget(t *testing.T) {
-	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
+	t.Parallel()
+	limitReset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	primary := func(resource string) map[string]string {
-		return map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": resource}
+		return map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": limitReset, "X-RateLimit-Resource": resource}
 	}
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name          string
 		first, second record.OutboxPayload
@@ -1959,8 +2042,8 @@ func TestARateLimitDefersOnlyTheRowsThatSpendItsBudget(t *testing.T) {
 			mergeLimit: map[string]string{"Retry-After": "180"}, deferred: true, wait: 180 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newBudgetGitHub(t, tc.restLimit, tc.mergeLimit)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-209", Title: "Disarmed", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
@@ -2005,6 +2088,7 @@ func TestARateLimitDefersOnlyTheRowsThatSpendItsBudget(t *testing.T) {
 // its rows met: a REST core limit met after a GraphQL one leaves the GraphQL limit standing, and a
 // disarm behind both is deferred rather than sent against an exhausted budget.
 func TestARateLimitedBatchRemembersEveryBudgetItExhausted(t *testing.T) {
+	t.Parallel()
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	primary := func(resource string) map[string]string {
 		return map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": resource}
@@ -2036,10 +2120,12 @@ func TestARateLimitedBatchRemembersEveryBudgetItExhausted(t *testing.T) {
 // and an issue branch behind a 30-second REST core limit and a 180-second secondary limit waits the
 // 180 seconds.
 func TestARateLimitStandsUntilTheLatestDeadlineOfTheBudgetsARowSpends(t *testing.T) {
+	t.Parallel()
 	secondary := map[string]string{"Retry-After": "180"}
+	pool, reset := tableDatabase(t)
 	t.Run("across batches", func(t *testing.T) {
+		reset(t)
 		github := newBudgetGitHub(t, nil, secondary)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-209", Title: "Disarmed", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
@@ -2074,9 +2160,9 @@ func TestARateLimitStandsUntilTheLatestDeadlineOfTheBudgetsARowSpends(t *testing
 		}
 	})
 	t.Run("overlapping REST core and secondary limits", func(t *testing.T) {
+		reset(t)
 		core := map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(time.Now().Add(30*time.Second).Unix(), 10), "X-RateLimit-Resource": "core"}
 		github := newBudgetGitHub(t, core, secondary)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		for _, key := range []string{"LEGION-210", "LEGION-211"} {

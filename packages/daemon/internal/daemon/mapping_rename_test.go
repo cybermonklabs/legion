@@ -33,7 +33,9 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // configured none of it happens: nothing is heard under the second name, and an issue resolved to
 // it is not mapped to the project at all.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
+	t.Parallel()
 	const unserved = "a configured repository rename names a repository this project does not serve"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -47,8 +49,9 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 		{name: "no pair configured", renames: ghrepo.Renames{}, heard: []string{"acme/widgets", "zeta/tools"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			logged := &syncBuffer{}
-			w, _, _, stream := mappingRigWith(t, &installations{}, func(w *workflowRuntime) {
+			w, _, _, stream, _ := mappingRigJSOn(t, pool, &installations{}, func(w *workflowRuntime) {
 				w.repositories = newRepositories("LEGION", tc.renames)
 				w.log = slog.New(slog.NewTextHandler(logged, nil))
 			})
@@ -105,9 +108,11 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 // spelling it was written with (record.Issue.GitHubRepo), and the pair's own spelling is used for
 // the side nothing else names, which is how a pair configured before the transfer is heard.
 func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The pair is written in the deployment's own case, which is neither name as GitHub spells it.
 	pair := ghrepo.MustRenames(ghrepo.MustRename("SJAWHAR/Legion", "CyberMonkLabs/legion"))
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		// recorded is GitHub's spelling a record of the project keeps, none when "".
@@ -120,7 +125,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 			heard: []string{"cybermonklabs/legion", "SJAWHAR/Legion"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			if tc.recorded != "" {
 				if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch, github_repo)
 					values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, $1, 'main', $1)`, tc.recorded); err != nil {
@@ -169,6 +174,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 //     M3's second row, where it would address the repository the transfer has not yet moved the
 //     name away from.
 func TestTheMappingResolvesARecordedRepositoryOverTheSixMappingStates(t *testing.T) {
+	t.Parallel()
 	const recordedOld, recordedNew = "sjawhar/legion", "cybermonklabs/legion"
 	pair := ghrepo.MustRenames(ghrepo.MustRename(recordedOld, recordedNew))
 	accepted := func(repos ...string) []mappedRepository {
@@ -347,6 +353,7 @@ func servedDefaults(repos *repositories) []string {
 // served with Dispatch's webhook App not installed on it. The served repository's gap is
 // reported, since what the daemon serves decides it and not what the pair's other name did.
 func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *testing.T) {
+	t.Parallel()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// transferred is GitHub after the transfer, which answers the old address with the redirect
 	// GitHub's own answers; untransferred is GitHub before it; separate is the pair's two names
@@ -566,6 +573,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 // the honest answer, so a transient failure on the name the repository moved to would leave the
 // entry out for good behind that reason, and no read again would ever revisit it.
 func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T) {
+	t.Parallel()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	failure := errors.New("GitHub answered 502")
 	for _, tc := range []struct {
@@ -632,6 +640,7 @@ func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T
 // win would clear the default the accepted entry carries, and a project that serves no default
 // refuses the launch of an issue that names no repository (issueRepository).
 func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: old, Project: "LEGION"}, {Repo: moved, Project: "LEGION", Default: true}}}
@@ -680,6 +689,7 @@ func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
 // under the name it was last served under: after a transfer those are two names, so without the
 // relabel legion state would name the owner the repository left, for as long as the read fails.
 func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// Dispatch is asked the check under the name its own mapping holds, so the reason names the

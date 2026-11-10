@@ -21,8 +21,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -136,7 +136,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 		rt: fake.NewRuntime(), built: &built{}, records: record.NewStore(), pool: pool, logs: &syncBuffer{}}
 
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -179,7 +179,7 @@ func (rig *checkWakeRig) boot(t *testing.T) {
 	go func() {
 		done <- run(ctx, rig.cfg, slog.New(slog.NewJSONHandler(rig.logs, nil)), overrides{
 			listen: heldListen, runtime: fakeRuntime(rig.rt, rig.built).runtime, clock: stillClock{},
-			workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
+			environ: workflowEnviron(t), workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
 		})
 	}()
 	t.Cleanup(func() {
@@ -189,7 +189,7 @@ func (rig *checkWakeRig) boot(t *testing.T) {
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(arrivalBound(t)):
 			t.Error("daemon did not stop")
 		}
 	})
@@ -216,6 +216,7 @@ func (rig *checkWakeRig) check(t *testing.T) record.ProductionCheck {
 // session kept — so a boot that still compared would start look 2 here. Nothing is compared, the
 // check stays as it was and the implementer is never resumed.
 func TestABootOnABuildCarryingTheMergeStartsNoLook(t *testing.T) {
+	t.Parallel()
 	rig := newCheckWakeRig(t)
 	rig.boot(t)
 

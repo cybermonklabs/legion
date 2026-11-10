@@ -25,8 +25,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	workershim "github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -177,7 +177,7 @@ func superviseMany(t *testing.T, cfg config.Config, o overrides, rt *stallingRun
 			Detail: "pod " + string(token) + " Failed: init container workspace-init terminated (Error, exit code 1)"})
 	}
 	waiting := map[claim.Token]bool{}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(arrivalBound(t))
 	for len(waiting) < relaunching {
 		select {
 		case token := <-rt.entered:
@@ -232,7 +232,7 @@ func stopWithin(t *testing.T, d *daemon, logs *syncBuffer, bound time.Duration) 
 func lastBootStopped(t *testing.T, cfg config.Config) *time.Time {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -312,6 +312,7 @@ func neverStarted(t *testing.T, stopLog string) {
 // stopping and which claims are deciding, ends those relaunches with the stop instead of waiting
 // them out, and stamps its boot, well inside a pod's termination grace (LEGION-650).
 func TestRunStopsInsideAPodGraceWhileRelaunchesWaitOnTheCluster(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
 	logs := &syncBuffer{}
@@ -334,6 +335,7 @@ func TestRunStopsInsideAPodGraceWhileRelaunchesWaitOnTheCluster(t *testing.T) {
 // waited on past the stop's budget: the daemon names the claims it left deciding, stamps its boot
 // and returns, and the next boot's re-adoption and orphan sweep take those claims up.
 func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), true)
 	logs := &syncBuffer{}
@@ -356,6 +358,7 @@ func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T
 // A machine holds its lock through the runtime call its decision makes, and the listing reads every
 // machine, so a daemon with a relaunch always in flight never answered it (LEGION-650).
 func TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster(t *testing.T) {
+	t.Parallel()
 	const listingBound = 5 * time.Second
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
@@ -393,6 +396,8 @@ func TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster(t *testing.T) 
 // runtime. One that answers to its context ends with the stop; one that answers to none is not
 // waited on past the stop's budget, and the stop names it (LEGION-650, LEGION-653).
 func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
 		ignoresContext bool
@@ -401,7 +406,8 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 		{name: "a relaunch that ignores the stop", ignoresContext: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			project, _ := claim.ProjectToken(cfg.Project)
 			token, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
 			putClaim(t, cfg, supervise.Claim{
@@ -418,7 +424,7 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 			case <-rt.entered:
 			case err := <-done:
 				t.Fatalf("run returned %v before it relaunched the unfinished launch; log:\n%s", err, logs)
-			case <-time.After(30 * time.Second):
+			case <-time.After(arrivalBound(t)):
 				t.Fatalf("the daemon never relaunched the unfinished launch; log:\n%s", logs)
 			}
 			testwait.Eventually(t, "the daemon to say it started while its relaunch waits in the runtime", func() bool {
@@ -451,6 +457,7 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 // must succeed before an unfinished launch is relaunched) wait on the cluster or the tmux server,
 // and the stop's budget bounds a boot as it bounds a daemon that serves (LEGION-650).
 func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := &bootReconcileStall{stallingRuntime: newStallingRuntime(t, fake.NewRuntime(), false), reconciling: make(chan struct{}, 1)}
 	o := fakeRuntime(rt, &built{})
@@ -460,7 +467,7 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 	case <-rt.reconciling:
 	case err := <-done:
 		t.Fatalf("run returned %v before its boot reconciled orphans; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
 	}
 
@@ -475,15 +482,101 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 	}
 }
 
-// quietStop requires the stop to have logged nothing at WARN or ERROR: a rollout's stop cuts
-// decisions short by design, and the next boot takes their claims up.
+// quietStop requires the stop to have logged nothing an operator must act on: it reports every line
+// stopComplaints refuses, and logs the one it permits with what the halt was deciding.
 func quietStop(t *testing.T, stopLog string) {
 	t.Helper()
+	for _, line := range stopComplaints(stopLog) {
+		t.Errorf("the stop logged: %s", line)
+	}
+	for _, line := range owedStopWrites(stopLog) {
+		t.Logf("the stop owed a claim write (the halt was deciding %v): %s", decidingAtHalt(stopLog), line)
+	}
+}
+
+// stopComplaints is the lines of a stop's log window an operator must act on: every WARN and ERROR
+// but one, the claim write a cancelled decision left owed.
+//
+// A rollout's stop cuts decisions short by design — halt closes every machine's inbox, narrows the
+// stream and cancels, waiting for nothing, and its own `legion daemon stopping` line names the
+// decisions it is cancelling (`deciding`, daemon.go). A decision caught mid-write fails with
+// context.Canceled, which writeOwed owes because it is no *pgconn.PgError, so the stop logs
+// owedWriteFailedLine with `"owed":true` and the claim's next decision writes the row again. That
+// the repair happens is proven elsewhere, and the citation says what it relies on rather than only
+// where, because these are files this branch does not own and another tree can change what they
+// prove without knowing anything leans on it: this package's own
+// TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering (owedwrite_test.go)
+// drives the database into answering again and requires owedWriteMadeLine in the log, which is the
+// claim's next decision making the write it owed, and
+// TestTheOwedReportsReachTheDaemonOnceTheRepairLands is the same fact from the reports' side;
+// internal/supervise/owedwrite_test.go and repairagain_test.go assert it over the machine. This
+// permission asserts none of it — the next daemon of the test it exists for is a bare net.Listen
+// on the same socket, with no store to repair anything — it only declines to read the design's own
+// line as a defect.
+//
+// Its sibling with `"owed":false` — a repair that failed again — is the one an operator must come
+// and look at, and this refuses it, as it refuses every other WARN and ERROR.
+//
+// The permission is not bounded by the deciding list, and the bound was tried before it was
+// dropped: the run this exception exists for owed the write of a claim the stopping line did not
+// name, because the list is read as the halt begins and the race is between that read and the
+// cancel a few statements later. A bound on the named claims would refuse the very line it was
+// written to permit, and every green run would have been consistent with it. The line's own
+// `"owed":true` is the bound instead, and the list is reported beside it so a reader sees what the
+// halt caught.
+//
+// One shuffled run in 31 at 6ad469101b6f hit it, in
+// TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon, which drives a shim's frame
+// into the drain on purpose; the serial suite never lost the race and so never read the line.
+func stopComplaints(stopLog string) []string {
+	var refused []string
 	for _, line := range strings.Split(stopLog, "\n") {
-		if strings.Contains(line, `"level":"ERROR"`) || strings.Contains(line, `"level":"WARN"`) {
-			t.Errorf("the stop logged: %s", line)
+		if !strings.Contains(line, `"level":"ERROR"`) && !strings.Contains(line, `"level":"WARN"`) {
+			continue
+		}
+		if owedStopWrite(line) {
+			continue
+		}
+		refused = append(refused, line)
+	}
+	return refused
+}
+
+// owedStopWrite is whether line is the one a stop may log: a claim write left owed, which the
+// claim's next decision makes again.
+func owedStopWrite(line string) bool {
+	return strings.Contains(line, loggedMessage(owedWriteFailedLine)) && strings.Contains(line, `"owed":true`)
+}
+
+// owedStopWrites is the permitted lines of a window, which quietStop logs rather than refuses.
+func owedStopWrites(stopLog string) []string {
+	var owed []string
+	for _, line := range strings.Split(stopLog, "\n") {
+		if owedStopWrite(line) {
+			owed = append(owed, line)
 		}
 	}
+	return owed
+}
+
+// decidingAtHalt is the decisions the halt reported cancelling, read from the stop's own
+// `legion daemon stopping` line: each claim with the decision it was in. It is empty where the
+// window holds no such line, and where the line's `deciding` cannot be read, since it is reported
+// beside a permitted line rather than deciding anything.
+func decidingAtHalt(stopLog string) []string {
+	for _, line := range strings.Split(stopLog, "\n") {
+		if !strings.Contains(line, `"msg":"legion daemon stopping"`) {
+			continue
+		}
+		var fields struct {
+			Deciding []string `json:"deciding"`
+		}
+		if err := json.Unmarshal([]byte(line), &fields); err != nil {
+			return nil
+		}
+		return fields.Deciding
+	}
+	return nil
 }
 
 // bootSwept waits for the liveness sweep's first verdict, which a daemon with no controller
@@ -500,7 +593,7 @@ func bootSwept(t *testing.T, logs *syncBuffer) {
 func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.Claim {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -546,6 +639,7 @@ func operatorRequest(d *daemon, method, path string, body []byte) <-chan int {
 // hangs up, never past the drain. The failure the cut leaves is the stop's, logged at Info
 // (LEGION-650).
 func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
 	logs := &syncBuffer{}
@@ -561,7 +655,7 @@ func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
 	var spawning claim.Token
 	select {
 	case spawning = <-rt.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the operator's spawn never reached the runtime; log:\n%s", logs)
 	}
 
@@ -601,6 +695,7 @@ func (r *exitingSuspend) Suspend(ctx context.Context, loc runtime.Locator) error
 // and the store holds the claim suspended. Cut short at the signal, it would leave the claim stored
 // live, which the next boot finds dead and relaunches, undoing the operator's request (LEGION-650).
 func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	logs := &syncBuffer{}
@@ -610,7 +705,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
 	select {
 	case <-rt.stopping:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the operator's suspension never reached the runtime; log:\n%s", logs)
 	}
 
@@ -691,6 +786,7 @@ func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, w
 // The claim the route is deciding keeps its connection, which carries its process's shutdown frame
 // (LEGION-650).
 func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	rec := &built{}
@@ -710,7 +806,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/suspend", nil)
 	select {
 	case <-rt.stopping:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the operator's suspension never reached the runtime; log:\n%s", logs)
 	}
 
@@ -763,7 +859,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	var conn net.Conn
 	select {
 	case conn = <-accepted:
-	case <-time.After(15 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the shim never redialled the next daemon; its log:\n%s", shimLog)
 	}
 	t.Cleanup(func() { conn.Close() })
@@ -831,6 +927,7 @@ func (r *closingRelease) Release(ctx context.Context, k runtime.Known) error {
 // holds them from before the root's close, so the stop keeps their connections, and each one's stop
 // sends its shutdown frame rather than ending its agent unannounced (LEGION-650).
 func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnections(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	root, _ := claim.NewToken(project, "LEGION-9", claim.RoleArchitect)
@@ -848,7 +945,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(root)+"/close", nil)
 	select {
 	case <-rt.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the root's release never reached the runtime; log:\n%s", logs)
 	}
 
@@ -896,6 +993,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 // stopping daemon does not report a shim reconnecting across a restart as a credential problem
 // (LEGION-650).
 func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-3", claim.RolePlanner)
@@ -914,7 +1012,7 @@ func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
 	case <-rt.reconciling:
 	case err := <-done:
 		t.Fatalf("run returned %v before its boot reconciled orphans; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
 	}
 	rec.mu.Lock()

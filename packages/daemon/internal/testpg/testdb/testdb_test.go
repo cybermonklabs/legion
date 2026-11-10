@@ -115,8 +115,8 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 		},
 		{
 			// The rewrite the live proofs' binary makes before any test runs: create asks this
-			// helper for the admin database `postgres`, connects to that, and creates the run's
-			// own database on it (RunDatabaseMain in testdb.go).
+			// helper for the admin database `postgres`, connects to that, and creates the
+			// test's own database on it (create in testdb.go).
 			name:     "the admin database the run's first rewrite asks for",
 			dsn:      "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable",
 			database: "postgres",

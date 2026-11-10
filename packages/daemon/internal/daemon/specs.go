@@ -96,6 +96,11 @@ type specs struct {
 	// through the workflow); nil for a daemon with no workflow, whose launches work no repository.
 	hostWorkspaces  bool
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// environ is the environment every launch's passthrough variables are read from
+	// (passthrough: stallLimitVariables and refusalCooldownVariables). Boot sets os.LookupEnv;
+	// it is nil only in a test whose specs literal leaves it out, and such a specs passes none
+	// of them, as memoryGroup's nil leaves a launch without memory.
+	environ func(string) (string, bool)
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -113,8 +118,9 @@ func rolePromptPath(stateDir string, token claim.Token) string {
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the
 // same way for both — the controller the daemon launches (`controller: daemon`) is covered like
 // any claim.
-// Env carries the stall limits the daemon's own environment holds, merged after the fork
-// (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
+// Env carries the stall limits the environment this specs was given holds, merged after the fork
+// (passthrough, stallLimitVariables), so the controller's launch is told them exactly as a
+// worker's is.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
 	var spec runtime.SpawnSpec
 	var err error
@@ -129,7 +135,7 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	// After the fork, so every launch is served by one seam, and after the git identity, which
 	// replaces a worker's spec.Env rather than merging into it: the stall limits are merged into
 	// whatever map the launch holds by then (stallLimitVariables).
-	passthrough(spec.Env, stallLimitVariables...)
+	s.passthrough(spec.Env, stallLimitVariables...)
 	var part string
 	if spec.Backend, part, err = s.launchBackend(c.Role); err != nil {
 		return runtime.SpawnSpec{}, err
@@ -232,17 +238,22 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// After the git identity, which replaces spec.Env rather than merging into it: the refusal
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
-	passthrough(spec.Env, refusalCooldownVariables...)
+	s.passthrough(spec.Env, refusalCooldownVariables...)
 	return spec, nil
 }
 
-// passthrough merges into env each of names the daemon's own environment holds, and no other: a
-// role told none of a group runs on the defaults its plugin holds. Both runtimes forward spec.Env
-// verbatim — a pane's -e pairs (runtime/tmux's panePairs) and a pod launcher's start command
-// (runtime/sandbox's mainEnvironment) — so these two calls are the whole seam.
-func passthrough(env map[string]string, names ...string) {
+// passthrough merges into env each of names the environment this specs was given holds, and no
+// other: a role told none of a group runs on the defaults its plugin holds. It reads s.environ
+// rather than the process, so a test of a launch names what the daemon holds instead of setting
+// it beside its neighbours, and a specs that names no environment passes nothing. Both runtimes
+// forward spec.Env verbatim — a pane's -e pairs (runtime/tmux's panePairs) and a pod launcher's
+// start command (runtime/sandbox's mainEnvironment) — so these three calls are the whole seam.
+func (s specs) passthrough(env map[string]string, names ...string) {
+	if s.environ == nil {
+		return
+	}
 	for _, name := range names {
-		if value, ok := os.LookupEnv(name); ok {
+		if value, ok := s.environ(name); ok {
 			env[name] = value
 		}
 	}
@@ -273,9 +284,9 @@ func (s specs) issueTrailer(repository ghrepo.Repository, issue string) string {
 // worker waits for a reminder after a settle, how long after a resume on an open phase, the gap
 // between the recovery ladder's steps, and how long a reply that said what it waits on buys. A
 // session told none of them runs on the defaults its plugin holds
-// (packages/pi-shared/src/stall-limits.ts), so the daemon passes exactly the ones its own
-// environment holds and no more. Both runtimes forward spec.Env verbatim — a pane's -e pairs
-// (runtime/tmux's panePairs) and a pod launcher's start command (runtime/sandbox's
+// (packages/pi-shared/src/stall-limits.ts), so the daemon passes exactly the ones the environment
+// it was given holds and no more (passthrough). Both runtimes forward spec.Env verbatim — a
+// pane's -e pairs (runtime/tmux's panePairs) and a pod launcher's start command (runtime/sandbox's
 // mainEnvironment) — so SpawnSpec, after its fork, is the one seam that serves them all, the
 // controller's launch among them.
 var stallLimitVariables = []string{
@@ -366,7 +377,7 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 		addressing += " " + SlackChannelsFragment(s.slackChannels)
 	}
 	env := map[string]string{}
-	passthrough(env, refusalCooldownVariables...)
+	s.passthrough(env, refusalCooldownVariables...)
 	return runtime.SpawnSpec{
 		Env:     env,
 		Secrets: maps.Clone(s.secrets),

@@ -76,14 +76,14 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		_ = cmd.Wait()
 	}()
 	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
-		client: &http.Client{Timeout: 10 * time.Second}}
+		client: &http.Client{Timeout: serverReplyTimeout}}
 	var once sync.Once
 	l.stop = func() {
 		once.Do(func() {
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(15 * time.Second):
+			case <-time.After(arrivalBound(t)):
 				t.Error("the Envoy listener did not stop")
 			}
 		})

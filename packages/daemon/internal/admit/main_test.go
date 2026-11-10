@@ -9,7 +9,8 @@ import (
 )
 
 // TestMain drops the migrated template migratedPool clones its databases from (testpg.Main) and
-// removes the NATS container the package's tests share (testnats.Main).
+// fails the run if a NATS server a test started is still running after the last test
+// (testnats.Main).
 func TestMain(m *testing.M) {
 	os.Exit(testpg.Main("legion_admit_test", func() int { return testnats.Main(m) }))
 }

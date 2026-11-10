@@ -24,8 +24,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -166,7 +166,7 @@ func stoppableWorker(cfg config.Config, project string, token claim.Token, tree,
 func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -289,6 +289,7 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // starting this worker again, and the row is the whole of that start. That subtest makes those
 // passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
 		project, err := claim.ProjectToken(cfg.Project)

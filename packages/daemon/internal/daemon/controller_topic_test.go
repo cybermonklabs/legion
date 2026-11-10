@@ -32,6 +32,7 @@ import (
 // subscriber dedupes on. The controller reads the notice the architect is sent, without the row's
 // routing.
 func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitects(t *testing.T) {
+	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
@@ -42,6 +43,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")})
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	d := startDaemon(t, cfg, o)
 
 	token, err := claim.ProjectToken(cfg.Project)

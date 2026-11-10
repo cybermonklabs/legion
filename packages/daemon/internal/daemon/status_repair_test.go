@@ -25,6 +25,7 @@ import (
 // write. That is the cost the design accepts for reading one field of the record rather than the
 // board, and this test is what records it.
 func TestTheStatusRepairKeepsQueuingARowTheOutboxWillNotWrite(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -63,6 +64,7 @@ func TestTheStatusRepairKeepsQueuingARowTheOutboxWillNotWrite(t *testing.T) {
 // the row was queued against, which is the guard that keeps a stale row off a person's move. The
 // record and the board both stay where they were.
 func TestTheStatusRepairWritesNothingOverAStatusTheDaemonNeverSaw(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -98,6 +100,7 @@ func TestTheStatusRepairWritesNothingOverAStatusTheDaemonNeverSaw(t *testing.T) 
 // event, or a boot listing — so the record still reads todo here, and the next repair run queues
 // the write again until that event arrives.
 func TestNoOutboxFinishWritesTheRecordsDispatchStatus(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

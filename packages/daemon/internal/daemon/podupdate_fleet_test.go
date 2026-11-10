@@ -38,8 +38,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -155,7 +155,7 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		}, claims...)
 	}
 
-	st, err := store.Open(ctx, dsn)
+	st, err := testpg.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -247,7 +247,7 @@ func (r *fleetRig) podless(issue string) {
 func (r *fleetRig) restart() *fleetRig {
 	r.t.Helper()
 	r.sup.stop()
-	st, err := store.Open(r.ctx, r.pool.Config().ConnString())
+	st, err := testpg.OpenStore(r.ctx, r.pool.Config().ConnString())
 	if err != nil {
 		r.t.Fatalf("open the store again: %v", err)
 	}
@@ -535,6 +535,7 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // for. And nothing of any of it moves a root out of the workflow: no root waits on a person, none
 // is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}},
@@ -640,6 +641,7 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // the same claim is refused the stale-caller 409 — the negative control — and the round is what
 // turns that refusal into the 200 a completion needs.
 func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},

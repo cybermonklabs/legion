@@ -26,6 +26,8 @@ import (
 // Kubernetes, whose pods provision their own, the record takes GitHub's spelling. The default
 // branch is GitHub's either way.
 func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		clone bool
@@ -35,8 +37,8 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 		{"a daemon with no clone", false, "Acme/Widgets"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 				values ('LEGION-301', 'LEGION-301', 'LEGION', 'existing', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
@@ -87,6 +89,7 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 // Two shared clones that spell one repository in two ways leave the backfill no spelling to keep,
 // so it refuses, naming both, rather than move an issue's workspace onto either by guess.
 func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -115,6 +118,54 @@ func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
 	}
 }
 
+// Which spelling a record takes for the repository Dispatch resolves it to, and the two
+// refusals that leave it none: a shared clone that spells the repository gives its spelling, so
+// the issue keeps working in the workspace that spelling named; with no clone the record takes
+// GitHub's own name; two clones that spell one repository refuse, naming both; and a clone whose
+// name and GitHub's are two repositories rather than one refuses, naming the fix. A rename the
+// deployment configures makes the two names one repository, and refuses nothing.
+func TestWhichSpellingTheBackfillKeeps(t *testing.T) {
+	t.Parallel()
+	clone := func(repo string) workspace.Workspace {
+		return workspace.Workspace{Clone: "/state/clones/" + repo, Repo: ghrepo.MustParse(repo)}
+	}
+	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	for _, tc := range []struct {
+		name             string
+		resolved, github string
+		clones           []workspace.Workspace
+		renames          ghrepo.Renames
+		want, refusal    string
+	}{
+		{name: "a clone that spells it", resolved: "acme/widgets", github: "Acme/Widgets",
+			clones: []workspace.Workspace{clone("acme/widgets")}, want: "acme/widgets"},
+		{name: "no clone at all", resolved: "acme/widgets", github: "Acme/Widgets", want: "Acme/Widgets"},
+		{name: "a clone of another repository", resolved: "acme/widgets", github: "Acme/Widgets",
+			clones: []workspace.Workspace{clone("zeta/tools")}, want: "Acme/Widgets"},
+		{name: "two clones that spell it", resolved: "acme/widgets", github: "Acme/Widgets",
+			clones:  []workspace.Workspace{clone("acme/widgets"), clone("Acme/Widgets")},
+			refusal: "fill the repository of LEGION-301: two shared clones spell acme/widgets (/state/clones/acme/widgets, /state/clones/Acme/Widgets); remove the one no issue works in and restart"},
+		{name: "a clone under the name GitHub renamed away from", resolved: "acme/old", github: "acme/new",
+			clones:  []workspace.Workspace{clone("acme/old")},
+			refusal: "fill the repository of LEGION-301: GitHub renamed acme/old to acme/new, and the shared clone /state/clones/acme/old still has the old name: map acme/new in Dispatch (Settings → Repositories → Projects), or remove that clone if no issue works in it, and restart"},
+		{name: "a rename the deployment configures", resolved: "sjawhar/legion", github: "cybermonklabs/legion",
+			clones: []workspace.Workspace{clone("sjawhar/legion")}, renames: pair, want: "sjawhar/legion"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spelling, err := twoClonesRefusal("LEGION-301", ghrepo.MustParse(tc.resolved), ghrepo.MustParse(tc.github), tc.clones, tc.renames)
+			if tc.refusal != "" {
+				if err == nil || err.Error() != tc.refusal {
+					t.Fatalf("twoClonesRefusal = %v, want %q", err, tc.refusal)
+				}
+				return
+			}
+			if err != nil || spelling != tc.want {
+				t.Fatalf("twoClonesRefusal = %q, %v; want %q", spelling, err, tc.want)
+			}
+		})
+	}
+}
+
 // A record written before the record carried its repository may already have a pull request,
 // which names the repository the issue worked in. The fill takes Dispatch's resolution only when
 // that pull request is on it, in any case: one on another repository (the issue's own repository
@@ -122,15 +173,17 @@ func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
 // naming the issue, both repositories and the fix, and fills nothing, since a record on the wrong
 // repository would create branches there and disarm a stranger's pull request.
 func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct{ name, prRepo, want string }{
 		{"on another repository", "zeta/tools", "fill the repository of LEGION-1: Dispatch resolves it to acme/widgets, but its pull request #7 is on zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools) and restart"},
 		{"on the resolved repository in another case", "ACME/Widgets", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
 				values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, '', '')`); err != nil {
 				t.Fatal(err)
@@ -171,15 +224,17 @@ func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testi
 // anew in another repository and strand its unpushed work; a workspace under the resolved
 // repository, in any case, fills.
 func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct{ name, workspaceIn, want string }{
 		{"in another repository", "zeta/tools", "fill the repository of LEGION-1: Dispatch resolves it to acme/widgets, but its workspace %s is in zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools) and restart"},
 		{"in the resolved repository in another case", "ACME/Widgets", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
 				values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, '', '')`); err != nil {
 				t.Fatal(err)
@@ -219,12 +274,13 @@ func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing
 // naming what fixes it; and a record already on the old name with no GitHub spelling, which no
 // later boot can rename, refuses the boot naming why.
 func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/old": "301 acme/new", "acme/new": "acme/new@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/old"}}}
+	pool, reset := tableDatabase(t)
 	seed := func(t *testing.T, repo, branch string) (*workflowRuntime, string) {
 		t.Helper()
-		pool := isolatedOutboxPool(t)
 		if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
 			values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, $1, $2)`, repo, branch); err != nil {
 			t.Fatal(err)
@@ -237,6 +293,7 @@ func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 	}
 
 	t.Run("no shared clone", func(t *testing.T) {
+		reset(t)
 		w, state := seed(t, "", "")
 		if err := backfill(w, state); err != nil {
 			t.Fatal(err)
@@ -247,6 +304,7 @@ func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 	})
 
 	t.Run("a shared clone under the old name", func(t *testing.T) {
+		reset(t)
 		w, state := seed(t, "", "")
 		clone, err := workspace.Location(state, ghrepo.MustParse("acme/old"), "LEGION-1")
 		if err != nil {
@@ -266,6 +324,7 @@ func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 	})
 
 	t.Run("a record on the old name with no GitHub spelling", func(t *testing.T) {
+		reset(t)
 		w, state := seed(t, "acme/old", "main")
 		want := "name the repository of LEGION-1: GitHub renamed acme/old to acme/new, and a record's repository never changes; " +
 			"only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database"
@@ -311,12 +370,13 @@ func (t servedOwnerTokens) Token(ctx context.Context, role appauth.AppRole, repo
 // with no GitHub spelling. The repository is then heard under both names, so the events GitHub
 // publishes under the name it moved to reach the record all the same.
 func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "301 cybermonklabs/legion", "cybermonklabs/legion": "cybermonklabs/legion@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "sjawhar/legion"}}}
+	pool, reset := tableDatabase(t)
 	seed := func(t *testing.T, repo, branch string) (*workflowRuntime, string) {
 		t.Helper()
-		pool := isolatedOutboxPool(t)
 		if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
 			values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, $1, $2)`, repo, branch); err != nil {
 			t.Fatal(err)
@@ -334,6 +394,7 @@ func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
 	}
 
 	t.Run("a record with no repository whose shared clone keeps the old name", func(t *testing.T) {
+		reset(t)
 		w, state := seed(t, "", "")
 		clone, err := workspace.Location(state, ghrepo.MustParse("sjawhar/legion"), "LEGION-1")
 		if err != nil {
@@ -351,6 +412,7 @@ func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
 	})
 
 	t.Run("a record on the old name with no GitHub spelling", func(t *testing.T) {
+		reset(t)
 		w, state := seed(t, "sjawhar/legion", "main")
 		if err := backfill(w, state); err != nil {
 			t.Fatalf("backfill = %v, want the boot to go on: the pair names one repository, read on the owner that holds it", err)

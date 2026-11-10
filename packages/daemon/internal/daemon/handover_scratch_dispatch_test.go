@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A finished root's hand-over of a child it leaves mid-run is one write to Dispatch, so the one
@@ -21,11 +22,12 @@ import (
 // actor: that event is what admission takes the child in by as an orphan (LEGION-624). The labels
 // the child already carried are kept.
 func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := createScratchDispatchIssue(t, baseURL)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: testwait.Bounded(t, serverReplyTimeout, time.Second)}
 	patch, err := json.Marshal(map[string]any{"status": "in_progress", "labels": []string{"repo:x"}})
 	if err != nil {
 		t.Fatal(err)

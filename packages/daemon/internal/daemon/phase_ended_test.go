@@ -34,10 +34,12 @@ import (
 // GitHub supplies stand apart from the daemon's own words. It is no
 // architect notice: the architect's own notice goes out beside it, to the architect's topic.
 func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
+	t.Parallel()
 	const red = "CI is red at sha-1: ci"
 	tail := " Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
 		" The workspace is the implementing phase's now, so stop writing it at once and leave whatever you have uncommitted." +
 		" Reason: " + red + "."
+	tablePool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		from   phase.Phase
@@ -60,9 +62,10 @@ func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 				" Your implementing task follows." + tail},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
 			publisher := &outboxPublisher{}
-			runner, sup, pool := redRunner(t, tc.from, tc.status, tc.uncompleted, publisher)
+			runner, sup, pool := redRunnerOn(t, tablePool, tc.from, tc.status, tc.uncompleted, publisher)
 			implementer := startedClaim(t, sup, claim.RoleImplementer)
 
 			applyTheRed(t, ctx, pool, runner)
@@ -115,6 +118,7 @@ func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 // next task from the daemon names its phase anyway: the row ends with one log line rather than
 // waiting as an architect's notice waits, and the implementer's start goes on all the same.
 func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &holderPublisher{}
 	runner, sup, pool := redRunner(t, phase.Testing, "testing", false, publisher)
@@ -151,6 +155,7 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // Only a role with no live holder ends the row.
 func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing,
 		To: phase.Implementing, Reason: "CI is red at sha-1: ci"}, time.Now())
@@ -181,6 +186,34 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 	}
 }
 
+// Which answer to a phase-ended publish finishes its row undelivered: only a role topic no live
+// session holds, since the role's next task from the daemon names its phase anyway and a role
+// that never claims its topic would hold the row for ever. The three answers of the confirmed
+// publish route are failures the next attempt may not meet, so each keeps the row, and so does
+// any other failure.
+func TestWhenAPhaseEndedMessageFinishesUndelivered(t *testing.T) {
+	t.Parallel()
+	const denial = `envoy: the message bus denied the publish under this listener's own permissions`
+	for _, tc := range []struct {
+		name     string
+		answer   error
+		finished bool
+	}{
+		{name: "the publish was taken", answer: nil},
+		{name: "no live session holds the role", answer: fmt.Errorf("publish notice to the tester's topic: %w: no holder", notify.ErrNoHolder), finished: true},
+		{name: "a holder that did not confirm it", answer: fmt.Errorf("publish notice: %w", notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_t"})},
+		{name: "a holder that does not advertise the delivery mode", answer: fmt.Errorf("publish notice: %w", notify.ErrRefusedByHolder{Holder: "ses_t"})},
+		{name: "a forward the listener's grant denies", answer: fmt.Errorf("publish notice: %w", notify.ErrPublishDenied{Message: denial})},
+		{name: "the bus being unreachable", answer: errors.New("nats: no servers available for connection")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := phaseEndedMessage(tc.answer); got != tc.finished {
+				t.Fatalf("phaseEndedMessage(%v) = %t, want %t", tc.answer, got, tc.finished)
+			}
+		})
+	}
+}
+
 // redRunner is an outbox runner over an isolated database holding LEGION-208 in from, with the
 // pull request a red is about to settle on and the phase rows of the roles that worked it, wired to
 // the workflow engine as production wires it: a fact applied against the pool queues its rows, and
@@ -189,8 +222,14 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 // moment the drain reaches it rather than waiting for a slot (holdSlot).
 func redRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
 	t.Helper()
+	return redRunnerOn(t, isolatedOutboxPool(t), from, status, uncompleted, publisher)
+}
+
+// redRunnerOn is redRunner on a database the caller already holds, for a table-driven test whose
+// rows share one clone and empty it between them (tableDatabase).
+func redRunnerOn(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
+	t.Helper()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: from, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5}

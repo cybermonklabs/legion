@@ -164,6 +164,7 @@ func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 // margin wider than that gap would read this heartbeat as a registration written since and
 // leave it standing, which is the whole of the defect (dispatch://INFRA-2064).
 func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-500 * time.Millisecond)},
 		settled: make(chan struct{}),
@@ -175,7 +176,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 
 	select {
 	case <-listener.settled:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the clean stop never reached the listener's session route")
 	}
 	if !listener.entryRemoved {
@@ -188,6 +189,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 // of its conditions: the client instance the registry answered for that session, and the moment
 // the probe judged the process gone. One read, one delete, and nothing sent twice.
 func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -223,6 +225,7 @@ func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) 
 // the listener can tell what is stored when it lands — and what it reports is that the
 // registration stayed, with the listener's own reason, not that the session was stopped.
 func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
 		relaunched: &storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now()},
@@ -253,6 +256,7 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 // listener's own words for why, in the reason field, rather than asserting one of the three.
 // Here it is kept because the entry belongs to another client instance.
 func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
 		relaunched: &storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now().Add(-time.Second)},
@@ -277,6 +281,7 @@ func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 // for an absent one (session.InstanceMatches), so the query states only the condition the stop
 // really holds.
 func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{held: storedRegistration{lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -304,6 +309,7 @@ func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *t
 // A registry that holds no record of the session has already reached what the stop asked for, so
 // no delete is sent at all: there is nothing to name and nothing to remove.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{held: storedRegistration{absent: true}}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -324,6 +330,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 // says why that is not sent). So nothing is deleted and nothing is tried again, and the
 // registration lapses at the gone horizon, which is the wait the session already had.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -344,6 +351,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T
 // work is bounded, by cleanSessionStopBudget and by supervision's own end, and the stop that is
 // abandoned there sends no delete either.
 func TestCleanSessionStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
+	t.Parallel()
 	arrived := make(chan struct{})
 	listener := &listenerRecorder{hangRead: true, arrived: arrived}
 	server := listener.server(t)
@@ -370,6 +378,7 @@ func TestCleanSessionStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
 // returns reads the moment there — where no lock is waited on — and leaves the read and the
 // delete to a goroutine.
 func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
+	t.Parallel()
 	arrived := make(chan struct{})
 	listener := &listenerRecorder{
 		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
@@ -386,12 +395,12 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the clean stop held the machine's decision until the listener answered")
 	}
 	select {
 	case <-arrived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the clean stop never reached the listener")
 	}
 }
@@ -399,6 +408,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
+	t.Parallel()
 	if stop := cleanSessionStop(context.Background(), "", "", quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}

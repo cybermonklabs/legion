@@ -95,14 +95,69 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
 // since Clone registered that cleanup first.
+//
+// Every connection the pool will use is opened here rather than left to the test, and each is
+// opened through testdb.OnConnect, so a reset at accept is retried where it would otherwise end
+// the test with nothing run: pgxpool.New establishes nothing, and its own Constructor
+// (pgxpool/pool.go) calls pgx.ConnectConfig once with no retry of its own, so a connection the
+// pool opens on demand is reset inside whatever the test was doing. Measured twice: a first
+// connection at 0.12 s (TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled, run 16
+// of 20 on 2026-11-09) and a later one mid-test (TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt,
+// mapping_refresh_test.go:846, run 13 of the campaign of 2026-11-10, seed 1794300552752315934),
+// whose run's own line read "1220 connects, 0 needed a retry" because the counter never saw that
+// attempt.
+//
+// Warming to MaxConns is what covers the second: the pool hands back idle connections rather than
+// opening new ones, and MaxConnIdleTime (30 minutes) and MaxConnLifetime (an hour) both exceed any
+// test of this module, so the warmed set is the set the test uses. What it does not cover is a
+// connection the server drops mid-test, which the pool replaces through that same unretried
+// Constructor; covering that needs a retry inside pgx, which only duplicate Fallbacks give, and
+// those would retry SQLSTATE 53300 — the connection cap's own refusal — where transientConnect
+// cannot reach. The cap's silence is R5's evidence, so the narrower fix is the right one and this
+// comment is the record of what it leaves open.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	warmed := warm(t, pool)
+	t.Cleanup(func() {
+		// Read before Close, which keeps the counters but is where the pool's life ends: every
+		// connection beyond the warmed ones is an establishment pgxpool made itself, through the
+		// Constructor OnConnect cannot reach.
+		stat := pool.Stat()
+		testdb.CountUnwarmedConnects(stat.NewConnsCount(), warmed,
+			stat.MaxIdleDestroyCount()+stat.MaxLifetimeDestroyCount())
+		pool.Close()
+	})
 	return pool
+}
+
+// warm opens every connection pool may hold, each through testdb.OnConnect, and hands them all
+// back: acquiring them all at once is what makes the pool open each one, and releasing them leaves
+// them idle for the test's own acquires. A pool whose MaxConns the configuration leaves at pgx's
+// default holds four.
+func warm(t testing.TB, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	held := make([]*pgxpool.Conn, 0, pool.Config().MaxConns)
+	defer func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	}()
+	for range pool.Config().MaxConns {
+		var conn *pgxpool.Conn
+		if err := testdb.OnConnect(func() error {
+			var err error
+			conn, err = pool.Acquire(context.Background())
+			return err
+		}); err != nil {
+			t.Fatalf("the cloned database's pool opened no connection: %v", err)
+		}
+		held = append(held, conn)
+	}
+	return int64(len(held))
 }
 
 // cloneStatement returns the create database that makes name a copy of the template's files rather
@@ -127,6 +182,7 @@ func Main(prefix string, run func() int) int {
 	}
 	defer shared.admin.Close()
 	shared.drops.Wait()
+	fmt.Fprintln(os.Stderr, testdb.DropLine())
 	for _, failure := range shared.dropFails {
 		fmt.Fprintf(os.Stderr, "testpg: %s\n", failure)
 		if code == 0 {
@@ -136,8 +192,9 @@ func Main(prefix string, run func() int) int {
 	if shared.template == "" {
 		return code
 	}
-	// No `with (force)`: the template takes no connection (prepare), so there is none to end.
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
+	// testdb.Drop's shape, for the window in which prepare's migration connection is closed but
+	// its backend is not yet gone; the template takes no other connection.
+	if err := testdb.Drop(context.Background(), shared.admin, shared.template); err != nil {
 		fmt.Fprintf(os.Stderr, "testpg: drop the template database %s: %v\n", shared.template, err)
 		if code == 0 {
 			code = 1
@@ -147,19 +204,25 @@ func Main(prefix string, run func() int) int {
 }
 
 // dropSlots holds the drops in flight to two of the admin pool's four connections. A clone takes
-// one of those connections too, and a `drop database … with (force)` forces a checkpoint and
-// waits for it: with every slot on drops — a package whose parallel subtests each clone one
-// database queues one drop per subtest that ends — the next clone waits for a checkpoint on its
-// own clock, which is the cost dropInBackground exists to move off it.
+// one of those connections too, and a drop forces a checkpoint and waits for it: with every slot
+// on drops — a package whose parallel subtests each clone one database queues one drop per
+// subtest that ends — the next clone waits for a checkpoint on its own clock, which is the cost
+// dropInBackground exists to move off it.
 var dropSlots = make(chan struct{}, 2)
 
 // dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
+//
+// The drop is testdb.Drop's: plain, retried while Postgres says the database is still in use, and
+// `with (force)` only as the last attempt, so a test login that may not end another role's
+// backend — a Legion issue pod's — finishes the package. Clone registers this cleanup before the
+// pool's close, so every pool of the clone is already closed when it runs and the plain drop is
+// what a run should need; Main prints how many drops needed more than that.
 func dropInBackground(name string) {
 	shared.drops.Go(func() {
 		dropSlots <- struct{}{}
 		defer func() { <-dropSlots }()
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
+		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
 			shared.dropMu.Unlock()
@@ -192,6 +255,12 @@ func prepare(dsn string) error {
 	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open the admin pool: %w", err)
+	}
+	// Its first connection, opened here so a reset at accept is retried rather than met by the
+	// first clone of the run (testdb.OnConnect).
+	if err := testdb.OnConnect(func() error { return admin.Ping(ctx) }); err != nil {
+		admin.Close()
+		return fmt.Errorf("the admin pool opened no connection: %w", err)
 	}
 	shared.admin = admin
 

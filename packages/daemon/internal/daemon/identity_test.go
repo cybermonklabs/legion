@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -21,6 +20,7 @@ import (
 // launch carries the six git identity variables every worker pane gets, nothing else of the Apps,
 // and a launch whose identity cannot be resolved does not happen.
 func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	token, err := claim.NewToken("s1", "S1-1", claim.RoleImplementer)
 	if err != nil {
@@ -34,9 +34,8 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The six below are the whole of Env only for a daemon holding none of the passthrough
-	// variables a launch is told beside them (stallLimitVariables, refusalCooldownVariables):
-	// this test's daemon holds none.
-	fixtureenv.Unset(t, slices.Concat(stallLimitVariables, refusalCooldownVariables)...)
+	// variables a launch is told beside them (stallLimitVariables, refusalCooldownVariables): this
+	// specs names no environment to read them from, so it passes none.
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
 	s := specs{stateDir: stateDir, project: "s1", repositories: noRepositoriesView,

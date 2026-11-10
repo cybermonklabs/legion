@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -66,6 +67,14 @@ func mappingRig(t *testing.T, missing map[string]bool) (*workflowRuntime, *mappi
 	return mappingRigWith(t, &installations{missing: missing})
 }
 
+// mappingRigOn is mappingRig on a database the caller already holds, for a table-driven test
+// whose rows share one clone and empty it between them (tableDatabase).
+func mappingRigOn(t *testing.T, pool *pgxpool.Pool, missing map[string]bool) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream) {
+	t.Helper()
+	w, client, installs, stream, _ := mappingRigJSOn(t, pool, &installations{missing: missing})
+	return w, client, installs, stream
+}
+
 // mappingRigWith is mappingRig answering each installation read from installs, with each of opts
 // applied to the runtime before its boot reads the mapping.
 func mappingRigWith(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream) {
@@ -76,6 +85,12 @@ func mappingRigWith(t *testing.T, installs *installations, opts ...func(*workflo
 
 // mappingRigJS is mappingRigWith with the JetStream it opened, for a test that publishes on it.
 func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
+	t.Helper()
+	return mappingRigJSOn(t, isolatedOutboxPool(t), installs, opts...)
+}
+
+// mappingRigJSOn is mappingRigJS on a database the caller already holds.
+func mappingRigJSOn(t *testing.T, pool *pgxpool.Pool, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := nats.Connect(workflowNATS(t))
@@ -96,7 +111,7 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	if installs.missing == nil {
 		installs.missing = map[string]bool{}
 	}
-	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
 		mappingChanged: make(chan struct{}, 1)}
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, Steps: config.DesignGateOff.Steps()}, quietLogger())
@@ -178,6 +193,8 @@ func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 // recorded on it, and the next read covers the issue that came up for admission. An issue is never
 // recorded on a repository GitHub intake does not hear.
 func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		fail bool
@@ -186,8 +203,9 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 		{"a refresh whose live-record snapshot fails once", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, installs, stream := mappingRig(t, map[string]bool{"review zeta/tools": true})
+			w, client, installs, stream := mappingRigOn(t, pool, map[string]bool{"review zeta/tools": true})
 			client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools", LastSeq: 1}
 			installs.missing["review zeta/tools"] = false
 			w.records = &faultyStore{Store: w.records, failIssues: tc.fail}
@@ -226,6 +244,7 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 // records, so the repository it recorded stays heard. A refresh never unsubscribes a
 // repository an admission is about to commit an issue on.
 func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, _, stream := mappingRig(t, map[string]bool{})
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -254,7 +273,7 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 	}()
 	select {
 	case <-store.reached:
-	case <-time.After(10 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the admission never reached its record write")
 	}
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
@@ -286,6 +305,7 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 // that unmaps it and across a restart, so a person moving it back to todo re-admits it on a
 // repository whose pull request facts still arrive.
 func TestAClosedTreesRepositoryStaysHeardAfterItIsUnmapped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, _, stream := mappingRig(t, map[string]bool{})
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -331,6 +351,7 @@ func TestAClosedTreesRepositoryStaysHeardAfterItIsUnmapped(t *testing.T) {
 // repository the mapping no longer serves is heard under the GitHub spelling its record keeps, with
 // no read of GitHub.
 func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, _, _, _ := mappingRig(t, map[string]bool{})
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -364,6 +385,7 @@ func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
 // on it. Once the App is installed, the issue's next hand-over is held for a read of the mapping,
 // which serves the repository and records the issue on it, which GitHub intake then hears.
 func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, installs, stream := mappingRig(t, map[string]bool{"review acme/widgets": true, "review zeta/tools": true})
 	client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}
@@ -425,6 +447,8 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 // another repository with no event of its own (an ancestor's or the project's default changed),
 // it is recorded on the one it resolves to now.
 func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		now    dispatch.Issue
@@ -435,8 +459,9 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 		{"on another repository with no event of its own", dispatch.Issue{Key: "LEGION-302", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 1}, "acme/widgets"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, _, stream := mappingRig(t, map[string]bool{})
+			w, client, _, stream := mappingRigOn(t, pool, map[string]bool{})
 			client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
 			if err := w.refreshMapping(ctx); err != nil {
 				t.Fatal(err)
@@ -478,6 +503,8 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 // issue's newer events, so it is prepared as Dispatch now shows the issue: a person who withdrew
 // it meanwhile is not overruled, and one still handed over is recorded.
 func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name      string
 		heldFirst bool
@@ -489,8 +516,9 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 		{"still handed over after a failed branch read", false, dispatch.Issue{Key: "LEGION-305", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, _, _ := mappingRig(t, map[string]bool{})
+			w, client, _, _ := mappingRigOn(t, pool, map[string]bool{})
 			repo := "acme/widgets"
 			if tc.heldFirst {
 				repo = "zeta/tools"
@@ -544,6 +572,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 // the issue. It is prepared as Dispatch now shows the issue, as a redelivered one is: the
 // withdrawal stands.
 func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, _, _ := mappingRig(t, map[string]bool{})
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
@@ -575,6 +604,8 @@ func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *t
 // record), and release_children's, prepared in place of no event, applies nothing. Either way the
 // record stays as it was, and the issue's later events, each with its own actor, carry it on.
 func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name          string
 		releasedFirst bool
@@ -583,8 +614,9 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 		{"release_children's view, an event recording the issue first", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, _, _ := mappingRig(t, map[string]bool{})
+			w, client, _, _ := mappingRigOn(t, pool, map[string]bool{})
 			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			apply := func(id string, fact intake.DispatchIssue) {
@@ -639,6 +671,7 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 // one read it asked for rather than asking again. A withdrawal meanwhile ends the hold: the
 // redelivery, prepared as Dispatch now shows the issue, records nothing and leaves no hold.
 func TestAHeldEventKeepsItsDeliveredSequenceAndAWithdrawalEndsItsHold(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, _, _ := mappingRig(t, map[string]bool{})
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
@@ -708,6 +741,23 @@ func quickInstallReads(t *testing.T) {
 	t.Cleanup(func() { installReadRetry = retry })
 }
 
+// refresherAtRest waits for refreshOnMappingChange to have nothing left to read of its own: no
+// repository awaiting an installation read, and none left to recover. Those two lists are the
+// whole of what arms its recheck, so a refresher that finds both empty parks on the next mapping
+// change and reads GitHub, Dispatch and the record no further — which is what a test asks for
+// before it reads a count that must not move again.
+//
+// What a test must never ask for is a multiple of installReadRetry: that is the production
+// backoff, 30 s doubling to ten minutes, and it is milliseconds here only because
+// quickInstallReads made it so. Waiting out ten of its caps buys the same confidence this does,
+// at the cost of the wait and of a test one edit away from running for a hundred minutes.
+func refresherAtRest(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	testwait.Eventually(t, "the refresher with nothing left to read of its own", func() bool {
+		return len(w.repositories.awaitingRead()) == 0 && len(w.recoveringReasons()) == 0
+	})
+}
+
 // served is whether w serves repo now.
 func served(w *workflowRuntime, repo string) bool {
 	_, refusal, _, _ := w.repositories.lookup(repo)
@@ -740,6 +790,9 @@ func repositoryNotes(t *testing.T, w *workflowRuntime, key string) []string {
 // Dispatch's listing and admits it on it. A served repository whose read fails stays served on its
 // last answer and holds nothing else back; once GitHub answers for it too, the daemon stops
 // reading again.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
@@ -800,7 +853,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	installs.setFailing(nil, "review acme/widgets")
 	testwait.Eventually(t, "acme/widgets read again", func() bool { return len(w.repositories.awaitingRead()) == 0 })
 	reads := installs.reads("review acme/widgets")
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := installs.reads("review acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more once GitHub answered, want the reads again to stop", got-reads)
 	}
@@ -809,6 +862,9 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 // A repository an App is not installed on (GitHub's 404) stays left out as before, read again only
 // while another repository's failed read is: once that one is served, nothing is read again until
 // a mapping change or an issue held for one asks.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
@@ -823,7 +879,7 @@ func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 		t.Fatalf("acme/widgets refusal = %q (left out %v), want the App it lacks", refusal, leftOut)
 	}
 	reads := installs.reads("review acme/widgets")
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := installs.reads("review acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more with only its 404 left, want no read again", got-reads)
 	}
@@ -833,6 +889,9 @@ func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 // not refused: no note is said on it, and once a read again serves the repository the daemon
 // recovers it from Dispatch's listing and admits it on it with no person's move. A root on a
 // repository GitHub says lacks an App is refused at boot with its note, as before.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestABootListingsRootOnARepositoryWhoseReadFailedIsAdmittedOnceItIsServed(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
@@ -890,6 +949,9 @@ func within(bound time.Duration, condition func() bool) bool {
 // GitHub answers for its repository, with no note on it. Left on the stream, the event kept the
 // consumer's acknowledgement floor below the boot's target, and no root of the boot's listing was
 // admitted on any repository until the failing one healed.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
@@ -947,6 +1009,9 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 // name GitHub last gave it and asks GitHub nothing more: its name read failing too, once the read
 // it holds is old, fails no read of the mapping, so another repository whose installation read
 // fails at boot is still served once GitHub answers for it.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -983,6 +1048,9 @@ func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testi
 // under a child of a live tree, both on a repository whose read failed, is recorded under the tree
 // once GitHub answers, whatever order their keys sort in (LEGION-100 sorts before LEGION-99) or
 // the listing's: the workflow records a child only under a recorded parent.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
@@ -1038,6 +1106,9 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 // for on a read of the mapping too, however long the whole check takes: only a read longer than
 // installReadAttempt is a failed read. A refresh bounded as a whole by appMintAttempt cut such a
 // check off, so a repository whose read failed once was never served.
+//
+// Not parallel: it assigns the production package variables appMintAttempt, installReadAttempt
+// and installReadRetry, which every test of the process shares.
 func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
 	quickInstallReads(t)
 	attempt, read := appMintAttempt, installReadAttempt
@@ -1149,6 +1220,9 @@ func serveAndRecover(t *testing.T, w *workflowRuntime, installs *installations) 
 // daemon reads nothing more and applies nothing more, and tells the controller nothing. The
 // per-issue hold kept the person's sub-issue held for good, reading and applying it at every
 // read of the mapping.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
@@ -1195,7 +1269,7 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 	}
 	listings, reads := client.listingCount(), installs.reads("implement zeta/tools")
 	facts := rowCount(t, w, "select count(*) from processed_events")
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := client.listingCount(); got != listings {
 		t.Fatalf("Dispatch listed %d times more once recovered, want none", got-listings)
 	}
@@ -1215,6 +1289,9 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 // over during the outage is admitted; one moved back to backlog during it is not, and its later
 // move to todo admits it once; one whose event was prepared while GitHub said an App was missing
 // and applied after the read failed is admitted too.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{missing: map[string]bool{"review zeta/tools": true}}
@@ -1272,6 +1349,9 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 // child of a live tree, is recovered with its parent: the child's own event recorded nothing, its
 // parent then unrecorded, and the recovery records both, parent first. The per-issue hold held
 // only the parent, and the child, already todo in Dispatch, was never recorded.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestAChildOnAServedRepositoryUnderAnUnreadParentIsRecovered(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -1297,6 +1377,9 @@ func TestAChildOnAServedRepositoryUnderAnUnreadParentIsRecovered(t *testing.T) {
 
 // A recovery whose read of Dispatch's listing fails stays to recover, and is tried again on the
 // refresher's backoff: the next listing records the issue, and none is read after it.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -1312,7 +1395,7 @@ func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 	if recordedIssue(t, w, key) == nil {
 		t.Fatalf("%s not admitted by the recovery's second listing", key)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := client.listingCount(); got != 2 {
 		t.Fatalf("Dispatch listed %d times, want two: the failed listing and the one that recovered", got)
 	}
@@ -1321,6 +1404,9 @@ func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 // A recovery while the Dispatch consumer is behind the stream holds its listing as the boot's is,
 // and admits the root once the consumer catches up, once; a second recovery in the same boot, on a
 // stream the consumer has caught up with, admits at once.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
@@ -1375,6 +1461,7 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 // s doubling to 10 min, and no more; once nothing waits it reads nothing of its own, and the next
 // failed read starts again at 30 s.
 func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var waits []time.Duration
 	var spin atomic.Bool
@@ -1445,6 +1532,9 @@ func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 // event of its own): the event's silence is noted with the repository it was silent for, and that
 // repository's recovery takes the issue in whatever it resolves to. Scoped by its resolution at
 // the recovery alone, it waited for the next boot.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -1469,6 +1559,9 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 // left for the repository the recovery still did not record, with what to release: here C, todo
 // under a backlog parent P, which the recovery records no child under. A child the recovery
 // recorded, E, is not named. Before, such a child stranded silently.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -1492,7 +1585,7 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 		!strings.Contains(notices[0], c+" (its parent "+p+" is not recorded: release "+p+" first, then "+c+")") || strings.Contains(notices[0], e) {
 		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s and %s, not %s", tree, notices, c, p, e)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
 		t.Fatalf("notices after the recovery = %d, want the one only", len(got))
 	}
@@ -1502,6 +1595,9 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 // that the daemon had not recorded yet is recorded with its parent once both happen: the parent's
 // own event records the parent, the recovery records the child, and the architect is told
 // nothing, since nothing is left unrecorded.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestARecoveryTellsNothingOnceAChildUnderALaggingTodoParentIsRecorded(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -1519,7 +1615,7 @@ func TestARecoveryTellsNothingOnceAChildUnderALaggingTodoParentIsRecorded(t *tes
 			t.Fatalf("%s = %+v once zeta/tools is recovered, want it recorded in %s's tree", key, got, tree)
 		}
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 0 {
 		t.Fatalf("notices after the recovery = %q, want none: nothing is left unrecorded", got)
 	}
@@ -1548,6 +1644,9 @@ func childEnvelope(t *testing.T, key, parent, repo string, id, seq int64) []byte
 // when the consumer runs, the parent's event records the parent, the hold releases, the child is
 // recorded, and nothing more is told. Before, the notice waited for the hold to release, so while
 // the hold lasted the child was neither recorded nor named.
+//
+// Not parallel: it assigns the production package variables installReadRetry and
+// recoveryHoldBound, which every test of the process shares.
 func TestARecoveryHeldPastItsBoundTellsItsReleaseWaitsOnce(t *testing.T) {
 	h := newHeldRecovery(t, 40*time.Millisecond, 300*time.Millisecond)
 	before := h.notices(t)
@@ -1681,6 +1780,9 @@ func (h *heldRecovery) notices(t *testing.T) int {
 // with the backoff's cap at 2 s and the bound at 500 ms, the notice comes about 500 ms after the
 // hold begins. The refresher cut its wait to the time left to the bound; before, the bound was
 // checked only when the backoff next fired, up to its cap later.
+//
+// Not parallel: it assigns the production package variables installReadRetry and
+// recoveryHoldBound, which every test of the process shares.
 func TestARecoveryHeldWithReleaseWaitsIsToldAtItsBoundNotItsBackoff(t *testing.T) {
 	h := newHeldRecovery(t, 2*time.Second, 500*time.Millisecond)
 	before := h.notices(t)
@@ -1701,6 +1803,9 @@ func TestARecoveryHeldWithReleaseWaitsIsToldAtItsBoundNotItsBackoff(t *testing.T
 // Here the consumer stays behind the stream, so each run's listing is held, and the hold poller
 // reads a position that has reached it, so each hold is released before the next run. A clock
 // that started anew at each hold released and made again never reached the bound.
+//
+// Not parallel: it assigns the production package variables installReadRetry and
+// recoveryHoldBound, which every test of the process shares.
 func TestARecoveryWhoseHoldFlapsIsToldOnceAtTheBound(t *testing.T) {
 	caughtUp := &failingPositionReader{position: intake.DispatchConsumerPosition{AckFloorStream: 1 << 40, Idle: true}}
 	h := newHeldRecovery(t, 100*time.Millisecond, time.Second, caughtUp)
@@ -1756,6 +1861,9 @@ func failPastTheBound(t *testing.T, fault, clear func(h *heldRecovery)) {
 // A held recovery whose Dispatch listing keeps failing once its bound has passed waits the
 // refresher's backoff between runs, and tells its waits once the listing answers. Before, the wait
 // cut to the bound's zero time left made every failed run re-run at once.
+//
+// Not parallel: it assigns the production package variables installReadRetry and
+// recoveryHoldBound, which every test of the process shares.
 func TestARecoveryWhoseListingFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 	failPastTheBound(t, func(h *heldRecovery) {
 		h.client.mu.Lock()
@@ -1769,6 +1877,9 @@ func TestARecoveryWhoseListingFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 }
 
 // The same when the write of the recovery's notice keeps failing past the bound.
+//
+// Not parallel: it assigns the production package variables installReadRetry and
+// recoveryHoldBound, which every test of the process shares.
 func TestARecoveryWhoseNoticeFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 	failPastTheBound(t, func(h *heldRecovery) { h.failNotice.Store(true) }, func(h *heldRecovery) { h.failNotice.Store(false) })
 }

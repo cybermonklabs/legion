@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -36,6 +37,7 @@ import (
 // timeout. Once the turn ends, or that expiry ends a turn that never does, the new tree's architect
 // launches and the role resumes its session in the new tree.
 func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	carries := []struct {
 		name string
@@ -63,10 +65,12 @@ func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.
 		{"with nothing held and a turn that never ends", false, lingerExpires},
 		{"with the close's suspension held and the operator stopping a hung turn", true, operatorStops},
 	}
+	pool, reset := tableDatabase(t)
 	for _, cc := range carries {
 		for _, sc := range stops {
 			t.Run(cc.name+"/"+sc.name, func(t *testing.T) {
-				carriedChildStops(t, rootKey, childKey, cc.carry, sc.closeHeld, sc.end)
+				reset(t)
+				carriedChildStops(t, pool, rootKey, childKey, cc.carry, sc.closeHeld, sc.end)
 			})
 		}
 	}
@@ -84,15 +88,14 @@ const (
 	operatorStops turnEnd = "operator"
 )
 
-// carriedChildStops runs one case of TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches:
-// carry moves the child, closeHeld holds the close's suspension in memory first, and end says how
-// the role's turn in the old tree ends.
-func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply func(id string, fact intake.Fact)), closeHeld bool, end turnEnd) {
+// carriedChildStops runs one case of TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches
+// on a database the caller already holds: carry moves the child, closeHeld holds the close's
+// suspension in memory first, and end says how the role's turn in the old tree ends.
+func carriedChildStops(t *testing.T, pool *pgxpool.Pool, rootKey, childKey string, carry func(apply func(id string, fact intake.Fact)), closeHeld bool, end turnEnd) {
 	// stopTimeout is the machines' stop timeout, and linger the old root's time left to linger, each a
 	// wait no other timer of the test is armed for, so firing one fires only the held suspension's.
 	const stopTimeout, linger = 7 * time.Second, time.Hour
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	// Whole seconds, so the linger expiry Postgres stores (to the microsecond) reads back as set, and
 	// the deadline the daemon names from it is armed as exactly linger from the machines' start.
@@ -285,6 +288,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 // the cluster. The check before a start reads each claim's view, which only Retree changes, and
 // goes on while the issue's architect launches.
 func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
+	t.Parallel()
 	sup, fakeRuntime := newOutboxSupervisor(t, "legion", t.TempDir())
 	rt := newStallingRuntime(t, fakeRuntime, false)
 	sup.deps.Runtime = rt
@@ -294,7 +298,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 	go func() { _ = machine.Handle(context.Background(), supervise.RequestSpawn{Claim: architect}) }()
 	select {
 	case <-rt.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the architect's launch never reached the runtime")
 	}
 	runner := &outbox{log: quietLogger(), supervisor: sup, project: "legion"}
@@ -307,7 +311,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the check before a start of LEGION-1 in its own tree = %v, want nothing to wait for", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatal("the check before a start waited on its architect's launch in the runtime")
 	}
 }
@@ -317,6 +321,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 // lingers, or none recorded, leaves no close to wait for, so the stop is bounded at the stop timeout
 // from now, as an operator's is.
 func TestACarriedRolesStopDeadlineIsItsOldRootsLingerExpiry(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 13, 1, 0, 0, 0, time.UTC)
 	until := now.Add(17 * time.Minute)
 	const stop = 10 * time.Second

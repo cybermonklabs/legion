@@ -30,16 +30,30 @@ func bit(sig syscall.Signal) uint64 { return 1 << (uint(sig) - 1) }
 
 func bare(command string) string { return command }
 
+// requireProcStatus skips t where this kernel's /proc/self/status cannot answer what these tests
+// read: a process's ignored-signal mask. The file existing is not enough — gVisor, which a Legion
+// issue pod runs under, serves it without a SigIgn line at all, and a test that only stat'd it
+// then failed parsing "" rather than saying what the machine could not give it.
 func requireProcStatus(t *testing.T) {
 	t.Helper()
-	if _, err := os.Stat("/proc/self/status"); err != nil {
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
 		t.Skip("no /proc/self/status to read a child's signal dispositions from")
 	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		if strings.HasPrefix(line, "SigIgn:") {
+			return
+		}
+	}
+	t.Skip("this kernel's /proc/self/status carries no SigIgn line, so a child's ignored-signal mask cannot be read here (gVisor, which a Legion issue pod runs under, is one)")
 }
 
 // The attempt's SIGTTOU immunity ends with it: a child started after release - the controller's
 // Oh My Pi - is stopped by SIGTTOU again rather than inheriting SIG_IGN, which signal.Reset alone
 // leaves in place.
+//
+// Not parallel: it changes or reads this process's own signal dispositions, which every test of
+// the process shares.
 func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 	requireProcStatus(t)
 	before := ignoredBy(t, bare)
@@ -66,6 +80,9 @@ func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 
 // At the terminal the attempt ignores SIGTSTP, so a Ctrl-Z cannot stop the terminal's foreground
 // job while this process waits in the background; an attempt run as the daemon's are does not.
+//
+// Not parallel: it changes or reads this process's own signal dispositions, which every test of
+// the process shares.
 func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
 	requireProcStatus(t)
 	var background *terminalJob
@@ -85,6 +102,7 @@ func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
 // Oh My Pi does, caught it and exited 130; any other end is judged as an answer, and an attempt
 // away from a terminal is never an interrupt.
 func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
+	t.Parallel()
 	ended := func(script string) *os.ProcessState {
 		t.Helper()
 		cmd := exec.Command("sh", "-c", script)
@@ -118,6 +136,7 @@ func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
 // the signal rather than reading it from the launch's status. Without a Ctrl-C the launch's own
 // status comes through.
 func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
+	t.Parallel()
 	job := &terminalJob{}
 	// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
 	launch := `exec sh -c 'trap "" INT; sleep 1; exit 0'`
@@ -155,6 +174,7 @@ func (c *chunks) Write(p []byte) (int, error) {
 
 // The terminal sees the attempt's stderr as it arrives, without the load probe's report.
 func TestTheTerminalCopyDropsTheProbesReportAndShowsAPromptAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		writes []string

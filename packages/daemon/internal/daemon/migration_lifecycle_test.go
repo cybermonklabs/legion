@@ -21,6 +21,7 @@ import (
 // The two halves are one rule: the fact is carried where it is missing, and a row that already
 // stands is left exactly as it is, since its epoch is the one the tree's claims carry.
 func TestTheMigrationCarriesEachRunningTreesLivenessAndKeepsTheRowsItFinds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()

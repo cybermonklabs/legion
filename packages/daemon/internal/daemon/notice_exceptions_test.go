@@ -87,10 +87,15 @@ func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
 // again, counted as one re-send and published under the key of the row it copies, so a session that
 // did get the forward recognises the copy. Every report is queued, a late receipt from the claim's
 // own session too: a Go relaunch resumes the session id, so that report may come from the stopped
-// process. The first copy is due at once when the architect's agent has said it is ready
-// (supervise.SaidReady), whichever session the forward went to, since that ready will not come
-// again to release it; otherwise it waits the first re-send delay.
+// process. The copy is written due at the moment the re-hold decides, and the row runs then: at
+// once for an architect whose agent has said it is ready, and otherwise after the first re-send
+// delay. Which claim and which report make which moment is
+// TestWhatAFailedForwardLeavesItsNotice's and TestWhenACopyIsDueAtOnce's; the two rows here are
+// the two moments, each carried from the decision to the row Postgres holds and on to the
+// delivery.
 func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, reason       string
 		architect          supervise.ClaimState
@@ -98,17 +103,10 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 		due                time.Duration
 	}{
 		{"a failed forward to the live session", "delivery_failed", supervise.StateWorking, "ses_live", "ses_live", 0},
-		{"a late receipt from the live session", "receipt_timeout", supervise.StateIdle, "ses_live", "ses_live", 0},
-		{"a holder that lapsed, the role taken since", "no_holder", supervise.StateWorking, "ses_live", "", 0},
 		{"a holder that lapsed, the claim relaunching", "no_holder", supervise.StateLaunching, "", "", noticeReholdDelays[0]},
-		{"a late receipt while the claim relaunches", "receipt_timeout", supervise.StateLaunching, "", "ses_stopped", noticeReholdDelays[0]},
-		{"a late receipt from the stopped session after the new one registered", "receipt_timeout", supervise.StateRegistered, "ses_new", "ses_stopped", noticeReholdDelays[0]},
-		{"a late receipt from the stopped session after the new one is ready", "receipt_timeout", supervise.StateReady, "ses_new", "ses_stopped", 0},
-		{"a late receipt from a resumed session before it said ready", "receipt_timeout", supervise.StateRegistered, "ses_arch", "ses_arch", noticeReholdDelays[0]},
-		{"a late receipt from a resumed session that said ready inside the receipt window", "receipt_timeout", supervise.StateReady, "ses_arch", "ses_arch", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -160,6 +158,8 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 // the re-send delay is held, its lane's wait armed for the delay, and goes once the delay has
 // passed on the clock.
 func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, reason       string
 		architect          supervise.ClaimState
@@ -170,7 +170,7 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 		{"a copy due after the re-send delay", "no_holder", supervise.StateLaunching, "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			noticeTree(t, pool, record.NewStore(), false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", tc.architect, tc.session)
@@ -218,6 +218,7 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 // The listener's report echoes the summary and dedupe key the executor published the notice with,
 // and the re-hold reads both back: a report of the executor's own publish is queued again.
 func TestAReportOfTheExecutorsOwnPublishIsQueuedAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -250,8 +251,10 @@ func TestAReportOfTheExecutorsOwnPublishIsQueuedAgain(t *testing.T) {
 // worker's role, the merge queue's READY, another publisher's key, a summary that is not the
 // executor's own, a payload that is not a notice — is someone else's, and changes nothing.
 func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
+	t.Parallel()
 	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}
 	root := "notifications.role.legion-legion-legion-1-architect"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		report laneReport
@@ -266,7 +269,7 @@ func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 		{"a payload that is not a notice", laneReport{"evt-exception", "delivery_failed", root, "pr-blocked on LEGION-2", map[string]string{"kind": "pr-blocked", "packet": "READY"}, "legion-outbox:7", "ses_live"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: record.NewStore(), supervisor: sup, project: "legion", now: time.Now}
@@ -286,46 +289,34 @@ func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 // this is routine rather than exceptional: the row was answered 404 and is still held, retrying on
 // its own backoff, so the report queues no copy — which would send the notice twice — and raises no
 // error, since calling a well-formed report malformed would log one ERROR per refusal on the lane
-// an operator watches for real re-hold failures. Every other reason is still refused.
+// an operator watches for real re-hold failures. Which reasons are the listener's refusal and
+// which are refused as malformed is TestWhatAListenersReasonSaysOfItsPublish's; what one such
+// report leaves behind is here.
 func TestAReportOfAPublishTheListenerRefusedQueuesNothingAndIsNoError(t *testing.T) {
+	t.Parallel()
 	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}
 	topic := "notifications.role.legion-legion-legion-1-architect"
-	for _, tc := range []struct {
-		name, reason, recipient string
-		refused                 bool
-	}{
-		{"a role nothing claims", "unclaimed", "", true},
-		{"a claim whose holder is no longer live", "holder_lapsed", "ses_lapsed", true},
-		{"a reason this daemon does not know", "some_new_reason", "ses_live", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			noticeTree(t, pool, records, false)
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
-			var logged bytes.Buffer
-			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
-				supervisor: sup, project: "legion", now: time.Now}
-			report := laneReport{"evt-refused", tc.reason, topic, "pr-blocked on LEGION-2", notice, "legion-outbox:7", tc.recipient}
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, false)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
+	var logged bytes.Buffer
+	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
+		supervisor: sup, project: "legion", now: time.Now}
+	report := laneReport{"evt-refused", "unclaimed", topic, "pr-blocked on LEGION-2", notice, "legion-outbox:7", ""}
 
-			err := runner.rehold(context.Background(), report.envelope(t))
-			if tc.refused && err != nil {
-				t.Fatalf("rehold a %s report = %v, want no error", tc.reason, err)
-			}
-			if !tc.refused && err == nil {
-				t.Fatalf("rehold a %s report = nil, want it refused as malformed", tc.reason)
-			}
-			if got := queuedNotices(t, pool); len(got) != 0 {
-				t.Fatalf("queued %v after a %s report, want nothing: its row retries on its own", got, tc.reason)
-			}
-			// The handler is at slog's default Info level, so the quiet branch's debug line is the only
-			// thing it may say: any louder line, a WARN included, is one every few hundred
-			// milliseconds at hundreds of unheld roles, about a state the executor already handles.
-			if tc.refused && logged.Len() != 0 {
-				t.Fatalf("a %s report logged at Info or above, want nothing:\n%s", tc.reason, logged.String())
-			}
-		})
+	if err := runner.rehold(context.Background(), report.envelope(t)); err != nil {
+		t.Fatalf("rehold an unclaimed report = %v, want no error", err)
+	}
+	if got := queuedNotices(t, pool); len(got) != 0 {
+		t.Fatalf("queued %v after an unclaimed report, want nothing: its row retries on its own", got)
+	}
+	// The handler is at slog's default Info level, so the quiet branch's debug line is the only
+	// thing it may say: any louder line, a WARN included, is one every few hundred
+	// milliseconds at hundreds of unheld roles, about a state the executor already handles.
+	if logged.Len() != 0 {
+		t.Fatalf("an unclaimed report logged at Info or above, want nothing:\n%s", logged.String())
 	}
 }
 
@@ -334,6 +325,7 @@ func TestAReportOfAPublishTheListenerRefusedQueuesNothingAndIsNoError(t *testing
 // with a fresh event id. A copy is published under the key of the row it copies, so the report of
 // the copy is queued again too. A report that cannot be read is refused.
 func TestARowCopyIsQueuedOnceAndAnUnreadableReportIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: record.NewStore(), supervisor: sup, project: "legion", now: time.Now}
@@ -370,6 +362,7 @@ func TestARowCopyIsQueuedOnceAndAnUnreadableReportIsRefused(t *testing.T) {
 // times: a holder that keeps its registration alive but never confirms a delivery would otherwise
 // be sent copies without end. The report of the third copy is logged once and queues nothing.
 func TestANoticeIsQueuedAgainAtMostThreeTimes(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	var logged bytes.Buffer
@@ -416,6 +409,7 @@ func noticeRowID(t *testing.T, pool *pgxpool.Pool) int64 {
 // noticeReholdDelays, under the key of the row it copies — and the row that drew the answer
 // finishes. The answer to the third copy is logged once and queues nothing.
 func TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedule(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -467,9 +461,11 @@ func TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedul
 // publish while a deployment rolls its listeners), in either order, or the same answer twice (a
 // row run again after its lease expired). Each marks the publish's key and copy count processed.
 func TestOneNoticePublishIsQueuedAgainOnceFromAnswersAndExceptions(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, steps := range [][]string{{"answer", "exception"}, {"exception", "answer"}, {"answer", "answer"}} {
 		t.Run(strings.Join(steps, " then "), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -511,6 +507,7 @@ func TestOneNoticePublishIsQueuedAgainOnceFromAnswersAndExceptions(t *testing.T)
 // re-held and spends none of the three copies: it fails and is retried on its backoff as long as
 // the answer lasts, so an outage drops nothing, and goes once the listener can forward it.
 func TestANoticeTheListenerCouldNotForwardAtAllIsRetriedWithoutACap(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -560,6 +557,7 @@ func TestANoticeTheListenerCouldNotForwardAtAllIsRetriedWithoutACap(t *testing.T
 // log line naming the notice and the holder, and queues no copy, so it holds no later notice to the
 // architect behind the fence.
 func TestANoticeTheHolderRefusesFinishesUndelivered(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -588,6 +586,7 @@ func TestANoticeTheHolderRefusesFinishesUndelivered(t *testing.T) {
 // fence. The publisher is the daemon's own HTTPPublisher, answered with the body the publish route
 // writes for the denial.
 func TestANoticeTheListenerIsDeniedToForwardFinishesUndelivered(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -617,6 +616,8 @@ func TestANoticeTheListenerIsDeniedToForwardFinishesUndelivered(t *testing.T) {
 // queued before the close finishes without publishing when it runs. Each says so in one line
 // naming the notice, and neither reports a forwarding failure.
 func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -625,7 +626,7 @@ func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing
 		{"the architect's claim retired", supervise.StateRetired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, true)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -666,6 +667,7 @@ func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing
 // report writes the controller notice, a second report of the same publish and the copy queued
 // before the close write none, and the controller is told once; the architect is told nothing.
 func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -719,6 +721,7 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 // The report arrives over core NATS on the original role topic's exceptions subject; the
 // subscription hears it there and queues the notice again.
 func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-1", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
@@ -764,9 +767,11 @@ func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
 // registration has lapsed, so an architect that takes the role back after four minutes, or after
 // seven, still receives the notice once, and nothing is dropped at the cap.
 func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, relaunch := range []time.Duration{4 * time.Minute, 7 * time.Minute} {
 		t.Run(relaunch.String(), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -819,12 +824,14 @@ func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
 // relaunch resumes the claim's session file, so the relaunched agent registers the same session id
 // the stopped one had; a relaunch onto a new session is released the same way.
 func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct{ name, stopped, relaunched string }{
 		{"the session resumed", "ses_arch", "ses_arch"},
 		{"a new session", "ses_stopped", "ses_new"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -890,6 +897,7 @@ func architectTopicToken(t *testing.T, issue string) claim.Token {
 // copy or one held on the outbox's backoff; a notice owned by another architect of the tree keeps
 // its time. One release serves every architect that became ready, each in its own tree.
 func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -937,6 +945,7 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 // The ready route's hook only records a ready architect, so the agent's ready is answered without
 // waiting on a release; the workflow's release loop then releases the architect's waiting notice.
 func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -982,6 +991,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 // schedule, not a few seconds, before the cap drops it. The run ticks every 5 seconds, so a copy
 // due at once goes on the next tick.
 func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -1034,48 +1044,11 @@ func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
 	}
 }
 
-// A later copy whose report names a session other than the one the claim is ready on went to a
-// session the role has since left, so it is due at once, as the first copy is: waiting its delay
-// would hold the live architect's later notices behind it. A later copy that failed on the claim's
-// own ready session keeps its delay, since that session may be the one hearing nothing, and so
-// does one whose report names no session: the listener names none when the role had no holder or
-// it could not read the holder, which says nothing about where the role went.
-func TestALaterCopyToAnArchitectBackOnAnotherSessionIsDueAtOnce(t *testing.T) {
-	for _, tc := range []struct {
-		name, reason, recipient string
-		due                     time.Duration
-	}{
-		{"the report names the session the role left", "receipt_timeout", "ses_stopped", 0},
-		{"the report names the claim's own ready session", "receipt_timeout", "ses_new", noticeReholdDelays[1]},
-		{"a lapsed holder, naming no session", "no_holder", "", noticeReholdDelays[1]},
-		{"a failed holder read, naming no session", "delivery_failed", "", noticeReholdDelays[1]},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaimOn(t, sup, "LEGION-1", supervise.StateReady, "ses_new")
-			clock := time.Now()
-			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: record.NewStore(), supervisor: sup, project: "legion", now: func() time.Time { return clock }}
-			copied := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap", Resends: 1}
-			report := laneReport{"evt-exception", tc.reason, architectTopic(t, "LEGION-1"), "pr-blocked on LEGION-2", copied, "legion-outbox:7", tc.recipient}
-			if err := runner.rehold(context.Background(), report.envelope(t)); err != nil {
-				t.Fatalf("rehold: %v", err)
-			}
-			var nextAt time.Time
-			if err := pool.QueryRow(context.Background(), "select next_at from outbox where kind = 'notice'").Scan(&nextAt); err != nil {
-				t.Fatalf("read the re-held row: %v", err)
-			}
-			if !nextAt.Equal(clock.Add(tc.due).Truncate(time.Microsecond)) {
-				t.Fatalf("the second copy is due %s; want %s", nextAt, clock.Add(tc.due))
-			}
-		})
-	}
-}
-
-// A copy is due at once only while the architect's agent has said it is ready, and then only the
-// first copy, or a later one whose report names a session other than the one the claim is ready
-// on. A later copy that failed on the claim's own session, or whose report names no session, waits.
+// A copy is due at once only while the architect's agent has said it is ready, and then only the first
+// copy, or a later one whose report names a session other than the one the claim is ready on. A
+// later copy that failed on the claim's own session, or whose report names no session, waits.
 func TestWhenACopyIsDueAtOnce(t *testing.T) {
+	t.Parallel()
 	claimOn := func(state supervise.ClaimState) supervise.Claim {
 		return supervise.Claim{State: state, Session: "ses_arch"}
 	}
@@ -1107,12 +1080,98 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 	}
 }
 
+// What a failed forward leaves its notice, over the three verdicts and the copy's moment: an
+// architect that stopped with its finished tree is told nothing more and the decision is parked;
+// a notice already queued again the most times a notice is spends its last copy; and anything
+// else is copied, due at once while the architect's agent has said it is ready (copyDueAtOnce) and
+// after the next of noticeReholdDelays otherwise. A lingering tree decides nothing while its
+// architect has still said it is ready, which is why reholdNotice reads the tree only when it does
+// not.
+func TestWhatAFailedForwardLeavesItsNotice(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	view := func(state supervise.ClaimState, stopping bool) supervise.ClaimView {
+		return supervise.ClaimView{Claim: supervise.Claim{State: state, Session: "ses_arch"}, Stopping: stopping}
+	}
+	for _, tc := range []struct {
+		name      string
+		held      supervise.ClaimView
+		lingers   bool
+		resends   int
+		recipient string
+		want      reholdVerdict
+		due       time.Duration
+	}{
+		{name: "a working architect, the first copy from another session", held: view(supervise.StateWorking, false), recipient: "ses_old", want: reholdCopy},
+		{name: "a relaunching architect", held: view(supervise.StateLaunching, false), recipient: "", want: reholdCopy, due: noticeReholdDelays[0]},
+		{name: "a later copy on the claim's own session", held: view(supervise.StateReady, false), resends: 1, recipient: "ses_arch", want: reholdCopy, due: noticeReholdDelays[1]},
+		{name: "the last copy", held: view(supervise.StateLaunching, false), resends: 2, recipient: "", want: reholdCopy, due: noticeReholdDelays[2]},
+		{name: "a notice queued again the most times", held: view(supervise.StateWorking, false), resends: len(noticeReholdDelays), recipient: "ses_arch", want: reholdSpent},
+		{name: "a suspended architect whose tree lingers", held: view(supervise.StateSuspended, false), lingers: true, want: reholdParked},
+		{name: "a retired architect whose tree lingers", held: view(supervise.StateRetired, false), lingers: true, want: reholdParked},
+		{name: "an architect being stopped as its tree lingers", held: view(supervise.StateWorking, true), lingers: true, want: reholdParked},
+		{name: "a lingering tree whose architect is still ready", held: view(supervise.StateWorking, false), lingers: true, recipient: "ses_old", want: reholdCopy},
+		{name: "a suspended architect whose tree does not linger", held: view(supervise.StateSuspended, false), recipient: "", want: reholdCopy, due: noticeReholdDelays[0]},
+		{name: "the last copy to an architect stopped with its tree", held: view(supervise.StateRetired, false), lingers: true, resends: len(noticeReholdDelays), want: reholdParked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict, due := reholdTarget(tc.held, tc.lingers, tc.resends, tc.recipient, now)
+			if verdict != tc.want {
+				t.Fatalf("reholdTarget(%s lingers=%t, %d copies, report from %q) = verdict %d, want %d",
+					tc.held.State, tc.lingers, tc.resends, tc.recipient, verdict, tc.want)
+			}
+			if tc.want != reholdCopy {
+				return
+			}
+			if !due.Equal(now.Add(tc.due)) {
+				t.Fatalf("the copy is due %s, want %s", due, now.Add(tc.due))
+			}
+		})
+	}
+}
+
+// What the reason of a listener's report says became of the publish it names: the three the
+// listener uses for a forward it took and could not complete are re-held; the reasons it refuses
+// a publish with, before forwarding anything, queue nothing, since the row it answered 404 is
+// still held and retries on its own; and any other reason is refused as malformed.
+func TestWhatAListenersReasonSaysOfItsPublish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		reason    string
+		refused   bool
+		malformed bool
+	}{
+		{reason: "delivery_failed"},
+		{reason: "no_holder"},
+		{reason: "receipt_timeout"},
+		{reason: "unclaimed", refused: true},
+		{reason: "holder_lapsed", refused: true},
+		{reason: "some_new_reason", malformed: true},
+		{reason: "", malformed: true},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			refused, err := refusedPublish(tc.reason)
+			if tc.malformed {
+				if !errors.Is(err, errNoticeException) {
+					t.Fatalf("refusedPublish(%q) = %v, want it refused as malformed", tc.reason, err)
+				}
+				return
+			}
+			if err != nil || refused != tc.refused {
+				t.Fatalf("refusedPublish(%q) = %t, %v; want %t and no error", tc.reason, refused, err, tc.refused)
+			}
+		})
+	}
+}
+
 // A catch-up whose forward failed is superseded once a newer one exists for the claim: the
 // architect's claim is ready at a later launch, whose ready wrote a catch-up of its own, queued or
 // already delivered (claimReady), or the root is re-admitted at a later generation, whose start
 // writes one. A copy would reach the architect after that fresh catch-up, so none is queued. A
 // catch-up nothing superseded may be the architect's only one, and is re-held as any notice is.
 func TestAReheldCatchUpNeverFollowsANewerOne(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name       string
 		state      supervise.ClaimState
@@ -1127,7 +1186,7 @@ func TestAReheldCatchUpNeverFollowsANewerOne(t *testing.T) {
 		{"the root re-admitted at a later generation", supervise.StateReady, 2, 2, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-1", Title: "Root", Phase: phase.Implementing, Generation: tc.generation, Status: "in_progress"}
@@ -1164,6 +1223,7 @@ func TestAReheldCatchUpNeverFollowsANewerOne(t *testing.T) {
 // the claim and the root it reads when it runs the row, so the stale copy finishes without a
 // publish and the architect is told the fresh catch-up alone.
 func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -1215,6 +1275,7 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 // claim for — and the notice is lost. Both answers come from a listener answering as the real
 // one does, since the notice's fate turns on how that body is read.
 func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
+	t.Parallel()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{supervisor: sup, log: quietLogger()}
 	architect := claim.Token("legion-LEGION-2-architect")
@@ -1255,6 +1316,7 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 // listener reported, and never "outbox row failed" — an unresponsive holder is the session's box
 // under load, not a fault of the daemon's, and the row is tried again until its heartbeats land.
 func TestAnUnresponsiveArchitectsNoticeIsLoggedAsAWaitNotAFailedRow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)

@@ -43,6 +43,7 @@ func openSpecGate(root string, version int) record.DesignGate {
 // never ran such a root is still left alone: its gate stands at no open step, and replaying the
 // event log below its own admission handout is history this release must not replay.
 func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
+	t.Parallel()
 	pool, w := catchUpRig(t, &awaitingDispatch{}, 2)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		for _, issue := range []record.Issue{

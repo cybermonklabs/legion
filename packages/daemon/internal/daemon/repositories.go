@@ -330,12 +330,25 @@ func (r *repositories) awaitingRead() []string {
 // repository caches (none under tmux): each on the mapped repository it is for, matched whatever
 // the case, and the rest, caches of repositories the mapping no longer names, listed apart.
 func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
+	return settingsView(r.Owners(), r.Mapped(), r.Refused(), r.WithoutWebhookApp(), caches)
+}
+
+// settingsView is the mapping as the settings page shows it, composed from the four readings the
+// state holds — the owners minted for, the repositories mapped to the project, those refused
+// with why, and those served without Dispatch's own GitHub App — and the runtime's repository
+// caches. A cache goes on the mapped repository it is for, matched whatever the case, and the
+// caches of repositories the mapping no longer names are listed apart.
+//
+// It is separate from view because view's work is reading those four under the mapping's lock,
+// each a snapshot of state that moves, while what the page shows is decided by the five values
+// alone and is the same whether they come from a running daemon or a test's own lists.
+func settingsView(owners []string, mapped []mappedRepository, refused []refusedRepository, gaps []webhookAppGap, caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := map[string]sandbox.CacheStatus{}
 	for _, cache := range caches {
 		byRepo[strings.ToLower(cache.Repo.String())] = cache
 	}
-	view := api.RepositoriesView{Owners: r.Owners()}
-	for _, mapped := range r.Mapped() {
+	view := api.RepositoriesView{Owners: owners}
+	for _, mapped := range mapped {
 		entry := api.MappedRepositoryView{Repo: mapped.Repo.String(), Default: mapped.Default}
 		key := strings.ToLower(mapped.Repo.String())
 		if cache, held := byRepo[key]; held {
@@ -344,10 +357,10 @@ func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
 		}
 		view.Mapped = append(view.Mapped, entry)
 	}
-	for _, refused := range r.Refused() {
+	for _, refused := range refused {
 		view.Refused = append(view.Refused, api.RefusedRepositoryView{Repo: refused.Repo, Reason: refused.Reason})
 	}
-	for _, gap := range r.WithoutWebhookApp() {
+	for _, gap := range gaps {
 		view.WithoutWebhookApp = append(view.WithoutWebhookApp, api.WebhookAppGapView{Repo: gap.Repo, Reason: gap.Reason})
 	}
 	for _, cache := range caches {
@@ -1415,15 +1428,30 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // nothing else heard names, as the pair configures it, so a restart subscribes with no read of
 // GitHub.
 func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, served []ghrepo.Repository) ([]ghrepo.Repository, error) {
-	heard := map[string]ghrepo.Repository{}
-	for _, repo := range served {
-		heard[strings.ToLower(repo.String())] = repo
-	}
 	issues, err := w.records.Issues(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)
 	}
-	for _, issue := range issues {
+	return heardRepositorySet(served, issues, w.repositories.renames)
+}
+
+// heardRepositorySet is the set heardRepositories answers with, over the repositories served and
+// the records read: every name once, sorted without case, each spelled as GitHub spells it. A
+// record's name is added only where nothing served already names it without case, and a
+// configured pair's partner only where nothing heard names that side at all, so the spelling
+// GitHub itself gave always wins over the pair's, which NATS would otherwise match against no
+// published subject. Both sides of a pair are read before either is added, so neither addition is
+// seen by the other's test.
+//
+// It is separate from heardRepositories because the method's work is the one read of the records
+// inside the caller's transaction, while the set is decided by what that read answered: a union
+// of three lists under one rule about spelling, which needs no database to state.
+func heardRepositorySet(served []ghrepo.Repository, recorded []record.Issue, renames ghrepo.Renames) ([]ghrepo.Repository, error) {
+	heard := map[string]ghrepo.Repository{}
+	for _, repo := range served {
+		heard[strings.ToLower(repo.String())] = repo
+	}
+	for _, issue := range recorded {
 		if _, ok := heard[strings.ToLower(issue.GitHubRepo)]; ok {
 			continue
 		}
@@ -1434,13 +1462,8 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 		heard[strings.ToLower(repo.String())] = repo
 	}
 	// One pass over the configured pairs, not over everything heard: a deployment configures no
-	// pair at all nearly always, and this runs at every boot and consumer re-open. A partner is
-	// added only when nothing heard already names it, so the spelling GitHub itself gave — the
-	// served repository's (nameAccepted) or a record's — always wins over the pair's, which NATS
-	// would otherwise match against no published subject at all; the pair's spelling is used only
-	// for a name nothing else names. Both sides are read before either is added, so neither
-	// addition is seen by the other's test.
-	for _, pair := range w.repositories.renames.Pairs() {
+	// pair at all nearly always, and this runs at every boot and consumer re-open.
+	for _, pair := range renames.Pairs() {
 		from, to := strings.ToLower(pair.From.String()), strings.ToLower(pair.To.String())
 		_, heardFrom := heard[from]
 		_, heardTo := heard[to]

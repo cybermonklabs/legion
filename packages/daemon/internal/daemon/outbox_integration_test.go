@@ -29,6 +29,7 @@ import (
 )
 
 func TestOutboxLeaseLetsOnlyOneRunnerExecuteDueRow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -58,6 +59,7 @@ func TestOutboxLeaseLetsOnlyOneRunnerExecuteDueRow(t *testing.T) {
 }
 
 func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -85,6 +87,7 @@ func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
 // soon as the lease has lapsed; a row due later runs when its moment comes on the clock, and the
 // sweep's tick before then leaves it alone.
 func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -133,6 +136,7 @@ func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
 }
 
 func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -207,8 +211,9 @@ func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
 }
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
-// template (testpg.ClonePool). The rigs' own stores share the package's run database instead
-// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
+// template (testpg.ClonePool), for a test that reads the outbox table itself: its daemon is
+// pointed at this same database (cfg.PostgresDSN) rather than at the clone testDSN made, so the
+// rows the test counts are the rows that daemon wrote.
 func isolatedOutboxPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return testpg.ClonePool(t, "legion_outbox_test")
@@ -285,32 +290,6 @@ func (d *blockingDispatch) count() int {
 	return d.writes
 }
 
-// One issue's status writes reach Dispatch in the order the workflow made them. Before, a newer row
-// ran while an older one backed off, found the board at a status it did not expect, took that for a
-// human's change and finished unwritten; the older row then wrote, leaving the board a phase behind.
-func TestOutboxWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	now := time.Now().UTC()
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.StatusWrite{ObservedStatus: "in_progress", Status: "testing"}, now))
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.StatusWrite{ObservedStatus: "testing", Status: "needs_review"}, now))
-	board := &boardDispatch{status: "in_progress", failures: 1}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, now: func() time.Time { return now }}
-
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	runner.now = func() time.Time { return now.Add(time.Minute) }
-	for range 3 {
-		if err := runner.RunOnce(context.Background()); err != nil {
-			t.Fatalf("run: %v", err)
-		}
-	}
-	if board.status != "needs_review" || outboxRows(t, pool) != 0 {
-		t.Fatalf("board = %q with %d rows left, want needs_review and none", board.status, outboxRows(t, pool))
-	}
-}
-
 // A status Dispatch refuses outright — the issue is gone, or the status is one it will not take —
 // can never be written, and an issue's status writes run one at a time: retried forever, it held
 // every later status of that issue behind it, so nothing the workflow decided afterwards ever
@@ -319,6 +298,7 @@ func TestOutboxWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T
 // ordinary rule: this one finds the board at a status neither its own nor the one it was made
 // from, takes that for someone else's move, and leaves it.
 func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -369,6 +349,8 @@ func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *te
 // status of that issue for good, which is the one outcome this outbox exists to prevent. Each
 // case names the arm that saves it, so deleting one fails here.
 func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		refusal *dispatch.Error
@@ -379,7 +361,7 @@ func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *tes
 		{"a parent a concurrent reparent moved at every attempt", &dispatch.Error{Status: 409, Code: dispatch.ParentContended, Message: "LEGION-208's parent changed at each of 2 attempts while this request waited to lock it, so nothing was applied: read the issue and retry"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			now := time.Now().UTC()
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.StatusWrite{ObservedStatus: "in_progress", Status: "testing"}, now))
@@ -460,57 +442,13 @@ func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) erro
 	return nil
 }
 
-// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
-type boardDispatch struct {
-	status   string
-	failures int
-}
-
-func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
-	return nil, nil
-}
-func (d *boardDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
-	return dispatch.Issue{Key: key, Status: d.status}, nil
-}
-func (d *boardDispatch) SetStatus(_ context.Context, _ string, status string) (dispatch.Issue, error) {
-	if d.failures > 0 {
-		d.failures--
-		return dispatch.Issue{}, errors.New("Dispatch down")
-	}
-	d.status = status
-	return dispatch.Issue{}, nil
-}
-func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error {
-	return errors.New("boardDispatch takes no hand-over")
-}
-func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
-	return errors.New("boardDispatch releases no claim")
-}
-func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
-func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
-	return nil, nil
-}
-func (d *boardDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
-	return nil, nil
-}
-func (d *boardDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
-	return dispatch.Approval{}, nil
-}
-func (d *boardDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
-	return dispatch.Handoff{}, nil
-}
-func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
-func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
-
 // A failed transaction is one row's failure, never the runner's end: a Postgres restart drops the
 // pool's connections, and the outbox has to keep draining once they are back. A claim that fails
 // leaves the row due for the sweep, whose next tick runs it; a row whose finish fails keeps its
 // lease, under which no sweep runs it, and the sweep after the lease lapses runs it again. The
 // row's effect is written once before the failed finish and once after.
 func TestOutboxRunSurvivesAFailedClaimAndAFailedFinish(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := &flakyOutboxStore{Store: record.NewStore(), claimFailures: 1, finishFailures: 1}
 	clock := microClock()
@@ -613,6 +551,7 @@ func (s *flakyOutboxStore) failedFinishes() int {
 // An outbox tree_close row (lingerExpired enqueues one for every claim of the tree) is the one
 // supervise request that ends the tree's root claim; the supervisor refuses any other stop of a root.
 func TestOutboxTreeCloseRowEndsTheTreesRootClaim(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	// A tree's close is the expiry of its linger, so the tree lingers when the row runs.
@@ -650,6 +589,7 @@ func TestOutboxTreeCloseRowEndsTheTreesRootClaim(t *testing.T) {
 // workflow's own decision and is never put to treeClosable, while the operator's close of the same
 // tree is refused. Without this wiring in the test, a predicate that refused both looked green.
 func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	until := time.Now().Add(-time.Minute)
@@ -700,6 +640,7 @@ func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
 // rewrite once its issue has left the phase the task was queued for. A predicate that reads
 // anything the retry rewrites answers this wrong in production and green in a test that skips it.
 func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -788,6 +729,7 @@ func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
 // on the outbox's backoff, and its first attempt is logged as a wait (wait.ErrWaiting), never as a
 // failed row.
 func TestOutboxStartWaitingOnThePendingDeliveryIsNotAFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}

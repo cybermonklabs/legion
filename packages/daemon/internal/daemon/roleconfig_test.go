@@ -16,6 +16,7 @@ import (
 // settled it: the tmux runtime's Options and the Sandbox runtime's, which tell each role its own
 // overlays and hand the image probe every role's.
 func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
+	t.Parallel()
 	files := map[claim.Role][]string{
 		claim.RoleImplementer: {"/etc/legion-operator/fallback.yml"},
 		claim.RoleController:  {"/etc/legion-operator/fallback.yml", "/etc/legion-operator/controller.yml"},
@@ -40,6 +41,7 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 // the boot, naming the role, the file and Oh My Pi's error line, rather than failing each launch of
 // that role; a role file Oh My Pi starts on, or no key at all, passes.
 func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
@@ -80,7 +82,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 // The gate boot builds for a tmux daemon (prepare) refuses a role file Oh My Pi cannot parse,
 // before the plugin gate's load probes run, naming the role and the file.
 func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
-	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
@@ -94,6 +96,9 @@ func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := testConfig(t)
+	// The gate is built and run below, and no store is opened: the DSN names a server nothing
+	// answers, so a boot read that reached for one would fail rather than touch a database.
+	cfg.PostgresDSN = unreachablePostgres
 	cfg.RoleConfigFiles = map[claim.Role][]string{claim.RoleMerger: {malformed}}
 	p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}, getenv: func(name string) string {
 		if name == "LEGION_OMP_PATH" {

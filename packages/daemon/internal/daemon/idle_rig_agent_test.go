@@ -267,6 +267,7 @@ func writeIdleRigJSON(w http.ResponseWriter, body any) {
 // Run by anything but that launcher it does nothing: with no rig service named in its
 // environment there is no rig to serve.
 func TestIdleRigRoleProcess(t *testing.T) {
+	t.Parallel()
 	rig := os.Getenv(idleRigURLVariable)
 	if rig == "" {
 		return
@@ -366,7 +367,7 @@ type idleRigRoleProcess struct {
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
-	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}, recorded: map[uint64]bool{}}
+	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: serverReplyTimeout}, recorded: map[uint64]bool{}}
 	p.pod = os.Getenv("LEGION_SANDBOX")
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")

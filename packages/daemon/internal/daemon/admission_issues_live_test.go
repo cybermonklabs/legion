@@ -96,6 +96,7 @@ type admissionIssuesArchitect struct {
 // parking of the two children, which frees the rows that return and that parent's first phase
 // then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
+	t.Parallel()
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
 	r.step("step2-the-released-children-hold-both-slots-and-their-parent-waits", r.childrenHoldTheSlots)
@@ -126,6 +127,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	r.seedTrees()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = admissionIssuesGitHub(t)
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
 	r.architect = r.registerArchitect()

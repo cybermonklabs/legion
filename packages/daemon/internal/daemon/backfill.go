@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // backfillRepositories brings every record of project to carry its repository, its default branch
@@ -116,21 +117,9 @@ func fillRepositories(ctx context.Context, pool *pgxpool.Pool, records record.St
 		if err != nil {
 			return fmt.Errorf("fill the repository of %s: %w", issue.Key, err)
 		}
-		spelling := read.Name.String()
-		var spelled []string
-		for _, clone := range clones {
-			if strings.EqualFold(clone.Repo.String(), repo.String()) {
-				spelling = clone.Repo.String()
-				spelled = append(spelled, clone.Clone)
-			}
-		}
-		if len(spelled) > 1 {
-			return fmt.Errorf("fill the repository of %s: two shared clones spell %s (%s); remove the one no issue works in and restart",
-				issue.Key, repo, strings.Join(spelled, ", "))
-		}
-		if !renames.Same(spelling, read.Name.String()) {
-			return fmt.Errorf("fill the repository of %s: GitHub renamed %s to %s, and the shared clone %s still has the old name: map %s in Dispatch (Settings → Repositories → Projects), or remove that clone if no issue works in it, and restart",
-				issue.Key, repo, read.Name, spelled[0], read.Name)
+		spelling, err := twoClonesRefusal(issue.Key, repo, read.Name, clones, renames)
+		if err != nil {
+			return err
 		}
 		if pull, ok := pulls[issue.Key]; ok && !renames.Same(pull.Repo, repo.String()) && !renames.Same(pull.Repo, read.Name.String()) {
 			elsewhere = append(elsewhere, fmt.Sprintf("%s: Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
@@ -166,6 +155,42 @@ func fillRepositories(ctx context.Context, pool *pgxpool.Pool, records record.St
 			"defaultBranch", fill.branch, "githubRepo", fill.github)
 	}
 	return nil
+}
+
+// twoClonesRefusal is the spelling a record takes for the repository Dispatch resolves it to,
+// and the two refusals that leave it none. A shared clone under stateDir that spells resolved
+// case-insensitively gives the spelling, since the issue's workspace and its sessions were made
+// under it; with no clone, as under Kubernetes, the record takes github, GitHub's own name.
+//
+// Two clones that spell one repository leave no spelling to keep and refuse the boot, naming
+// both, rather than move an issue's workspace onto either by guess. So does a clone whose
+// spelling and GitHub's name two repositories rather than one, which is a repository GitHub
+// renamed while Dispatch still resolves the old name: the record's two repository columns must
+// name one repository, and the operator maps the new name in Dispatch or removes the clone. A
+// rename the deployment configures (renames) names one repository, so a transfer the pair
+// already covers refuses no boot.
+//
+// It is separate from fillRepositories because the fill's work is the reads — Dispatch's
+// listing, GitHub's name, the clones on disk — while which of them a record's spelling comes
+// from, and when there is none, is decided by the four values alone.
+func twoClonesRefusal(issue string, resolved, github ghrepo.Repository, clones []workspace.Workspace, renames ghrepo.Renames) (string, error) {
+	spelling := github.String()
+	var spelled []string
+	for _, clone := range clones {
+		if strings.EqualFold(clone.Repo.String(), resolved.String()) {
+			spelling = clone.Repo.String()
+			spelled = append(spelled, clone.Clone)
+		}
+	}
+	if len(spelled) > 1 {
+		return "", fmt.Errorf("fill the repository of %s: two shared clones spell %s (%s); remove the one no issue works in and restart",
+			issue, resolved, strings.Join(spelled, ", "))
+	}
+	if !renames.Same(spelling, github.String()) {
+		return "", fmt.Errorf("fill the repository of %s: GitHub renamed %s to %s, and the shared clone %s still has the old name: map %s in Dispatch (Settings → Repositories → Projects), or remove that clone if no issue works in it, and restart",
+			issue, resolved, github, spelled[0], github)
+	}
+	return spelling, nil
 }
 
 // issueWorkspaces is every workspace a tmux daemon provisioned for issue under stateDir, by the

@@ -67,6 +67,7 @@ func (g *repositoryGitHub) answer(status int) {
 // owner, once per TTL: a second read within it asks GitHub nothing, and one after it reads again,
 // seeing a branch GitHub renamed meanwhile.
 func TestDefaultBranchesReadsGitHubOncePerTTL(t *testing.T) {
+	t.Parallel()
 	github := newRepositoryGitHub(t, "release/v7.1")
 	clock := time.Now()
 	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, func() time.Time { return clock })
@@ -100,6 +101,7 @@ func TestDefaultBranchesReadsGitHubOncePerTTL(t *testing.T) {
 // A read GitHub refuses is returned, naming the repository, and nothing is kept: the next read asks
 // GitHub again.
 func TestDefaultBranchesKeepsNoRefusal(t *testing.T) {
+	t.Parallel()
 	github := newRepositoryGitHub(t, "main")
 	github.answer(http.StatusInternalServerError)
 	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, time.Now)
@@ -122,6 +124,7 @@ func TestDefaultBranchesKeepsNoRefusal(t *testing.T) {
 // GitHub's spelling. Kept is the last read the daemon made, however old, and asks GitHub nothing:
 // what the workflow records an issue with inside its transaction, once the read was made.
 func TestDefaultBranchesNamesTheRepositoryAndKeepsTheLastRead(t *testing.T) {
+	t.Parallel()
 	github := newRepositoryGitHub(t, "release/v7.1")
 	github.fullName = "Acme/Widgets"
 	clock := time.Now()
@@ -151,6 +154,7 @@ func TestDefaultBranchesNamesTheRepositoryAndKeepsTheLastRead(t *testing.T) {
 
 // Reads that overlap share one request to GitHub.
 func TestDefaultBranchesSharesOneReadInFlight(t *testing.T) {
+	t.Parallel()
 	github := newRepositoryGitHub(t, "develop")
 	github.release = make(chan struct{})
 	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, time.Now)
@@ -168,7 +172,7 @@ func TestDefaultBranchesSharesOneReadInFlight(t *testing.T) {
 			answers <- got.DefaultBranch
 		})
 	}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(arrivalBound(t))
 	for github.reads.Load() == 0 {
 		select {
 		case <-deadline:

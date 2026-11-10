@@ -6,11 +6,6 @@
 // Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
 // Clone or CloneStore instead, which copy a template that package migrated once.
 //
-// A package whose tests migrate into the database their DSN names, rather than making one per
-// test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
-// RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
-// both nests them (internal/daemon's TestMain).
-//
 // This package imports nothing of this module, and nothing added here may: migrating the template
 // needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
 // imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
@@ -25,14 +20,19 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -74,8 +74,10 @@ func Database(t testing.TB, prefix string) string {
 // URL and the function that drops it, which also closes the admin connection create opened. Both
 // URLs it connects or points a caller at — the admin database's and the new database's — come
 // from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database and RunDatabaseMain are its
-// two callers: one database per test, one per run.
+// server ends the call with no connection and no database. Database is its one caller: one
+// database per test. Its admin connection is opened through OnConnect, as every connection this
+// package's fixtures make is, so a socket the server resets under the churn is tried again and
+// the count below says how often.
 func create(dsn, prefix string) (string, func() error, error) {
 	admin, err := DatabaseURL(dsn, "postgres")
 	if err != nil {
@@ -90,8 +92,12 @@ func create(dsn, prefix string) (string, func() error, error) {
 		return "", nil, err
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin)
-	if err != nil {
+	var conn *pgx.Conn
+	if err := OnConnect(func() error {
+		var opened error
+		conn, opened = pgx.Connect(ctx, admin)
+		return opened
+	}); err != nil {
 		return "", nil, fmt.Errorf("connect to the admin database: %w", err)
 	}
 	// A copy of template1's files. Created the default way, from PostgreSQL 15, every page of
@@ -102,12 +108,190 @@ func create(dsn, prefix string) (string, func() error, error) {
 	}
 	drop := func() error {
 		defer func() { _ = conn.Close(context.Background()) }()
-		if _, err := conn.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			return fmt.Errorf("drop %s: %w", name, err)
-		}
-		return nil
+		return Drop(context.Background(), conn, name)
 	}
 	return database, drop, nil
+}
+
+// dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
+// Postgres says the database is still in use, and the wait between tries.
+const (
+	dropWindow = 15 * time.Second
+	dropPause  = 200 * time.Millisecond
+)
+
+// connectTries and connectPause bound OnConnect's retry: how many times a connection is opened
+// while the server resets it, and the wait between attempts.
+const (
+	connectTries = 3
+	connectPause = 200 * time.Millisecond
+)
+
+// connectCounts is what every connection this test process opened did, printed beside the drops:
+// a run whose connects all went at the first attempt says the churn costs nothing, and one that
+// needed retries says how many, which is the measurement rather than a guess about the server.
+var connectCounts struct {
+	opened  atomic.Int64
+	retried atomic.Int64
+}
+
+// OnConnect runs open until it answers no error, the server refuses it for a reason a second
+// attempt would meet again, or connectTries attempts are spent.
+//
+// It exists because this package's fixtures open about 790 connections in a run of
+// internal/daemon — a database per test, each with its own admin connection — where the serial
+// suite opened them one at a time, and a connection that the server resets at accept under that
+// churn ended a test at its first statement: measured once in 20 shuffled runs of 2026-11-09 and
+// once in about 90 runs the day before, each time "read: connection reset by peer" at 0.12 s with
+// no assertion reached and the postmaster unrestarted. A retry is the instrument rather than a
+// criterion: the count below says whether the churn is costing connections, where excluding the
+// run from a campaign would say nothing and could hide a defect of this very conversion.
+//
+// Only a reset, a refusal or a closed socket is retried. A server that ANSWERED — a bad password,
+// a database that does not exist, a connection refused for max_connections — fails at once,
+// because a second attempt meets the same answer and a retry there would turn a defect into a
+// wait (transientConnect).
+func OnConnect(open func() error) error {
+	var err error
+	for try := 1; ; try++ {
+		connectCounts.opened.Add(1)
+		if err = open(); err == nil {
+			if try > 1 {
+				connectCounts.retried.Add(1)
+			}
+			return nil
+		}
+		if try == connectTries || !transientConnect(err) {
+			return err
+		}
+		time.Sleep(connectPause)
+	}
+}
+
+// transientConnect reports whether err is the socket going rather than the server answering: a
+// reset, a refusal, a broken pipe or an end of file, each of which a later attempt may not meet.
+// A *pgconn.PgError is the server's own answer and is never transient, whatever it says — the
+// connection cap's own refusal (SQLSTATE 53300, "sorry, too many clients already") above all,
+// since a retry that absorbed that would make k6's headroom true by construction and leave the
+// campaign's zero refusals saying nothing.
+func transientConnect(err error) bool {
+	var answered *pgconn.PgError
+	if errors.As(err, &answered) {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
+}
+
+// execer is what Drop needs of a connection or a pool, which pgx.Conn and pgxpool.Pool both are.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// dropCounts is what every drop of this test process did, which a package's Main prints: a run
+// whose drops all went plainly needs no right to end a backend, and one that reached the force
+// fallback says how often and how long it waited first. The counters are the evidence that the
+// plain drop carries the fixture, rather than one green run.
+var dropCounts struct {
+	drops   atomic.Int64
+	retried atomic.Int64
+	forced  atomic.Int64
+	longest atomic.Int64
+}
+
+// unwarmedConnects is how many connections the pools of this test process opened that the fixture
+// did not open itself: each pool's pgxpool Stat().NewConnsCount() at teardown, less the ones the
+// fixture established through OnConnect when it warmed the pool.
+//
+// It is the denominator the reset this retry exists for has no rate without. OnConnect covers
+// every establishment the fixture makes; a pool that grows past its warmed set, or replaces a
+// connection a health check destroyed, establishes one through pgxpool's own Constructor, which
+// has no retry (measured: mapping_refresh_test.go:846 died of a reset while its run's line read
+// "1220 connects, 0 needed a retry"). Two reset events across a campaign say nothing about how
+// wide that path is; this count is how many chances it had.
+var unwarmedConnects atomic.Int64
+
+// shedWarmConns is how many warm connections pgxpool destroyed under a pool this process warmed:
+// its Stat's MaxIdleDestroyCount and MaxLifetimeDestroyCount at teardown.
+//
+// It must read zero. A warm connection is destroyed only when it is older than MaxConnLifetime (an
+// hour by default) or has been idle longer than MaxConnIdleTime (thirty minutes) — pgxpool's
+// checkConnsHealth, which merely releases every other idle connection — and no test of this module
+// lives that long, so the warmed set is the set the test uses. That is a reading of the library's
+// defaults; this counter is the measurement of it, and the reason to keep it is the day somebody
+// changes them: a warm set that quietly stopped covering anything would leave
+// unwarmedConnects reading zero while every replacement went through the unretried Constructor.
+var shedWarmConns atomic.Int64
+
+// CountUnwarmedConnects records what a warmed pool did with its connections, read from its Stat at
+// teardown: how many it opened beyond the ones the fixture warmed, and how many warm ones pgxpool
+// destroyed for age or idleness. internal/testpg calls it when a pool it warmed is torn down.
+func CountUnwarmedConnects(made, warmed, shed int64) {
+	if beyond := made - warmed; beyond > 0 {
+		unwarmedConnects.Add(beyond)
+	}
+	shedWarmConns.Add(shed)
+}
+
+// Drop drops the database name through exec: plainly, then again while Postgres answers SQLSTATE
+// 55006 (object_in_use) up to dropWindow, and `with (force)` as the last attempt.
+//
+// `with (force)` ends every backend still attached, which needs pg_signal_backend or a superuser
+// login: CI's test login is a superuser and a Legion issue pod's is not, so a fixture that always
+// forced could not finish a package on a pod. A caller closes its own pool before this runs — both
+// fixtures of this module register the drop first, and t.Cleanup is LIFO — but Postgres tears a
+// backend down after the client has closed its socket, so a drop landing inside that window finds
+// a connection and answers 55006 rather than a permission error. Retrying the plain drop covers
+// that window; the force is left for a connection that really is somebody else's, and is the only
+// attempt that needs the right.
+//
+// Measured on this issue's pod, PostgreSQL 18.6 with fsync off, ten clones of the daemon's
+// migrated template: the forced drop means 18.8 ms against a plain drop's 17.1 ms, so the clause
+// never bought speed.
+func Drop(ctx context.Context, exec execer, name string) error {
+	started := time.Now()
+	defer func() {
+		dropCounts.drops.Add(1)
+		elapsed := int64(time.Since(started))
+		for {
+			longest := dropCounts.longest.Load()
+			if elapsed <= longest || dropCounts.longest.CompareAndSwap(longest, elapsed) {
+				return
+			}
+		}
+	}()
+	deadline := time.Now().Add(dropWindow)
+	var err error
+	tries := 0
+	for {
+		if _, err = exec.Exec(ctx, "drop database "+name); err == nil {
+			if tries > 0 {
+				dropCounts.retried.Add(1)
+			}
+			return nil
+		}
+		tries++
+		var pgError *pgconn.PgError
+		if !errors.As(err, &pgError) || pgError.Code != "55006" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(dropPause)
+	}
+	dropCounts.forced.Add(1)
+	if _, forced := exec.Exec(ctx, "drop database "+name+" with (force)"); forced != nil {
+		// The forced drop ended the cleanup, so its error is the one reported; the plain drop's
+		// says what the force was for.
+		return fmt.Errorf("drop %s: %w, after the plain drop answered: %v", name, forced, err)
+	}
+	return nil
+}
+
+// DropLine is one line naming what this process's drops did, for the package Main that prints it.
+func DropLine() string {
+	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s; %d connects, %d needed a retry, %d opened outside the warm set, %d warm connections shed",
+		dropCounts.drops.Load(), dropCounts.retried.Load(), dropCounts.forced.Load(),
+		time.Duration(dropCounts.longest.Load()).Round(time.Millisecond),
+		connectCounts.opened.Load(), connectCounts.retried.Load(), unwarmedConnects.Load(), shedWarmConns.Load())
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is
@@ -254,78 +438,6 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 			name, moved)
 	}
 	return rewritten, nil
-}
-
-// runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and
-// runDatabase the URL of that database; both are empty until a RunDatabaseMain with
-// LEGION_TEST_PG_DSN set runs.
-var (
-	runServer   string
-	runDatabase string
-)
-
-// serverKey is the part of a DSN that names the server rather than a database on it, so two DSNs
-// that differ only in the database they name have one key. It reads the DSN with
-// pgconn.ParseConfig, the parser DatabaseURL and the driver read it with, so the key is the host,
-// the port and the user pgx connects as. A DSN pgx refuses is its own key: every key below holds
-// two NUL bytes, and a DSN a test read out of its environment holds none, so no refused DSN
-// equals a key.
-func serverKey(dsn string) string {
-	cfg, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return dsn
-	}
-	return fmt.Sprintf("%s\x00%d\x00%s", cfg.Host, cfg.Port, cfg.User)
-}
-
-// RunDatabaseMain makes one database named <prefix>_<random> for the whole run on the server
-// LEGION_TEST_PG_DSN names, runs run, drops that database and returns run's code; a drop that
-// fails prints why and turns a passing run into exit 1. A package whose tests migrate into the
-// database their DSN names calls it from TestMain, where every test reads the run's database
-// through RunDatabaseFor, so two runs of the package on one server never write each other's rows
-// and neither writes the database that server serves. With LEGION_TEST_PG_DSN unset it makes
-// nothing and returns run(), so those tests skip as they do without a server.
-//
-// It is not internal/testpg's Main, which prepares the template Clone copies: the two are
-// different databases for different needs, and a package that wants both nests them, each under a
-// prefix of its own so a census of either name says which it counted:
-//
-//	os.Exit(testpg.Main("legion_daemon_test", func() int {
-//		return testdb.RunDatabaseMain("legion_daemon_run", m.Run)
-//	}))
-//
-// It takes run rather than *testing.M so that it wraps another TestMain helper.
-func RunDatabaseMain(prefix string, run func() int) int {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		return run()
-	}
-	database, drop, err := create(dsn, prefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "make the package's run database: %v\n", err)
-		return 1
-	}
-	runServer, runDatabase = serverKey(dsn), database
-	code := run()
-	if err := drop(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
-}
-
-// RunDatabaseFor is the URL of the database RunDatabaseMain made for this run when dsn names the
-// server that database is on, which is the host, the port and the user pgx reads from both
-// (serverKey), and dsn itself otherwise: a test that points LEGION_TEST_PG_DSN at a server of its
-// own keeps what it set. Without a run database — no RunDatabaseMain, or LEGION_TEST_PG_DSN
-// unset — it is dsn.
-func RunDatabaseFor(dsn string) string {
-	if runDatabase == "" || serverKey(dsn) != runServer {
-		return dsn
-	}
-	return runDatabase
 }
 
 // DSNFile is a 0600 file under the test's temporary directory holding Database's URL, as the

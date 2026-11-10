@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // Daemons of several projects share one database, and admission is each project's own. Another
@@ -30,6 +30,7 @@ import (
 // Dispatch, and none of them ever gets a branch created on GitHub (refs/heads/legion/<key>) by this
 // daemon.
 func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.AdmissionCap = 2
 	other := "OTHER" + randomSuffix(t)
@@ -37,7 +38,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	own := cfg.Project + "-1"
 
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the shared store: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(runCtx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
+			listen: heldListen, environ: workflowEnviron(t),
 			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 			githubAPI: github.url,
 		})
@@ -130,7 +131,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(arrivalBound(t)):
 			t.Error("daemon did not stop")
 		}
 	})
@@ -160,7 +161,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 
 	select {
 	case <-ownRun:
-	case <-time.After(60 * time.Second):
+	case <-time.After(arrivalBound(t)):
 		t.Fatalf("the outbox never reached Dispatch for %s after admitting it", own)
 	}
 

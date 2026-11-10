@@ -19,8 +19,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -51,6 +51,7 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 // the lock for the whole replay; the replay of facts already applied finishes anyway and applies
 // nothing again, and a claim's fact no daemon applied is still applied, once the lock is free.
 func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
@@ -144,6 +145,7 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 // replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
 // applied exactly once.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
+	t.Parallel()
 	const budget = 5 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
@@ -225,6 +227,7 @@ func (r *bootReconcileHeld) ReconcileOrphans(ctx context.Context, known []runtim
 // fact. Here every one of 200 ready claims' shims has sent its hello before the boot's orphan
 // reconciliation returns, and each, as its hello_ack arrives, finds all 200 facts applied.
 func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
+	t.Parallel()
 	const n = 200
 	cfg := workflowConfig(t, workflowNATS(t))
 	project, err := claim.ProjectToken(cfg.Project)
@@ -232,7 +235,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -284,6 +287,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	var record built
 	o := fakeRuntime(&bootReconcileHeld{Runtime: fake.NewRuntime(), hello: hello}, &record)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	type acked struct {
 		conn    net.Conn
 		applied int

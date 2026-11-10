@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // wakeAt is when every wake of these tests reaches the daemon, and wakeIssueGeneration the run
@@ -58,7 +58,7 @@ func newWakeRig(t *testing.T) wakeRig {
 // project of its own, and the store derives the one its claim-keyed tables hold.
 func wakePods(t *testing.T, pool *pgxpool.Pool) Pods {
 	t.Helper()
-	st, err := store.Open(context.Background(), pool.Config().ConnString())
+	st, err := testpg.OpenStore(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store over the test pool: %v", err)
 	}

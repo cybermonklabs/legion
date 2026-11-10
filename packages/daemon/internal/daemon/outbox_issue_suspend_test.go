@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -51,10 +52,11 @@ func (issueProvisionTokens) Token(context.Context, ghrepo.Repository) (string, e
 // session is the store's and outlives the Sandbox, which owned no part of it. The tree stays live
 // until its linger closes, and its cleanup then finds the issue's Sandbox already gone.
 func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +75,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 		t.Helper()
 		runtimeCtx, stopRuntime := context.WithCancel(ctx)
 		t.Cleanup(stopRuntime)
-		reopened, err := store.Open(ctx, pool.Config().ConnString())
+		reopened, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,6 +201,7 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // launches fresh because its resume path was cleared, while its session id stays as reaping
 // evidence until the volume is gone.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
+	t.Parallel()
 	// Two children under the running root: the one closed as done, whose planner is stopped with
 	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
 	// works the phase the root stands in, so admission's pass starts no worker of the root's while
@@ -370,7 +373,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
+	st, err := testpg.OpenStore(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,6 +547,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 // itself (record.OutOfWorkflow) rather than a list of its own, so every status that takes an issue
 // out of the workflow declines the start while a status the workflow runs in still starts it.
 func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
+	t.Parallel()
 	// departed reads what a declined start leaves behind: nothing launched — the fixture seeds the
 	// child's Sandbox, so a Sandbox created here is a relaunch and nothing else — no start recorded
 	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
@@ -678,6 +682,7 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
 // re-admission wrote and which claim each brought back.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
+	t.Parallel()
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single
 	// park this door needs: a running root holding its admission slot, the tree's one child under
@@ -987,6 +992,7 @@ func startRequestsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.Su
 // the claim records the row as its newest start, and the issue is still done when the look is
 // running: a look runs behind the close rather than reopening the issue.
 func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

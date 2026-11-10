@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -145,7 +147,13 @@ type branchAdmission struct {
 
 func newBranchAdmission(t *testing.T, answer func() (int, string)) (*branchAdmission, *branchGitHub) {
 	t.Helper()
-	pool := isolatedOutboxPool(t)
+	return newBranchAdmissionOn(t, isolatedOutboxPool(t), answer)
+}
+
+// newBranchAdmissionOn is newBranchAdmission on a database the caller already holds, for a
+// table-driven test whose rows share one clone and empty it between them (tableDatabase).
+func newBranchAdmissionOn(t *testing.T, pool *pgxpool.Pool, answer func() (int, string)) (*branchAdmission, *branchGitHub) {
+	t.Helper()
 	records := record.NewStore()
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	github := newBranchGitHub(t, rt, answer)
@@ -195,6 +203,8 @@ func (b *branchAdmission) launches() int {
 // the repository's default branch, which admission recorded. A branch GitHub already has (its
 // create answered 422 "Reference already exists") is the same success.
 func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStarts(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		answer func() (int, string)
@@ -203,7 +213,8 @@ func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStart
 		{name: "already exists", answer: branchExists},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			admitted, github := newBranchAdmission(t, tc.answer)
+			reset(t)
+			admitted, github := newBranchAdmissionOn(t, pool, tc.answer)
 
 			admitted.run(t)
 			admitted.run(t)
@@ -226,6 +237,7 @@ func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStart
 // outbox's backoff, each attempt logged with the repository, the ref, GitHub's status and its body,
 // and the start behind it waits. Once a create passes, the architect starts.
 func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.T) {
+	t.Parallel()
 	admitted, github := newBranchAdmission(t, branchRefused)
 
 	for range 3 {
@@ -275,6 +287,7 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 // nothing and finishes: a refused create of a parked tree never retries forever, and the starts it
 // held back meet their own fences.
 func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	github := newBranchGitHub(t, nil, branchRefused)
@@ -317,6 +330,7 @@ func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string, [
 // repository the issue's record names, and a mint that fails names that repository, so the
 // outbox's failure line says which installation refused and for what.
 func TestBranchCreationTheDisarmAndTheREADYMergeNameTheRepositoryTheyMintFor(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow",

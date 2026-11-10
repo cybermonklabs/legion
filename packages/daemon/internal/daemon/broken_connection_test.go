@@ -41,6 +41,7 @@ import (
 // backend and nothing else: the package's tests run under the race detector against one shared
 // PostgreSQL, where a kill by database or by login would end another test's connection.
 func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
+	t.Parallel()
 	// A database of this test's own, and a pool of its own on it: the reads below and the kill go
 	// over a connection the daemon does not own and the kill does not end.
 	pool := isolatedOutboxPool(t)
@@ -89,13 +90,16 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	// The claim's next decision makes the write the database did not take. A second agent_start is
 	// a turn already in flight, which the table ignores — the repair at the head of the decision is
 	// the whole of what this drives.
+	//
+	// Both facts are waited for together. They are written by one goroutine but not at one
+	// moment, and reading either the instant the other arrives is a race the daemon does not owe
+	// the test: the row reading `working` is what the repair wrote, and the line is what the
+	// daemon says about having written it.
 	sh.send(shimwire.AgentStart{})
-	testwait.Eventually(t, "the claim to read working in the database", func() bool {
-		return storedClaimState(t, pool, token) == supervise.StateWorking
+	testwait.Eventually(t, "the claim to read working in the database and the daemon to log the write it owed", func() bool {
+		return storedClaimState(t, pool, token) == supervise.StateWorking &&
+			strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine))
 	})
-	if !strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine)) {
-		t.Fatalf("the daemon never logged %q: %s", owedWriteMadeLine, logs.String())
-	}
 
 	// No daemon was restarted: the one boot this test started is the one that wrote the row.
 	if count, _ := boots(t, cfg); count != 1 {

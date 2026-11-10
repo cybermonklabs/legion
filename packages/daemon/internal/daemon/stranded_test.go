@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -40,7 +40,7 @@ type previousRun struct {
 func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -204,6 +204,7 @@ func keysOf(state map[string]json.RawMessage) []string {
 // start is still queued. A slot whose worker has neither is not stranded but repaired, since
 // admission starts that worker's phase again on its first pass (admit's resumeSlottedWorkers).
 func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	implementing, reviewing, tested, lingering, lingeringChild, planning := key("1"), key("2"), key("3"), key("4"), key("5"), key("6")
@@ -244,6 +245,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	reported := strandedReportDone(&o)
 
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -289,6 +291,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 // phase was over or before it began, and the members of a lingering tree, its architect included —
 // reports nothing: no line, and an empty list in the state.
 func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	root, lingering, lingeringChild := key("1"), key("2"), key("3")
@@ -309,6 +312,7 @@ func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	reported := strandedReportDone(&o)
 
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -348,9 +352,10 @@ func awaitStrandedReport(t *testing.T, reported <-chan struct{}) {
 // the same boot-cycle deadlock unfinished relaunches used to cause. Holding `issues` exclusively
 // makes the report's read wait on a real Postgres connection; /healthz must still answer.
 func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
@@ -380,7 +385,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(arrivalBound(t)):
 			t.Error("run did not return after the report lock released")
 		}
 	})
@@ -413,6 +418,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 // worker view says `retired` and the report names it, since only a start of its phase relaunches
 // it and no rule queues one.
 func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	retiredIssue := cfg.Project + "-2"
@@ -425,7 +431,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 	})
 
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := testpg.OpenStore(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}

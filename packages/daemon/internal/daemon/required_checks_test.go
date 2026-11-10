@@ -144,6 +144,8 @@ func capturePhase(t *testing.T, pool *pgxpool.Pool) (phase.Phase, *record.PullRe
 // sent back and nobody told; a set that requires one of the reds brings a red that stands for the
 // head, which sends the work back to implementing from under the open round, naming the check.
 func TestTheBootReadOfRequiredChecksJudgesTheHeadByTheSetItRecords(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, requires string
 		want           phase.Phase
@@ -152,7 +154,7 @@ func TestTheBootReadOfRequiredChecksJudgesTheHeadByTheSetItRecords(t *testing.T)
 		{"the base requires a check that failed", "review", phase.Implementing},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedUnjudgedRound(t, pool)
 			w := requiredRuntime(pool, rulesetsStandIn(t, &atomic.Bool{}, tc.requires).URL, quietLogger())
 			w.readRequiredChecks(context.Background())
@@ -179,6 +181,7 @@ func TestTheBootReadOfRequiredChecksJudgesTheHeadByTheSetItRecords(t *testing.T)
 // and GitHub's HTTP status. The next pass that reads the set judges the head: a failed required
 // check it brings sends the work back to implementing.
 func TestAnUnreadableRulesetLeavesTheHeadUndecided(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedUnjudgedRound(t, pool)
 	var logged bytes.Buffer
@@ -215,6 +218,8 @@ func TestAnUnreadableRulesetLeavesTheHeadUndecided(t *testing.T) {
 // the next one. Any other refusal skips only the pull request, or the listing, it answered. The
 // stand-in refuses every read; two open pull requests are recorded, on the one served repository.
 func TestARateLimitAnswerEndsTheRequiredChecksPass(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		status  int
@@ -230,7 +235,7 @@ func TestARateLimitAnswerEndsTheRequiredChecksPass(t *testing.T) {
 		{"403 that is not a rate limit", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "4999"}, "", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedUnjudgedRound(t, pool)
 			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 				records := record.NewStore()
@@ -360,6 +365,8 @@ func noticeReasons(t *testing.T, pool *pgxpool.Pool, kind string) []string {
 // pull request's required checks were read before and passed at the head, so only the workflow can
 // decide anything.
 func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		from   phase.Phase
@@ -374,7 +381,7 @@ func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
 		{"succeeded, in awaiting_merge", phase.AwaitingMerge, "retro", reviewRuns(1, "completed", `"success"`), phase.AwaitingMerge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, tc.from, tc.status)
 			requiredRuntime(pool, requiredWorkflowStandIn(t, func() string { return tc.runs }).URL, quietLogger()).readRequiredChecks(context.Background())
 			if got, _ := capturePhase(t, pool); got != tc.want {
@@ -408,6 +415,8 @@ func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
 // return the merge queue's own state makes writes that mark while the record already reads
 // MERGEABLE, where no change in GitHub's answer ever follows to carry the clearing read in.
 func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		state string
@@ -432,7 +441,7 @@ func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *te
 			mergeability: record.MergeabilityMergeable, want: phase.AwaitingMerge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.AwaitingMerge, "retro",
 				record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
 			if _, err := pool.Exec(context.Background(),
@@ -470,6 +479,7 @@ func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *te
 // issue still goes back to implementing on the conflict alone, with CONFLICTING recorded, even
 // though the required set is never read that pass.
 func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.AwaitingMerge, "retro",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
@@ -503,6 +513,8 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 // for good holds it no longer. The pass decides it once - the next pass sends nothing back again -
 // and a hold that has not lapsed is left held.
 func TestThePassDecidesARedWhoseHoldLapsed(t *testing.T) {
+	t.Parallel()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		arrived time.Duration
@@ -513,7 +525,7 @@ func TestThePassDecidesARedWhoseHoldLapsed(t *testing.T) {
 		{"a minute after the head arrived", -time.Minute, phase.Testing, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 			setCapturePullRequest(t, pool, func(pr *record.PullRequest) {
 				pr.HeadSHA, pr.CheckedHead, pr.Failing, pr.Required = "code", "code", []string{"pr-checks-result"}, []string{"pr-checks-result"}
@@ -542,6 +554,7 @@ func TestThePassDecidesARedWhoseHoldLapsed(t *testing.T) {
 // the pass decides its green once the hold lapses; the branch moves on and back, and the head
 // settles red.
 func TestThePassDecidesARedAtAHeadTheBranchReturnedTo(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	w := requiredRuntime(pool, mergeableStandIn(t, "true").URL, quietLogger())

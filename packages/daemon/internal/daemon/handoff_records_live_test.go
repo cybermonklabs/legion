@@ -148,6 +148,7 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = r.github
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 2*time.Minute)
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
@@ -825,8 +826,8 @@ func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
 	select {
 	case prompt := <-c.prompts:
 		return prompt
-	case <-time.After(2 * time.Minute):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
+	case <-time.After(arrivalBound(c.r.t)):
+		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, arrivalBound(c.r.t))
 		return shimwire.Prompt{}
 	}
 }
