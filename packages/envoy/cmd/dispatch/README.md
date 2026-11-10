@@ -2372,6 +2372,10 @@ Three filters narrow every leg of a search beside `project`, each in the arm its
 and `updated_since` (RFC 3339) is when the item itself was last written, not when anything on its issue moved, since an issue's `updated_at` moves whenever anything on it does.
 The answer carries the filters it applied (`filters`), as it carries how it read the words.
 
+A search carrying `number_project`, `status`, `author`, `updated_since` or `keywords_only` is sent to `GET /api/v1/search/results`, which answers exactly what `GET /api/v1/search` answers and is served by the same handler.
+It has a path of its own because a build released before those members answers it `404 no route`, where it answers `GET /api/v1/search` with the members dropped: unnarrowed rows under the filters a person chose, which is the wrong answer rather than a refusal, and the two builds of a rolling release serve at once.
+`GET /api/v1/search` still reads all nine, so a page served by an earlier release that sends a filter there is still answered narrowed; what moved is the declared contract, and so every generated client, which offers the five on the results route alone.
+
 Search covers issue titles, the latest settled document text, comments, asks (questions, option labels and descriptions, free-text answers and the options an answer chose), and messages.
 An issue's own vector carries its key and its title at weight `A`, as `0088` left them, and the markdown of the latest version of its primary document at weight `C` (`20261105145242`), so an issue whose title holds none of its spec's words is still found by them, and below every issue whose key or title holds them:
 `ts_rank_cd`, which ranks every keyword arm, scores `A` at 1.0 and `C` at 0.2.
@@ -3132,7 +3136,7 @@ Each item below names a path with its method and identity, then its purpose.
   `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
   A refilling list never makes a route `no_holder`.
 
-- `/api/v1/search?q=&project=&number_project=&keywords_only=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/search?q=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   Full-text search over issue titles, latest document text, comments, asks, and messages;
   every match ranked on one list across the kinds by one score (above), with `<mark>` snippets and SPA `href`s.
@@ -3146,12 +3150,20 @@ Each item below names a path with its method and identity, then its purpose.
   An under-two-character query returns `400 INVALID_QUERY`;
   a stop-word-only query returns `200` with no results;
   `400 CAP_EXCEEDED` over 1,000 characters (`contracts.SearchQueryMax`, UTF-16 units after trimming), since the query rides in the URL;
-  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project), and `400 INVALID_NUMBER_PROJECT` for a `number_project` that is not one; `400 INVALID_LIMIT`; `400 INVALID_OFFSET`; `400 INVALID_KEYWORDS_ONLY` for a `keywords_only` that is neither `true` nor `false`.
+  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project); `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.
+  This route declares `q`, `project`, `limit` and `offset` alone.
+  `number_project`, `status`, `author`, `updated_since` and `keywords_only` are declared on `GET /api/v1/search/results` below, and a client sends a search carrying one of them there.
+  It still reads all nine, refusing each of those five under its own code (`400 INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`), so a page served by an earlier release that sends one here is still answered narrowed ([Search](#search)).
+  Keyword search finds a text whose search vector would pass Postgres's limit on one vector by the words in its opening part only ([Search](#search)).
+
+- `/api/v1/search/results?q=&project=&number_project=&status=&author=&updated_since=&keywords_only=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The same search as `GET /api/v1/search`: the same handler, the same answer and the same refusals.
+  It declares all nine members, so every generated client offers the five here and nowhere else, and a client sends a search carrying `number_project`, `status`, `author`, `updated_since` or `keywords_only` here, because a build released before those five answers this path `404 NOT_FOUND no route for GET /api/v1/search/results`, where it answers the other path with the member dropped ([Search](#search)).
   `number_project` is the project of the page the search was made from, which a query that is a bare issue number is read in ([Search](#search));
   it narrows nothing, so a search from a project or issue page answers every project's rows.
   `keywords_only=true` runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured, and its answer is not stamped `degraded`, because nothing is unavailable: the caller asked for the words alone.
   The command bar sends it on every keystroke, so a person typing waits on no model call; a request that leaves it out searches as it always did, by meaning too wherever an embedder is configured.
-  Keyword search finds a text whose search vector would pass Postgres's limit on one vector by the words in its opening part only ([Search](#search)).
 
 - `/api/v1/search/coverage` (GET; cookie, trusted header, or bearer)
 
@@ -3821,7 +3833,7 @@ reads (GET, HEAD) and writes (every other method) each have a limit of the reque
 The class limits add up to more, so a class reaches its own only while the other is quiet;
 a request is admitted when its class and the 40 both have room, and 22 of the 40 are the reads' while a read is waiting for room, so writes hold at most 18 under read pressure and reach their whole 24 only while the reads are light.
 A route that runs two reads side by side counts twice: the delivery timeline, measures and pipeline, and every route that runs the related-item check - the two related routes, creating an issue or an ask, and editing a document, whose new decision blocks are checked one after another so that one check's two reads are all the edit runs at once.
-Four read routes carry a lane of their own as well, taken before their class units and held to one request a processor at once in a process, at most 7 (`admission.Limits.HeavyReadLane`, `admission.MaxHeavyReadLane`): `GET /api/v1/search`, the reference closure (`GET /api/v1/issues/{key}/references`), `GET /api/v1/issues/{key}/artifacts` and `GET /api/v1/issues`.
+Five read routes carry a lane of their own as well, taken before their class units and held to one request a processor at once in a process, at most 7 (`admission.Limits.HeavyReadLane`, `admission.MaxHeavyReadLane`): `GET /api/v1/search` and `GET /api/v1/search/results`, which share one handler and one lane, the reference closure (`GET /api/v1/issues/{key}/references`), `GET /api/v1/issues/{key}/artifacts` and `GET /api/v1/issues`.
 Those four statements are 101 of the 124 seconds of database statement time the two minutes after a burst spend - the search union 327 ms a call, the closure 164 ms, the artifacts 288 ms, the issue list 149 ms - and three to five of them running at once is what every stall measured after a burst turned out to be, with the database waiting on no lock and simply out of processors (INFRA-592).
 A request waiting for its lane holds no class unit, so a queue of searches costs every other route nothing; a lane's queue holds twice its limit and its wait is what is left of the read's 1 second, and a request refused by either is answered `429 OVERLOADED` naming the lane (`dispatch_http_lane_*`).
 The lane's wait and the class's are one wait, not one each: a read its lane held for 0.9 second has 0.1 second left to wait for its class's units, and it waits for them at the place it arrived rather than behind the requests that arrived while the lane held it, so a lane route is answered within the second its class states where it used to take up to two (INFRA-592).

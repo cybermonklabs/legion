@@ -307,7 +307,8 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
   }
 });
 
-test("the row at the viewport centre stays put when a P0 ask arrives above it", async ({
+// @pr: A delivery arriving: a P0 ask landing above the reader must not move the row they are reading.
+test("the row at the viewport centre stays put when a P0 ask arrives above it @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

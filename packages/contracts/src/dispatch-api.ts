@@ -832,6 +832,33 @@ export const SEARCH_OPERATORS = [
 ] as const;
 export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
 
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
+
 // GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
 // `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
 // schema decides those names (Go's pmdoc.LinkKinds), so any other string is admitted beside the

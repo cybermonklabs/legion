@@ -14,7 +14,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("edits issue labels from a searchable multi-select and filters project issues by every selected label", async ({
+// @pr: A keyed write a person makes: labels edited from the multi-select, and the project list filtered by every one picked.
+test("edits issue labels from a searchable multi-select and filters project issues by every selected label @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
