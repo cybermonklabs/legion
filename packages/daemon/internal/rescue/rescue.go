@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -420,6 +421,9 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 			refspecs = append(refspecs, tip+":refs/heads/"+name)
 			pushed = append(pushed, shimwire.RescueBranch{Name: name, Commit: tip})
 		}
+		if err := guardPush(ctx, req, run, clone, pushed); err != nil {
+			return fail(err)
+		}
 		if _, err := run.git(clone, []string{"GIT_TERMINAL_PROMPT=0"}, append([]string{"push", "--atomic", "--quiet", "origin"}, refspecs...)...); err != nil {
 			return fail(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err))
 		}
@@ -430,6 +434,67 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 		result.Status = Rescued
 	}
 	return result
+}
+
+// noSHA is git's "this ref is not there", which a pre-push line carries as the remote side of a
+// ref the push creates. Every branch this check pushes is created by it: the name it picks names
+// no branch the remote advertises and none an earlier workspace of the same check took.
+const noSHA = "0000000000000000000000000000000000000000"
+
+// guardReserve is what the guard's own call leaves of a workspace's remaining time for the push
+// it clears. The shared public leak check's push mode can spend a minute asking the remote what
+// it holds and another in its credential path, so a guard given the whole of what is left would
+// leave the push nothing to run in, and work this check could have rescued would be lost to a
+// bound rather than refused by anyone.
+const guardReserve = 30 * time.Second
+
+// guardPush runs the leak guard over the push this check is about to make, and is the error that
+// fails the workspace where the guard refuses that push or could not be made to run: either way
+// nothing is pushed, and the runtime hands the failure back having written nothing. The guard
+// runs the shared public leak check in its pre-push shape, in the clone, and then this
+// repository's own private-name rules over each ref name and over every commit the push would
+// add (leakguard.Push).
+//
+// The destination repository is read from the remote's URL, which this package does not hold:
+// it asks the clone for it with the package's own runner, under the same bound and the same
+// environment as everything else here, and a remote whose URL it cannot read fails the
+// workspace rather than being pushed unchecked.
+//
+// The updates are the refspecs the push is about to send, as git would hand them to a pre-push
+// hook: the local sha, the branch it creates on the remote, and the all-zero sha for what the
+// remote holds there, since every one of these branches is new.
+//
+// Env is the role's own environment, the one the push itself runs in, which is what names the
+// credential the check reads the remote with.
+func guardPush(ctx context.Context, req Request, run runner, clone string, pushed []shimwire.RescueBranch) error {
+	const what = "the push to origin"
+	url, err := run.git(clone, nil, "remote", "get-url", "origin")
+	if err == nil && url == "" {
+		err = errors.New("git named no URL for origin")
+	}
+	if err != nil {
+		return &leakguard.SetupFailure{What: what, Why: "the URL of the remote this push is made to could not be read", Err: err}
+	}
+	updates := make([]leakguard.Update, 0, len(pushed))
+	for _, branch := range pushed {
+		updates = append(updates, leakguard.Update{
+			LocalRef: branch.Commit, LocalSHA: branch.Commit,
+			RemoteRef: "refs/heads/" + branch.Name, RemoteSHA: noSHA,
+		})
+	}
+	bound := ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		left := time.Until(deadline) - guardReserve
+		if left <= 0 {
+			return &leakguard.SetupFailure{What: what, Why: "the workspace's bound has no time left to check this push in"}
+		}
+		checking, cancel := context.WithTimeout(ctx, left)
+		defer cancel()
+		bound = checking
+	}
+	return leakguard.New(leakguard.Options{Env: req.Env}).Push(bound, leakguard.PushRequest{
+		Dir: clone, Remote: "origin", URL: url, Updates: updates,
+	})
 }
 
 // worktrees is every worktree of the repository whose directory is there, as `git worktree list`

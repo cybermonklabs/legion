@@ -394,3 +394,31 @@ func TestTheTestsEnvironmentReachesNoNetworkRemote(t *testing.T) {
 		t.Errorf("the loopback server received %d requests, want none", n)
 	}
 }
+
+// Every push passes the leak guard before it is made: a push the shared public leak check
+// refuses fails the workspace, leaving the remote without the branch it would have created,
+// and the same push passes and is made once the check clears it. The check the guard runs is
+// the disk's stand-in (rescuetest.Passes, rescuetest.Refuses), the real one being a script no
+// clone of this repository holds.
+func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.LeakCheck(rescuetest.Refuses)
+	d.Write(d.Workspace, "feature.txt", "work the guard reads before it is pushed\n")
+	d.JJ("commit", "-m", "work the guard reads before it is pushed")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	before := d.RemoteBranches()
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "LEAK CHECK: refusing") {
+		t.Fatalf("the check reported %+v, want the guard's refusal and no branch", w)
+	}
+	if held := d.RemoteBranch(prefix + "-1"); held != "" {
+		t.Errorf("the remote holds %s-1 at %s, want no such branch", prefix, held)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
+
+	d.LeakCheck(rescuetest.Passes)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+}

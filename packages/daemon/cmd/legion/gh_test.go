@@ -858,17 +858,21 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	// as the real gh would, and every other run with its argv and GH_CONFIG_DIR, then the rest of
 	// the environment `legion gh` gives it.
 	stub := filepath.Join(t.TempDir(), "gh")
-	script := "#!/bin/sh\nfor last; do :; done\n" +
-		"if [ \"$last\" = --help ]; then\n" +
-		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+	script := ghStandInPrefix(help) +
 		"printf '%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$*\"\n" +
 		"printf 'env %s|%s|%s=%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
-	env := map[string]string{"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root, "PATH": wrappers + ":" + os.Getenv("PATH")}
+	// Every call passes the leak guard before gh runs, and a guard that can resolve no shared
+	// check refuses it, so these runs carry a stand-in check that clears every call
+	// (ghLeakCheck): what this test reads is which directory's token gh is run with, not what
+	// the guard refuses, which TestLegionGhChecksTheCallWithTheLeakGuard reads.
+	env := map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": ghLeakCheck(t, ghCheckPasses),
+	}
 	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|1|credential.https://github.com.useHttpPath=true|1|1\n"
 	for _, tc := range []struct {
 		args []string
@@ -1054,5 +1058,216 @@ func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
 	}
 	if _, err := withGitHubUseHTTPPath([]string{"GIT_CONFIG_COUNT=x"}); err == nil || !strings.Contains(err.Error(), "no count") {
 		t.Errorf("withGitHubUseHTTPPath with GIT_CONFIG_COUNT=x = %v, want a refusal", err)
+	}
+}
+
+// ghStandInPrefix is what every stand-in real gh of this package begins with. It answers
+// `[<command>] --help` with the saved help of that command, gh's own for none, which is the help
+// the command resolver reads; and it answers the shared public leak check's own visibility read
+// — the one call `legion gh` hands gh without checking it — with a visibility, recording it in
+// GH_STANDIN_RECORD where the test names one. Without that second answer the guard's read of a
+// destination's visibility would get a stand-in's ordinary output and refuse every call it
+// cleared, since a visibility it cannot read is a setup failure.
+func ghStandInPrefix(help string) string {
+	return "#!/bin/sh\nfor last; do :; done\n" +
+		"if [ \"$last\" = --help ]; then\n" +
+		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
+		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+		"if [ -n \"$PUBLIC_LEAK_CHECK_VISIBILITY_READ\" ]; then\n" +
+		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
+		"  echo public\n" +
+		"  exit 0\n" +
+		"fi\n"
+}
+
+// The stand-in shared public leak checks `legion gh`'s guard is driven against. Each records the
+// call it was given in LEAK_CHECK_RECORD, so a test can read whether the guard ran at all, and
+// each reads its standard input, as the real check does, so nothing is left in a pipe when it
+// exits. ghCheckRefuses answers as the check answers a write it refuses: its report, and exit 3.
+const (
+	ghCheckPasses  = "printf 'checked %s\\n' \"$*\" >>\"${LEAK_CHECK_RECORD:-/dev/null}\"\ncat >/dev/null 2>&1\nexit 0\n"
+	ghCheckRefuses = "printf 'checked %s\\n' \"$*\" >>\"${LEAK_CHECK_RECORD:-/dev/null}\"\ncat >/dev/null 2>&1\n" +
+		"echo 'LEAK CHECK: refusing the gh call: one of ours'\nexit 3\n"
+)
+
+// ghCheckReading is the check's two-go shape for a call whose body is on standard input: the
+// first run exits 4 to say the call reads standard input, and the second, handed the buffer as a
+// file, records what it read and ends with status — 0 for a call it clears, 3 for one it
+// refuses.
+func ghCheckReading(status int) string {
+	refusal := ""
+	if status != 0 {
+		refusal = "echo 'LEAK CHECK: refusing the gh call: one of ours'\n"
+	}
+	return "if [ -z \"$PUBLIC_LEAK_CHECK_STDIN\" ]; then exit 4; fi\n" +
+		"printf 'checked stdin %s\\n' \"$(cat \"$PUBLIC_LEAK_CHECK_STDIN\")\" >>\"${LEAK_CHECK_RECORD:-/dev/null}\"\n" +
+		refusal + fmt.Sprintf("exit %d\n", status)
+}
+
+// ghLeakCheck writes a stand-in shared public leak check whose body is script into a directory of
+// the test's own and answers its path. The file's name is the real check's, so a test that names
+// it in PUBLIC_LEAK_CHECK resolves it as a pod does.
+func ghLeakCheck(t *testing.T, script string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "public-leak-check.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// readRecord is what a stand-in wrote into its record file, and "" where it never wrote one.
+func readRecord(t *testing.T, path string) string {
+	t.Helper()
+	recorded, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(recorded)
+}
+
+// `legion gh` hands every call to the leak guard before it runs gh, and runs gh not at all for a
+// call the guard refuses: a title, a body and a body on standard input that the shared check
+// refuses are each exit 2 with the check's own report, and gh is never started. A call the check
+// clears reaches gh with its arguments untouched, and gh's own exit status comes back through
+// `legion gh` — the stand-in exits 7 and `legion gh` exits 7 — with the standard input the guard
+// buffered handed to gh in this process's place.
+//
+// Two calls reach gh unchecked. `legion gh auth git-credential` answers git as it always did,
+// with no check run at all, since reading its standard input would break git's protocol. And the
+// shared check's own visibility read passes when it is exactly that read for exactly the
+// repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names — without it a pod's gh, which is this
+// command, would call the check, whose own read would call it again, without end — while the
+// same variable with any other argv, and a variable naming no repository, are checked like
+// anything else.
+func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The gh of these cases records every run it is handed — its arguments and its standard
+	// input — and exits 7, a status nothing in `legion gh` itself answers with, so a test can
+	// read that gh's own status is what came back.
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := ghStandInPrefix(help) +
+		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"exit 7\n"
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrappers := ghWrapperDir(t)
+	// call runs `legion gh args…` with stdin against a stand-in check whose body is check, and
+	// answers its status, what it printed, what gh recorded and what the check recorded.
+	call := func(t *testing.T, check, stdin string, extra map[string]string, args ...string) (code int, stdout, stderr, ghRan, checked string) {
+		t.Helper()
+		records := t.TempDir()
+		ghRecord, checkRecord := filepath.Join(records, "gh"), filepath.Join(records, "check")
+		env := map[string]string{
+			"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+			"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": ghLeakCheck(t, check),
+			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord,
+		}
+		maps.Copy(env, extra)
+		code, stdout, stderr = legionGhIn(t, t.TempDir(), env, stdin, args...)
+		return code, stdout, stderr, readRecord(t, ghRecord), readRecord(t, checkRecord)
+	}
+	ranGh := func(recorded string) bool { return strings.Contains(recorded, "gh ") }
+
+	for _, tc := range []struct {
+		name  string
+		check string
+		stdin string
+		args  []string
+	}{
+		{"a title", ghCheckRefuses, "", []string{"pr", "create", "-R", "acme/widgets", "--title", "a title of this call"}},
+		{"a body", ghCheckRefuses, "", []string{"pr", "create", "-R", "acme/widgets", "--body", "a body of this call"}},
+		{"a body on standard input", ghCheckReading(3), "a body on standard input\n", []string{"pr", "create", "-R", "acme/widgets", "--body-file", "-"}},
+	} {
+		t.Run("refused: "+tc.name, func(t *testing.T) {
+			code, stdout, stderr, ghRan, checked := call(t, tc.check, tc.stdin, nil, tc.args...)
+			if code != 2 || !strings.Contains(stderr, "LEAK CHECK: refusing") {
+				t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and the guard's refusal", tc.args, code, stdout, stderr)
+			}
+			if ranGh(ghRan) {
+				t.Errorf("gh ran: %q", ghRan)
+			}
+			if checked == "" {
+				t.Errorf("the shared check was never run for %q", tc.args)
+			}
+		})
+	}
+
+	t.Run("cleared: a call the check passes reaches gh, and gh's status comes back", func(t *testing.T) {
+		args := []string{"pr", "create", "-R", "acme/widgets", "--title", "a title of this call", "--body", "a body of this call"}
+		code, stdout, stderr, ghRan, checked := call(t, ghCheckPasses, "", nil, args...)
+		if code != 7 {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want gh's own 7", args, code, stdout, stderr)
+		}
+		if want := "gh " + strings.Join(args, " ") + "\n"; !strings.Contains(ghRan, want) {
+			t.Errorf("gh recorded %q, wants %q", ghRan, want)
+		}
+		if checked == "" {
+			t.Errorf("the shared check was never run for %q", args)
+		}
+	})
+
+	t.Run("cleared: the standard input the guard read is handed to gh", func(t *testing.T) {
+		body := "a body on standard input\n"
+		args := []string{"pr", "create", "-R", "acme/widgets", "--body-file", "-"}
+		code, stdout, stderr, ghRan, checked := call(t, ghCheckReading(0), body, nil, args...)
+		if code != 7 {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want gh's own 7", args, code, stdout, stderr)
+		}
+		if want := "stdin " + strings.TrimSuffix(body, "\n") + "\n"; !strings.Contains(ghRan, want) {
+			t.Errorf("gh read %q on its standard input, want %q", ghRan, want)
+		}
+		if want := "checked stdin " + strings.TrimSuffix(body, "\n") + "\n"; !strings.Contains(checked, want) {
+			t.Errorf("the check read %q, want %q", checked, want)
+		}
+	})
+
+	t.Run("unchecked: auth git-credential", func(t *testing.T) {
+		code, stdout, _, ghRan, checked := call(t, ghCheckRefuses, "protocol=https\nhost=github.com\npath=acme/widgets.git\n\n", nil, "auth", "git-credential", "get")
+		if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
+			t.Errorf("legion gh auth git-credential get = exit %d, stdout %q; want %q", code, stdout, want)
+		}
+		if checked != "" || ranGh(ghRan) {
+			t.Errorf("the check recorded %q and gh %q, want neither run", checked, ghRan)
+		}
+	})
+
+	t.Run("unchecked: the shared check's own visibility read", func(t *testing.T) {
+		visibility := []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".visibility"}
+		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{"PUBLIC_LEAK_CHECK_VISIBILITY_READ": "sjawhar/legion"}, visibility...)
+		if code != 0 || stdout != "public\n" {
+			t.Errorf("the check's own visibility read = exit %d, stdout %q, stderr %q; want exit 0 and the visibility", code, stdout, stderr)
+		}
+		if checked != "" {
+			t.Errorf("the shared check ran for its own visibility read: %q", checked)
+		}
+		if want := "visibility " + strings.Join(visibility, " ") + "\n"; ghRan != want {
+			t.Errorf("gh recorded %q, want %q", ghRan, want)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		slug string
+		args []string
+	}{
+		{"another argv under the same variable", "sjawhar/legion", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".name"}},
+		{"a variable naming no repository", "sjawhar/legion/pulls", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion/pulls", "--jq", ".visibility"}},
+	} {
+		t.Run("checked: "+tc.name, func(t *testing.T) {
+			code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{"PUBLIC_LEAK_CHECK_VISIBILITY_READ": tc.slug}, tc.args...)
+			if code != 2 || !strings.Contains(stderr, "LEAK CHECK: refusing") {
+				t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and the guard's refusal", tc.args, code, stdout, stderr)
+			}
+			if checked == "" || ranGh(ghRan) {
+				t.Errorf("the check recorded %q and gh %q; want the call checked and gh not run", checked, ghRan)
+			}
+		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -16,6 +17,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the repository the command names, or of its owner where the bundle holds the repository none, under LEGION_GH_OWNERS_DIR)"
@@ -33,6 +38,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // A command it cannot read for certain, one naming two owners, and one naming an owner the
 // bundle holds no directory for are refused, exit 2, naming why, and the real gh never runs: no
 // token but the target repository's or its owner's is ever sent.
+//
+// Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
+// refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
+// guard's own message, and gh never runs. Two calls pass unchecked: `legion gh auth
+// git-credential`, which answers above before any of this, and the shared check's own read of a
+// repository's visibility (ghVisibilityRead).
 //
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
@@ -69,6 +80,34 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
 	}
+	// The guard, between the owner this command resolved and the gh it is about to run. The whole
+	// argv is what it reads, rather than the options a parser calls text: the shared check's own
+	// gh-guard reads full argv, and a private name is refusable wherever it stands. The call's
+	// standard input goes with it, and whatever the guard read of it comes back to hand gh in
+	// this process's place (runGhChild).
+	//
+	// Two calls reach gh unchecked, each for a reason of its own. `legion gh auth git-credential`
+	// is one: it returned above, before any of this, because it is git's credential protocol on
+	// standard input and standard output and reading that input would break it. The shared
+	// check's own visibility read is the other (ghVisibilityRead).
+	//
+	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
+	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
+	// gh runs, which is what an unreadable command and an unset variable already exit with, and
+	// both print the guard's own message, which names the record and the class and never the
+	// text it refused.
+	var buffered []byte
+	if !ghVisibilityRead(args, env) {
+		repo := ""
+		if target.owner != "" && target.repo != "" {
+			repo = target.owner + "/" + target.repo
+		}
+		buffered, err = leakguard.New(leakguard.Options{}).GhCall(ctx, leakguard.GhRequest{Args: args, Stdin: os.Stdin, Repo: repo})
+		if err != nil {
+			fmt.Fprintf(stderr, "legion gh: %v\n", err)
+			return 2
+		}
+	}
 	dir := env["GH_CONFIG_DIR"]
 	if target.owner != "" {
 		if dir, err = repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
@@ -90,9 +129,106 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
 	}
-	err = syscall.Exec(gh, append([]string{"gh"}, args...), childEnv)
-	fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
-	return 1
+	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
+}
+
+// ghVisibilityRead is whether argv is the shared public leak check's own read of a repository's
+// visibility, the one gh call the guard above never sees. A pod's gh is `legion gh`, so the
+// check's read comes back through this command: checking it would run the check, whose own
+// visibility read would come back here again, and the first write to a repository of another
+// owner would recurse without end.
+//
+// The match is the check's own, as its gh guard makes it: exactly the argv
+//
+//	gh api --hostname github.com repos/<slug> --jq .visibility
+//
+// for exactly the slug PUBLIC_LEAK_CHECK_VISIBILITY_READ names, which must itself be a
+// repository GitHub could have (ghrepo.Parse), so that a variable someone else set lets through
+// one read of one repository and nothing else. leakguard's own visibility reader sets the same
+// variable and sends the same argv (Guard.ghVisibility), so this one exemption serves both.
+func ghVisibilityRead(argv []string, env map[string]string) bool {
+	slug := env["PUBLIC_LEAK_CHECK_VISIBILITY_READ"]
+	if slug == "" {
+		return false
+	}
+	if _, err := ghrepo.Parse("PUBLIC_LEAK_CHECK_VISIBILITY_READ", slug); err != nil {
+		return false
+	}
+	return slices.Equal(argv, []string{"api", "--hostname", "github.com", "repos/" + slug, "--jq", ".visibility"})
+}
+
+// ghForwardedSignals are the signals runGhChild passes on to the gh it started: what a terminal
+// sends a foreground job (an interrupt, a quit, a hangup, a window that changed size) and what a
+// supervisor stops one with. gh runs in a process group of its own, so none of them reaches it
+// otherwise. SIGKILL and SIGSTOP are not here because no process can catch them, and every other
+// signal keeps this process's own default handling, which is what an exec'd gh had.
+var ghForwardedSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGWINCH}
+
+// runGhChild runs the real gh as a child of this process and is the status to exit with: gh's
+// own exit status, and 128+<signal> for a gh a signal killed, which is the status a shell reads
+// such an end as.
+//
+// gh is a child rather than this process exec'd into, as it was before the guard: the guard may
+// have read this process's standard input to check it, and exec cannot put those bytes back,
+// while a child can be handed them (buffered, nil where the guard read none and gh gets this
+// process's own standard input whole). Standard output and standard error are this process's
+// own descriptors, so gh's reading of its terminal — its colour, its spinner, its prompts — is
+// what an exec'd gh would have read.
+//
+// The child runs in a process group of its own (procgroup.Configure, called before any other
+// SysProcAttr field, as its doc requires), and this process forwards it the signals above, to
+// the whole group, since that is what a terminal would have signalled had gh been exec'd here.
+// Its context is this process's with the cancellation taken off (context.WithoutCancel): the
+// Cancel procgroup gives the command is one exec refuses on a command built with no context at
+// all, and the cancellation itself is not wanted — a signal that ends this process's context
+// reaches gh as the signal it was, through the forwarding below, and gh ends on it and answers
+// with its own status, where exec's cancellation would kill gh's group outright, mid-clone, and
+// answer with a status nobody sent.
+func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer) int {
+	child := exec.CommandContext(context.WithoutCancel(ctx), gh, args...)
+	child.Env = env
+	child.Stdin = os.Stdin
+	if buffered != nil {
+		child.Stdin = bytes.NewReader(buffered)
+	}
+	child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	procgroup.Configure(child)
+	// Notified before the child starts, so a signal sent while gh is starting is held in the
+	// channel rather than lost, and stopped once it has ended.
+	signals := make(chan os.Signal, len(ghForwardedSignals))
+	signal.Notify(signals, ghForwardedSignals...)
+	defer signal.Stop(signals)
+	if err := child.Start(); err != nil {
+		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
+		return 1
+	}
+	ended := make(chan struct{})
+	defer close(ended)
+	go func() {
+		for {
+			select {
+			case received := <-signals:
+				if sig, ok := received.(syscall.Signal); ok {
+					_ = syscall.Kill(-child.Process.Pid, sig)
+				}
+			case <-ended:
+				return
+			}
+		}
+	}()
+	err := child.Wait()
+	if err == nil {
+		return 0
+	}
+	var exited *exec.ExitError
+	if !errors.As(err, &exited) {
+		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
+		return 1
+	}
+	if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return exited.ExitCode()
 }
 
 // ghWrapperScript is the `gh` wrapper both runtimes install first on PATH: a script whose one

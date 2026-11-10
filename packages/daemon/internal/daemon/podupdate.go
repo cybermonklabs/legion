@@ -627,9 +627,16 @@ func (s *supervision) replacementDue(issue, round, pod string, checked *pushChec
 // inside it. rescueAnswerMargin is what the shim's bound leaves of the time the replacement has
 // left, for the answer to cross the stream: a check bounded at the whole of that time would be
 // read as a failure the moment it finished, and would run on in the pod beside the next one.
+//
+// A workspace's bound carries the leak guard the check's push now passes (internal/rescue)
+// beside the push itself: the shared public leak check's push mode can spend sixty seconds
+// asking the remote what it holds and another sixty in its credential path before its engine
+// starts, which is why the workspace's two minutes are four. The whole check's bound keeps the
+// margin over it that it had — three minutes, enough for the workspaces a disk holds past the
+// first — so five are seven.
 const (
-	rescueWorkspaceTimeout = 2 * time.Minute
-	rescueTimeout          = 5 * time.Minute
+	rescueWorkspaceTimeout = 4 * time.Minute
+	rescueTimeout          = 7 * time.Minute
 	rescueAnswerMargin     = 30 * time.Second
 )
 

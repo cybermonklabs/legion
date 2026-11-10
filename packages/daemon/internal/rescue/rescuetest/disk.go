@@ -26,9 +26,22 @@ const (
 	Repo  = "widgets"
 )
 
+// The stand-in shared public leak checks a disk's pushes are checked against. The real check is
+// a script no clone of this repository holds, and the push check refuses a push it can run no
+// check for, so every disk carries one: Passes to begin with, and Refuses for a test that wants
+// the push refused (Disk.LeakCheck). Each reads its standard input, as the real check does, so
+// that nothing is left in a pipe when it exits.
+const (
+	Passes  = "cat >/dev/null 2>&1\nexit 0\n"
+	Refuses = "cat >/dev/null 2>&1\necho 'LEAK CHECK: refusing: one of ours'\nexit 3\n"
+)
+
 // Disk is one pod's disk and the remote its clone pushes to.
 type Disk struct {
 	t testing.TB
+	// leakCheck is the stand-in shared public leak check PUBLIC_LEAK_CHECK names in Env, whose
+	// body LeakCheck writes.
+	leakCheck string
 	// Remote is the bare repository standing in for GitHub.
 	Remote string
 	// StateDir is the disk's root, a pod's /legion.
@@ -47,6 +60,17 @@ type Disk struct {
 	// the workspace's creation in the workspace's .jj (workspace.RecordCreated), which the
 	// launcher's resume check reads. RunBefore dates a commit an hour before it.
 	Provisioned time.Time
+}
+
+// LeakCheck writes script as the body of the stand-in shared public leak check this disk's
+// pushes are checked against, the one PUBLIC_LEAK_CHECK names in Env: Passes, Refuses, or a
+// script of the test's own. A disk starts with Passes, and a call of this before a check
+// replaces it, since the guard resolves the check again at every call.
+func (d *Disk) LeakCheck(script string) {
+	d.t.Helper()
+	if err := os.WriteFile(d.leakCheck, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		d.t.Fatal(err)
+	}
 }
 
 // New is a disk whose clone is jj's own colocated clone (`jj git clone --colocate`, which checks
@@ -126,6 +150,9 @@ func newDisk(t testing.TB, issue string, before []func(d *Disk), clone func(d *D
 		Clone:     filepath.Join(root, "legion", "repos", "github.com", Owner, Repo),
 		Workspace: filepath.Join(root, "legion", "workspaces", Owner, Repo, strings.ToLower(issue)),
 	}
+	d.leakCheck = filepath.Join(root, "public-leak-check.sh")
+	d.Env = append(d.Env, "PUBLIC_LEAK_CHECK="+d.leakCheck)
+	d.LeakCheck(Passes)
 	d.Provisioned = time.Now()
 	seed := filepath.Join(root, "seed")
 	d.Run(root, fixturegit.InitBare(d.Remote, "main")...)
