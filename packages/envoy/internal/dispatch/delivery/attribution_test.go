@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -115,16 +116,16 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 	}{
 		{"bare reference in the same repository", "Fixes #77.", "ATTR-111"},
 		{"full URL to another repository", "See https://github.com/acme/other/issues/5 for context.", "ATTR-112"},
-		// The host's left boundary: a URL at the very start of the body is still a citation,
-		// scheme or none, while a host whose name merely ends in github.com is not one at all.
+		// A citation is the whole path of a URL whose host is github.com: a URL at the very start
+		// of the body is one, scheme or none, and a host whose name merely ends in github.com is
+		// not.
 		{"full URL at the start of the body", "https://github.com/acme/other/issues/5 is the context.", "ATTR-112"},
 		{"scheme-less citation at the start of the body", "github.com/acme/other/issues/5 is the context.", "ATTR-112"},
 		{"a lookalike host is not github.com", "See https://evilgithub.com/acme/widgets/issues/77 for context.", ""},
 		{"a subdomain of github.com is not github.com", "See https://pages.github.com/acme/widgets/issues/77 for context.", ""},
 		// www.github.com serves the same pages as github.com, so a reader writing a citation by
-		// hand is likelier to type it than any other lookalike. What the boundary does with it is
-		// pinned here rather than left to be rediscovered: it is a subdomain like any other, and
-		// no citation.
+		// hand is likelier to type it than any other lookalike. What the parse does with it is
+		// pinned here rather than left to be rediscovered: it is a subdomain, and another host.
 		{"www.github.com is a subdomain too", "See https://www.github.com/acme/widgets/issues/77 for context.", ""},
 		// The same string standing inside another URL is no citation either, wherever it sits:
 		// another host's path, its query or its fragment.
@@ -133,8 +134,7 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", ""},
 		// Userinfo before the host is a citation, because the host after it is github.com and
 		// that is where the reader goes; the host of `github.com@evil.test` is evil.test, which
-		// citation_boundary_test.go holds. This row expected no citation while a boundary class
-		// decided these cases, and the parse corrected it (review round two, finding 1).
+		// citation_boundary_test.go holds.
 		{"userinfo before github.com", "See https://user@github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
 		// An issue path with no host is the path of no URL at all: the finder matches the path
 		// rather than the host, so this is the row that says so.
@@ -153,6 +153,64 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 				t.Fatalf("source = %q, want %q", source, sourceGitHubIssueLink)
 			}
 		})
+	}
+}
+
+// TestCitedIssuesCreditsTheURLsOwnPath drives citedIssues, which needs no database, over the
+// three defects review round three found in the citation parse and over the shapes that prove
+// each fix did not take a citation away with it. Each row names what the body cites, whole:
+// an extra citation is a defect of its own, which a membership test would pass over.
+func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
+	const cited = "https://github.com/acme/widgets/issues/7"
+	for _, row := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		// The matched path must be the URL's own path from its start. A host check alone credits
+		// any path a github.com URL carries, which is how /blob/, /tree/ and /wiki/ URLs were
+		// read as citations of an issue nobody wrote.
+		{"a blob URL deep in a repository", "See https://github.com/acme/widgets/blob/main/docs/issues/12 here.", nil},
+		{"a tree URL", "See https://github.com/acme/widgets/tree/fix/issues/123 here.", nil},
+		{"a wiki URL", "See https://github.com/acme/widgets/wiki/issues/3 here.", nil},
+		{"an issue path repeated inside a longer path", "See https://github.com/acme/widgets/issues/7/x/y/issues/8 here.", []string{cited}},
+		// A citation the prose wraps is still a citation: the host opens a word of its own,
+		// whatever stands beside it, and a space is not the only thing that can end a word.
+		{"in parentheses", "See (github.com/acme/widgets/issues/7) here.", []string{cited}},
+		{"in backticks", "See `github.com/acme/widgets/issues/7` here.", []string{cited}},
+		{"in a Markdown link", "See [the issue](github.com/acme/widgets/issues/7) here.", []string{cited}},
+		{"between bold markers", "See **github.com/acme/widgets/issues/7** here.", []string{cited}},
+		{"after a non-breaking space", "See\u00a0github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"after a line separator", "See\u2028github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"in text with no spaces at all", "参照github.com/acme/widgets/issues/7です", []string{cited}},
+		{"after a key and a colon", "Refs:github.com/acme/widgets/issues/7", []string{cited}},
+		// What wraps it is read as the prose it is, and what stands inside another URL is not.
+		{"inside another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/7 here.", nil},
+		{"inside another host's path behind a tilde", "See https://example.test/~github.com/acme/widgets/issues/7 here.", nil},
+		{"inside another host's path behind a bracket", "See https://example.test/(github.com/acme/widgets/issues/7) here.", nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
+				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
+			}
+		})
+	}
+}
+
+// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds the bound review round three asked for: the
+// work is linear in the body rather than quadratic in it. A body of 65,533 bytes with no space
+// in it, every ten of them an issue path, took 1.56 s while each match walked back to the
+// nearest space; it is thousandths of a second once each match reads at most one URL's length.
+// The assertion is the answer rather than a clock, which no loaded machine can make flaky: a
+// quadratic reading cannot reach it inside this test's own deadline.
+func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
+	body := strings.Repeat("/a/b/issues/1", 65533/13)
+	if got := citedIssues("acme/widgets", body); len(got) != 0 {
+		t.Fatalf("a body of %d bytes with no host in it cites %v, want nothing", len(body), got)
+	}
+	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
+	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
+		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
 }
 

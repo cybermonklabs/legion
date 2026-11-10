@@ -91,85 +91,128 @@ type attributionFacts struct {
 	CommitMessages []string
 }
 
-// githubIssueURL matches a full GitHub issue URL; githubBareReference a bare #N of two to six
-// digits (the prototype's reference shape), which GitHub reads as an issue or pull request of the
-// same repository. Both are read out of running text, so both have a left boundary.
+// githubIssuePath matches the path a citation carries, `/<owner>/<repo>/issues/<n>`, and no host
+// at all; githubBareReference matches a bare #N of two to six digits (the prototype's reference
+// shape), which GitHub reads as an issue or pull request of the same repository. A # after a word
+// character, `&` (an HTML character reference), `/` (a URL fragment) or another # (a heading) is
+// not a reference.
 //
-// A citation is `github.com/<owner>/<repo>/issues/<n>` as the host of its own URL, with a scheme
-// or without, and in whatever case the writer spelled either: a URL scheme and a host are both
-// case-insensitive (RFC 3986) and github.com answers `HTTPS://GITHUB.COM/…`, so a body cites the
-// same issue however it writes them.
-//
-// Whether the host is the URL's own is not a question a boundary character can answer, and three
-// rounds of trying one got it wrong in both directions: a class wide enough to refuse
-// `example.test/github.com/…` also refused `Refs:https://github.com/…`, and one narrow enough to
-// credit that credited `example.test/~github.com/…`. So githubIssuePath matches the issue path
-// and no host at all, and citesGitHubIssue parses the URL that path belongs to, crediting it
-// only where net/url reads github.com as the host. The two capture groups and the number stay
-// where citedIssues reads them.
-//
-// A # after a word character, `&` (an HTML character reference), `/` (a URL fragment) or another
-// # (a heading) is not a reference.
+// The host is no part of the pattern. A pattern that matched `github.com` would have to say where
+// a host ends, and an expression matching a host name unanchored is itself the kind of defect
+// this file was changed to fix. citesGitHubIssue decides instead, from what stands before the
+// path, and net/url reads the host.
 var (
 	githubIssuePath     = regexp.MustCompile(`/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
 	githubBareReference = regexp.MustCompile(`(?:^|[^\w&/#])#([1-9][0-9]{1,5})\b`)
 )
 
-// citesGitHubIssue says whether the issue path running from pathAt to end is the path of a URL
-// whose host is github.com, rather than a path of another host's URL or of no URL at all. The
-// host is nowhere in githubIssuePath on purpose: a pattern that matched the host would have to
-// say where a host ends, which is the question three boundary classes answered wrongly, and a
-// regular expression matching `github.com` unanchored is the very defect alert 51 named. So the
-// expression finds the path, and this reads the whitespace-delimited token the path sits in,
-// since no URL holds a space, cuts it to end where the issue number does, and parses it:
+const (
+	// maxHostName is the longest run of host bytes read before the path: a DNS name is at most
+	// 253 bytes (RFC 1035), so a longer run is no host.
+	maxHostName = 253
+	// maxCitationURL is how far back of a body one citation may be read. A URL longer than this
+	// before the issue path is no citation, and the bound is what keeps the work of one match
+	// independent of the body's length: the finder is linear in the body and each match costs at
+	// most this many bytes, where a walk back to the nearest space cost a body with no space in
+	// it the square of its length.
+	maxCitationURL = 2048
+)
+
+// citesGitHubIssue says whether the issue path running from pathAt to end is the whole path of a
+// URL whose host is github.com: `https://github.com/acme/widgets/issues/7` and
+// `GITHUB.COM/acme/widgets/issues/7` are citations, while `evilgithub.com/…`,
+// `https://example.test/github.com/…`, `https://github.com@evil.test/…` and
+// `https://github.com/acme/widgets/blob/main/docs/issues/12` are not.
 //
-//   - a token carrying a scheme is the URL that scheme opens, so `Refs:https://github.com/…`,
-//     `[1]:https://…` and `<a href=https://…>` are each a citation, while
-//     `https://example.test/github.com/…` is example.test's URL with github.com in its path;
-//   - a token with no scheme is a host and a path, so `//` is prefixed to make net/url read it
-//     as one, which is what tells `github.com/acme/widgets/issues/7` from `my-github.com/…`,
-//     and what leaves a bare `/acme/widgets/issues/7` the path of no host at all.
-//
-// The parsed host decides, so userinfo before it (`https://user:p@github.com/…`) is a citation
-// and `https://github.com@evil.test/…` is not, and a subdomain is another host: www.github.com
-// and pages.github.com are credited to nobody, as this issue's review settled.
+// It reads the authority that owns the path — the host, and a port and userinfo where they stand
+// — and hands that and the path to net/url, which answers what the host is. Both halves matter: a
+// host check alone would credit any path on github.com, and the path check alone would credit the
+// right path under any host.
 func citesGitHubIssue(body string, pathAt, end int) bool {
-	start := strings.LastIndexAny(body[:pathAt], " \t\r\n") + 1
-	token := body[start:end]
-	at := pathAt - start
-	switch scheme := strings.LastIndex(token[:at], "://"); {
-	case scheme >= 0:
-		token = token[schemeStart(token[:scheme]):]
-	case strings.HasPrefix(token, "//"):
-		token = "https:" + token
+	host := authorityBefore(body, pathAt)
+	if host < 0 {
+		return false
+	}
+	parsed, err := url.Parse("//" + body[host:end])
+	return err == nil && strings.EqualFold(parsed.Hostname(), "github.com") &&
+		parsed.EscapedPath() == body[pathAt:end]
+}
+
+// authorityBefore is where the authority owning the path at pathAt begins, or -1 where the bytes
+// before the path are the path of some other URL, or no authority at all. It reads at most a URL's
+// length, so a body of any size costs one bounded read per match rather than a walk back through
+// everything before it.
+//
+// What may stand before a host and leave it a host: nothing, because the body begins there; an
+// `@`, which makes what came before it userinfo of this same URL; a `//`, which opens an authority
+// after a scheme (`https://github.com/…`), at the body's start, after a space or a bracket
+// (`//github.com/…`), or inside another URL where a whole URL is written out
+// (`https://example.test/r?u=https://github.com/…`, which cites what it writes); and a word of its
+// own, however the prose wraps it — `(github.com/…)`, `Refs:github.com/…`, a backtick, a quote, a
+// non-breaking space, or CJK text with no space in it.
+//
+// What does not: a single `/`, since the bytes are then a path segment of another URL, as in
+// `https://example.test/github.com/…`; and a word already inside a URL, which is what a `/`, `?`
+// or `#` earlier in that word says — `https://example.test/r?u=github.com/…` and
+// `HTTPS://EXAMPLE.TEST/~GITHUB.COM/…` cite example.test, whatever they carry after it.
+func authorityBefore(body string, pathAt int) int {
+	at := pathAt
+	digits := at
+	for digits > 0 && isDigitByte(body[digits-1]) {
+		digits--
+	}
+	if digits < at && digits > 0 && body[digits-1] == ':' {
+		at = digits - 1 // a port, which belongs to the authority
+	}
+	start := at
+	for start > 0 && at-start < maxHostName && isHostByte(body[start-1]) {
+		start--
+	}
+	switch {
+	case start == at, at-start >= maxHostName:
+		return -1 // no host before the path, or a run too long to be one
+	case start == 0, body[start-1] == '@':
+		return start
+	case body[start-1] == '/':
+		if start >= 2 && body[start-2] == '/' && (start == 2 || body[start-3] == ':' || !isURLByte(body[start-3])) {
+			return start // the // that opens an authority
+		}
+		return -1 // a path segment of another URL
+	case opensItsOwnWord(body, start):
+		return start
 	default:
-		token = "//" + token
+		return -1
 	}
-	parsed, err := url.Parse(token)
-	return err == nil && strings.EqualFold(parsed.Hostname(), "github.com")
 }
 
-// schemeStart is where the scheme ending text begins: a letter, then letters, digits, `+`, `-`
-// and `.` (RFC 3986). Text ending in no scheme answers its own length, so the caller parses from
-// the `://` itself and reads no host, which is what `1]:` or `href=` before a second scheme
-// leaves behind.
-func schemeStart(text string) int {
-	at := len(text)
-	for at > 0 && isSchemeByte(text[at-1]) {
-		at--
+// opensItsOwnWord says whether the host at start begins a word rather than standing inside a URL
+// already under way. It reads left to the first byte no URL may hold, which ends the word, and
+// answers no where that word already carries a `/`, `?` or `#`, each of which means the URL has
+// left its authority behind. The read stops at maxCitationURL bytes and answers no there: a URL
+// that long is no citation, and the bound is what keeps one match's work independent of the
+// body's length.
+func opensItsOwnWord(body string, start int) bool {
+	for at := start; at > 0 && start-at < maxCitationURL; at-- {
+		switch b := body[at-1]; {
+		case !isURLByte(b):
+			return true
+		case b == '/', b == '?', b == '#':
+			return false
+		}
 	}
-	if at == len(text) || !isSchemeLetter(text[at]) {
-		return len(text)
-	}
-	return at
+	return start < maxCitationURL
 }
 
-func isSchemeByte(b byte) bool {
-	return isSchemeLetter(b) || b >= '0' && b <= '9' || b == '+' || b == '-' || b == '.'
+func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
+
+func isHostByte(b byte) bool {
+	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
 }
 
-func isSchemeLetter(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+// isURLByte is every byte RFC 3986 allows inside a URL. A byte outside it ends the URL, so what
+// follows begins a word of its own.
+func isURLByte(b byte) bool {
+	return isHostByte(b) || strings.IndexByte("_~:/?#[]@!$&'()*+,;=%", b) >= 0
 }
 
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
