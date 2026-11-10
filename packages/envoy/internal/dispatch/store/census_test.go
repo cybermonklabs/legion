@@ -713,9 +713,12 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		if report.Refused() != oldShape {
-			t.Fatalf("old shape %v: unexpected verdict:\n%s", oldShape, reportText(report))
-		}
+		// The verdict of the whole set is not this test's subject and must not be asserted: the
+		// set holds every pending migration, and under a TableLimit of one byte any of them may
+		// refuse for a table of its own - 20261110004829_drop_default_branch_commits does, where
+		// default_branch_commits already exists (measured in CI at d656b570, which is why this
+		// assertion is gone). What this test is about is the two entries below, each read on its
+		// own.
 		found := map[int]bool{20261109120000: false, 20261110155257: false}
 		for _, entry := range report.Pending {
 			if _, wanted := found[entry.Migration.Version]; wanted {
