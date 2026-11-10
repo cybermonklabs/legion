@@ -19,9 +19,11 @@
 # (legion-envoy-v29.47.1); its tree is taken with `git archive` into the run's own work directory,
 # so the checkout is never touched. The ports are SEARCH_TWO_BUILDS_BASE_PORT (19081),
 # SEARCH_TWO_BUILDS_HEAD_PORT (19082) and SEARCH_TWO_BUILDS_ENVOY_PORT (19083), each refused when
-# something already answers on it, so this proof and dispatch-two-builds.sh beside it can run at
-# once. The work directory, under TMPDIR, holds the base tree, both binaries and every process's
-# log: removed when the run passes, kept and printed when it fails.
+# something already answers on it, so this proof and dispatch-two-builds.sh beside it hold no
+# port in common. Running them at once still takes a database each: both reset their own
+# DATABASE_URL's `public` schema, so one database given to both leaves each build migrating a
+# schema the other emptied. The work directory, under TMPDIR, holds the base tree, both binaries
+# and every process's log: removed when the run passes, kept and printed when it fails.
 #
 # It is a sibling of dispatch-two-builds.sh rather than a case added to it: that proof needs a
 # base build older than this release's reference grammar, and this one needs the release before
@@ -117,7 +119,7 @@ answer_body=''
 fetch() {
   local out
   out=$(mktemp "$work/answer.XXXXXX")
-  answer_status=$(curl -sS -o "$out" -w '%{http_code}' --max-time 30 \
+  answer_status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" \
     -H "Authorization: Bearer $agent_token" "$1") || answer_status=000
   answer_body=$(cat "$out")
   rm -f "$out"
@@ -149,7 +151,7 @@ new_issue() {
 coverage_reading=''
 every_item_embedded() {
   local body
-  body=$(curl -sS --max-time 30 -H "Authorization: Bearer $agent_token" \
+  body=$(curl -sS --max-time "$call_seconds" -H "Authorization: Bearer $agent_token" \
     "$head_url/api/v1/search/coverage") || return 1
   # shellcheck disable=SC2016 # the JavaScript below is bun's, not this shell's
   coverage_reading=$(printf '%s' "$body" | bun -e 'let data = ""; process.stdin.on("data", (chunk) => { data += chunk; }); process.stdin.on("end", () => { const report = JSON.parse(data); const kinds = Object.entries(report.kinds ?? {}).map(([kind, counts]) => `${kind} ${counts.lacking}/${counts.items}`).join(", "); console.log(`lacking=${report.total.lacking} items=${report.total.items} (${kinds})`); });') || return 1
