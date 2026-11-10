@@ -28,7 +28,7 @@ const returnIssue = "LEGION-208"
 
 // seedReturningWorker records the claim of role as a worker between turns is left: live, holding
 // no task, and still serving the assignment of the phase entry it last worked. A claim in that
-// state is what the return's relaunch row finds, and what a completion of the earlier assignment
+// state is what the return's start row finds, and what a completion of the earlier assignment
 // would be weighed against (api/handoff.go, HANDOFF_STALE_ASSIGNMENT).
 func seedReturningWorker(t *testing.T, pool *pgxpool.Pool, role claim.Role) claim.Token {
 	t.Helper()
@@ -49,9 +49,8 @@ func seedReturningWorker(t *testing.T, pool *pgxpool.Pool, role claim.Role) clai
 	return token
 }
 
-// startRow is one supervise start row of the issue, as the two rows a start is written as leave
-// it (StartOrOwe): the relaunch row carries no task, and the task row carries one and waits for
-// the slot.
+// startRow is one supervise start row of the issue, as the one row a start is written as leaves
+// it (StartOrOwe): it carries the task and waits for the issue's slot.
 type startRow struct {
 	id         int64
 	role       claim.Role
@@ -128,35 +127,22 @@ func assertTransitionApplied(t *testing.T, pool *pgxpool.Pool, want phase.Phase,
 }
 
 // assertOwesOneStart is A3's second and third assertions: the issue owes its worker exactly one
-// start that waits for a slot, however many transitions wrote one, and each transition's relaunch
-// row is runnable at once and carries no task, so the outbox's start case brings the worker's
-// session back and delivers nothing (its delivery is guarded by a task the row does not carry).
-// The claim is left as the relaunch leaves one that is already live — ready or idle, holding no
-// task. transitions is how many of them landed before the slot.
-func assertOwesOneStart(t *testing.T, pool *pgxpool.Pool, role claim.Role, assignment, task string, transitions int, now time.Time) {
+// start, however many transitions wrote one, and that row waits for the issue's slot and is
+// runnable by nobody until it comes. The claim is left as a worker between turns is — ready or
+// idle, holding no task — because nothing of the start runs before the slot.
+func assertOwesOneStart(t *testing.T, pool *pgxpool.Pool, role claim.Role, assignment, task string, now time.Time) {
 	t.Helper()
-	var owed, relaunch []startRow
-	for _, row := range startRowsOf(t, pool, returnIssue, now) {
-		if row.needsSlot {
-			owed = append(owed, row)
-			continue
-		}
-		relaunch = append(relaunch, row)
+	rows := startRowsOf(t, pool, returnIssue, now)
+	if len(rows) != 1 {
+		t.Fatalf("the issue holds the start rows %+v, want exactly one: a start is one row that carries the task", rows)
 	}
-	if len(owed) != 1 {
-		t.Fatalf("the issue owes %+v, want exactly one start held for its slot", owed)
+	owed := rows[0]
+	if !owed.needsSlot {
+		t.Fatalf("the start row is %+v, want it marked for the issue's slot: the cap counts the issues at work", owed)
 	}
-	if owed[0].role != role || owed[0].assignment != assignment || owed[0].task != task || owed[0].claimable {
+	if owed.role != role || owed.assignment != assignment || owed.task != task || owed.claimable {
 		t.Fatalf("the owed start is %+v, want the %s's, carrying assignment %q and task %q, runnable by nobody while the issue holds no slot",
-			owed[0], role, assignment, task)
-	}
-	if len(relaunch) != transitions {
-		t.Fatalf("the relaunch rows are %+v, want one for each of the %d transitions", relaunch, transitions)
-	}
-	for _, row := range relaunch {
-		if row.role != role || row.task != "" || row.assignment != "" || !row.claimable {
-			t.Fatalf("the relaunch row %+v, want the %s's, carrying no task and runnable at once", row, role)
-		}
+			owed, role, assignment, task)
 	}
 	var state string
 	var pending int
@@ -240,12 +226,12 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // A3. Every return the daemon makes for a worker applies its transition at once and owes that
 // worker one start, which waits for the issue's admission slot and for nothing else.
 //
-// The cap counts the issues at work, so a worker's task is the one thing a transition may not do
+// The cap counts the issues at work, so a worker's start is the one thing a transition may not do
 // before its issue holds a slot. Everything else is written in the fact's own transaction: the
 // phase, the role's assignment on its phases row, the Dispatch status and the notices. The start
-// travels as two rows (StartOrOwe) — a relaunch that carries no task and runs at once, so the
-// role's session is live and answering questions, and the task row the outbox holds unclaimable
-// while the slots table names no slot of the issue (store.go's outboxInOrder).
+// is one row (StartOrOwe), which carries the worker's task and which the outbox holds
+// unclaimable while the slots table names no slot of the issue (store.go's outboxInOrder), so
+// the worker comes back with its work rather than ahead of it.
 //
 // The rows are the returns the spec names, each of which starts a worker on an issue that held a
 // slot before: a red head, a head that conflicts with its base, the merge queue's failed_checks
@@ -373,7 +359,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			token := seedReturningWorker(t, pool, tc.role)
 			engine := tc.engine()
 
-			transitions := 1
 			applyRefusingNothing(t, pool, engine, tc.fact)
 			if tc.second != nil {
 				first := assignmentOfRow(t, pool, tc.role)
@@ -381,7 +366,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 				if again := assignmentOfRow(t, pool, tc.role); again == first {
 					t.Fatalf("the second transition left the %s's assignment at %q, want one of its own", tc.role, first)
 				}
-				transitions = 2
 			}
 
 			assignment := assertTransitionApplied(t, pool, tc.want, tc.role, tc.status, tc.keeps)
@@ -389,7 +373,7 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			if task == "" || !strings.Contains(task, tc.task) {
 				t.Fatalf("the %s's task %q, want the last transition's, naming %q", tc.role, task, tc.task)
 			}
-			assertOwesOneStart(t, pool, tc.role, assignment, task, transitions, engine.now())
+			assertOwesOneStart(t, pool, tc.role, assignment, task, engine.now())
 			assertNotStranded(t, pool, tc.role, token, tc.want)
 			assertTheSlotDeliversOnce(t, pool, tc.role, assignment, task, engine.now())
 		})
