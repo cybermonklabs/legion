@@ -136,6 +136,8 @@ function renderShellAt(
       rank: issue.rank,
       title: issue.title,
       updated_at: issue.updated_at,
+      created_by: issue.created_by,
+      created_at: issue.created_at,
     },
   ];
   api.getMyState = async () => ({

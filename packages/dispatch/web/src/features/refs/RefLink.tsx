@@ -89,8 +89,8 @@ export function RefLink({
           />{" "}
         </>
       )}
-      {/* An issue reads as its key then its title, as the project's issue list writes a key
-          beside one (`IssueList.tsx`), so the link's accessible name is `CORE-12 Fix the
+      {/* An issue reads as its key then its title, as the project's issues table writes a key
+          beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
           thing`. Until the title resolves, and for an issue the reader cannot read, the words
           the author wrote stand. */}
       {title === undefined ? (

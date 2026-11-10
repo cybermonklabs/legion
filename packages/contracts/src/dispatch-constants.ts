@@ -382,3 +382,30 @@ export const LIVE_SOCKET_MAX_AGE_MS = 3_600_000;
 /** The most subscriptions one live socket holds at once; a subscribe past it is refused with a
  *  `TOO_MANY_SUBSCRIPTIONS` error frame. */
 export const LIVE_SOCKET_MAX_SUBSCRIPTIONS = 64;
+
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
