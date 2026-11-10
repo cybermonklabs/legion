@@ -342,5 +342,9 @@ export function IssueTree({
 }
 
 /** The width the tree is read one node at a time at, where five levels of indent and a row's own
- *  words do not fit together (R1, R17). */
-const ZOOMED_TREE_QUERY = "(max-width: 1024px)";
+ *  words do not fit together (R1, R17). It is the page's one width: the preset row is the row of
+ *  five exactly where the tree is not zoomed, so `IssuePresets.tsx` reads this query's negation
+ *  rather than a `(min-width: …)` of its own. Two queries a pixel apart would leave a fractional
+ *  width - a zoomed browser, a fractional device-pixel ratio - matching neither, with the presets
+ *  a menu while the tree draws full indents (`shell/useDialog.ts`, `MD_VIEWPORT_QUERY`). */
+export const ZOOMED_TREE_QUERY = "(max-width: 1024px)";

@@ -145,13 +145,27 @@ export const artifactBlocksQuery = (id: string) =>
  *  surfaces naming the same set share one answer and a set that grows by one is a read of its
  *  own rather than a stale hit. An empty set is never read: `enabled` is off, because a read of
  *  nothing still costs a request.
+ *
+ *  A set past the server's cap (`REFERENCE_TARGETS_MAX`, which it refuses with
+ *  `400 CAP_EXCEEDED`) is read in batches of the cap rather than cut to it, so the addresses
+ *  past it are named too: a page the cap was not sized for - an issue whose tree holds a node
+ *  per comment, message, ask and typed block - would otherwise draw the rest of its rows with
+ *  no words at all and say nothing about it. One request is still one request: a page under the
+ *  cap, which is every ordinary one, reads exactly as it did.
  */
 export const referenceTargetsQuery = (refs: readonly string[]) => {
-  const named = [...new Set(refs)].sort().slice(0, REFERENCE_TARGETS_MAX);
+  const named = [...new Set(refs)].sort();
+  const batches: string[][] = [];
+  for (let at = 0; at < named.length; at += REFERENCE_TARGETS_MAX) {
+    batches.push(named.slice(at, at + REFERENCE_TARGETS_MAX));
+  }
   return queryOptions({
     enabled: named.length > 0,
     queryKey: ["reference-targets", named],
-    queryFn: () => api.getReferenceTargets(named),
+    queryFn: async () => {
+      const answers = await Promise.all(batches.map((batch) => api.getReferenceTargets(batch)));
+      return { targets: answers.flatMap((answer) => answer.targets ?? []) };
+    },
   });
 };
 

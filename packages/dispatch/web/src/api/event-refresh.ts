@@ -492,6 +492,18 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
 }
 
 /**
+ * The batched read a page's names come from (`referenceTargetsQuery`): the words shown for every
+ * `dispatch://` address one page holds - an issue's title, a document's name, a block's excerpt,
+ * an ask's question, a comment's or a message's first words - in one answer. Its key is the set
+ * of addresses it asked for and names no issue, so there is no narrower target than the prefix:
+ * a retitled issue, an edited block or a reworded ask moves the words of a page whose addresses
+ * reach it, whichever issue the event is on. One read of one open page answers it, the scheduler
+ * asks it at most once a second, and the route answers an unchanged set `304` from its ETag
+ * (`reference_targets.go`), so the prefix costs a conditional request rather than a payload.
+ */
+const EVERY_REFERENCE_NAME: RefreshTarget = { queryKey: ["reference-targets"] };
+
+/**
  * What an `issue.created`, `issue.updated` or `issue.closed` of `key` refreshes beyond what every
  * event of the issue does.
  */
@@ -678,6 +690,11 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
+  // A version, an ask or a comment of a document outside any issue can be what a page's chip
+  // names, and the words that chip draws come from the batched name read.
+  if (changesReferenceGraph(event)) {
+    targets.push(EVERY_REFERENCE_NAME);
+  }
   // A reference to the document shows its name, kind and latest version. A new document can be
   // the one a reference that found nothing named (no data to test), so it refreshes those too.
   if (event.type === "artifact.version" || event.type === "artifact.created") {
@@ -832,7 +849,12 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push({ queryKey: myRepliesKey });
   }
   if (changesReferenceGraph(event)) {
-    targets.push({ exact: true, queryKey: ["issue", key, "references"] });
+    // By prefix, not exactly: the References tab reads `["issue", key, "references"]` and the
+    // issue page's tree reads the issue's own closure under `["issue", key, "references", "own"]`
+    // (`useIssueTree.ts`), and a version that cites a document moves both. Nothing else hangs
+    // under this prefix, so the one rule holds whatever the next reader of the closure keys on.
+    targets.push({ queryKey: ["issue", key, "references"] });
+    targets.push(EVERY_REFERENCE_NAME);
   }
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
@@ -1085,7 +1107,9 @@ function changedReferenceTargets(event: DispatchEvent): RefreshTarget[] {
     if (target.kind === "issue") {
       targets.push(
         { exact: true, queryKey: ["issue", target.id] },
-        { exact: true, queryKey: ["issue", target.id, "references"] },
+        // By prefix: the References tab's read and the issue page's own closure
+        // (`["issue", key, "references", "own"]`) both hold the edges this target just lost.
+        { queryKey: ["issue", target.id, "references"] },
         referencePanel(buildDispatchReference({ key: target.id, kind: "issue" }))
       );
       continue;

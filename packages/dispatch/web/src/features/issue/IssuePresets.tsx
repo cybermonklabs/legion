@@ -13,6 +13,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
+import { ZOOMED_TREE_QUERY } from "./IssueTree";
 import { presetPath } from "./issue-address";
 import { MENU_CLASS, MENU_ITEM_CLASS, NodeMenu } from "./NodeMenu";
 import { authorText, pageChrome } from "./page-structure";
@@ -26,7 +27,8 @@ import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-
  * link in a tablist: the row says what the page is showing and how much of the tree each query
  * holds, and selecting one is navigation, not a panel switch.
  *
- * The row has two shapes and no third. From 1025 px it is the row of five, each tab named by
+ * The row has two shapes and no third. Past the width the tree zooms at (`ZOOMED_TREE_QUERY`,
+ * `IssueTree.tsx`, whose negation decides this) it is the row of five, each tab named by
  * its preset alone - `tab "Spec"`, the name the page is held to by the inventory of the page
  * it replaced (`e2e/fixtures/issue-page-inventory.json`'s rename of `tab "Spec"`) - with its
  * count beside it. The count sits beside the link rather than inside it, because WCAG 2.5.3
@@ -41,7 +43,7 @@ import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-
  * inventory entry holds it to a name. Between the two the row wraps rather than scrolling, so
  * nothing is ever cut.
  *
- * The node menu sits beside the row and outside it, so the one control below 1025 px is
+ * The node menu sits beside the row and outside it, so the one control at the zoomed width is
  * unambiguous. What it holds is `NodeMenu.tsx`'s: what no block of the tree cites, and the
  * upload.
  */
@@ -77,7 +79,9 @@ export function IssuePresets({
   uncited: readonly Artifact[];
 }): ReactNode {
   const navigate = useNavigate();
-  const row = useMediaQuery(PRESET_ROW_QUERY);
+  // The row of five is drawn exactly where the tree is not zoomed: one query and its negation,
+  // so no width answers both shapes or neither (`ZOOMED_TREE_QUERY`).
+  const row = !useMediaQuery(ZOOMED_TREE_QUERY);
   // The page opens at most one menu at a time, so which one is open is one value.
   const [open, setOpen] = useState<OpenMenu>(nodeMenu ? "nodes" : undefined);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -256,7 +260,3 @@ export function IssuePresets({
 
 /** Which of the page's two menus is open; the page opens at most one at a time. */
 type OpenMenu = "nodes" | "presets" | undefined;
-
-/** The width the row of five is drawn at. Below it the row is one control, which is also the
- *  width the tree itself is read one node at a time at (R3, R17). */
-const PRESET_ROW_QUERY = "(min-width: 1025px)";

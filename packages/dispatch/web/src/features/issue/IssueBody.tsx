@@ -66,15 +66,16 @@ export function IssueBody({
   // the tree itself changes, not on every commit the page makes.
   const targetKind = address.target?.kind;
   const targetId = address.target?.id;
-  const target = useMemo<AddressTarget | undefined>(
-    () =>
-      targetKind === undefined || targetId === undefined
-        ? undefined
-        : // The two fields are the whole of a target, and this is the one place that says so,
-          // so a target holds its value across a render rather than being built afresh.
-          ({ id: targetId, kind: targetKind } as AddressTarget),
-    [targetId, targetKind]
-  );
+  // Which document a block target belongs to, where its address names one: a block id alone
+  // names a block of any document of the issue (`pathToTarget`).
+  const targetDocument = address.target?.kind === "block" ? address.target.document : undefined;
+  const target = useMemo<AddressTarget | undefined>(() => {
+    if (targetKind === undefined || targetId === undefined) return undefined;
+    if (targetKind === "block") return { document: targetDocument, id: targetId, kind: "block" };
+    // These fields are the whole of a target, and this is the one place that says so, so a
+    // target holds its value across a render rather than being built afresh.
+    return { id: targetId, kind: targetKind } as AddressTarget;
+  }, [targetDocument, targetId, targetKind]);
   const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
   // The node the preset draws the body of without being asked: the decision waiting for the
   // reader's review, whose body holds Keep and Change, so a reader who opens the preset is in

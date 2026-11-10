@@ -187,7 +187,12 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
           ))}
         </span>
       )}
-      {child.claim === null ? null : (
+      {/* `== null`: a Dispatch older than the claim this row draws answers the issue read with
+          children carrying no `claim` at all, and during a rollout two builds answer one load
+          balancer (`e2e/two-builds.multiprocess.e2e.ts`). `=== null` would let that `undefined`
+          through to `child.claim.actor` and drop the whole page into its error boundary, where
+          `blocked_by` above already reads an absent field as none. */}
+      {child.claim == null ? null : (
         <span {...pageChrome}>
           {PROPERTY_LABELS.claim}{" "}
           <span {...authorText}>

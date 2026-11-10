@@ -1,8 +1,9 @@
-import { itemFromSearch } from "@legion/contracts";
+import { decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
 import type { ConversationState, Preset } from "./page-words";
+import { blockNodeId } from "./tree-drafts";
 
 /**
  * What one address of the issue page says (dispatch://INFRA-1196 R19,
@@ -20,8 +21,12 @@ import type { ConversationState, Preset } from "./page-words";
 
 /** The node an address names, before the tree is there to resolve it against. */
 export type AddressTarget =
-  /** One block, by the block id a `#b-` fragment or a route's block target holds. */
-  | { readonly kind: "block"; readonly id: string }
+  /** One block, by the block id a `#b-` fragment or a route's block target holds, and the slug
+   *  of the document holding it where the address names one: a block id is unique inside its
+   *  document alone, and an issue carries several (`tree-drafts.ts`'s `blockNodeId`). An
+   *  address that names no document - a `#b-` fragment on the issue's own address - leaves it
+   *  undefined, and the first node carrying that block id answers. */
+  | { readonly kind: "block"; readonly id: string; readonly document?: string }
   /** One ask, comment or message a preset's own address names beside it (`?ask=`, `?comment=`),
    *  by its own id: the tree is what that address opens, and the item is a node of it. */
   | { readonly kind: "item"; readonly id: string }
@@ -88,7 +93,9 @@ function routeTarget(route: IssueRoute): AddressTarget | undefined {
   }
   if (route.kind === "artifact") {
     const block = "block" in route ? route.block : undefined;
-    return block === undefined ? { id: route.slug, kind: "node" } : { id: block.id, kind: "block" };
+    return block === undefined
+      ? { id: route.slug, kind: "node" }
+      : { document: route.slug, id: block.id, kind: "block" };
   }
   if (route.kind === "spec") {
     const block = "block" in route ? route.block : undefined;
@@ -112,9 +119,21 @@ export function issueAddress(
 ): IssueAddress {
   const query = new URLSearchParams(search);
   const item = itemFromSearch(search);
-  const block = hash.startsWith("#b-") ? decodeURIComponent(hash.slice(3)) : undefined;
+  // `decodeBlockId`, not `decodeURIComponent`: a fragment holding a stray percent (`#b-50%`)
+  // throws a `URIError`, and this runs in a render, so a bare decode would put the whole page
+  // in its error boundary over one unreadable address. A fragment that reads as no block id
+  // names no block, and the address falls back to what its route names, which for a document's
+  // address is that document. The block it does name belongs to the document the route names,
+  // where it names one: a block id is unique inside its own document alone.
+  const block = hash.startsWith("#b-") ? decodeBlockId(hash.slice(3)) : undefined;
   const named: AddressTarget | undefined =
-    block === undefined ? routeTarget(route) : { id: block, kind: "block" };
+    block === undefined
+      ? routeTarget(route)
+      : {
+          document: route.kind === "artifact" ? route.slug : undefined,
+          id: block,
+          kind: "block",
+        };
   return {
     conversation: ROUTE_CONVERSATION_STATES[route.kind] ?? "words",
     filter: query.get("q") ?? "",
@@ -143,6 +162,12 @@ function pathToNode(
  * The chain from the issue down to the node `target` names, the issue first. An ask is the
  * block the server indexed it from where it has one, so an item is looked up by its node id
  * first and by the `dispatch://` address of that item second.
+ *
+ * A block is looked up inside the document its address names, since a node's id is
+ * `<slug>#b-<id>` (`tree-drafts.ts`'s `blockNodeId`) and a block id is the author's, unique
+ * inside one document alone: `/issues/KEY/artifacts/plan-md#b-t1` would otherwise land on the
+ * spec's own `#b-t1`. An address naming no document - a `#b-` fragment on the issue's own
+ * address - has only the block id to go on, and the first node carrying it answers.
  */
 export function pathToTarget(
   root: TreeNode,
@@ -150,6 +175,10 @@ export function pathToTarget(
 ): readonly TreeNode[] | undefined {
   if (target === undefined) return undefined;
   if (target.kind === "block") {
+    if (target.document !== undefined) {
+      const id = blockNodeId(target.document, target.id);
+      return pathToNode(root, (node) => node.id === id);
+    }
     const suffix = `#b-${target.id}`;
     return pathToNode(root, (node) => node.id.endsWith(suffix));
   }

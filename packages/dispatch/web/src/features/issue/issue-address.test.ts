@@ -78,3 +78,63 @@ test("an item is found by its own id, and an ask by the address of the ask it wa
   expect(pathToTarget(tree, { id: "nothing", kind: "item" })).toBeUndefined();
   expect(pathToTarget(tree, undefined)).toBeUndefined();
 });
+
+// A fragment is a reader's own text and can be anything: `#b-50%` is no percent-escape, and
+// `decodeURIComponent` throws a `URIError` on it. This runs in a render, so a throw here puts
+// the whole issue page in its error boundary; an unreadable fragment names no block instead,
+// and the address falls back to what its route names.
+test("an unreadable block fragment names no block and keeps the route's own target", () => {
+  expect(
+    issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-50%", false).target
+  ).toBeUndefined();
+  expect(
+    issueAddress({ key: "CORE-1", kind: "artifact", slug: "plan-md" }, "", "#b-50%", false).target
+  ).toEqual({ id: "plan-md", kind: "node" });
+  // An escape that does read is the block it names, decoded.
+  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-a%20b", false).target).toEqual({
+    document: undefined,
+    id: "a b",
+    kind: "block",
+  });
+});
+
+// A block id is the author's and unique inside its own document alone, so an address naming a
+// document resolves inside that document: `/issues/CORE-1/artifacts/plan-md#b-t1` is the plan's
+// `t1` and never the spec's. An address naming no document - the issue's own, with a fragment -
+// has only the block id to go on.
+test("a block of a document's address is found in that document, not in another one's", () => {
+  const specTask = node("spec#b-t1", "plan_task");
+  const planTask = node("plan-md#b-t1", "plan_task");
+  const documents = node("CORE-1", "issue", {
+    children: [
+      node("spec", "document", { children: [specTask] }),
+      node("plan-md", "document", { children: [planTask] }),
+    ],
+  });
+
+  const address = issueAddress(
+    { key: "CORE-1", kind: "artifact", slug: "plan-md" },
+    "",
+    "#b-t1",
+    false
+  );
+  expect(address.target).toEqual({ document: "plan-md", id: "t1", kind: "block" });
+  expect(pathToTarget(documents, address.target)?.map((found) => found.id)).toEqual([
+    "CORE-1",
+    "plan-md",
+    "plan-md#b-t1",
+  ]);
+  // A document the tree does not hold that block of answers nothing, rather than another
+  // document's block of the same id.
+  expect(pathToTarget(documents, { document: "verification-md", id: "t1", kind: "block" })).toBe(
+    undefined
+  );
+  // The issue's own address with a fragment names no document: the first node carrying the
+  // block id answers, which is the behaviour every such address has always had.
+  expect(
+    pathToTarget(
+      documents,
+      issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-t1", false).target
+    )?.map((found) => found.id)
+  ).toEqual(["CORE-1", "spec", "spec#b-t1"]);
+});

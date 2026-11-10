@@ -1,4 +1,4 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
@@ -35,9 +35,11 @@ import {
  * read by the node that opens it and by nothing else (`NodeArtifact.tsx`).
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
- * batched request (`referenceTargetsQuery`), and the tree is built again with the names in it.
- * Until that answers the tree draws, with a chip naming its target's address and a block of a
- * document carrying no words yet.
+ * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
+ * at once costs one request per batch of them, which no ordinary issue reaches), and the tree is
+ * built again with the names in it. Until that answers the tree draws, with a chip naming its
+ * target's address and a block of a document carrying no words yet; on every read after the
+ * first the names already in hand stand while the new set loads.
  */
 export function useIssueTree(issue: IssueDetails): TreeNode {
   const key = issue.key;
@@ -126,7 +128,18 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
     !references.isPending &&
     !results.isPending &&
     !documents.pending;
-  const targets = useQuery(referenceTargetsQuery(treeRead ? refs : []));
+  // The last answer stands while the next one loads, because the key is the set of addresses
+  // itself: one comment, message, ask or block arriving changes that set, and without this the
+  // whole page would fall back to no names at all - every block row drawn with empty text and
+  // every chip with its raw address - until the new read lands. Merging the two answers by
+  // `ref` would say no more than this does: the new read names every address the tree now
+  // holds, so the only names it lacks are the ones the previous answer carries, which is what
+  // is kept here. A name that moved is a stale word for as long as one read, where a dropped
+  // one is the whole page's words at once.
+  const targets = useQuery({
+    ...referenceTargetsQuery(treeRead ? refs : []),
+    placeholderData: keepPreviousData,
+  });
   const named = targets.data === undefined ? undefined : (targets.data.targets ?? []);
   // The same answer every link of this page would otherwise read one pointer at a time: a
   // block's own words, which a link in a document, in a decision's card or in a comment's
