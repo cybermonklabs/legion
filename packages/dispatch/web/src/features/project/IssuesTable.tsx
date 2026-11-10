@@ -107,8 +107,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     useTableView();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const layout = useTableLayout(project);
-  const { attachAbove, attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [expanded, setExpanded] = useState<ExpandedState>(true);
@@ -136,6 +134,13 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     listingError,
     missingParents,
   } = useProjectIssueItems(project, { wantsDone, registry });
+  // The box and the pinned widths follow the window and the longest key the listing holds, so
+  // the Key column writes a key in full at every width.
+  const layout = useTableLayout(
+    project,
+    useMemo(() => all.reduce((most, issue) => Math.max(most, issue.key.length), 0), [all])
+  );
+  const { attachAbove, attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   // The issues behind a number the reader clicked on the Legion tab, if they arrived by one.
   const picked = useMemo(() => readSelection(params), [params]);
   const items = useMemo(() => {
@@ -424,7 +429,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         <IssueTableStatus
           table={table}
           items={allItems}
-          epics={epics}
           hasLegion={hasLegion}
           board={legion.data}
         />

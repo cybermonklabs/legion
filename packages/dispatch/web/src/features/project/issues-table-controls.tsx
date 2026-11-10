@@ -31,9 +31,9 @@ import {
   type Item,
   PAGE_SIZES,
   readUrl,
-  runningIssueStatuses,
   writeUrl,
 } from "./issues-table-model";
+import { useWidth } from "./useWidth";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -238,41 +238,53 @@ export function Action({
   );
 }
 
+/** The width a segment keeps on a phone, where a share of the bar would be too narrow to
+ *  press: the bar wraps to a second row rather than cut a segment off. */
+const SEGMENT_MIN_PX = 88;
+
+/** The width one segment needs to hold a piece of text, in pixels: the glyphs at the bar's
+ *  12px type, plus the segment's own padding. Measuring each of fifteen segments on every
+ *  render would cost more than it tells; a segment that this call gets wrong by a character
+ *  drops to its count, which always fits. */
+function textWidth(text: string): number {
+  return text.length * 6.6 + 14;
+}
+
+/**
+ * Each segment's width as a percentage of the bar, from the counts: a share of the issues,
+ * floored so that a count of one is still wide enough to press, and then scaled back so the
+ * segments together are the full bar and none of it is cut off.
+ */
+export function segmentWidths(counts: readonly number[], floorPercent = 3): number[] {
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  if (total <= 0) return counts.map(() => 100 / Math.max(counts.length, 1));
+  const floored = counts.map((count) => Math.max(floorPercent, (100 * count) / total));
+  const sum = floored.reduce((running, width) => running + width, 0);
+  return floored.map((width) => (100 * width) / sum);
+}
+
 export function IssueTableStatus({
   table,
   items,
-  epics,
   hasLegion = false,
   board,
 }: {
   table: Table<Item>;
   items: readonly Item[];
-  epics: readonly IssueSummary[];
   hasLegion?: boolean;
   board?: LegionBoardResponse;
 }): ReactNode {
   const stateCounts = countIssueStates(items);
-  let queuedCount = 0;
-  let runningCount = 0;
-  for (const item of items) {
-    if (item.queue !== undefined) queuedCount += 1;
-    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
-  }
+  const [barRef, barWidth] = useWidth();
+  const widths = segmentWidths(stateCounts.map(({ count }) => count));
+  // A phone holds each segment to a pressable width and wraps the bar to a second row; a wide
+  // page lays every segment on one row, each as wide as its share.
+  const compact = barWidth < 640;
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div
         className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
       >
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> queued
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
-          {epics.length === 1 ? "epic" : "epics"}
-        </span>
         {hasLegion && board ? (
           <>
             <span data-legion-slots>
@@ -284,9 +296,10 @@ export function IssueTableStatus({
             {board.header.read_ok && board.header.read_at ? (
               <span data-legion-read-at>
                 <InfoHint label="About these counts">
-                  Queued counts the issues in Legion's waiting line. Running counts the issues a
-                  worker has in hand. Slots counts the workers at work against the most the daemon
-                  runs. Dispatch read the daemon at{" "}
+                  Slots counts the workers at work. The second number is the most workers the daemon
+                  runs at once. The bar below counts every issue on this page. Each segment is one
+                  phase, and its width is its share of the issues. Press a segment to show only that
+                  phase. Dispatch read the daemon at{" "}
                   <time dateTime={board.header.read_at}>
                     {new Date(board.header.read_at).toLocaleString()}
                   </time>
@@ -315,10 +328,11 @@ export function IssueTableStatus({
       </div>
       <fieldset
         aria-label={hasLegion ? "Issues by phase or status" : "Issues by status"}
-        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+        className={`flex min-h-11 min-w-0 flex-wrap rounded-md border-0 p-0 md:min-h-7 md:flex-nowrap ${surfaceMutedBg}`}
+        ref={barRef}
         role={hasLegion ? "group" : undefined}
       >
-        {stateCounts.map(({ id, label, column, count, picks }) => {
+        {stateCounts.map(({ id, label, column, count, picks }, index) => {
           const current = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
           const on = current.length === 0 || current.includes(id);
           const wanted = hasLegion ? picks : { status: picks.status ?? [id] };
@@ -327,9 +341,20 @@ export function IssueTableStatus({
             current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
           const scale: Readonly<Record<string, string>> =
             column === "phase" ? legionPhaseScale : issueStatusScale;
+          const width = widths[index] ?? 0;
+          // What the segment is drawn at: its share of the bar, or the pressable floor a phone
+          // holds it to. The label is written inside it only where the words fit.
+          const drawn = Math.max((barWidth * width) / 100, compact ? SEGMENT_MIN_PX : 0);
+          const shown =
+            drawn >= textWidth(`${label} ${count}`)
+              ? `${label} ${count}`
+              : drawn >= textWidth(`${count}`)
+                ? `${count}`
+                : "";
           return (
             <button
-              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${scale[id] ?? ""} ${on ? "" : "opacity-30"}`}
+              aria-label={`${label} ${count}`}
+              className={`min-h-11 overflow-hidden px-1 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${scale[id] ?? ""} ${on ? "" : "opacity-30"}`}
               key={`${column}:${id}`}
               onClick={() =>
                 table.setColumnFilters((filters) => {
@@ -346,13 +371,11 @@ export function IssueTableStatus({
                   ];
                 })
               }
+              style={{ width: `${width}%`, minWidth: compact ? SEGMENT_MIN_PX : 0 }}
               title={`${label}: ${count}`}
-              // Each segment takes width in proportion to its count, so the bar spans the box
-              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead.
-              style={{ flexGrow: count }}
               type="button"
             >
-              {label} {count}
+              {shown}
             </button>
           );
         })}

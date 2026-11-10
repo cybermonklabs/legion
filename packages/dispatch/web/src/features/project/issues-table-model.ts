@@ -418,6 +418,16 @@ export const COMPACT_COLUMN_MIN: Readonly<Record<string, number>> = Object.fromE
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
   )
 );
+/**
+ * The width the Key column needs to write a key of `chars` characters in full, at any box
+ * width: the glyphs at the cell's 12px monospace type, the cell's padding, and the room the
+ * unread dot takes beside them. A key cut to "INFRA-255…" names no issue, so this is a floor
+ * the phone layout keeps as the wide one does.
+ */
+export function keyColumnWidth(chars: number): number {
+  return Math.min(176, Math.ceil(chars * 7.4) + 34);
+}
+
 export const PINNED: readonly string[] = COLUMNS.filter((column) => column.pinned).map(
   (column) => column.id
 );

@@ -1,5 +1,3 @@
-import type { IssueStatus } from "@legion/contracts/dispatch-tools";
-
 import type { Swatch } from "./palette";
 import * as P from "./palette";
 
@@ -153,6 +151,9 @@ export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
 export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
+/** The focus ring's colour with no `focus-visible:` of its own, for a ring a parent's
+ *  `group-focus-visible:` turns on (an icon drawn inside a larger hit area). */
+export const focusRingColour = "ring-sky-600 dark:ring-sky-400";
 /** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a
  * native `<select>` laid over a badge): the ring shows on the wrapper when the control has
  * keyboard focus. */

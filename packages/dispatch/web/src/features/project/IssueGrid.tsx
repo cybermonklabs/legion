@@ -150,7 +150,10 @@ export function IssueGrid<Row extends { key: string }>({
   keyHref?: (row: Row) => string;
 }): ReactNode {
   const [params, setParams] = useSearchParams();
-  const layout = useTableLayout(layoutKey);
+  const layout = useTableLayout(
+    layoutKey,
+    useMemo(() => rows.reduce((most, row) => Math.max(most, row.key.length), 0), [rows])
+  );
   const { attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   const userState = useQuery(userStateQuery());
   const registry = useAgentRegistry(false);
