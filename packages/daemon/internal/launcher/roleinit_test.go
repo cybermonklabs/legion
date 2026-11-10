@@ -1201,11 +1201,12 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 // is parseStatus and nothing else: every line reportStatus can write — it writes the 32 bits of a
 // syscall.WaitStatus as a decimal, so from zero to the largest of them — reads back as itself,
 // and a line holding anything but such a number is no status at all rather than one truncated
-// into a role exit that never happened. Whitespace around the number is ignored, so a reader
-// that takes the pipe a line at a time reads the same status as one that takes it whole, which
-// the newline row below holds. What the writer prints is not checked here: reportStatus lives in
-// roleinit_linux.go, runs inside the re-exec stage and writes to an inherited descriptor, so a
-// test of it is a test of that stage rather than of this function.
+// into a role exit that never happened. Whitespace around the number is ignored, which costs
+// nothing and asks no caller to trim what it read: both readers take the pipe whole with
+// io.ReadAll (roleinit.go:151, launcher.go:634), and the writer sends no newline of its own.
+// What the writer prints is not checked here: reportStatus lives in roleinit_linux.go, runs
+// inside the re-exec stage and writes to an inherited descriptor, so a test of it is a test of
+// that stage rather than of this function.
 func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
 	for _, tc := range []struct {
 		name string
