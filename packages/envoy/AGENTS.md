@@ -115,7 +115,7 @@ Each item below names a task and where its code is, then notes on it.
 
   The `ENVOY_NOTIFICATIONS` stream's consumer cap is compiled in rather than read from a setting:
   `streamMaxConsumers`, 24000, the most session consumers the stream holds at once.
-  What keeps the count under it is not the cap but the two deletes ("Session consumers" below): the population is the live sessions, those that ended within one `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL`, and the consumers a hub holds from before that sweep.
+  What keeps the count under it is not the cap but the two deletes ("Session consumers" below): the population is the live sessions, those that ended without deregistering within about the last gone horizon and sweep interval, and the consumers a hub holds from before that sweep.
   The inactive threshold (`bus.SessionConsumerInactiveThreshold`, 1 hour) only backs those deletes up, and bounds nothing on a replicated hub.
   A start and the keeper raise a smaller deployed cap to it and never lower one, as for the copies and the byte limit.
   A deployed `-1` or `0`, a stream that sets no cap, is raised only where the connected server is nats-server 2.15.0 or later (`serverDefaultsAnUnsetCap`, read from `ConnectedServerVersion`):
@@ -4511,7 +4511,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   A deregistration takes the consumer with the registration it removed (`deleteSessionHandler`, `sessionDelivery.deleteConsumer`): after the unconditional `DELETE /v1/sessions/<id>`, and after a conditional one answered `session.EntryDeleted`.
   Every outcome that leaves a registration standing keeps the consumer, since a live registration stands behind it.
   A session whose pane closed or whose box went deregisters nothing, so a sweep deletes the consumer of every session the session registry judges gone, confirmed against the `envoy_sessions` bucket itself (only `nats.ErrKeyNotFound` confirms it), at most 256 a pass (`sessionConsumerSweepCap`), every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5m by default), and only on the task that holds its machine's durable binding and over a session cache that is ready, servable and needs no read (`cmd/listener/session_consumer_sweep.go`).
-  The sweep is the bound: a consumer goes one sweep interval after the registry would answer `gone`, which is `ENVOY_SESSION_GONE_HORIZON` after the session's last registration.
+  The sweep is the bound: a consumer goes within one sweep interval of the moment its session's record has left the `envoy_sessions` bucket, since the pass deletes only once the bucket holds no record.
+  That is the session reaper's first pass after `ENVOY_SESSION_GONE_HORIZON` (within one `ENVOY_SESSION_REAP_INTERVAL` of the horizon, 1m by default), or the bucket's own `MaxAge` (`ENVOY_SESSION_MAX_AGE`) when that drops the record first, each counted from the session's last registration.
   It is also what retires the consumers a hub holds from before the sweep existed, 256 a pass.
   Before each delete the listener records the consumer's ack floor and the stream's identity on the session's resume lane, `notifications.envoy.resume.<session id>` (`bus.SessionResumeSubject`), one message per session:
   the stream carries that prefix (`bus.StreamCarriedSubjects`) where no consumer filter takes it (`bus.StreamSubjects`, and `consumerFilterSubjects` for a legacy durable's), no session may register a topic reaching it (`bus.ReachesPrivateStreamSubject`), and `POST /v1/messages/publish` refuses a topic under it `400`.
