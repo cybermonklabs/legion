@@ -69,14 +69,16 @@ function quantile(values: readonly number[], q: number): number | null {
   return (sorted[low] ?? 0) + ((sorted[high] ?? 0) - (sorted[low] ?? 0)) * (at - low);
 }
 
-/** A per-day series: one value a UTC day of the window, null for a day nothing counted. */
+/** A per-day series: one value a UTC day of the window, null for a day nothing counted.
+ *  `unitLabel` is how the plot's title writes the unit, where `unit` would repeat the label. */
 function perDay(
   report: LegionMetricsResponse,
   label: string,
   unit: string,
   format: (value: number) => string,
   value: (day: string) => number | null,
-  tickFormat?: (value: number) => string
+  tickFormat?: (value: number) => string,
+  unitLabel?: string
 ): ChartSeries {
   const points = daysOf(report).map(({ day, partial }) => ({
     label: day,
@@ -88,6 +90,7 @@ function perDay(
     format,
     label,
     unit,
+    unitLabel,
     tickFormat,
     max: Math.max(1, ...points.map((point) => point.value ?? 0)),
     points,
@@ -117,8 +120,8 @@ export function workTimeTrendSeries(report: LegionMetricsResponse): ChartSeries[
       q
     );
   return [
-    perDay(report, "Median work time", "hours, median", formatHours, of(0.5), hourTicks),
-    perDay(report, "p90 work time", "hours, p90", formatHours, of(0.9), hourTicks),
+    perDay(report, "Median work time", "hours, median", formatHours, of(0.5), hourTicks, "hours"),
+    perDay(report, "p90 work time", "hours, p90", formatHours, of(0.9), hourTicks, "hours"),
   ];
 }
 
@@ -142,7 +145,9 @@ export function reworkTrendSeries(report: LegionMetricsResponse): ChartSeries[] 
         quantile(
           rows(day).map((row) => row.review_rounds),
           0.5
-        )
+        ),
+      undefined,
+      ""
     ),
     perDay(
       report,

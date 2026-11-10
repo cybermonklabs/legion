@@ -14,7 +14,6 @@ import {
   borderDefault,
   surfaceBg,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
@@ -93,47 +92,51 @@ const timelineHref =
   (row: { key: string }): string =>
     buildProjectPath({ kind: "legion", project, issue: row.key });
 
-/** One slot's row: its holder's card and what the slot is used for. */
+/** One slot's row: its holder's card and what the slot is used for, short and in detail. */
 interface SlotRow {
   readonly key: string;
   readonly card: LegionBoardCard;
   readonly use: string;
+  readonly detail: string;
 }
 
-/** Each slot's holder, live, in the Issues tab's table: slot, phase (with "between turns" when no
- *  worker of it is in a turn), children not started, CI and what the slot is used for. */
+/** Each slot's holder, live, in the Issues tab's table: slot, phase, children not started, CI and
+ *  what the slot is used for (the detail in the cell's hover). */
 function Slots({ board, project }: { board: LegionBoardResponse; project: string }): ReactNode {
   const phases = useMemo(() => legionPhases(board), [board]);
   const rows = useMemo((): SlotRow[] => {
     const cards = board.columns.flatMap((column) => column.cards);
-    // A worker in a turn (an architect's included) or the root's own phase makes the slot
-    // working; else the root holds it for its children.
-    const use = (card: LegionBoardCard): string => {
-      if (card.roles.length > 0) return `working: ${card.roles.join(", ")} in a turn`;
-      if (!HELD_FOR_CHILDREN[card.phase]) return "working: own phase";
+    // A worker in a turn (an architect's included) makes the slot working; a root in its own
+    // phase with no worker in a turn is between turns; else the root holds it for its children.
+    const use = (card: LegionBoardCard): Pick<SlotRow, "use" | "detail"> => {
+      if (card.roles.length > 0)
+        return { use: "working", detail: `${card.roles.join(", ")} in a turn` };
+      if (!HELD_FOR_CHILDREN[card.phase])
+        return { use: "between turns", detail: "Own phase, no worker in a turn" };
       const busy = cards.some(
         (other) =>
           other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
       );
-      return busy ? "held: for its children" : "held: children idle";
+      return busy
+        ? { use: "held: children", detail: "Held for its children, which work" }
+        : { use: "held: idle", detail: "Held for its children; no child works" };
     };
     return cards
       .filter((card) => card.slot !== null)
       .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
-      .map((card) => ({ key: card.key, card, use: use(card) }));
+      .map((card) => ({ key: card.key, card, ...use(card) }));
   }, [board]);
   const held = rows.filter((row) => row.use.startsWith("held")).length;
-  const idle = rows.filter((row) => row.use === "held: children idle").length;
+  const idle = rows.filter((row) => row.use === "held: idle").length;
   const { header } = board;
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
       <SectionTitle
-        info="Held: the root waits on its children, and no worker of the root is in a turn. Children idle: no child of the root implements, tests or reviews."
+        info="Held: the root waits on its children, and no worker of the root is in a turn. Idle: no child of the root implements, tests or reviews."
         title="Slots"
       />
       <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-slot-summary>
-        {header.slots_in_use} of {header.slot_cap ?? "?"} in use · {held} held · {idle} children
-        idle
+        {header.slots_in_use} of {header.slot_cap ?? "?"} in use · {held} held · {idle} idle
       </p>
       <IssueGrid<SlotRow>
         columns={[
@@ -153,22 +156,10 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
             value: (row) => phases.get(row.key)?.order ?? Number.MAX_SAFE_INTEGER,
             cell: (row) => {
               const phase = phases.get(row.key);
-              return phase === undefined ? null : (
-                <span className="flex flex-col gap-1">
-                  <LegionPhaseCell phase={phase} />
-                  {row.card.roles.length === 0 ? (
-                    <span
-                      className={`text-xs ${textMutedOnSurface}`}
-                      data-legion-slot-between-turns
-                    >
-                      between turns
-                    </span>
-                  ) : null}
-                </span>
-              );
+              return phase === undefined ? null : <LegionPhaseCell phase={phase} />;
             },
             filter: "picks",
-            size: 200,
+            size: 180,
           },
           {
             id: "children_not_started",
@@ -183,9 +174,17 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
             id: "slot_use",
             header: "Slot use",
             value: (row) => row.use,
-            cell: (row) => <span data-legion-slot-state={row.use}>{row.use}</span>,
+            cell: (row) => (
+              <span
+                className="whitespace-nowrap"
+                data-legion-slot-state={row.use}
+                title={row.detail}
+              >
+                {row.use}
+              </span>
+            ),
             filter: "picks",
-            size: 220,
+            size: 140,
           },
         ]}
         empty="No slot in use."
@@ -201,13 +200,14 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
   );
 }
 
-/** One row of the waiting line: its place (none for an issue awaiting a person), its card and
- *  why it waits. */
+/** One row of the waiting line: its place (none for an issue awaiting a person, which is out of
+ *  the queue), its card, why it waits, and since when. */
 interface WaitingRow {
   readonly key: string;
   readonly place: number | null;
   readonly card: LegionBoardCard;
   readonly why: string;
+  readonly since: string | null;
 }
 
 /** The daemon's waiting line, in the order it starts them, in the Issues tab's table: place, the
@@ -222,21 +222,31 @@ function WaitingLine({
   const rows = useMemo((): WaitingRow[] => {
     const queue = board.columns.find((column) => column.id === "queue")?.cards ?? [];
     const awaiting = board.columns.find((column) => column.id === "awaiting_person")?.cards ?? [];
-    const why = (card: LegionBoardCard): string =>
-      card.blocked_by.length > 0
-        ? `held by ${card.blocked_by.join(", ")}`
-        : card.waiting_on !== null && card.waiting_on.answered_at === null
-          ? `on a person (${card.waiting_on.kind})`
-          : "ready";
+    // A wait on a person counts from when the person was asked, else from the phase entry.
+    const row = (card: LegionBoardCard, place: number | null): WaitingRow => {
+      const onPerson =
+        place === null || (card.waiting_on !== null && card.waiting_on.answered_at === null);
+      return {
+        key: card.key,
+        place,
+        card,
+        why:
+          place !== null && card.blocked_by.length > 0
+            ? `held by ${card.blocked_by.join(", ")}`
+            : onPerson
+              ? "awaiting a person"
+              : "ready",
+        since: (onPerson ? card.waiting_on?.since : null) ?? card.phase_since,
+      };
+    };
     return [
-      ...awaiting.map((card) => ({ key: card.key, place: null, card, why: "awaiting a person" })),
-      ...queue.map((card, index) => ({ key: card.key, place: index + 1, card, why: why(card) })),
+      ...awaiting.map((card) => row(card, null)),
+      ...queue.map((card, index) => row(card, index + 1)),
     ];
   }, [board]);
-  const queued = rows.filter((row) => row.place !== null);
-  const ready = queued.filter((row) => row.why === "ready").length;
-  const blocked = queued.filter((row) => row.card.blocked_by.length > 0).length;
-  const awaiting = rows.length - queued.length;
+  const ready = rows.filter((row) => row.why === "ready").length;
+  const blocked = rows.filter((row) => row.why.startsWith("held by")).length;
+  const awaiting = rows.filter((row) => row.why === "awaiting a person").length;
   const now = Date.now();
   return (
     <section aria-label="Waiting line" className={CARD} data-legion-waiting-line>
@@ -245,8 +255,8 @@ function WaitingLine({
         title="Waiting line"
       />
       <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
-        {queued.length} waiting · {ready} ready · {blocked} held by a dependency · {awaiting}{" "}
-        awaiting a person
+        {rows.length} issues · {ready} ready · {blocked} held by a dependency · {awaiting} awaiting
+        a person
       </p>
       <IssueGrid<WaitingRow>
         columns={[
@@ -254,7 +264,16 @@ function WaitingLine({
             id: "place",
             header: "#",
             value: (row) => row.place ?? 0,
-            cell: (row) => <span className="tabular-nums">{row.place ?? "—"}</span>,
+            cell: (row) =>
+              row.place === null ? (
+                <span
+                  className="block h-4 w-full"
+                  data-legion-place-none
+                  title="Not in the queue: waits for a person"
+                />
+              ) : (
+                <span className="tabular-nums">{row.place}</span>
+              ),
             filter: false,
             size: 64,
           },
@@ -263,15 +282,14 @@ function WaitingLine({
           {
             id: "waited",
             header: "Waited",
-            value: (row) =>
-              row.card.phase_since === null ? 0 : now - Date.parse(row.card.phase_since),
+            value: (row) => (row.since === null ? 0 : now - Date.parse(row.since)),
             cell: (row) => (
               <span
                 className="tabular-nums whitespace-nowrap"
                 data-legion-waited={row.key}
-                title={row.card.phase_since ?? "Entry time unknown"}
+                title={row.since ?? "The daemon did not report when this wait started"}
               >
-                {formatPhaseTime(row.card.phase_since, now)}
+                {formatPhaseTime(row.since, now)}
               </span>
             ),
             filter: false,

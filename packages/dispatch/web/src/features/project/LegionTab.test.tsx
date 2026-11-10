@@ -64,7 +64,7 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
 
 /** Four slots: one working, one held for its child who is implementing, one held with its
  *  children idle, and an accepting root whose architect is in a turn; a waiting
- *  line of a ready root and one a dependency holds. */
+ *  line of a ready root and one a dependency holds, and a root awaiting a person's answer. */
 const BOARD: LegionBoardResponse = {
   columns: COLUMNS.map((column) => ({
     ...column,
@@ -86,7 +86,15 @@ const BOARD: LegionBoardResponse = {
                   card("ACME-4", { phase: "admitted" }),
                   card("ACME-5", { phase: "admitted", blocked_by: ["ACME-1"] }),
                 ]
-              : [],
+              : column.id === "awaiting_person"
+                ? [
+                    card("ACME-7", {
+                      phase: "awaiting_person",
+                      phase_since: null,
+                      waiting_on: { kind: "ask", since: "2026-11-08T00:00:00Z", answered_at: null },
+                    }),
+                  ]
+                : [],
   })),
   computed_at: "2026-11-10T00:00:00Z",
   header: {
@@ -244,21 +252,20 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
   const slot = (key: string) => row("Slots", key);
   const use = (key: string) => slot(key)?.querySelector("[data-legion-slot-state]")?.textContent;
   await waitFor(() => expect(slot("ACME-1")).not.toBeNull());
-  // Each slot use says why.
-  expect(use("ACME-1")).toBe("working: implementer in a turn");
-  expect(use("ACME-2")).toBe("held: for its children");
-  expect(use("ACME-3")).toBe("held: children idle");
+  // Each slot use is one short word or two; the hover says why.
+  expect(use("ACME-1")).toBe("working");
+  expect(slot("ACME-1")?.querySelector("[data-legion-slot-state]")?.getAttribute("title")).toBe(
+    "implementer in a turn"
+  );
+  expect(use("ACME-2")).toBe("held: children");
+  expect(use("ACME-3")).toBe("held: idle");
   // An architect in a turn makes the slot working, whatever the phase.
-  expect(use("ACME-6")).toBe("working: architect in a turn");
+  expect(use("ACME-6")).toBe("working");
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toBe(
-    "4 of 4 in use · 2 held · 1 children idle"
+    "4 of 4 in use · 2 held · 1 idle"
   );
-  // The phase is the issues table's own cell; a phase with no worker in a turn says so.
+  // The phase is the issues table's own cell.
   expect(slot("ACME-1")?.querySelector('[data-legion-phase="implementing"]')).not.toBeNull();
-  expect(slot("ACME-1")?.querySelector("[data-legion-slot-between-turns]")).toBeNull();
-  expect(slot("ACME-3")?.querySelector("[data-legion-slot-between-turns]")?.textContent).toBe(
-    "between turns"
-  );
   expect(screen.getByRole("region", { name: "Slots" }).textContent).not.toContain("Nobody");
 });
 
@@ -270,8 +277,17 @@ test("the waiting line keeps the daemon's order, says why each root waits and ho
   expect(row("Waiting line", "ACME-4")?.textContent).toContain("ready");
   expect(row("Waiting line", "ACME-4")?.querySelector("[data-legion-waited]")).not.toBeNull();
   expect(document.querySelector("[data-legion-waiting-summary]")?.textContent).toBe(
-    "2 waiting · 1 ready · 1 held by a dependency · 0 awaiting a person"
+    "3 issues · 1 ready · 1 held by a dependency · 1 awaiting a person"
   );
+  // A root awaiting a person has no place in the queue, and its wait counts from the ask.
+  const awaiting = row("Waiting line", "ACME-7");
+  expect(awaiting?.querySelector("[data-legion-place-none]")?.getAttribute("title")).toBe(
+    "Not in the queue: waits for a person"
+  );
+  expect(awaiting?.querySelector('[data-legion-waited="ACME-7"]')?.getAttribute("title")).toBe(
+    "2026-11-08T00:00:00Z"
+  );
+  expect(awaiting?.textContent).toContain("awaiting a person");
 });
 
 test("an issue key opens that issue's timeline address", async () => {

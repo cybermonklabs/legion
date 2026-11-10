@@ -94,7 +94,7 @@ function showTable(label: string): void {
   );
 }
 
-test("the chart draws one plot per unit, with axes and a legend, and names both controls", () => {
+test("the chart draws one plot per unit, with axes and a legend where a plot has two lines, and names both controls", () => {
   render(
     <Chart
       compare={{ onRange: mock(), range: null, series: undefined }}
@@ -109,9 +109,10 @@ test("the chart draws one plot per unit, with axes and a legend, and names both 
   // A value axis in the series' own numbers and a time axis of its days.
   expect(deploysPlot.textContent).toContain("Sep 26");
   expect(deploysPlot.textContent).toContain("deploys");
+  // A plot of one line has no legend: its title names it.
   expect(
     [...document.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
-  ).toEqual(["Run time median", "Run time p90", "Deploys"]);
+  ).toEqual(["Run time median", "Run time p90"]);
   expect(screen.queryByRole("table")).toBeNull();
   const view = screen.getByRole("group", { name: "PR CI view" });
   expect(within(view).getByRole("button", { name: "Graph" }).getAttribute("aria-pressed")).toBe(

@@ -200,7 +200,7 @@ registerText("danger text on canvas", DANGER_TEXT, CANVAS);
 registerText("success text on surface", SUCCESS_TEXT, SURFACE);
 registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
 
-/** The issue status scale in lifecycle order, in the same IBM Carbon set as the Legion phase scale (dispatch://INFRA-979): the waiting states gray, the working ones in the working phases' hues, done green. */
+/** The issue status scale in lifecycle order, in the same IBM Carbon set as the Legion phase scale (dispatch://INFRA-979): the waiting states gray, each working state its Legion phase's colour (in progress as implementing, testing, needs review as reviewing), done green. */
 const ISSUE_STATUS_ROWS = [
   [
     "triage",
@@ -236,14 +236,6 @@ const ISSUE_STATUS_ROWS = [
   ],
   [
     "in_progress",
-    "bg-[#002d9c] text-white dark:bg-[#4589ff] dark:text-[#161616]",
-    P.CARBON_BLUE_80,
-    P.WHITE,
-    P.CARBON_BLUE_50,
-    P.CARBON_GRAY_100,
-  ],
-  [
-    "testing",
     "bg-[#1192e8] text-[#161616] dark:bg-[#33b1ff] dark:text-[#161616]",
     P.CARBON_CYAN_50,
     P.CARBON_GRAY_100,
@@ -251,11 +243,19 @@ const ISSUE_STATUS_ROWS = [
     P.CARBON_GRAY_100,
   ],
   [
+    "testing",
+    "bg-[#005d5d] text-white dark:bg-[#007d79] dark:text-white",
+    P.CARBON_TEAL_70,
+    P.WHITE,
+    P.CARBON_TEAL_60,
+    P.WHITE,
+  ],
+  [
     "needs_review",
-    "bg-[#009d9a] text-[#161616] dark:bg-[#08bdba] dark:text-[#161616]",
-    P.CARBON_TEAL_50,
-    P.CARBON_GRAY_100,
-    P.CARBON_TEAL_40,
+    "bg-[#6929c4] text-white dark:bg-[#a56eff] dark:text-[#161616]",
+    P.CARBON_PURPLE_70,
+    P.WHITE,
+    P.CARBON_PURPLE_50,
     P.CARBON_GRAY_100,
   ],
   [
@@ -282,7 +282,7 @@ for (const [status, , light, lightText, dark, darkText] of ISSUE_STATUS_ROWS) {
   registerText(`issue status scale: ${status}`, pair(lightText, darkText), pair(light, dark));
 }
 
-/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases one cool family (purple, blue, cyan, teal), merging magenta. Each phase differs from its neighbours in hue or in lightness. The issues table, its status bar, the board and the Legion tab use it. */
+/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases in Carbon's purple, blue, cyan, teal and magenta. Each working phase differs from both neighbours in hue and alternates light and dark, so a thin bar still tells adjacent phases apart. The issues table, its status bar, the board and the Legion tab use it. */
 const LEGION_PHASE_ROWS = [
   [
     "queue",
@@ -302,22 +302,14 @@ const LEGION_PHASE_ROWS = [
   ],
   [
     "planning",
-    "bg-[#6929c4] text-white dark:bg-[#8a3ffc] dark:text-white",
-    P.CARBON_PURPLE_70,
+    "bg-[#002d9c] text-white dark:bg-[#0f62fe] dark:text-white",
+    P.CARBON_BLUE_80,
     P.WHITE,
-    P.CARBON_PURPLE_60,
+    P.CARBON_BLUE_60,
     P.WHITE,
   ],
   [
     "implementing",
-    "bg-[#002d9c] text-white dark:bg-[#4589ff] dark:text-[#161616]",
-    P.CARBON_BLUE_80,
-    P.WHITE,
-    P.CARBON_BLUE_50,
-    P.CARBON_GRAY_100,
-  ],
-  [
-    "testing",
     "bg-[#1192e8] text-[#161616] dark:bg-[#33b1ff] dark:text-[#161616]",
     P.CARBON_CYAN_50,
     P.CARBON_GRAY_100,
@@ -325,20 +317,28 @@ const LEGION_PHASE_ROWS = [
     P.CARBON_GRAY_100,
   ],
   [
-    "reviewing",
-    "bg-[#009d9a] text-[#161616] dark:bg-[#08bdba] dark:text-[#161616]",
-    P.CARBON_TEAL_50,
-    P.CARBON_GRAY_100,
-    P.CARBON_TEAL_40,
-    P.CARBON_GRAY_100,
-  ],
-  [
-    "accepting",
+    "testing",
     "bg-[#005d5d] text-white dark:bg-[#007d79] dark:text-white",
     P.CARBON_TEAL_70,
     P.WHITE,
     P.CARBON_TEAL_60,
     P.WHITE,
+  ],
+  [
+    "reviewing",
+    "bg-[#6929c4] text-white dark:bg-[#a56eff] dark:text-[#161616]",
+    P.CARBON_PURPLE_70,
+    P.WHITE,
+    P.CARBON_PURPLE_50,
+    P.CARBON_GRAY_100,
+  ],
+  [
+    "accepting",
+    "bg-[#009d9a] text-[#161616] dark:bg-[#08bdba] dark:text-[#161616]",
+    P.CARBON_TEAL_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_TEAL_40,
+    P.CARBON_GRAY_100,
   ],
   [
     "merging",
@@ -986,16 +986,17 @@ export const chartAxis = {
   base: "stroke-slate-400 dark:stroke-slate-500",
 } as const;
 
-/** Distinct solid fills for the parts of one stacked bar (a worker type each), in order;
- *  decorative, since each part's name is beside it or in its title. */
+/** Distinct solid fills for the parts of one stacked bar, in order, from the same IBM Carbon
+ *  categorical set as the Legion phase scale (dispatch://INFRA-979), adjacent parts apart in hue
+ *  and lightness; decorative, since each part's name is beside it or in its title. */
 export const chartParts = [
-  "bg-sky-500 dark:bg-sky-400",
-  "bg-violet-500 dark:bg-violet-400",
-  "bg-emerald-500 dark:bg-emerald-400",
-  "bg-amber-500 dark:bg-amber-400",
-  "bg-rose-500 dark:bg-rose-400",
-  "bg-teal-500 dark:bg-teal-400",
-  "bg-slate-400 dark:bg-slate-500",
+  "bg-[#6929c4] dark:bg-[#a56eff]",
+  "bg-[#1192e8] dark:bg-[#33b1ff]",
+  "bg-[#005d5d] dark:bg-[#007d79]",
+  "bg-[#9f1853] dark:bg-[#ff7eb6]",
+  "bg-[#b28600] dark:bg-[#d2a106]",
+  "bg-[#002d9c] dark:bg-[#0f62fe]",
+  "bg-[#8d8d8d] dark:bg-[#6f6f6f]",
 ] as const;
 
 // ---------------------------------------------------------------------------------------------

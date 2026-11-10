@@ -85,7 +85,6 @@ export const EMERALD_950 = swatch("emerald-950", 0.262, 0.051, 172.552);
 // status scale use (dispatch://INFRA-979). OKLCH converted from Carbon's published hex values.
 export const CARBON_PURPLE_70 = swatch("carbon-purple-70", 0.468, 0.219, 295.08); // #6929c4
 export const CARBON_PURPLE_50 = swatch("carbon-purple-50", 0.663, 0.208, 298.001); // #a56eff
-export const CARBON_PURPLE_60 = swatch("carbon-purple-60", 0.574, 0.258, 294.891); // #8a3ffc
 export const CARBON_PURPLE_30 = swatch("carbon-purple-30", 0.836, 0.097, 301.177); // #d4bbff
 export const CARBON_CYAN_50 = swatch("carbon-cyan-50", 0.641, 0.162, 246.51); // #1192e8
 export const CARBON_CYAN_40 = swatch("carbon-cyan-40", 0.729, 0.155, 241.664); // #33b1ff
@@ -96,7 +95,7 @@ export const CARBON_TEAL_40 = swatch("carbon-teal-40", 0.722, 0.123, 192.748); /
 export const CARBON_MAGENTA_70 = swatch("carbon-magenta-70", 0.465, 0.172, 1.339); // #9f1853
 export const CARBON_MAGENTA_40 = swatch("carbon-magenta-40", 0.756, 0.167, 354.525); // #ff7eb6
 export const CARBON_BLUE_80 = swatch("carbon-blue-80", 0.363, 0.184, 263.056); // #002d9c
-export const CARBON_BLUE_50 = swatch("carbon-blue-50", 0.647, 0.189, 260.581); // #4589ff
+export const CARBON_BLUE_60 = swatch("carbon-blue-60", 0.557, 0.243, 261.953); // #0f62fe
 export const CARBON_YELLOW_50 = swatch("carbon-yellow-50", 0.645, 0.132, 85.25); // #b28600
 export const CARBON_YELLOW_40 = swatch("carbon-yellow-40", 0.734, 0.149, 86.457); // #d2a106
 export const CARBON_GREEN_60 = swatch("carbon-green-60", 0.527, 0.141, 148.295); // #198038

@@ -24,11 +24,9 @@ import { InfoHint } from "../../components/InfoHint";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
-  borderStrong,
   chartParts,
   legionPhaseScale,
   surfaceBg,
-  surfaceMutedBg,
   textMutedOnSurface,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -39,6 +37,7 @@ import {
   type ChartRange,
   type ChartSeries,
   chartCompare,
+  rangeLabel,
 } from "../delivery/Chart";
 import { formatDuration, formatRate, pct } from "../delivery/lib/format";
 import type { WindowChoice } from "../delivery/lib/window";
@@ -169,19 +168,27 @@ export function LegionSections({
     range: compare,
   });
   const report = metrics.data;
+  // The first UTC day with a finished issue or a filing: the page says once that the window's
+  // days before it hold no data, where each chart would say it again.
+  const dataStart = useMemo(() => {
+    if (report === undefined) return null;
+    const days = [
+      ...report.work_time.issues.map((issue) => issue.closed_at.slice(0, 10)),
+      ...report.splitting.filed.map((one) => one.at.slice(0, 10)),
+    ].sort();
+    const first = days[0];
+    return first !== undefined && first > report.from.slice(0, 10) ? first : null;
+  }, [report]);
 
   return (
     <div className="flex flex-col gap-3" data-legion-sections>
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <SegmentedToggle
-            label="Legion issues"
-            onChange={setScope}
-            options={SCOPES}
-            value={scope}
-          />
-          <WindowControl onChange={setChosen} value={chosen} />
-        </div>
+        <SegmentedToggle label="Legion issues" onChange={setScope} options={SCOPES} value={scope} />
+        <WindowControl onChange={setChosen} value={chosen} />
+        <span className={`text-xs tabular-nums ${textMutedOnSurface}`} data-legion-range>
+          {rangeLabel(range)}
+          {dataStart === null ? "" : ` · no data before ${dataStart}`}
+        </span>
       </div>
       {metrics.isError ? (
         <QueryError
@@ -444,6 +451,7 @@ function TrendSection({
           rows === undefined || onOpenIssue === undefined ? undefined : (row) => onOpenIssue(row)
         }
         range={{ kind: "custom", from: report.from, to: report.to }}
+        rangeOnPage
         series={series}
         table={
           rows === undefined
@@ -541,13 +549,11 @@ function PhaseBreakdownSection({ report }: { report: LegionMetricsResponse }): R
 const LABEL_CHAR_PX = 6.8;
 const LABEL_PAD_PX = 10;
 
-/** A segment's label for its width in pixels: its name and share where both fit, the share
- *  alone where only that does, else nothing (the legend names it). */
+/** A segment's label for its width in pixels: its name and share where both fit, else nothing
+ *  (the legend and the hover name it). */
 function segmentLabel(label: string, share: number, px: number): string {
   const full = `${label} ${pct(share, 0)}`;
-  if (px >= full.length * LABEL_CHAR_PX + LABEL_PAD_PX) return full;
-  const short = pct(share, 0);
-  return px >= short.length * LABEL_CHAR_PX + LABEL_PAD_PX ? short : "";
+  return px >= full.length * LABEL_CHAR_PX + LABEL_PAD_PX ? full : "";
 }
 
 /** The full-width bar of the breakdown and its legend: each part as wide as its share at every
@@ -639,12 +645,15 @@ function DeliverySection({
   if (mappings.isPending || delivery.isPending) return null;
   if (!measured || notMeasured(pipeline.error) || notMeasured(measures.error)) {
     return (
-      <Section
-        headline="Not measured"
-        id="delivery"
-        info={`Dispatch measures CI and deploys for one deploy repository${deployRepo === undefined ? "" : `, ${deployRepo}`}. ${project} has no repository mapped to it.`}
-        title="CI and deploys"
-      />
+      <p
+        className={`flex items-center gap-1.5 px-1 text-sm ${textMutedOnSurface}`}
+        data-legion-delivery-unmeasured
+      >
+        CI and deploys: not measured
+        <InfoHint label="About CI and deploys">
+          {`Dispatch measures CI and deploys for one deploy repository${deployRepo === undefined ? "" : `, ${deployRepo}`}. ${project} has no repository mapped to it.`}
+        </InfoHint>
+      </p>
     );
   }
   const ci = pipeline.data?.pr_checks.run;
@@ -709,6 +718,7 @@ function DeliverySection({
             )}
             label="CI"
             range={range}
+            rangeOnPage
             series={timing(ci.days ?? [])}
           />
         )}
@@ -737,6 +747,7 @@ function DeliverySection({
             )}
             label="Deploys"
             range={range}
+            rangeOnPage
             series={deploys(daily.daily ?? [])}
           />
         )}

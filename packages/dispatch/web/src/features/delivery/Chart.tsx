@@ -67,6 +67,9 @@ interface ChartSparkSeries {
   /** What the values count, in words ("hours", "share of issues"): series of one unit share a
    *  plot and its value axis; a series with none plots alone, titled by its label. */
   readonly unit?: string;
+  /** How the plot's title writes the unit, where `unit` (which keeps two series apart) would
+   *  repeat the title ("hours" for a unit "hours, median"); empty shows no unit beside it. */
+  readonly unitLabel?: string;
   /** How the value axis writes a round number in this unit, where `format` would not ("0h", not
    *  "0.0m"). */
   readonly tickFormat?: (value: number) => string;
@@ -181,6 +184,9 @@ export interface ChartProps {
    *  a table of one row per issue. `compare` is the compare range's table series. */
   /** Which view opens first: a run of fewer than three rows reads better as its table. */
   readonly defaultMode?: "graph" | "table";
+  /** Whether the page names the range once, beside its window control: the chart then names
+   *  neither the range nor the days with no data at its ends. */
+  readonly rangeOnPage?: boolean;
   readonly table?: {
     readonly series: readonly ChartSeries[];
     readonly rows: ChartRows;
@@ -237,7 +243,7 @@ function sameRange(one: ChartRange, other: ChartRange): boolean {
 /** A range in the reader's words: the UTC days it covers. A range ending at a midnight ends on
  *  the day before, as `lastUtcDate` reads a whole-day range's exclusive end; a rolling preset,
  *  whose end is the present, ends on the day it is in, which is the last day the bars draw. */
-function rangeLabel(range: ChartRange): string {
+export function rangeLabel(range: ChartRange): string {
   const to = Date.parse(range.to);
   return `${utcDate(range.from)} to ${to % DAY_MS === 0 ? lastUtcDate(range.to) : utcDate(range.to)}`;
 }
@@ -554,7 +560,8 @@ const PLOT_HEIGHT = 170;
 const MARGIN = { top: 8, right: 12, bottom: 26, left: 62 };
 
 /** One plot: the lines of one unit over the rows, with a value axis of numbers in that unit, a
- *  time axis of the rows' days, and a dashed target where a series has one. */
+ *  time axis of the rows' days, a dashed target where a series has one, and a legend where it
+ *  draws more than one line (the title names a lone line). */
 function Plot({
   comparedRange,
   label,
@@ -563,6 +570,7 @@ function Plot({
   target,
   title,
   unit,
+  unitLabel,
 }: {
   comparedRange: string | null;
   label: string;
@@ -571,6 +579,7 @@ function Plot({
   target: number | undefined;
   title: string;
   unit: string;
+  unitLabel: string;
 }): ReactNode {
   const [ref, width] = useWidth();
   const format =
@@ -594,9 +603,11 @@ function Plot({
     <div className="min-w-0" ref={ref}>
       <div className="flex flex-wrap items-baseline gap-x-2" data-chart-plot-title>
         <span className={`text-sm font-medium ${textPrimaryOnCanvas}`}>{title}</span>
-        <span className={`text-[11px] ${textMutedOnSurface}`} data-chart-unit>
-          {unit}
-        </span>
+        {unitLabel === "" ? null : (
+          <span className={`text-[11px] ${textMutedOnSurface}`} data-chart-unit>
+            {unitLabel}
+          </span>
+        )}
       </div>
       <svg
         aria-label={`${label}: ${unit} by ${rows.length > 0 && /^\d{4}-/.test(rows[0] ?? "") ? "day" : "row"}`}
@@ -702,43 +713,48 @@ function Plot({
           );
         })}
       </svg>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" data-chart-legend-row>
-        {lines.map((line) => {
-          const palette = chartSeries[line.color % chartSeries.length] ?? chartSeries[0];
-          return (
-            <span
-              className="flex items-center gap-1.5"
-              data-chart-legend={line.compare ? "compare" : "window"}
-              key={`${line.label}-${line.compare}`}
-            >
+      {lines.length < 2 ? null : (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" data-chart-legend-row>
+          {lines.map((line) => {
+            const palette = chartSeries[line.color % chartSeries.length] ?? chartSeries[0];
+            return (
               <span
-                aria-hidden
-                className={`inline-block h-0.5 w-4 ${palette.swatch} ${line.compare ? "opacity-50" : ""}`}
-              />
-              <span className={textMutedOnSurface}>
-                {line.label}
-                {line.compare ? `, ${comparedRange}` : ""}
+                className="flex items-center gap-1.5"
+                data-chart-legend={line.compare ? "compare" : "window"}
+                key={`${line.label}-${line.compare}`}
+              >
+                <span
+                  aria-hidden
+                  className={`inline-block h-0.5 w-4 ${palette.swatch} ${line.compare ? "opacity-50" : ""}`}
+                />
+                <span className={textMutedOnSurface}>
+                  {line.label}
+                  {line.compare ? `, ${comparedRange}` : ""}
+                </span>
               </span>
-            </span>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 /** The chart itself: one plot per unit, each with its axes, its series in a legend below, a
  *  compared range's series drawn dashed beside the window's and named in the legend, and the
- *  series with nothing in the range left out and named once. */
+ *  series with nothing in the range left out and named once. With `rangeOnPage` the page names
+ *  the range and where its data starts, so the chart names neither. */
 function Graph({
   against,
   label,
   range,
+  rangeOnPage,
   series,
 }: {
   against: Comparison | null;
   label: string;
   range: ChartRange;
+  rangeOnPage: boolean;
   series: readonly ChartSeries[];
 }): ReactNode {
   const span = filledSpan(series);
@@ -781,24 +797,29 @@ function Graph({
               rows={first === undefined ? [] : rowLabels(first)}
               target={members.find(({ one }) => one.target !== undefined)?.one.target}
               unit={unit}
+              unitLabel={(first?.kind === "spark" ? first.unitLabel : undefined) ?? unit}
             />
           );
         })
       )}
-      <div className={`flex flex-wrap gap-x-3 ${noteClass}`}>
-        <div data-chart-range="window">
-          <span>{rangeLabel(range)}</span>
+      {rangeOnPage && empty.length === 0 ? null : (
+        <div className={`flex flex-wrap gap-x-3 ${noteClass}`}>
+          {rangeOnPage ? null : (
+            <div data-chart-range="window">
+              <span>{rangeLabel(range)}</span>
+            </div>
+          )}
+          {rangeOnPage || against === null ? null : (
+            <div data-chart-range="compare">
+              <span>{`Compare ${rangeLabel(against.range)}`}</span>
+            </div>
+          )}
+          {rangeOnPage || span.note === "" ? null : <span data-chart-trimmed>{span.note}</span>}
+          {empty.length === 0 ? null : (
+            <span data-chart-empty>{`No data: ${empty.join(", ")}.`}</span>
+          )}
         </div>
-        {against === null ? null : (
-          <div data-chart-range="compare">
-            <span>{`Compare ${rangeLabel(against.range)}`}</span>
-          </div>
-        )}
-        {span.note === "" ? null : <span data-chart-trimmed>{span.note}</span>}
-        {empty.length === 0 ? null : (
-          <span data-chart-empty>{`No data: ${empty.join(", ")}.`}</span>
-        )}
-      </div>
+      )}
     </div>
   );
 }
@@ -1033,6 +1054,7 @@ export function Chart({
   series,
   table,
   defaultMode = "graph",
+  rangeOnPage = false,
 }: ChartProps): ReactNode {
   const [mode, setMode] = useState<ChartMode>(defaultMode);
   const against: Comparison | null =
@@ -1042,7 +1064,13 @@ export function Chart({
   return (
     <div className="flex min-w-0 flex-col gap-1" data-chart={label}>
       {mode === "graph" ? (
-        <Graph against={against} label={label} range={range} series={series} />
+        <Graph
+          against={against}
+          label={label}
+          range={range}
+          rangeOnPage={rangeOnPage}
+          series={series}
+        />
       ) : (
         <NumberTable
           against={

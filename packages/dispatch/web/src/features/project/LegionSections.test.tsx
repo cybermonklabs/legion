@@ -328,7 +328,7 @@ test("the sections come in one column, in the order a reader asks, each with its
     [...document.querySelectorAll("[data-legion-section]")].map((one) =>
       one.getAttribute("data-legion-section")
     )
-  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "delivery", "finished"]);
+  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "finished"]);
   // Each headline holds numbers with their units and nothing else.
   expect(headline("work_time")).toBe("2 finished · median 24.0 h · p90 36.8 h");
   expect(headline("phase_breakdown")).toBe(
@@ -337,15 +337,11 @@ test("the sections come in one column, in the order a reader asks, each with its
   // Each title is short, and carries its info button.
   expect(
     [...document.querySelectorAll("[data-legion-title]")].map((one) => one.firstChild?.textContent)
-  ).toEqual([
-    "Time per phase",
-    "Work time",
-    "Rework",
-    "Splitting",
-    "CI and deploys",
-    "Finished issues",
-  ]);
+  ).toEqual(["Time per phase", "Work time", "Rework", "Splitting", "Finished issues"]);
   expect(document.querySelector("[data-health-tile]")).toBeNull();
+  // The range is named once, beside the window control, and no chart repeats it.
+  expect(document.querySelector("[data-legion-range]")?.textContent).toContain(" to ");
+  expect(document.querySelector("[data-chart-range]")).toBeNull();
 });
 
 test("the phase bar draws each part in the issues table's colour with its share", async () => {
@@ -364,18 +360,16 @@ test("the phase bar draws each part in the issues table's colour with its share"
   );
 });
 
-test("the work-time chart plots medians per day with axes and a legend; its table lists issues", async () => {
+test("the work-time chart plots medians per day, each plot titled once with its unit; its table lists issues", async () => {
   const { opened } = await renderSections(() => report());
 
   const section = document.querySelector('[data-legion-section="work_time"]') as HTMLElement;
+  // The median and the p90 each have their own plot, title and value axis, and no legend
+  // repeats a plot's one line.
   expect(
-    [...section.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
-  ).toEqual(["Median work time", "p90 work time"]);
-  // The median and the p90 each have their own plot, title and value axis.
-  expect([...section.querySelectorAll("[data-chart-unit]")].map((one) => one.textContent)).toEqual([
-    "hours, median",
-    "hours, p90",
-  ]);
+    [...section.querySelectorAll("[data-chart-plot-title]")].map((one) => one.textContent)
+  ).toEqual(["Median work timehours", "p90 work timehours"]);
+  expect(section.querySelector("[data-chart-legend]")).toBeNull();
   const table = await openTable("Work time");
   expect(table.textContent).toContain("ACME-6");
   fireEvent.click(screen.getByRole("button", { name: "Show the issues of ACME-6" }));
@@ -412,7 +406,12 @@ test("a project whose repositories are not the deploy repository gets one line f
     repos: [mapping("ACME", "acme/widgets")],
   });
 
-  await waitFor(() => expect(headline("delivery")).toBe("Not measured"));
+  await waitFor(() =>
+    expect(document.querySelector("[data-legion-delivery-unmeasured]")?.textContent).toStartWith(
+      "CI and deploys: not measured"
+    )
+  );
+  expect(document.querySelector('[data-legion-section="delivery"]')).toBeNull();
   expect(document.querySelector('[data-legion-section="ci"]')).toBeNull();
   expect(pipeline).not.toHaveBeenCalled();
   expect(measures).not.toHaveBeenCalled();
