@@ -235,9 +235,8 @@ def start(path: str, state_path: str) -> int:
         print(f"disk: {path} cannot be read ({problem.strerror}), nothing to watch")
         return 0
     print_space([path] + tool_directories())
-    # The sampler is started before the state is written: it sleeps a second before its first
-    # read and skips a state file that is not there yet, so one write, with its pid in it, is
-    # all the file ever needs.
+    # The sampler is started before the state is written: it reads at once and skips a state
+    # file that is not there yet, so one write, with its pid in it, is all the file ever needs.
     sampler = subprocess.Popen(
         [sys.executable, os.path.abspath(__file__), "sample", "--path", path, "--state", state_path],
         # The sampler outlives this step, so it must hold none of the step's pipes: a child still
@@ -347,13 +346,23 @@ def sample(path: str, state_path: str) -> int:
             # on the very file system being measured, so a tick that would rewrite the same
             # bytes writes nothing.
             if changed:
-                write_state(state_path, state)
+                try:
+                    write_state(state_path, state)
+                except OSError:
+                    # The disk this tool measures filling up is the one failure that must not
+                    # stop it: the next tick is the reading a person came for.
+                    pass
         # The read comes before the sleep, so the series begins in the second `start` spawned
         # this process in rather than a second later: the first step being measured begins at
         # the boundary `start` ends on, and a reader lines that boundary up against a tick. The
         # state file may not be written yet on this first pass, which costs nothing: `start`
         # seeds all three worst readings itself, and the series line is written either way.
-        time.sleep(SAMPLE_SECONDS)
+        # The wait is to the NEXT WHOLE SECOND rather than for a second: a fixed sleep after the
+        # work makes the period a little longer than a second, and a series that drifts skips a
+        # wall-clock second now and then. A missing second here is the shape a reader is asked
+        # to read as a machine that stopped answering, so a sampler that drifts makes that mark
+        # itself.
+        time.sleep(SAMPLE_SECONDS - (time.time() % SAMPLE_SECONDS))
     return 0
 
 
