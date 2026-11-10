@@ -126,7 +126,7 @@ itself, whose tests import its sources by relative path.
   (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-lanes.test.ts`).
+  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the

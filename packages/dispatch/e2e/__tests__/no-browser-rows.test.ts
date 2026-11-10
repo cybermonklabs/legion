@@ -28,7 +28,7 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // with DISPATCH_E2E_PROCESSES=2 lists that last spec, whose servers sign people in through the
 // dev OIDC issuer alone (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40).
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
-// ambient ones, so this file reads the same suite in every lane.
+// ambient ones, so this file reads the same suite wherever it runs.
 const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
   listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })

@@ -153,7 +153,7 @@ A check nobody has run yet reads no result.
   }
 });
 
-// SLOW(>=2s): 1.9 s here, over the bar on the four-lane report this rule is read against, and
+// SLOW(>=2s): 1.9 s here, over the bar on the four-worker report this rule is read against, and
 // this pod puts it over in a third of runs. Two results recorded against the document's two
 // checks, each one's record route reading through to the fake GitHub for the pull request's
 // head, with the fake re-seeded between them so the first result ages; then one load of the

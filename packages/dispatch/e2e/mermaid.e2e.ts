@@ -113,7 +113,7 @@ async function expectDrawnDiagram(card: Locator, labels: readonly string[]): Pro
   // the page moved between Playwright's actionability check on the summary and the click's own
   // dispatch - and no `toggle` fired and no figure was redrawn. Nothing had opened the
   // disclosure, so the row waited out its whole expect timeout; it failed that way twice in 100
-  // repeats on firefox in a two-lane run of this pod. A click already taken leaves the source
+  // repeats on firefox in a two-worker run of this pod. A click already taken leaves the source
   // visible, so the retry clicks only while it is still hidden rather than closing what the
   // first click opened.
   //

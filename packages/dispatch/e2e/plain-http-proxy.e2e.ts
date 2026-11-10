@@ -72,7 +72,7 @@ test("a page that closes leaves no live socket open upstream of the proxy", asyn
   const upstreamPort = (upstream.address() as AddressInfo).port;
   // A second proxy in front of the stand-in: the harness's own proxy forwards to the server under
   // test, whose subscribers this spec cannot count. With the plain-HTTP port unset under every
-  // name this lane carries it under, the second proxy binds a port the OS chooses, which this row
+  // name this stack carries it under, the second proxy binds a port the OS chooses, which this row
   // reads from its listening line.
   const env = withoutHarnessPort("plainHttp");
   const proxy = spawn("bun", [proxyModule], {

@@ -82,9 +82,9 @@ export interface Harness {
 
 export interface HarnessOptions {
   /** Variables every process this harness starts gets on top of this process's own, and which
-   *  its ports resolve through: one lane's database and file-store bucket (`e2e/run.ts`), so one
-   *  process can start a harness per lane. Absent, the harness is this process's environment,
-   *  which is what every other starter gives it. */
+   *  its ports resolve through: one stack's database and file-store bucket
+   *  (`e2e/harness-pool.ts`), so one process can start a harness per stack. Absent, the harness
+   *  is this process's environment, which is what every other starter gives it. */
   readonly env?: Readonly<Record<string, string>>;
   /** A directory for each process's output, as `<id>.log`; unset, it goes to this process's
    *  stderr. */
@@ -250,7 +250,7 @@ async function keepPort(
 /** Starts the harness (see the module comment) and returns once every listener serves. A failure
  *  stops every process it started before it throws. */
 export async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
-  // This harness's environment: this process's, under the lane's own variables when a caller
+  // This harness's environment: this process's, under the stack's own variables when a caller
   // starts more than one harness (`options.env`). Every port below resolves through it, and
   // every process started inherits it.
   const environment: NodeJS.ProcessEnv = { ...process.env, ...options.env };

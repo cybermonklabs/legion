@@ -65,9 +65,9 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // `stub` project at the end of this file runs them and nothing else runs them: this config's own
 // `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
-// annotation, because 150 spec files reset the database in a `beforeEach` and most of them sign in
-// and seed through the API: a stubbed row left among them would still run its file's hooks
-// (packages/dispatch/AGENTS.md, "The stubbed layer").
+// annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
+// database before every row and signs the default context in: a stubbed row left among them would
+// pay that fixture for nothing (packages/dispatch/AGENTS.md, "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
@@ -107,9 +107,10 @@ resolveReuseServers();
 // this file AFTER `globalSetup`, with the manifest that hook wrote in its environment, and it is
 // that evaluation which decides the worker's `use.baseURL` and every import-time origin beside it
 // (e2e/api.ts, e2e/plain-http-origin.ts). The four refusals this file used to make - the unset
-// ports, the missing `DISPATCH_E2E_REUSE_SERVERS`, a `--workers` that disagreed with the lane
-// count and a worker count no wrapper had lanes for - were all about a harness that had to be up
-// before Playwright started, which is no longer how a run works.
+// ports, the missing `DISPATCH_E2E_REUSE_SERVERS`, a `--workers` that disagreed with the number
+// of harnesses the wrapper had started and a worker count it had started none for - were all
+// about a harness that had to be up before Playwright started, which is no longer how a run
+// works.
 //
 // What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
 // recording, whether it holds a stubbed row at all - which is what decides the static file
@@ -128,7 +129,7 @@ const stub = stubSelection({
 const expectTimeout = 15_000;
 
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
-// when this suite ran one row at a time; it now runs four lanes on a four-core runner. Read from
+// when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
 // the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
 // 2026-11-05T20:32:13Z (78 merge_group, 119 pull_request, 4 push), at base b7866f96d7fe.
 //
@@ -233,8 +234,8 @@ const multiprocessProjects = [
 
 // The specs whose rows are read from the wall clock: that a card's draw holds the main thread
 // for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`). Four lanes on one machine leave such a claim unmeasurable - the wall
-// time of a draw holds what the other three lanes took as surely as the work the page did -
+// `main-thread-hold.ts`). Four workers on one machine leave such a claim unmeasurable - the wall
+// time of a draw holds what the other three workers took as surely as the work the page did -
 // so these files run in the `-alone` projects at the end of this list, after every other project
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
 const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
@@ -255,8 +256,8 @@ const readersPlaceRows =
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
-// Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
-// project added here is one more the clock rows wait for.
+// Every project that runs as wide as the run's own workers. The `-alone` projects below name all
+// of them, so a project added here is one more the clock rows wait for.
 const parallelProjects = [
   // The desktop half of the pair: every row of the suite except the two kinds this project is
   // not the one for. A `@phone-only` row has no desktop case to make, and the one row of
@@ -423,10 +424,10 @@ const parallelProjects = [
  * `testProject.workers`, "The maximum number of concurrent worker processes to use for
  * parallelizing tests from this project", which its dispatcher holds a project's running jobs to
  * (`_workerLimitPerProjectId`, `playwright/lib/runner/index.js`) - and the run's own `workers`
- * above stays at the lane count, so the suite ahead of these projects runs as wide as ever. A
- * worker here resolves a lane as any other worker does (`TEST_PARALLEL_INDEX`,
- * e2e/harness-ports.ts), so these rows run against one lane's harness while the other lanes
- * stand idle.
+ * above stays at the worker count the run was given, so the suite ahead of these projects runs
+ * as wide as ever. A worker here resolves a stack as any other worker does
+ * (`TEST_PARALLEL_INDEX`, e2e/harness-ports.ts), so these rows run against one stack's harness
+ * while the other stacks stand idle.
  *
  * A project whose dependency has a failing row is not run at all: in a red run these rows are
  * left unrun rather than measured beside whatever the failing row's retry is doing.

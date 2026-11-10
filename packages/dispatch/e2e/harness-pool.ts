@@ -28,10 +28,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  type LaneDatabase,
-  lanePostgres,
   pgBinVariable,
   pgImageVariable,
+  type StackDatabase,
+  stackPostgres,
 } from "./harness-postgres";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
@@ -57,7 +57,7 @@ export interface StackPoolOptions {
 
 /** One stack and what it takes to stop it. */
 interface Running extends Stack {
-  readonly database: LaneDatabase | undefined;
+  readonly database: StackDatabase | undefined;
   readonly harness: Harness;
   /** Where its processes write their output, unset for a run of one stack, which writes to this
    *  process's stderr as it always has. */
@@ -146,7 +146,7 @@ export async function startStacks(
     const postgres =
       count === 1 && given !== ""
         ? undefined
-        : lanePostgres({ dir: runDir, env, run: String(process.pid) });
+        : stackPostgres({ dir: runDir, env, run: String(process.pid) });
     if (count > 1 && postgres === undefined) {
       throw new Error(
         `${count} Playwright workers run ${count} stacks, each with a Postgres of its own, so ` +

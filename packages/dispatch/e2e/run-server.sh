@@ -105,10 +105,10 @@ fi
 # sign-in, the one shape the server reads it in: a suite whose assertions count search hits
 # counts the keyword answers Dispatch gives a deployment with no embedder, which is what every
 # spec but the ones that drive meaning search is written against. The acceptance driver and the
-# two-process run ask for it (packages/dispatch/README.md). No row of the two-process lane reads
-# a vector since INFRA-1554 moved its rollout row to a Go test, so that lane's request is for the
+# two-process run ask for it (packages/dispatch/README.md). No row of the two-process run reads
+# a vector since INFRA-1554 moved its rollout row to a Go test, so that run's request is for the
 # work ahead of it rather than for a row it has: dispatch://INFRA-558's plan builds on an embedder
-# there, and the dev embedder calls no model service, so leaving it on costs that lane nothing.
+# there, and the dev embedder calls no model service, so leaving it on costs that run nothing.
 # DISPATCH_E2E_EMBEDDER=fake is the other embedder a harness can have, the fake below, which this
 # block leaves alone: the server reads it as Bedrock, not as a dev-only setting, so it goes with
 # either sign-in.

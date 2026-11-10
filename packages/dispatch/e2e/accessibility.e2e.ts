@@ -34,7 +34,7 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *
  *  The check is a hook and not a final row because no row can see the run. `--shard=N/4` splits
  *  this file's rows over four machines (.github/workflows/dispatch-browser.yaml's shard job) and
- *  the lane's four workers split each shard again, so a final row would sit in one process and
+ *  the run's four workers split each shard again, so a final row would sit in one process and
  *  judge entries whose routes another process ran. `afterAll` runs once in each worker, after
  *  the rows that worker ran, which is exactly the set it can judge - and judging only the routes
  *  this process scanned is what keeps a shard that ran none of an entry's route from failing

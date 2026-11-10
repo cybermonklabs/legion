@@ -246,8 +246,8 @@ export function tagged(tag: string): RegExp {
  *
  *  An empty list is a run that names no project, which is every project of its mode. Every
  *  `--project` of the whole line is read, and a `--` ends one flag's values because it begins
- *  with `-`: `e2e/run.ts` reads the Playwright argv it passes after its own `--`, and the
- *  config reads a Playwright command line that has no `--` in it. */
+ *  with `-`: the Playwright command line this reads holds no `--`, and a line that held one
+ *  would not have it taken for a project name. */
 export function projectsOnCommandLine(argv: readonly string[]): string[] {
   const named: string[] = [];
   for (const [index, word] of argv.entries()) {

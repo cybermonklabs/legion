@@ -1149,13 +1149,13 @@ GATES = [
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
-        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each lane's server port through it"),
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each stack's server port through it"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
         (".github/scripts/dispatch-browser-postgres.sh",
          f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
-         "run it for the reading of the image's PostgreSQL their lanes start"),
+         "run it for the reading of the image's PostgreSQL their stacks start"),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
         (".github/scripts/dispatch-browser-run-reads.sh",
          f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "

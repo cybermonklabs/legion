@@ -442,7 +442,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   // happy: last_reconcile_at is set (a prior pass did succeed once) but last_error names the most
   // recent failure, and the freshness row must show that failure by name, not the generic
   // "Reconcile X ago"/"never ran" wording a merely-stale-but-healthy row gets (lib/freshness.ts's
-  // reconcileRow). The lane's own server runs the delivery reconcile on a ticker of its own, so a
+  // reconcileRow). The stack's own server runs the delivery reconcile on a ticker of its own, so a
   // pass can land between the write below and the page's read of it, and a failing pass
   // overwrites last_error (store.go's RecordReconcileError). Hence the fake GitHub: acme/widgets
   // with Contents and Pull-requests but no Actions makes every such pass fail with exactly the
@@ -450,7 +450,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   // read on acme/widgets"), so a pass inside this row's window changes nothing. The SQL seed
   // stays: the page must show the failure the instant it loads, before any pass has run.
   // To see that for oneself, run this row with DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1s, which
-  // e2e/run-server.sh forwards to the lane's server: several passes then land inside the window
+  // e2e/run-server.sh forwards to the stack's server: several passes then land inside the window
   // below and the row still reads the same.
   await seedFakeGithub({
     "acme/widgets": { contents: "read", installation_id: 690, pull_requests: "read" },

@@ -56,7 +56,7 @@ cd "$package"
 # (e2e/playwright.config.ts). A second stack would be a database nothing seeded, and a row that
 # opened it would fail nothing - a readiness locator such as the Inbox's heading is drawn by an
 # empty page too - but would compare, or with `--update-snapshots` WRITE, a baseline of an empty
-# corpus. That is what a one-lane guard stood here to refuse. It is now impossible rather than
+# corpus. That is what a one-stack guard stood here to refuse. It is now impossible rather than
 # refused: this script starts exactly one stack, `e2e/harness-up.ts` starts no more than the one
 # it is written for, and the run inside the container starts none at all.
 
