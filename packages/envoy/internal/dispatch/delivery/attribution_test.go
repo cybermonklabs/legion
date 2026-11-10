@@ -157,11 +157,14 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 }
 
 // TestCitedIssuesCreditsTheURLsOwnPath drives citedIssues, which needs no database, over the
-// three defects review round three found in the citation parse and over the shapes that prove
-// each fix did not take a citation away with it. Each row names what the body cites, whole:
-// an extra citation is a defect of its own, which a membership test would pass over.
+// shapes that tell a citation from the same bytes standing inside another URL. Each row names
+// what the body cites, whole: an extra citation is a defect of its own, which a membership test
+// would pass over.
 func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
+	const citedAB = "https://github.com/a/b/issues/7"
+	const citedCD = "https://github.com/c/d/issues/9"
+	const cited12 = "https://github.com/acme/widgets/issues/12"
 	for _, row := range []struct {
 		name string
 		body string
@@ -184,10 +187,40 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		{"after a line separator", "See\u2028github.com/acme/widgets/issues/7 here.", []string{cited}},
 		{"in text with no spaces at all", "参照github.com/acme/widgets/issues/7です", []string{cited}},
 		{"after a key and a colon", "Refs:github.com/acme/widgets/issues/7", []string{cited}},
-		// What wraps it is read as the prose it is, and what stands inside another URL is not.
+		// A separator or a closing bracket left of the host ends whatever stood before it, so the
+		// host opens a URL of its own even where that earlier text carries a `/` or a `#`: a
+		// citation before this one, a bare #N, or a Markdown link's own text.
+		{"two citations joined by a comma", "github.com/a/b/issues/7,github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations joined by a semicolon", "github.com/a/b/issues/7;github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations joined by an ampersand", "github.com/a/b/issues/7&github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations joined by a plus", "github.com/a/b/issues/7+github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"a schemed citation before a bare one", "https://github.com/a/b/issues/7,github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations each in parentheses", "(github.com/a/b/issues/7)(github.com/c/d/issues/9)", []string{citedAB, citedCD}},
+		{"after a bare reference and a comma", "#12,github.com/acme/widgets/issues/7", []string{cited12, cited}},
+		{"after a bare reference and a colon", "#12:github.com/acme/widgets/issues/7", []string{cited12, cited}},
+		{"after a bracketed bare reference", "Fixes (#12)github.com/acme/widgets/issues/7", []string{cited12, cited}},
+		{"in a Markdown link whose text names the issue", "See [acme/widgets#7](github.com/acme/widgets/issues/7)", []string{cited}},
+		{"in a Markdown link whose text is a bare reference", "See [#7](github.com/acme/widgets/issues/7)", []string{cited}},
+		{"after bold markers and a colon", "**#7**:github.com/acme/widgets/issues/7", []string{cited}},
+		{"after a word of prose carrying a slash", "Related issues/PRs:github.com/acme/widgets/issues/7", []string{cited}},
+		{"a scheme-relative URL in parentheses", "(//github.com/acme/widgets/issues/7)", []string{cited}},
+		{"a scheme-relative URL in brackets", "[//github.com/acme/widgets/issues/7]", []string{cited}},
+		// What wraps it is read as the prose it is, and what stands inside another URL is not: a
+		// `/`, `?` or `#` left of the host says that URL has left its authority behind.
 		{"inside another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/7 here.", nil},
+		{"inside another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/7 here.", nil},
 		{"inside another host's path behind a tilde", "See https://example.test/~github.com/acme/widgets/issues/7 here.", nil},
 		{"inside another host's path behind a bracket", "See https://example.test/(github.com/acme/widgets/issues/7) here.", nil},
+		// An `@` makes what stands before it userinfo of this same URL, wherever that is, which
+		// is how the default branch reads it too: the host after the `@` is the one a reader
+		// reaches, so the citation is credited, and `github.com@evil.test` is the other way
+		// round and is credited to nobody (citation_boundary_test.go holds that pair).
+		{"userinfo carrying another host's name", "See https://example.test/x@github.com/acme/widgets/issues/7 here.", []string{cited}},
+		// The scan left of a host stops after maxCitationURL bytes and refuses there, so a host
+		// that far inside one unbroken run of URL bytes is no citation, while a hundred bytes of
+		// the same run leave one.
+		{"a citation past the bound in one run of URL bytes", strings.Repeat("~", 2100) + "github.com/acme/widgets/issues/7", nil},
+		{"a citation within the bound", strings.Repeat("~", 100) + "github.com/acme/widgets/issues/7", []string{cited}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
@@ -197,16 +230,24 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 	}
 }
 
-// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds the bound review round three asked for: the
-// work is linear in the body rather than quadratic in it. A body of 65,533 bytes with no space
-// in it, every ten of them an issue path, took 1.56 s while each match walked back to the
-// nearest space; it is thousandths of a second once each match reads at most one URL's length.
-// The assertion is the answer rather than a clock, which no loaded machine can make flaky: a
-// quadratic reading cannot reach it inside this test's own deadline.
+// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
+// finder walks it once, and each match reads at most maxCitationURL bytes left of its path. The
+// body is 1 MiB with no whitespace in it and an issue path every thirteen bytes, the shape a
+// reading that walked back to the nearest space pays the square of — that walk costs about 1.5 s
+// at 64 KiB, so about 380 s at 1 MiB, against about a third of a second here, nearly all of it
+// the finder's own pass over the body. The deadline is thirty times that measured cost, so a
+// loaded machine stays green, and far under what the quadratic walk would need.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
-	body := strings.Repeat("/a/b/issues/1", 65533/13)
-	if got := citedIssues("acme/widgets", body); len(got) != 0 {
-		t.Fatalf("a body of %d bytes with no host in it cites %v, want nothing", len(body), got)
+	const cited = "https://github.com/acme/widgets/issues/7"
+	const deadline = 10 * time.Second
+	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
+	began := time.Now()
+	got := citedIssues("acme/widgets", body)
+	if took := time.Since(began); took > deadline {
+		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
+	}
+	if !slices.Equal(got, []string{cited}) {
+		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}
 	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
 	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
