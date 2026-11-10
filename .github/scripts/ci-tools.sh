@@ -528,11 +528,15 @@ ci_tools__tempfile() {
 # 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
 # which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
 # against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
-# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: the eight
-# negative controls, which each drive two ladders because their primary meets the fault and
-# their second source is a dead port, measured 104 to 127 s, while the head's own eight
-# installs and the eight second-source cases, which each drive one, measured about 64 s. So
-# 126 s is two ladders and not one. No negative control of that job drives a single ladder.
+# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: seven of the
+# eight negative controls each drive two ladders, because their primary meets the fault and
+# their second source is a dead port, and measured 126 to 127 s, while seven of the head's own
+# installs and seven of the second-source cases each drive one and measured 63 to 65 s (73 s
+# and 72 s for jj, which carry mise's own 10 s). So 126 s is two ladders and not one.
+# The eighth of each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not
+# through this function: its negative control drives one ladder, against the dead port, after
+# that action's own failed download, and measured 104 s, while its head install and its
+# second-source case drive none, because npm answers, and measured 23 s and 30 s.
 # The hang is the other shape. It costs 124 s with the bound, where the ladder without the
 # bound costs about ten minutes. So a row's primary costs about one minute before the second
 # source is read against a source that refuses at once, and about two minutes against a host
