@@ -102,7 +102,7 @@ interface SlotRow {
 /** A slot holder's phase: one label ("Retro" for a merging issue in retro) and, below it from
  *  640 px up, the time alone: in the phase, or since admission where the phase start is not
  *  recorded. The hover says which, and what a waiting root waits on. Below 640 px the second
- *  line is the slot and its use, whose own columns a phone does not show. */
+ *  line is the slot, its use and the time, since a phone shows neither the slot nor its use. */
 function SlotPhase({
   card,
   label,
@@ -143,6 +143,7 @@ function SlotPhase({
         data-legion-slot-line
       >
         slot {card.slot} · {use}
+        {time.text === "—" ? "" : ` · ${time.text}`}
       </span>
     </span>
   );

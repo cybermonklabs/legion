@@ -201,38 +201,38 @@ registerText("danger text on canvas", DANGER_TEXT, CANVAS);
 registerText("success text on surface", SUCCESS_TEXT, SURFACE);
 registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
 
-/** The issue status scale (dispatch://INFRA-979), in the same IBM Carbon set as the Legion phase scale: the waiting states gray, each working state a clearly lighter tint of its Legion phase's hue (in progress of implementing, testing of testing, needs review of reviewing, retro of merging), done green. In the Issues bar statuses and phases sit side by side in lifecycle order, so the grays alternate light and dark, and every side-by-side pair differs by a CIEDE2000 ΔE of 20 or more in both schemes (phase-scale.test.ts). */
+/** The issue status scale (dispatch://INFRA-979), in the same IBM Carbon set as the Legion phase scale: the waiting states gray, each working state a clearly lighter tint of its Legion phase's hue (in progress of implementing, testing of testing, needs review of reviewing, retro of merging), done a muted gray-green. In the Issues bar statuses and phases sit side by side in lifecycle order, so the grays alternate light and dark, and every side-by-side pair differs by a CIEDE2000 ΔE of 20 or more in both schemes (phase-scale.test.ts). */
 const ISSUE_STATUS_ROWS = [
   [
     "triage",
-    "bg-[#f4f4f4] text-[#161616] dark:bg-[#262626] dark:text-white",
-    P.CARBON_GRAY_10,
+    "bg-[#c6c6c6] text-[#161616] dark:bg-[#6f6f6f] dark:text-white",
+    P.CARBON_GRAY_30,
     P.CARBON_GRAY_100,
-    P.CARBON_GRAY_90,
+    P.CARBON_GRAY_60,
     P.WHITE,
   ],
   [
     "icebox",
-    "bg-[#8d8d8d] text-[#161616] dark:bg-[#8d8d8d] dark:text-[#161616]",
-    P.CARBON_GRAY_50,
-    P.CARBON_GRAY_100,
-    P.CARBON_GRAY_50,
+    "bg-[#393939] text-white dark:bg-[#c6c6c6] dark:text-[#161616]",
+    P.CARBON_GRAY_80,
+    P.WHITE,
+    P.CARBON_GRAY_30,
     P.CARBON_GRAY_100,
   ],
   [
     "backlog",
-    "bg-[#e0e0e0] text-[#161616] dark:bg-[#525252] dark:text-white",
-    P.CARBON_GRAY_20,
+    "bg-[#8d8d8d] text-[#161616] dark:bg-[#393939] dark:text-white",
+    P.CARBON_GRAY_50,
     P.CARBON_GRAY_100,
-    P.CARBON_GRAY_70,
+    P.CARBON_GRAY_80,
     P.WHITE,
   ],
   [
     "todo",
-    "bg-[#525252] text-white dark:bg-[#c6c6c6] dark:text-[#161616]",
-    P.CARBON_GRAY_70,
-    P.WHITE,
-    P.CARBON_GRAY_30,
+    "bg-[#e0e0e0] text-[#161616] dark:bg-[#a8a8a8] dark:text-[#161616]",
+    P.CARBON_GRAY_20,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_40,
     P.CARBON_GRAY_100,
   ],
   [
@@ -261,18 +261,18 @@ const ISSUE_STATUS_ROWS = [
   ],
   [
     "retro",
-    "bg-[#ffafd2] text-[#161616] dark:bg-[#ffafd2] dark:text-[#161616]",
-    P.CARBON_MAGENTA_30,
+    "bg-[#e0aebb] text-[#161616] dark:bg-[#eab2c6] dark:text-[#161616]",
+    P.MUTED_MAGENTA_20,
     P.CARBON_GRAY_100,
-    P.CARBON_MAGENTA_30,
+    P.MUTED_MAGENTA_10,
     P.CARBON_GRAY_100,
   ],
   [
     "done",
-    "bg-[#198038] text-white dark:bg-[#6fdc8c] dark:text-[#161616]",
-    P.CARBON_GREEN_60,
+    "bg-[#5a7b65] text-white dark:bg-[#8cae97] dark:text-[#161616]",
+    P.MUTED_GREEN_60,
     P.WHITE,
-    P.CARBON_GREEN_30,
+    P.MUTED_GREEN_40,
     P.CARBON_GRAY_100,
   ],
 ] as const;
@@ -283,22 +283,22 @@ for (const [status, , light, lightText, dark, darkText] of ISSUE_STATUS_ROWS) {
   registerText(`issue status scale: ${status}`, pair(lightText, darkText), pair(light, dark));
 }
 
-/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases in Carbon's purple, blue, cyan, teal, orange and magenta. Each working phase differs from its neighbours by a CIEDE2000 ΔE of 20 or more in both schemes (phase-scale.test.ts), so a thin bar still tells adjacent phases apart. The issues table, its status bar, the board and the Legion tab use it. */
+/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases in Carbon's green, blue, cyan, teal, purple, orange and magenta, each phase its own hue. Each working phase differs from its neighbours by a CIEDE2000 ΔE of 20 or more in both schemes (phase-scale.test.ts), so a thin bar still tells adjacent phases apart. The issues table, its status bar, the board and the Legion tab use it. */
 const LEGION_PHASE_ROWS = [
   [
     "queue",
-    "bg-[#a8a8a8] text-[#161616] dark:bg-[#393939] dark:text-white",
-    P.CARBON_GRAY_40,
-    P.CARBON_GRAY_100,
-    P.CARBON_GRAY_80,
+    "bg-[#525252] text-white dark:bg-[#262626] dark:text-white",
+    P.CARBON_GRAY_70,
+    P.WHITE,
+    P.CARBON_GRAY_90,
     P.WHITE,
   ],
   [
     "design",
-    "bg-[#a56eff] text-[#161616] dark:bg-[#d4bbff] dark:text-[#161616]",
-    P.CARBON_PURPLE_50,
+    "bg-[#42be65] text-[#161616] dark:bg-[#6fdc8c] dark:text-[#161616]",
+    P.CARBON_GREEN_40,
     P.CARBON_GRAY_100,
-    P.CARBON_PURPLE_30,
+    P.CARBON_GREEN_30,
     P.CARBON_GRAY_100,
   ],
   [
