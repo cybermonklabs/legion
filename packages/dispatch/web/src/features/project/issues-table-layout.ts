@@ -15,8 +15,12 @@ import { readLayout, writeLayout } from "./issues-table-storage";
  * in the window. The widths, order and visibility are the reader's, saved per project; the box
  * and the pinned columns follow the window, so a phone keeps the key and the title readable.
  *
- * Measuring reads layout, so it happens only when something that changes the answer happens:
- * the window resizes, or the caller says its rows changed (`measure`). A scroll does neither.
+ * Measuring reads layout, so it happens only when something that changes the answer happens: a
+ * `ResizeObserver` over the box and over everything drawn above it — which covers the rows the
+ * page holds, a notice appearing above the table and moving its top edge, and a sidebar
+ * changing its width — and a window resize, which the observer cannot see because the box's own
+ * height is what this sets. A scroll does none of these, and the virtualizer commits on every
+ * visible range, so measuring there would be a reflow per scrolled row.
  */
 export function useTableLayout(project: string) {
   const saved = useMemo(() => readLayout(project), [project]);
@@ -27,6 +31,17 @@ export function useTableLayout(project: string) {
   const [boxHeight, setBoxHeight] = useState(400);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pagerRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<HTMLDivElement | null>(null);
+  const [above, setAbove] = useState<HTMLDivElement | null>(null);
+  /** The box, held as both the ref the rest of the table reads and the state the measurement
+   *  observes: it is not in the page on the first render, while the listing is still out. */
+  const attachBox = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    setBox(node);
+  }, []);
+  /** Everything drawn above the box: the status bar, the toolbar and the notices. What it
+   *  does to the box is move its top edge, which is not a size change the box itself sees. */
+  const attachAbove = useCallback((node: HTMLDivElement | null) => setAbove(node), []);
 
   useEffect(() => {
     writeLayout(project, { sizing, order, visibility });
@@ -82,13 +97,21 @@ export function useTableLayout(project: string) {
   useLayoutEffect(() => {
     measure();
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [measure]);
+    // happy-dom lays nothing out and has no `ResizeObserver`; the unit suite installs one.
+    const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    if (box) sizes?.observe(box);
+    if (above) sizes?.observe(above);
+    return () => {
+      window.removeEventListener("resize", measure);
+      sizes?.disconnect();
+    };
+  }, [above, box, measure]);
 
   return {
+    attachAbove,
+    attachBox,
     boxHeight,
     boxWidth,
-    measure,
     order,
     pagerRef,
     responsive,

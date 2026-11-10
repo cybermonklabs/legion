@@ -27,6 +27,7 @@ import {
   COLUMN_MIN,
   COLUMNS,
   COMPACT_COLUMN_MIN,
+  type ColumnId,
   type Item,
   matchesFilters,
 } from "./issues-table-model";
@@ -38,6 +39,8 @@ declare module "@tanstack/react-table" {
     show?: (value: string) => string;
     /** The facet values in the order the filter lists them; by count when absent. */
     order?: readonly string[];
+    /** The values the filter offers whatever the loaded rows hold. */
+    always?: readonly string[];
     /** Filter by typed text instead of picking values: for a column of free text. */
     text?: boolean;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
@@ -47,13 +50,14 @@ declare module "@tanstack/react-table" {
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
 
-/** How each column renders and sorts, for the reader `userState` describes. Everything else
- *  about a column — whether it filters, what a row files under, what it groups by, how wide it
- *  starts and how narrow it may go — comes from `COLUMNS` in the model, so the two never
- *  disagree. */
+/** How each column renders and sorts, for the reader `userState` describes. Keyed by the
+ *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
+ *  else about a column — whether it filters, what a row files under, what it groups by, how
+ *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
+ *  never disagree. */
 const renderings = (
   userState: UserState | undefined
-): Record<string, Partial<ColumnDef<Item>>> => ({
+): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
       <input
@@ -250,7 +254,7 @@ export function useIssueTableColumns(
     return COLUMNS.map((column) => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
       return {
-        ...(rendering[column.id] ?? {}),
+        ...rendering[column.id],
         id: column.id,
         size: column.size,
         minSize: (compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id],
@@ -264,6 +268,7 @@ export function useIssueTableColumns(
           ...(column.filter?.kind === "text" ? { text: true } : {}),
           ...(picks?.order === undefined ? {} : { order: picks.order }),
           ...(picks?.show === undefined ? {} : { show: picks.show }),
+          ...(picks?.always === undefined ? {} : { always: picks.always }),
         },
       };
     });

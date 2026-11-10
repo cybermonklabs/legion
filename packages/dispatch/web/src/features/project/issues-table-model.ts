@@ -31,8 +31,10 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
 
-/** How a column filters. `picks` carries the values a row files under, so a column that filters
- *  by picking values cannot exist without them; `text` filters by what the reader types. */
+/** How a column filters, and everything a filter of its kind needs: a column that filters by
+ *  picking values cannot exist without the values a row files under, nor one that filters by
+ *  typed text without the text it reads. Matching, the URL parameter and the options a filter
+ *  always offers live here too, so a column is one entry rather than a branch in three files. */
 export type ColumnFilterSpec =
   | {
       readonly kind: "picks";
@@ -42,16 +44,42 @@ export type ColumnFilterSpec =
       readonly group?: (item: Item) => string;
       /** The order the filter lists its values in; by count when absent. */
       readonly order?: readonly string[];
-      /** A value as the reader sees it. */
+      /** A value as the reader sees it, in an option and in a group's heading. */
       readonly show?: (value: string) => string;
+      /** A row must carry every picked value, not just one of them, compared case-insensitively. */
+      readonly match?: "all";
+      /** The URL parameter the picks travel in; `f.<id>` when absent. */
+      readonly param?: string;
+      /** Values the filter offers whatever the loaded rows hold. */
+      readonly always?: readonly string[];
+      /** A value out of the URL as this column keeps it. */
+      readonly normalize?: (value: string) => string;
     }
-  | { readonly kind: "text" };
+  | { readonly kind: "text"; readonly value: (item: Item) => string };
+
+/** Every column the table has. Narrow enough that a rendering, a width or a minimum keyed by
+ *  an id no column carries fails to compile. */
+export type ColumnId =
+  | "select"
+  | "priority"
+  | "queue"
+  | "key"
+  | "title"
+  | "status"
+  | "epic"
+  | "assignee"
+  | "author"
+  | "labels"
+  | "claim"
+  | "asks"
+  | "created"
+  | "updated";
 
 /** One column's identity: everything about it that is not how its cell renders. The column
  *  definitions, `columnIds`, `groupable`, `facets`, the default widths and the minimums are all
  *  derived from this list, so a new column is one entry here plus its cell. */
 export interface ColumnSpec {
-  readonly id: string;
+  readonly id: ColumnId;
   /** Its width before the reader drags it. */
   readonly size: number;
   /** How narrow a drag may take it: label, sort mark, a 44 px filter target and padding. */
@@ -111,15 +139,28 @@ export const COLUMNS: readonly ColumnSpec[] = [
     pinned: true,
     filter: one((item) => item.issue.key, { groups: false }),
   },
-  { id: "title", size: 380, min: 116, compactMin: 120, pinned: true, filter: { kind: "text" } },
+  {
+    id: "title",
+    size: 380,
+    min: 116,
+    compactMin: 120,
+    pinned: true,
+    filter: { kind: "text", value: (item) => item.issue.title },
+  },
   {
     id: "status",
     size: 128,
     min: 132,
-    filter: one((item) => item.issue.status, {
+    filter: {
+      kind: "picks",
+      values: (item) => [item.issue.status],
+      group: (item) => item.issue.status,
       order: issueStatuses,
       show: (value) => statusLabel(value as IssueStatus),
-    }),
+      // Shared with the Board, and every status is offered even before its rows are loaded.
+      param: "status",
+      always: issueStatuses,
+    },
   },
   { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
   {
@@ -136,6 +177,10 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: {
       kind: "picks",
       values: (item) => (item.issue.labels ?? []).map((label) => label.toLowerCase()),
+      // Shared with the Board: every picked label, in the case the server matches them in.
+      match: "all",
+      param: "label",
+      normalize: (value) => value.toLowerCase(),
     },
   },
   {
@@ -167,14 +212,16 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: one((item) => ageOf(item.issue.updated_at), { order: AGES }),
   },
 ];
-const columnSpec = new Map(COLUMNS.map((column) => [column.id, column]));
+const columnSpec: ReadonlyMap<string, ColumnSpec> = new Map(
+  COLUMNS.map((column) => [column.id, column])
+);
 export const columnFilterSpec = (id: string): ColumnFilterSpec | undefined =>
   columnSpec.get(id)?.filter;
 /** The columns a URL may name in `sort=` or a filter parameter: every one a reader controls. */
-export const columnIds = COLUMNS.filter(
+export const columnIds: readonly string[] = COLUMNS.filter(
   (column) => column.sortable !== false || column.filter !== undefined
 ).map((column) => column.id);
-const groupable = COLUMNS.filter(
+const groupable: readonly string[] = COLUMNS.filter(
   (column) => column.filter?.kind === "picks" && column.filter.group !== undefined
 ).map((column) => column.id);
 export const canGroupBy = (id: string) => groupable.includes(id);
@@ -189,7 +236,9 @@ export const COMPACT_COLUMN_MIN: Readonly<Record<string, number>> = Object.fromE
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
   )
 );
-export const PINNED = COLUMNS.filter((column) => column.pinned).map((column) => column.id);
+export const PINNED: readonly string[] = COLUMNS.filter((column) => column.pinned).map(
+  (column) => column.id
+);
 /** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
  *  and title are what identify a row, so they take most of it. */
 export const PINNED_SHARE = 0.6;
@@ -337,19 +386,18 @@ export function facets(item: Item, id: string): string[] {
   return filter?.kind === "picks" ? filter.values(item) : [];
 }
 export function matchesFilters(item: Item, filters: ColumnFiltersState, except?: string): boolean {
-  return filters.every(
-    ({ id, value }) =>
-      id === except ||
-      (columnFilterSpec(id)?.kind === "text"
-        ? item.issue.title.toLowerCase().includes(String(value).toLowerCase())
-        : !Array.isArray(value) ||
-          value.length === 0 ||
-          (id === "labels"
-            ? value.every((picked: string) =>
-                facets(item, id).some((entry) => entry.toLowerCase() === picked.toLowerCase())
-              )
-            : facets(item, id).some((entry) => value.includes(entry))))
-  );
+  return filters.every(({ id, value }) => {
+    if (id === except) return true;
+    const filter = columnFilterSpec(id);
+    if (filter?.kind === "text")
+      return filter.value(item).toLowerCase().includes(String(value).toLowerCase());
+    if (!Array.isArray(value) || value.length === 0) return true;
+    return filter?.kind === "picks" && filter.match === "all"
+      ? value.every((picked: string) =>
+          facets(item, id).some((entry) => entry.toLowerCase() === picked.toLowerCase())
+        )
+      : facets(item, id).some((entry) => value.includes(entry));
+  });
 }
 export function facetCounts(
   items: readonly Item[],
@@ -365,8 +413,14 @@ export function facetCounts(
     }
   return counts;
 }
-const paramFor = (id: string) =>
-  id === "status" ? "status" : id === "labels" ? "label" : `f.${id}`;
+const paramFor = (id: string) => {
+  const filter = columnFilterSpec(id);
+  return filter?.kind === "picks" && filter.param !== undefined ? filter.param : `f.${id}`;
+};
+/** The column a filter parameter in a URL belongs to. */
+const columnForParam: ReadonlyMap<string, string> = new Map(
+  COLUMNS.map((column) => [paramFor(column.id), column.id])
+);
 const defaultSort = defaultView.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
 export function readUrl(params: URLSearchParams): View {
   const sorting = (params.get("sort") ?? "")
@@ -375,24 +429,20 @@ export function readUrl(params: URLSearchParams): View {
     .filter(({ id }) => columnIds.includes(id));
   const grouping = params.get("group") ?? "";
   const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap((key) => {
-    const id =
-      key === "label"
-        ? "labels"
-        : key === "status"
-          ? "status"
-          : key.startsWith("f.")
-            ? key.slice(2)
-            : "";
+    const id = columnForParam.get(key) ?? "";
+    const filter = columnFilterSpec(id);
     return columnIds.includes(id)
       ? [
           {
             id,
             value:
-              columnFilterSpec(id)?.kind === "text"
+              filter?.kind === "text"
                 ? params.get(key)
                 : params
                     .getAll(key)
-                    .map((value) => (id === "labels" ? value.toLowerCase() : value)),
+                    .map((value) =>
+                      filter?.kind === "picks" && filter.normalize ? filter.normalize(value) : value
+                    ),
           },
         ]
       : [];
@@ -429,9 +479,8 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
   for (const key of [...next.keys()])
     if (
       key.startsWith("f.") ||
-      ["status", "label", "sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(
-        key
-      )
+      columnForParam.has(key) ||
+      ["sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(key)
     )
       next.delete(key);
   // A control left at its default says nothing, so a shared link carries only what was changed.
@@ -449,6 +498,17 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
   if (state.search) next.set("q", state.search);
   if (state.page) next.set("page", String(state.page + 1));
   if (state.pageSize !== defaultView.pageSize) next.set("size", String(state.pageSize));
+  return next;
+}
+
+/** The column order a drag leaves behind: `dragged` taken out of `current` and put back
+ *  immediately before `before`. A drop on itself, or on an id the order does not hold, leaves
+ *  the order as it was. */
+export function reorder(current: readonly string[], dragged: string, before: string): string[] {
+  if (dragged === before || !current.includes(dragged) || !current.includes(before))
+    return [...current];
+  const next = current.filter((id) => id !== dragged);
+  next.splice(next.indexOf(before), 0, dragged);
   return next;
 }
 

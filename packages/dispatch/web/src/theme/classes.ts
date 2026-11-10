@@ -205,29 +205,35 @@ registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
  * issue status, holding the rendered class string and, beside it, the OKLCH background and
  * foreground swatches the contrast check registers. The class string stays a static literal
  * (Tailwind's scanner reads this file as text), so the row is what ties `bg-sky-700` to
- * `P.SKY_700`: changing a shade means editing one row, and a missing status is a type error
- * rather than an unstyled chip.
+ * `P.SKY_700`: changing a shade means editing one row, and a status with no row of its own is
+ * a type error rather than an unstyled chip.
  */
-const ISSUE_STATUS_SCALE: readonly (readonly [IssueStatus, string, Swatch, Swatch])[] = [
-  ["triage", "bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950", P.SKY_100, P.SKY_950],
-  ["icebox", "bg-sky-200 text-sky-950 dark:bg-sky-200 dark:text-sky-950", P.SKY_200, P.SKY_950],
-  ["backlog", "bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
-  ["todo", "bg-sky-400 text-sky-950 dark:bg-sky-400 dark:text-sky-950", P.SKY_400, P.SKY_950],
-  [
-    "in_progress",
-    "bg-sky-500 text-sky-950 dark:bg-sky-500 dark:text-sky-950",
-    P.SKY_500,
-    P.SKY_950,
-  ],
-  ["testing", "bg-sky-700 text-white dark:bg-sky-700 dark:text-white", P.SKY_700, P.WHITE],
-  ["needs_review", "bg-sky-800 text-white dark:bg-sky-800 dark:text-white", P.SKY_800, P.WHITE],
-  ["retro", "bg-sky-900 text-white dark:bg-sky-900 dark:text-white", P.SKY_900, P.WHITE],
-  ["done", "bg-sky-950 text-white dark:bg-sky-950 dark:text-white", P.SKY_950, P.WHITE],
-];
-export const issueStatusScale = Object.fromEntries(
-  ISSUE_STATUS_SCALE.map(([status, classes]) => [status, classes])
-) as Record<IssueStatus, string>;
-for (const [status, , background, foreground] of ISSUE_STATUS_SCALE)
+const ISSUE_STATUS_SCALE: Record<IssueStatus, readonly [string, Swatch, Swatch]> = {
+  triage: ["bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950", P.SKY_100, P.SKY_950],
+  icebox: ["bg-sky-200 text-sky-950 dark:bg-sky-200 dark:text-sky-950", P.SKY_200, P.SKY_950],
+  backlog: ["bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
+  todo: ["bg-sky-400 text-sky-950 dark:bg-sky-400 dark:text-sky-950", P.SKY_400, P.SKY_950],
+  in_progress: ["bg-sky-500 text-sky-950 dark:bg-sky-500 dark:text-sky-950", P.SKY_500, P.SKY_950],
+  testing: ["bg-sky-700 text-white dark:bg-sky-700 dark:text-white", P.SKY_700, P.WHITE],
+  needs_review: ["bg-sky-800 text-white dark:bg-sky-800 dark:text-white", P.SKY_800, P.WHITE],
+  retro: ["bg-sky-900 text-white dark:bg-sky-900 dark:text-white", P.SKY_900, P.WHITE],
+  done: ["bg-sky-950 text-white dark:bg-sky-950 dark:text-white", P.SKY_950, P.WHITE],
+};
+/** The class string of each row, which is all a chip needs. Written out rather than derived,
+ *  because `Object.fromEntries` answers a string-keyed map and recovering the nine keys from
+ *  it takes an assertion — the thing this scale is typed to avoid. */
+export const issueStatusScale: Record<IssueStatus, string> = {
+  triage: ISSUE_STATUS_SCALE.triage[0],
+  icebox: ISSUE_STATUS_SCALE.icebox[0],
+  backlog: ISSUE_STATUS_SCALE.backlog[0],
+  todo: ISSUE_STATUS_SCALE.todo[0],
+  in_progress: ISSUE_STATUS_SCALE.in_progress[0],
+  testing: ISSUE_STATUS_SCALE.testing[0],
+  needs_review: ISSUE_STATUS_SCALE.needs_review[0],
+  retro: ISSUE_STATUS_SCALE.retro[0],
+  done: ISSUE_STATUS_SCALE.done[0],
+};
+for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_SCALE))
   registerText(
     `issue status scale: ${status}`,
     pair(foreground, foreground),

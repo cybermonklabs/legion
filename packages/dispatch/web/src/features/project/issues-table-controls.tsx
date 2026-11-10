@@ -27,10 +27,11 @@ import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
   ALL_ROWS,
+  columnFilterSpec,
   type Item,
   PAGE_SIZES,
-  priorityName,
   readUrl,
+  reorder,
   runningIssueStatuses,
   writeUrl,
 } from "./issues-table-model";
@@ -89,14 +90,16 @@ export function ColumnFilter({
   }
   const picks = (column.getFilterValue() as string[] | undefined) ?? [];
   const order = meta?.order;
-  const options = [
-    ...new Set([...counts.keys(), ...picks, ...(column.id === "status" ? issueStatuses : [])]),
-  ].sort((a, b) =>
-    order === undefined
-      ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
-      : order.indexOf(a) - order.indexOf(b)
+  const options = [...new Set([...counts.keys(), ...picks, ...(meta?.always ?? [])])].sort(
+    (a, b) =>
+      order === undefined
+        ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
+        : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
+  // The one option whose detail is not a count: Done is offered before the closed issues it
+  // would count have been read, and says so rather than claiming zero.
+  const unloadedDone = (value: string) => column.id === "status" && value === "done" && !doneLoaded;
   return (
     <MultiSelect
       emptyMessage="No matching value."
@@ -104,13 +107,9 @@ export function ColumnFilter({
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
       onOpenChange={onOpenChange}
       open={open}
-      optionDetail={(value) =>
-        column.id === "status" && value === "done" && !doneLoaded
-          ? "load"
-          : String(counts.get(value) ?? 0)
-      }
+      optionDetail={(value) => (unloadedDone(value) ? "load" : String(counts.get(value) ?? 0))}
       optionDetailLabel={(value) =>
-        column.id === "status" && value === "done" && !doneLoaded
+        unloadedDone(value)
           ? "not loaded"
           : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? "issue" : "issues"}`
       }
@@ -128,118 +127,8 @@ export function ColumnFilter({
   );
 }
 
-/** A group's header row: its value, how many issues, its issues by status, and for an epic its
- *  actions. */
-export function GroupRow({
-  row,
-  grouping,
-  columns,
-  epics,
-  onRename,
-  onMerge,
-  onStartAll,
-  continued,
-  index,
-  measure,
-  viewportWidth,
-}: {
-  /** A repeat of the header of a group the page opens in the middle of. */
-  continued?: boolean;
-  index: number;
-  measure: (element: Element | null) => void;
-  row: Row<Item>;
-  grouping: string;
-  columns: number;
-  viewportWidth: number;
-  epics: readonly IssueSummary[];
-  onRename: (key: string) => void;
-  onMerge: (from: string, into: string) => void;
-  onStartAll: (epic: string) => void;
-}): ReactNode {
-  const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
-  const value = String(row.groupingValue ?? "");
-  const shown =
-    grouping === "status"
-      ? statusLabel(value as IssueStatus)
-      : grouping === "priority"
-        ? priorityName(value)
-        : value;
-  const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
-  const leafCounts = new Map<string, number>();
-  let next = Number.POSITIVE_INFINITY;
-  for (const leaf of leaves) {
-    const { issue, queue } = leaf.original;
-    leafCounts.set(issue.status, (leafCounts.get(issue.status) ?? 0) + 1);
-    if (queue !== undefined && queue < next) next = queue;
-  }
-  const byStatus = issueStatuses
-    .map((status) => [status, leafCounts.get(status) ?? 0] as const)
-    .filter(([, count]) => count > 0);
-  return (
-    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
-      <td className="px-2 py-2" colSpan={columns}>
-        <div
-          className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"
-          style={{ width: Math.max(180, viewportWidth - 20) }}
-        >
-          <button
-            aria-expanded={row.getIsExpanded()}
-            aria-label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${shown}, ${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}${continued ? ", continued" : ""}`}
-            className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
-            onClick={row.getToggleExpandedHandler()}
-            type="button"
-          >
-            <span className={`w-4 ${textMutedOnSurfaceMuted}`}>
-              {row.getIsExpanded() ? "▾" : "▸"}
-            </span>
-            {epicKey === undefined ? shown : null}
-            {continued ? (
-              <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
-            ) : null}
-            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
-              {leaves.length} {leaves.length === 1 ? "issue" : "issues"}
-              {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
-            </span>
-          </button>
-          {epicKey === undefined ? null : (
-            <Link
-              className={`font-semibold ${linkText} ${linkHoverText}`}
-              to={buildIssuePath({ key: epicKey, kind: "issue" })}
-            >
-              {shown}
-            </Link>
-          )}
-          <span className="flex items-center gap-2">
-            <span
-              aria-hidden
-              className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
-            >
-              {byStatus.map(([status, count]) => (
-                <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
-              ))}
-            </span>
-            <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
-              {byStatus
-                .map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`)
-                .join(" · ")}
-            </span>
-          </span>
-          {epicKey === undefined ? null : (
-            <EpicActions
-              epicKey={epicKey}
-              epics={epics}
-              onMerge={(into) => onMerge(epicKey, into)}
-              onRename={() => onRename(epicKey)}
-              onStartAll={() => onStartAll(epicKey)}
-            />
-          )}
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-function Popover({
+/** A button and the panel it opens: the table's own popovers, on the shared `AnchoredPanel`. */
+export function Popover({
   label,
   labelClassName,
   title,
@@ -326,76 +215,6 @@ export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): 
           ))
       }
     </Popover>
-  );
-}
-
-function EpicActions({
-  epicKey,
-  epics,
-  onRename,
-  onMerge,
-  onStartAll,
-}: {
-  epicKey: string;
-  epics: readonly IssueSummary[];
-  onRename: () => void;
-  onMerge: (into: string) => void;
-  onStartAll: () => void;
-}): ReactNode {
-  return (
-    <span className="ml-auto">
-      <Popover align="right" label="Epic actions ▾">
-        {(close) => (
-          <>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onRename();
-              }}
-              type="button"
-            >
-              Rename
-            </button>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onStartAll();
-              }}
-              type="button"
-            >
-              Start all its queued issues next
-            </button>
-            <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-              Merge into another epic
-              <select
-                className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                onChange={(event) => {
-                  if (event.target.value) {
-                    close();
-                    onMerge(event.target.value);
-                  }
-                }}
-                value=""
-              >
-                <option value="">Choose an epic…</option>
-                {epics
-                  .filter((epic) => epic.key !== epicKey)
-                  .map((epic) => (
-                    <option key={epic.key} value={epic.key}>
-                      {epic.title}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-              To split it, tick some of its issues and choose “New epic from these”.
-            </span>
-          </>
-        )}
-      </Popover>
-    </span>
   );
 }
 

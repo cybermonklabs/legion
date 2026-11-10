@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   type ExpandedState,
   type FilterFn,
-  flexRender,
   getCoreRowModel,
   getExpandedRowModel,
   getFilteredRowModel,
@@ -21,10 +20,7 @@ import {
   borderDefault,
   dangerText,
   focusVisibleRing,
-  selectedCardBg,
   surfaceBg,
-  tableResizeActive,
-  tableResizeHover,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
@@ -37,8 +33,6 @@ import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { useIssueTableColumns } from "./issues-table-columns";
 import {
-  ColumnFilter,
-  GroupRow,
   IssueTablePager,
   IssueTableSelection,
   IssueTableStatus,
@@ -54,6 +48,7 @@ import {
   matchesSearch,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
+import { GroupRow, IssueRow, TableHeaderCell } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import { issueIsUnread } from "./UnreadDot";
 
@@ -69,7 +64,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const layout = useTableLayout(project);
-  const { boxHeight, boxWidth, measure, pagerRef, responsive, scrollRef } = layout;
+  const { attachAbove, attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [expanded, setExpanded] = useState<ExpandedState>(true);
@@ -95,18 +90,21 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     listingError,
     missingParents,
   } = useProjectIssueItems(project, { wantsDone, registry });
-  const items = useMemo(
-    () =>
-      allItems.filter(
-        ({ issue }) =>
-          (!flags.needsYou || issue.open_asks > 0) &&
-          (!flags.unread ||
-            issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
-          // An epic is an ordinary row, except in the grouping that makes it a group heading.
-          (grouping[0] !== "epic" || !isEpic(issue))
-      ),
-    [allItems, flags.needsYou, flags.unread, grouping, userState.data]
-  );
+  const items = useMemo(() => {
+    const shown = allItems.filter(
+      ({ issue }) =>
+        (!flags.needsYou || issue.open_asks > 0) &&
+        (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
+    );
+    if (grouping[0] !== "epic") return shown;
+    // An epic is an ordinary row, except where it is already a group's heading. A heading is
+    // made by its children, so an epic none of these rows belongs to keeps its own row rather
+    // than leaving the view with nothing to show it, select it or act on it.
+    const headings = new Set(
+      shown.filter(({ issue }) => !isEpic(issue)).map(({ epicKey }) => epicKey)
+    );
+    return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
+  }, [allItems, flags.needsYou, flags.unread, grouping, userState.data]);
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640);
 
@@ -198,7 +196,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,
-    setUnansweredEpic,
+    dismissUnansweredEpic,
     moveTo,
     startNext,
     newEpic,
@@ -226,8 +224,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     ...(continued === undefined ? [] : [{ row: continued, continued: true }]),
     ...pageRows.map((row) => ({ row })),
   ];
-  // biome-ignore lint/correctness/useExhaustiveDependencies: how many rows the page holds and how they are grouped is what changes the box's height.
-  useLayoutEffect(measure, [measure, displayRows.length, grouping[0]]);
+  // The box measures itself: `useTableLayout` observes its size and the section around it, so
+  // neither the rows this page holds nor a notice above the table is measured from here.
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => scrollRef.current,
@@ -287,7 +285,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
 
   return (
     <section aria-label="Project issues" className="space-y-3 pb-24">
-      <div className="space-y-3">
+      <div className="space-y-3" ref={attachAbove}>
         {listingError ? (
           <p className={dangerText} role="alert">
             Could not load {wantsDone ? "closed " : ""}issues.{" "}
@@ -357,7 +355,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
             The selected issues have not been moved. Find the epic in the project before moving
             them.{" "}
-            <button type="button" onClick={() => setUnansweredEpic(undefined)}>
+            <button type="button" onClick={dismissUnansweredEpic}>
               Dismiss
             </button>
           </LandedWithoutAnswer>
@@ -381,7 +379,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
 
       <div
         className={`min-w-0 overflow-auto rounded-xl border ${borderDefault}`}
-        ref={scrollRef}
+        ref={attachBox}
         data-testid="issues-table-scroll"
         style={{
           overflowAnchor: "none",
@@ -404,91 +402,21 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
             <thead>
               {table.getHeaderGroups().map((group) => (
                 <tr key={group.id}>
-                  {group.headers.map((header) => {
-                    const pinned = header.column.getIsPinned() === "left";
-                    return (
-                      <th
-                        aria-sort={
-                          header.column.getIsSorted() === "asc"
-                            ? "ascending"
-                            : header.column.getIsSorted() === "desc"
-                              ? "descending"
-                              : undefined
-                        }
-                        className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && header.column.getIsLastColumn("left") ? "border-r" : ""}`}
-                        key={header.id}
-                        onDragOver={(event) => {
-                          if (dragColumn !== undefined && !pinned) event.preventDefault();
-                        }}
-                        onDrop={() => {
-                          if (
-                            dragColumn === undefined ||
-                            pinned ||
-                            dragColumn === header.column.id
-                          ) {
-                            return;
-                          }
-                          const current = table.getAllLeafColumns().map((column) => column.id);
-                          const next = current.filter((id) => id !== dragColumn);
-                          next.splice(next.indexOf(header.column.id), 0, dragColumn);
-                          layout.setOrder(next);
-                          setDragColumn(undefined);
-                        }}
-                        style={{
-                          width: header.getSize(),
-                          left: pinned ? header.column.getStart("left") : undefined,
-                        }}
-                      >
-                        <span
-                          className={`flex justify-between ${boxWidth < 640 && header.column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
-                        >
-                          {header.column.getCanSort() ? (
-                            <button
-                              className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
-                              draggable={!pinned}
-                              onClick={header.column.getToggleSortingHandler()}
-                              onDragEnd={() => setDragColumn(undefined)}
-                              onDragStart={() => setDragColumn(header.column.id)}
-                              title={
-                                pinned
-                                  ? "Sort (shift-click to add a second sort)"
-                                  : "Sort (shift-click to add a second sort); drag to move the column"
-                              }
-                              type="button"
-                            >
-                              {flexRender(header.column.columnDef.header, header.getContext())}
-                              <span className={textMutedOnCanvas}>
-                                {{ asc: "▲", desc: "▼" }[header.column.getIsSorted() as string] ??
-                                  ""}
-                              </span>
-                            </button>
-                          ) : (
-                            flexRender(header.column.columnDef.header, header.getContext())
-                          )}
-                          {header.column.getCanFilter() ? (
-                            <ColumnFilter
-                              column={header.column}
-                              doneLoaded={doneLoaded}
-                              counts={header.column.id === openFilter ? openFacets : EMPTY_FACETS}
-                              onOpenChange={(open) =>
-                                setOpenFilter(open ? header.column.id : undefined)
-                              }
-                              open={openFilter === header.column.id}
-                            />
-                          ) : null}
-                        </span>
-                        {header.column.getCanResize() ? (
-                          <span
-                            aria-hidden
-                            className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${header.column.getIsResizing() ? tableResizeActive : tableResizeHover}`}
-                            onDoubleClick={() => header.column.resetSize()}
-                            onMouseDown={header.getResizeHandler()}
-                            onTouchStart={header.getResizeHandler()}
-                          />
-                        ) : null}
-                      </th>
-                    );
-                  })}
+                  {group.headers.map((header) => (
+                    <TableHeaderCell
+                      compact={boxWidth < 640}
+                      counts={header.column.id === openFilter ? openFacets : EMPTY_FACETS}
+                      doneLoaded={doneLoaded}
+                      dragColumn={dragColumn}
+                      header={header}
+                      key={header.id}
+                      openFilter={openFilter}
+                      order={table.getAllLeafColumns().map((column) => column.id)}
+                      setDragColumn={setDragColumn}
+                      setOpenFilter={setOpenFilter}
+                      setOrder={layout.setOrder}
+                    />
+                  ))}
                   <th
                     className={`sticky top-0 z-20 border-b ${borderDefault} ${surfaceBg}`}
                     style={{ width: ACTION_WIDTH }}
@@ -526,45 +454,15 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                     row={row}
                   />
                 ) : (
-                  <tr
-                    className={`group align-top outline-none focus-visible:ring-2 ${focusVisibleRing} ${moved.has(row.original.issue.key) ? selectedCardBg : ""}`}
-                    data-index={virtual.index}
-                    aria-label={`${row.original.issue.key} ${row.original.issue.title}`}
-                    data-issue-row={row.original.issue.key}
-                    data-issue-group={row.getParentRow()?.id ?? "ungrouped"}
-                    data-moved={moved.has(row.original.issue.key) || undefined}
-                    tabIndex={-1}
+                  <IssueRow
+                    busy={busy}
+                    index={virtual.index}
                     key={row.id}
-                    ref={virtualizer.measureElement}
-                  >
-                    {row.getVisibleCells().map((cell) => {
-                      const pinned = cell.column.getIsPinned() === "left";
-                      return (
-                        <td
-                          className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${moved.has(row.original.issue.key) ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
-                          key={cell.id}
-                          style={{
-                            width: cell.column.getSize(),
-                            left: pinned ? cell.column.getStart("left") : undefined,
-                          }}
-                        >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
-                      );
-                    })}
-                    <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-                      {row.original.queue !== undefined && row.original.queue > 1 ? (
-                        <button
-                          className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-                          disabled={busy}
-                          onClick={() => startNext([row.original.issue.key])}
-                          type="button"
-                        >
-                          Start next
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
+                    measure={virtualizer.measureElement}
+                    moved={moved}
+                    onStartNext={(key) => startNext([key])}
+                    row={row}
+                  />
                 );
               })}
               {virtualizer.getVirtualItems().length > 0 ? (

@@ -17,8 +17,11 @@ const PARENT_READS_IN_FLIGHT = 8;
  *
  * Two reads, never three. The open-only listing stops once the full one has answered, so a live
  * event refetches one listing. The ancestry walk has a key of its own, outside the project
- * listing's, and reads each parent with no staleness of its own, so only an event on that
- * parent — which refreshes `["issue", key]` exactly — reads it again.
+ * listing's, and reads each parent with no staleness of its own. Nothing observes
+ * `["issue", key]`, so an event on a parent only marks it stale: this query runs again when the
+ * set of missing parents changes — a parent that joins the listing, a row whose parent changes —
+ * and on the whole-cache refresh after a reconnect. Until one of those happens, or the page is
+ * reloaded, a closed parent renamed somewhere else keeps the title it was read with.
  */
 export function useProjectIssueItems(
   project: string,
