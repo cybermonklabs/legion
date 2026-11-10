@@ -2449,3 +2449,5 @@ EXCLUDED = {
     "browser_image": "gates browser-image.yaml's image build; .github/scripts/check-image-trigger-paths.sh proves it covers "
                      "every file the build reads",
 }
+
+# INFRA-1413 selection probe, never merged.
