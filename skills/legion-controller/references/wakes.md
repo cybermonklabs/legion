@@ -19,11 +19,12 @@ the same way and wakes nobody.
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
-The daemon released the slot of `<KEY>` and no waiting issue took it: the work of that issue ended
-or left the workflow — its merge, `accepting`, a blocker, its own children, a person
-(`awaiting_person`, which also sends its own `awaiting-person` wake), or its tree finishing. A
-slot is one issue with work, a root or a child, so the issue it names may be either. Name the free
-slots; take nothing.
+The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
+left the workflow, it reached `awaiting_merge`, or its tree closed or stopped running. An issue
+takes its slot when the daemon starts it and keeps it
+until it is done, leaves the workflow or waits only for its merge,
+so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
+child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
 
@@ -70,14 +71,14 @@ wake gives it>; `todo` with the `legion` label queues it again". Other admission
 ## `awaiting-person on <KEY>` (`{kind: "awaiting-person", reason}`)
 
 A root whose architect asked a person a question, or handed its spec to a person for approval, and
-now waits only on them: the daemon returned its slot while the architect stays live to read the
-person's comments and replies. Read `issues.<KEY>.waitingOn`. Do not park it or start anything, and
-take nothing for the slot it returned: it is no reason to label or admit an issue ([Free
-slots](skill://legion-controller/SKILL.md#free-slots)). The person's answer puts it among the
-issues at the front of `admission.waiting` by itself, and its promotion gives its architect the
-answer task: at once, holding no slot, when its design gate has already opened, and at the next
-free slot while its architect is still writing the first spec. A lost label or a foreign
-Dispatch claim sends the separate `unslotted` wake.
+now waits only on them: it keeps the slot it took when the daemon started it, and its architect
+stays live to read the person's comments and replies. Read `issues.<KEY>.waitingOn`. Do not park
+it or start anything, and take nothing for its wait: the wait frees no slot and is no reason to
+label or admit an issue ([Free slots](skill://legion-controller/SKILL.md#free-slots)). The
+person's answer puts it in `admission.waiting` by itself, among the issues whose work came back,
+oldest first, and its promotion gives its architect the answer task, taking no further slot, so
+it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
+`unslotted` wake.
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 

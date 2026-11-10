@@ -34,6 +34,9 @@ import {
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
+  SEARCH_OPERATOR_EXCLUDE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_PHRASE,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -79,6 +82,7 @@ import {
   GOING_WORDS_MAX,
 } from "../src/going";
 import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
+import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
@@ -215,6 +219,17 @@ const SearchKindDepth = ${SEARCH_KIND_DEPTH}
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = ${JSON.stringify(SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE)}
+
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = ${JSON.stringify(SEARCH_OPERATOR_PHRASE)}
+	SearchOperatorOr      = ${JSON.stringify(SEARCH_OPERATOR_OR)}
+	SearchOperatorExclude = ${JSON.stringify(SEARCH_OPERATOR_EXCLUDE)}
+)
 
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
@@ -973,6 +988,11 @@ const outputs = [
   {
     path: resolve(import.meta.dir, "../../envoy/internal/dispatch/pmdoc/schema_generated.go"),
     rendered: renderBlockSchemaGo(blockSchema),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_tools_generated.go"),
+    rendered: renderDispatchTools(),
     language: "go",
   },
   {

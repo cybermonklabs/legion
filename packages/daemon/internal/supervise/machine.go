@@ -2621,11 +2621,21 @@ func HoldsCapability(state ClaimState) bool {
 	}
 }
 
-// TookRole is whether a claim in state has an agent that took its Envoy role and said it can be
-// prompted: ready, working or idle. A registered claim has not yet: the daemon records the
-// registration before the agent's plugin claims the role, so a publish then still reaches the
-// session that held the role before.
-func TookRole(state ClaimState) bool {
+// SaidReady is whether a claim in state has an agent that said it can be prompted: ready, working
+// or idle. A registered claim has not: the daemon records the registration before the agent's
+// plugin reports ready, so a publish then still reaches the session that held the role before.
+//
+// Since INFRA-1573 the ready comes before the Envoy role as well — the plugin claims the role at
+// its session's first turn, or at a bound if no turn comes — so a claim this answers true for
+// may not answer to its name yet. The listener refuses a publish to a role no live session holds
+// with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:
+// noticeAnswered, phaseEnded and mergeQueue each decide it for the rows they finish
+// (internal/daemon).
+//
+// The window is bounded at both ends: the name is taken inside the session's first turn — the
+// daemon's own task starts one, on either harness — and at the first-turn bound (30 s by
+// default) for a session that is given no task at all.
+func SaidReady(state ClaimState) bool {
 	return state == StateReady || state == StateWorking || state == StateIdle
 }
 

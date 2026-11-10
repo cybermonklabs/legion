@@ -26,15 +26,20 @@ and stop it starting more, [revoke its machine login](#end-a-machines-login).
 ## Revoke a grant in Dispatch
 
 Dispatch's **Settings** page lists your **Live grants**: every live grant of a session you operate,
-whether it was granted automatically or approved by someone, and every grant you approved on
-anyone's session. It also lists, to everyone, every live grant that belongs to no person: one a
+whether it was granted automatically or approved by someone, and every grant whose approver is
+you, on anyone's session — the ones you approved, and the ones the model judge approved in your
+stead. It lists to everyone, in the same way, every live grant the judge approved in anyone's
+stead: a shared secret's, whose approver is the sentinel `anyone`, so it names no person who
+could end it. It also lists, to everyone, every live grant that belongs to no person: one a
 pod or a VM got without asking, under a machine login that is a service's rather than a person's.
 Nobody operates such a session and nobody approved such a grant, so without this nobody would see
 what a pod had taken. Each row names its enrollment, its secrets, how it was **Granted**
-(**Automatically**, or **Approved by** an email), and when it was created and expires. Click
+(**Automatically**, or **Approved by** whoever decided it: an email, or `judge:<model id>` where
+the model judge decided it in an approver's stead), and when it was created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
-broker allows it when you are the grant's approver or its session's operator, and refuses anyone
-else `NOT_APPROVER` — so a grant that belongs to no person has no **Revoke** button at all. Its
+broker allows it when you are the grant's approver or its session's operator, and it allows
+anyone signed in to end a grant whose approver is `anyone`. It refuses everyone else
+`NOT_APPROVER` — so a grant with no approver and no operator has no **Revoke** button at all. Its
 row reads **Ends with its machine login** instead:
 [revoke the service's machine login](#end-a-machines-login), which ends every session it started,
 rather than that one row.
@@ -60,15 +65,17 @@ session's process tree (`IN_SESSION`), so an agent's own commands cannot act as 
 covers that process tree only. A process a session sends out of it, with `( cmd & )`, `setsid -f`
 or a tmux server the session started, passes it, and any process running as your user can stop the
 helper anyway. Through these commands such a process can list and revoke your own machine logins,
-never a service's machine login, and your grants, which include grants you approved on any
-session, a service's pod among them. `agent-secrets enroll --helper` is open to any process of
-your user, so such a process can also enroll a box and read your agent secrets.
+never a service's machine login, and your grants, which include every grant whose approver is
+you, on any session, a service's pod among them — those you approved, and those the model judge
+approved in your stead — and every grant the judge approved in anyone's stead.
+`agent-secrets enroll --helper` is open to any process of your user, so such a process can also
+enroll a box and read your agent secrets.
 
 ```console
 $ agent-secrets grant list
-GRANT_ID                              SECRETS          GRANTED    APPROVER         SESSION                                       OPERATOR         EXPIRES
-f26b6b78-2819-4b1d-abbd-d6990ca1a776  DEMO_API_KEY     approval   ada@example.com  session/example-host-laptop:1989345:35362384  ada@example.com  2026-10-10T15:56:07Z
-cc63d479-ddae-4052-b93b-b4b5df37adf0  DEMO_READ_TOKEN  automatic  -                session/example-host-devbox:1989344:35362384  ada@example.com  session-end
+GRANT_ID                              SECRETS          GRANTED    APPROVER         DECIDED_BY       SESSION                                       OPERATOR         EXPIRES
+f26b6b78-2819-4b1d-abbd-d6990ca1a776  DEMO_API_KEY     approval   ada@example.com  ada@example.com  session/example-host-laptop:1989345:35362384  ada@example.com  2026-10-10T15:56:07Z
+cc63d479-ddae-4052-b93b-b4b5df37adf0  DEMO_READ_TOKEN  automatic  -                -                session/example-host-devbox:1989344:35362384  ada@example.com  session-end
 Every row is a grant from the broker AGENT_SECRETS_URL names (AWS Secrets Manager).
 $ agent-secrets grant revoke f26b6b78-2819-4b1d-abbd-d6990ca1a776
 revoked f26b6b78-2819-4b1d-abbd-d6990ca1a776 at the broker AGENT_SECRETS_URL names
@@ -77,7 +84,10 @@ revoked f26b6b78-2819-4b1d-abbd-d6990ca1a776 at the broker AGENT_SECRETS_URL nam
 The line after the table goes to standard error, naming the broker and kind of store every row is from, so
 the table stays one row per grant for a script.
 
-`GRANTED` is `automatic` or `approval`, and `APPROVER` is `-` for an automatic grant. `EXPIRES` is
+`GRANTED` is `automatic` or `approval`. `APPROVER` is who may end the grant. `DECIDED_BY` is who
+decided the request it rests on: that same person for a person's own approval, and
+`judge:<model id>` where [the model judge](/legion/broker/concepts/#the-model-judge) approved it
+in that person's stead. Both are `-` for an automatic grant, which nobody decided. `EXPIRES` is
 `session-end` for a grant that lasts until its session ends, and a time for one its request gave a
 `--ttl`. `--json` prints the broker's answer, the same body the **Live grants** page reads, whose
 `expires_at` is null for a grant that lasts until its session ends.

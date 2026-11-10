@@ -958,6 +958,11 @@ async function claimPane(options: {
   process.env.LEGION_ROLE = options.role;
   process.env.LEGION_WORKSPACE = workspace;
   process.env.LEGION_STATE_DIR = stateDir;
+  // An hour, so no pane's deferred role claim ever fires on its own bound: the cases that want
+  // the name taken drive the session's first turn themselves (`firstTurn`), and a bound firing
+  // into a later test would claim through an interface that test has reset and stop a pane
+  // nobody is watching.
+  process.env.LEGION_CLAIM_FIRST_TURN_BOUND_MS = "3600000";
 
   const requests: DaemonRequest[] = [];
   let readyAttempts = 0;
@@ -1098,6 +1103,32 @@ async function bootPane(options: Parameters<typeof claimPane>[0]): Promise<Claim
   const pane = await claimPane(options);
   await pane.start();
   return pane;
+}
+
+/**
+ * The session's first turn, which is when the claim boot takes its Envoy name (INFRA-1573): the
+ * entry's own `agent_start` handler — the last registered for the event, the Envoy entry's
+ * running before it — and then the claim that signal fires, which nothing of the host awaits,
+ * having reached the listener.
+ */
+async function firstTurn(pane: ClaimPane): Promise<void> {
+  const agentStart = pane.handlersFor("agent_start").at(-1);
+  if (agentStart === undefined) throw new Error("the entry registered no agent_start handler");
+  await agentStart({}, pane.context);
+  const claimed = (): boolean =>
+    pane.requests.some(
+      (request) =>
+        request.path === "/v1/roles/set" &&
+        typeof request.body === "object" &&
+        request.body !== null &&
+        "role" in request.body &&
+        request.body.role === pane.claimToken
+    );
+  const deadline = Date.now() + 2_000;
+  while (!claimed()) {
+    if (Date.now() > deadline) throw new Error("the session's first turn claimed no Envoy role");
+    await Bun.sleep(5);
+  }
 }
 
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
@@ -1409,7 +1440,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       "LEGION_CONTROLLER_SECRET or LEGION_CONTROLLER_SECRET_FILE is required to claim the controller."
     );
   });
-  test("a claim registers, claims its Envoy role, measures nothing, and reports ready through the claim routes alone", async () => {
+  test("a claim registers, reports ready, measures nothing, and takes its Envoy role at the session's first turn", async () => {
     const calls: string[] = [];
     const pane = await bootPane({
       role: "tester",
@@ -1440,23 +1471,31 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         },
       },
     ]);
-    // The Envoy role is the claim token, claimed after the registration issued it and before ready.
-    // The claim names the process making it: the client instance the pane's own registration
-    // carried, never a literal id, so a claim another process made under this session id would
-    // not match.
-    const paths = pane.requests.map((request) => request.path);
+    // INFRA-1573: the name is taken last, so nothing of this session holds the role until one of
+    // its turns has started. The boot is over and no role has been claimed.
+    expect(pane.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
+
+    // The host's first-turn signal: `agent_start`, which `legion.ts` answers by telling the claim
+    // session its turn has started, and the claim that runs behind it.
+    await firstTurn(pane);
+
+    // The Envoy role is the claim token, claimed after the registration issued it and after
+    // ready. The claim names the process making it: the client instance the pane's own
+    // registration carried, never a literal id, so a claim another process made under this
+    // session id would not match.
     const roleClaimBody = {
       session_id: "ses_worker",
       role: pane.claimToken,
       client_instance_id: registeredClientInstance(pane.requests, "ses_worker"),
     };
+    const paths = pane.requests.map((request) => request.path);
     const roleClaim = pane.requests.findIndex(
       (request) =>
         request.path === "/v1/roles/set" &&
         JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
-    expect(roleClaim).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
+    expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/ready"));
     expect(pane.exits).toEqual([]);
     // The boot measures nothing: no capability host member was called before its ready.
     expect(calls).toEqual([]);
@@ -3116,6 +3155,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       },
     });
     await pane.start();
+    // There is a role to regain only once the session holds it, and it takes its name at its
+    // first turn. The heartbeat is the pane's first managed interval all the same: the Envoy
+    // registration that carries the session's title arms it, ahead of the boot.
+    await firstTurn(pane);
 
     holder = "";
     pane.intervals[0]?.();
@@ -6251,6 +6294,9 @@ function registrationBeforeClaim(
 describe.skipIf(skip)("a Legion session's title", () => {
   test("a phase worker is titled by its role and issue before its role claim registers it with Envoy", async () => {
     const worker = await bootPane({ role: "implementer" });
+    // The role is claimed at the session's first turn, so the registration that carries the
+    // title to the listener is the one that claim sends.
+    await firstTurn(worker);
 
     expect(worker.title.set).toEqual(["Legion implementer · REPO-43"]);
     expect(registrationBeforeClaim(worker.requests, worker.claimToken)).toMatchObject({
@@ -6273,6 +6319,7 @@ describe.skipIf(skip)("a Legion session's title", () => {
       issue: "REPO-42",
       sessionId: "ses_root_title",
     });
+    await firstTurn(pane);
 
     expect(pane.title.set).toEqual(["Legion architect · REPO-42"]);
     expect(registrationBeforeClaim(pane.requests, pane.claimToken)).toMatchObject({
@@ -6325,6 +6372,7 @@ describe.skipIf(skip)("a Legion session's title", () => {
       role: "reviewer",
       title: { name: "Reviewing the flaky e2e", source: "user" },
     });
+    await firstTurn(worker);
 
     expect(worker.title.set).toEqual([]);
     expect(registrationBeforeClaim(worker.requests, worker.claimToken)).toMatchObject({

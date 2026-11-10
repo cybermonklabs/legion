@@ -461,9 +461,10 @@ func TestADecisionTheRelayLeavesAloneOnAParkedTreeGoesOnceToTheController(t *tes
 // The loop posts its answer on an ask's thread in the stopped agent's name, which leaves the ask
 // with the person as the agent's own hand-back would. That post is nobody's act on the ask: the
 // decoder reads no fact from a comment carrying the loop's marker (intake.AnswerMarker), so an
-// admitted root whose tree's question the loop answered declares no hand-back and keeps the slot
-// its architect writes the spec in. The same reply without the marker is the tree's hand-back,
-// which declares the root, moves it to awaiting_person at the next pass and returns its slot.
+// admitted root whose tree's question the loop answered declares no hand-back and stays where it
+// is. The same reply without the marker is the tree's hand-back, which declares the root and moves
+// it to awaiting_person at the next pass. Either way the root keeps its slot, since a root waiting
+// on a person holds one (record.KeepsSlot).
 func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
 	const root, ask, session = "LEGION-700", "ask-q", "ses-architect"
 	for _, tc := range []struct {
@@ -545,8 +546,8 @@ func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
 				t.Fatalf("read the root's slot: %v", err)
 			}
 			if tc.handsBack {
-				if after.DeclaredSeq != 12 || !after.AwaitingPerson() || slotted {
-					t.Fatalf("root after the agent's hand-back = %#v, slotted %t; want it declared at 12, awaiting its person and unslotted", after, slotted)
+				if after.DeclaredSeq != 12 || !after.AwaitingPerson() || !slotted {
+					t.Fatalf("root after the agent's hand-back = %#v, slotted %t; want it declared at 12, awaiting its person and still slotted", after, slotted)
 				}
 				return
 			}

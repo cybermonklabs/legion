@@ -581,9 +581,9 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the retry = %+v, %v; want it accepted", result.Refusal, err)
 	}
-	// A phase worker's start is two outbox rows (workflow.StartOrOwe): the relaunch, which brings
-	// the held role's session back carrying no task, and the row that carries its task. Both are
-	// lifecycle rows of the issue, so the suspend under a live lease holds both of them.
+	// A phase worker's start is one outbox row, which brings the held role's session back and
+	// carries its task (workflow.StartOrOwe). It is a lifecycle row of the issue, so the suspend
+	// under a live lease holds it.
 	var starts []int64
 	rows, err := st.Pool().Query(ctx, "select id from outbox where issue = $1 and kind = $2 and payload->>'op' = 'start' order by id", issue, string(record.OutboxKindSupervise))
 	if err != nil {
@@ -600,14 +600,14 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the retry's start rows: %v", err)
 	}
-	if len(starts) != 2 {
-		t.Fatalf("the retry queued %d start rows, want its relaunch and its task", len(starts))
+	if len(starts) != 1 {
+		t.Fatalf("the retry queued %d start rows, want the one that carries its task", len(starts))
 	}
 
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	got := d.state().HeldOutboxRows
 	if len(got) != len(starts) {
-		t.Fatalf("heldOutboxRows = %+v, want the retry's two start rows alone", got)
+		t.Fatalf("heldOutboxRows = %+v, want the retry's one start row alone", got)
 	}
 	for i, id := range starts {
 		if got[i].WaitedSeconds < 0 {
