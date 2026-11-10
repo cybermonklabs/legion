@@ -2,9 +2,10 @@ package leakguard
 
 import "strings"
 
-// RefusedBy is the check a refusal names. Its two values are the two constants below and no
-// other: a named type rather than a string, so a caller cannot write a refusal by a third check
-// this package does not run.
+// RefusedBy is the check a refusal names. Its two values are the two constants below: a named
+// type rather than a bare string, so a reader of a Refusal sees which values the field holds. An
+// untyped string constant still converts to it, so the type documents the two values and does
+// not enforce them.
 type RefusedBy string
 
 // The two sentences a refusal names the refusing check by. byRules is this package's own rule

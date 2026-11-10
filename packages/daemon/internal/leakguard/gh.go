@@ -31,8 +31,10 @@ type GhRequest struct {
 	// alone cannot.
 	//
 	// Nil is a caller that parsed none, and the guard then reads the argv with a table of its
-	// own (ghFileArgs), which is what internal/rescue and any other caller handing the guard
-	// bare arguments gets. An empty, non-nil slice is a caller that parsed and found no file,
+	// own (ghFileArgs). `legion gh` hands nil only from the answers of its parse that send
+	// nothing (`--version`, a group with no leaf, `--help`), so in this binary the table is the
+	// fail-closed answer for a future caller that hands the guard bare arguments, not a path
+	// any write takes today. An empty, non-nil slice is a caller that parsed and found no file,
 	// and the table is not consulted for it.
 	Files []GhFile
 }
@@ -122,8 +124,10 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) ([]byte, error) {
 //     that is no JSON document — a Markdown body on standard input — is left as the one record
 //     it was.
 //   - The argv. `gh api -f name=value` and `-F name=value` send the value as the literal string
-//     it is, gh doing the escaping, so a `\u0074` written in an argument reaches GitHub as those
-//     six characters and the rules read what GitHub would show.
+//     it is, gh doing the escaping, so a `\u0074` written in an argument reaches GitHub's REST
+//     API as those six characters and the rules read what GitHub would show. A GraphQL query is
+//     the exception: `gh api graphql -f query=…` hands GitHub a document whose string literals
+//     GitHub's own parser decodes, and this pass reads the query as it was written.
 //   - A `-F name=@<path>` field's file, whose bytes gh makes one JSON string of, escaping them
 //     itself: the file holds the text GitHub shows, which is the record already read.
 func jsonAlso(record Record) []Record {

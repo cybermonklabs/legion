@@ -92,7 +92,7 @@ var commands = map[string]commandEntry{
 	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
 	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
-	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook, or a piece of text (the image's hook and scripts run it, never a person)"},
+	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
 
 // helpRequested says whether a command's first argument asks for its usage.

@@ -68,7 +68,9 @@ func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer
 // runLeakCheckText is the text half: the whole of standard input is the text, its first line the
 // title and the rest the body, and kind is what a refusal calls it ("the pull request body").
 // It names no destination repository, which the guard reads as public and so scans, the
-// fail-closed answer: a caller that runs this knows it is about to publish the text.
+// fail-closed answer: a caller that runs this knows it is about to publish the text. Its one
+// caller today is .github/scripts/check-private-names-port.test.sh, which drives this door and
+// the frozen check-private-names.sh over one fixture set and compares their verdicts.
 func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) int {
 	flags := newFlags("leak-check text", leakCheckTextUsage, stderr)
 	if code, ok := parseFlags(flags, args); !ok {
