@@ -148,26 +148,28 @@ function report(overrides: Partial<LegionMetricsResponse> = {}): LegionMetricsRe
       p90_hours: 36.8,
     },
     phase_breakdown: {
-      hours: 48,
+      hours: 18,
+      waiting_on_children_hours: 30,
       issues: [
         {
-          hours: 40,
+          hours: 10,
           key: "ACME-6",
-          phases: { planning: 10, waiting_on_children: 30 },
+          phases: { planning: 10 },
           title: "The finished root",
+          waiting_on_children_hours: 30,
         },
         {
           hours: 8,
           key: "ACME-7",
           phases: { implementing: 6, reviewing: 2 },
           title: "The finished child",
+          waiting_on_children_hours: 0,
         },
       ],
       phases: [
-        { hours: 10, id: "planning", label: "Planning", share: 0.2083 },
-        { hours: 6, id: "implementing", label: "Implementing", share: 0.125 },
-        { hours: 2, id: "reviewing", label: "Reviewing", share: 0.0417 },
-        { hours: 30, id: "waiting_on_children", label: "Waiting on children", share: 0.625 },
+        { hours: 10, id: "planning", label: "Planning", share: 0.5556 },
+        { hours: 6, id: "implementing", label: "Implementing", share: 0.3333 },
+        { hours: 2, id: "reviewing", label: "Reviewing", share: 0.1111 },
       ],
     },
     ...overrides,
@@ -293,27 +295,31 @@ test("the sections come in one column, in the order a reader asks, each with its
     [...document.querySelectorAll("[data-legion-section]")].map((one) =>
       one.getAttribute("data-legion-section")
     )
-  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting"]);
+  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "delivery"]);
   expect(headline("work_time")).toBe(
     "2 issues finished · median 24.0h from first worker event to merge, less parked and queued time · p90 36.8h"
   );
-  expect(headline("phase_breakdown")).toContain("most of it waiting on children: 63% (30.0h)");
+  expect(headline("phase_breakdown")).toContain("each hour counted once");
+  expect(headline("phase_breakdown")).toContain("most of it planning: 56% (10.0h)");
+  expect(document.querySelector("[data-legion-children-wait]")?.textContent).toBe(
+    "Roots also waited 30.0h on their children, whose work is counted above."
+  );
   expect(document.querySelector("[data-health-tile]")).toBeNull();
 });
 
 test("the phase bar draws each part in the issues table's colour with its share", async () => {
   await renderSections(() => report());
 
-  const part = document.querySelector(
-    '[data-legion-phase-part="waiting_on_children"]'
-  ) as HTMLElement;
-  for (const one of (legionPhaseScale.waiting_on_children ?? "").split(" ")) {
+  const part = document.querySelector('[data-legion-phase-part="planning"]') as HTMLElement;
+  for (const one of (legionPhaseScale.planning ?? "").split(" ")) {
     expect(part.className).toContain(one);
   }
-  expect(part.textContent).toBe("Waiting on children 63%");
-  expect(part.style.width).toBe("62.5%");
+  expect(part.textContent).toBe("Planning 56%");
+  expect(part.title).toBe("Planning: 10.0h, 56%");
+  expect(Number.parseFloat(part.style.width)).toBeCloseTo(55.56);
+  expect(document.querySelector('[data-legion-phase-part="waiting_on_children"]')).toBeNull();
   expect(document.querySelector("[data-legion-phase-legend]")?.textContent).toContain(
-    "Planning10.0h21%"
+    "Planning10.0h56%"
   );
 });
 
@@ -328,7 +334,7 @@ test("the issues rank by work hours, or by the phase picked, and a key opens its
   expect(
     document.querySelector('[data-legion-breakdown-issue="ACME-6"] [data-legion-breakdown-mostly]')
       ?.textContent
-  ).toBe("mostly waiting on children, 75%");
+  ).toBe("mostly planning, 100% · also waited 30.0h on its children");
   fireEvent.click(document.querySelector('[data-legion-phase-part="implementing"]') as HTMLElement);
   expect(order()).toEqual(["ACME-7", "ACME-6"]);
   fireEvent.click(screen.getByRole("button", { name: "ACME-6" }));
@@ -350,7 +356,11 @@ test("the work-time chart plots medians per day with axes and a legend; its tabl
   expect(
     [...section.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
   ).toEqual(["Median work time", "p90 work time"]);
-  expect(section.querySelector("[data-chart-unit]")?.textContent).toBe("hours");
+  // The median and the p90 each have their own plot, title and value axis.
+  expect([...section.querySelectorAll("[data-chart-unit]")].map((one) => one.textContent)).toEqual([
+    "hours, median",
+    "hours, p90",
+  ]);
   const table = await openTable("Work time to merge");
   expect(table.textContent).toContain("ACME-6");
   fireEvent.click(screen.getByRole("button", { name: "Show the issues of ACME-6" }));
@@ -363,7 +373,7 @@ test("splitting plots filings against finishes and lists the filings by class", 
   const section = document.querySelector('[data-legion-section="splitting"]') as HTMLElement;
   expect(
     [...section.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
-  ).toEqual(["Issues filed by Legion sessions", "Issues finished"]);
+  ).toEqual(["Issues filed by Legion sessions", "Issues finished (roots and children)"]);
   expect(section.querySelector("[data-legion-filing-classes]")?.textContent).toContain(
     "In the filer's tree, while designing it1100%"
   );
@@ -390,12 +400,12 @@ test("a project whose repositories are not the deploy repository gets one line f
   expect(
     (
       await waitFor(() => {
-        const line = document.querySelector("[data-legion-delivery-unmeasured]");
+        const line = document.querySelector('[data-legion-section="delivery"]');
         if (line === null) throw new Error("no line");
         return line;
       })
     ).textContent
-  ).toStartWith("CI and deploys: not measured for this project yet.");
+  ).toStartWith("CI and deploysNot measured for this project yet.");
   expect(document.querySelector('[data-legion-section="ci"]')).toBeNull();
   expect(pipeline).not.toHaveBeenCalled();
   expect(measures).not.toHaveBeenCalled();

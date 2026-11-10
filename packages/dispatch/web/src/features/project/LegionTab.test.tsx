@@ -178,7 +178,7 @@ function Location(): null {
   return null;
 }
 
-async function renderTab(issue?: string) {
+async function renderTab(issue?: string, timeline: typeof TIMELINE = TIMELINE) {
   spies.push(
     spyOn(api, "listLegionSettings").mockResolvedValue([
       {
@@ -191,7 +191,7 @@ async function renderTab(issue?: string) {
     spyOn(api, "getLegionMetrics").mockImplementation(() => new Promise(() => {})),
     spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "getDeliverySettings").mockResolvedValue(null),
-    spyOn(api, "getLegionIssueTimeline").mockResolvedValue(TIMELINE)
+    spyOn(api, "getLegionIssueTimeline").mockResolvedValue(timeline)
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -289,4 +289,39 @@ test("the CI column writes a short mark with the full verdict on hover", async (
   const ci = document.querySelector('[data-legion-slot="0"] [data-legion-slot-ci]');
   expect(ci?.textContent).toBe("✓");
   expect(ci?.getAttribute("title")).toBe("green");
+});
+
+test("a root's phase hatches the hours it waited on its children, and the key names each colour", async () => {
+  await renderTab("ACME-2", {
+    ...TIMELINE,
+    segments: [
+      {
+        bar: "implementer",
+        from: "2026-11-09T12:00:00Z",
+        hours: 2,
+        name: "waiting_on_children",
+        source: "observed",
+        to: "2026-11-09T14:00:00Z",
+      },
+    ],
+  });
+
+  const timeline = await screen.findByRole("region", { name: "ACME-2 timeline" });
+  await waitFor(() => expect(timeline.querySelector("[data-legion-hatched]")).not.toBeNull());
+  const phase = timeline.querySelector('[data-legion-lane="Phase"]') as HTMLElement;
+  expect(
+    [...phase.querySelectorAll("[data-legion-span]")].map(
+      (one) => one.getAttribute("title")?.split(":")[0]
+    )
+  ).toEqual(["Implementing", "implementing · waiting on children", "Implementing", "Reviewing"]);
+  expect(timeline.querySelector("[data-legion-timeline-key]")?.textContent).toContain(
+    "hatched: the root waiting on its children"
+  );
+});
+
+test("the waiting line shows how long each issue has waited, and the slots show ten at first", async () => {
+  await renderTab();
+
+  expect(document.querySelectorAll("[data-legion-waited]").length).toBeGreaterThan(0);
+  expect(screen.getByRole("region", { name: "Slots" }).textContent).toContain("✓ green");
 });

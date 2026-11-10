@@ -67,6 +67,9 @@ interface ChartSparkSeries {
   /** What the values count, in words ("hours", "share of issues"): series of one unit share a
    *  plot and its value axis; a series with none plots alone, titled by its label. */
   readonly unit?: string;
+  /** How the value axis writes a round number in this unit, where `format` would not ("0h", not
+   *  "0.0m"). */
+  readonly tickFormat?: (value: number) => string;
 }
 
 /** A run of per-day medians and p90s, as `SpreadBars` takes them; `label` heads its two duration
@@ -408,6 +411,7 @@ interface PlotLine {
   readonly values: readonly (number | null)[];
   readonly partial: readonly boolean[];
   readonly format: (value: number) => string;
+  readonly tickFormat?: (value: number) => string;
   readonly compare: boolean;
   readonly color: number;
 }
@@ -421,6 +425,7 @@ function linesOf(series: ChartSeries, color: number, compare: boolean): PlotLine
         values: series.points.map((point) => point.value),
         partial: series.points.map((point) => point.partial),
         format: series.format,
+        tickFormat: series.tickFormat,
         compare,
         color,
       },
@@ -552,20 +557,26 @@ const MARGIN = { top: 8, right: 12, bottom: 26, left: 62 };
 /** One plot: the lines of one unit over the rows, with a value axis of numbers in that unit, a
  *  time axis of the rows' days, and a dashed target where a series has one. */
 function Plot({
+  comparedRange,
   label,
   lines,
   rows,
   target,
+  title,
   unit,
 }: {
+  comparedRange: string | null;
   label: string;
   lines: readonly PlotLine[];
   rows: readonly string[];
   target: number | undefined;
+  title: string;
   unit: string;
 }): ReactNode {
   const [ref, width] = useWidth();
-  const format = lines[0]?.format ?? String;
+  const format =
+    lines[0]?.tickFormat ??
+    ((value: number) => (lines[0]?.format ?? String)(value).replace(/\.0(?=\D*$)/, ""));
   const all = lines.flatMap((line) =>
     line.values.filter((value): value is number => value !== null)
   );
@@ -582,8 +593,11 @@ function Plot({
   const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(inner.w / 64))));
   return (
     <div className="min-w-0" ref={ref}>
-      <div className={`text-[11px] ${textMutedOnSurface}`} data-chart-unit>
-        {unit}
+      <div className="flex flex-wrap items-baseline gap-x-2" data-chart-plot-title>
+        <span className={`text-sm font-medium ${textPrimaryOnCanvas}`}>{title}</span>
+        <span className={`text-[11px] ${textMutedOnSurface}`} data-chart-unit>
+          {unit}
+        </span>
       </div>
       <svg
         aria-label={`${label}: ${unit} by ${rows.length > 0 && /^\d{4}-/.test(rows[0] ?? "") ? "day" : "row"}`}
@@ -609,7 +623,7 @@ function Plot({
               x={MARGIN.left - 6}
               y={y(tick)}
             >
-              {format(Math.round(tick * 100) / 100).replace(/\.0(?=\D*$)/, "")}
+              {format(Math.round(tick * 100) / 100)}
             </text>
           </g>
         ))}
@@ -689,6 +703,27 @@ function Plot({
           );
         })}
       </svg>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" data-chart-legend-row>
+        {lines.map((line) => {
+          const palette = chartSeries[line.color % chartSeries.length] ?? chartSeries[0];
+          return (
+            <span
+              className="flex items-center gap-1.5"
+              data-chart-legend={line.compare ? "compare" : "window"}
+              key={`${line.label}-${line.compare}`}
+            >
+              <span
+                aria-hidden
+                className={`inline-block h-0.5 w-4 ${palette.swatch} ${line.compare ? "opacity-50" : ""}`}
+              />
+              <span className={textMutedOnSurface}>
+                {line.label}
+                {line.compare ? `, ${comparedRange}` : ""}
+              </span>
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -723,14 +758,6 @@ function Graph({
     color += one.kind === "spread" ? 2 : 1;
   }
   const comparedRange = against === null ? null : rangeLabel(against.range);
-  const legend = drawn.flatMap(({ one, index }) => {
-    const own = linesOf(one, colorOf.get(index) ?? 0, false);
-    const theirs =
-      trimmedCompare?.[index] === undefined
-        ? []
-        : linesOf(trimmedCompare[index] as ChartSeries, colorOf.get(index) ?? 0, true);
-    return [...own, ...theirs];
-  });
   return (
     <div className="flex min-w-0 flex-col gap-1" data-chart-graph>
       {drawn.length === 0 ? (
@@ -747,8 +774,10 @@ function Graph({
           const first = members[0]?.one;
           return (
             <Plot
+              comparedRange={comparedRange}
               key={unit}
               label={label}
+              title={members.map(({ one }) => one.label).join(" and ")}
               lines={lines}
               rows={first === undefined ? [] : rowLabels(first)}
               target={members.find(({ one }) => one.target !== undefined)?.one.target}
@@ -757,27 +786,6 @@ function Graph({
           );
         })
       )}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" data-chart-legend-row>
-        {legend.map((line) => {
-          const palette = chartSeries[line.color % chartSeries.length] ?? chartSeries[0];
-          return (
-            <span
-              className="flex items-center gap-1.5"
-              data-chart-legend={line.compare ? "compare" : "window"}
-              key={`${line.label}-${line.compare}`}
-            >
-              <span
-                aria-hidden
-                className={`inline-block h-0.5 w-4 ${palette.swatch} ${line.compare ? "opacity-50" : ""}`}
-              />
-              <span className={textMutedOnSurface}>
-                {line.label}
-                {line.compare ? `, ${comparedRange}` : ""}
-              </span>
-            </span>
-          );
-        })}
-      </div>
       <div className={`flex flex-wrap gap-x-3 ${noteClass}`}>
         <div data-chart-range="window">
           <span>{rangeLabel(range)}</span>

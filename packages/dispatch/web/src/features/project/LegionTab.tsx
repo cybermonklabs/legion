@@ -5,7 +5,7 @@
 // from the board route over /ws/live. Any issue opens in its timeline (LegionIssueTimeline) at
 // /projects/<KEY>/legion/<ISSUE>, above the rest.
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { legionBoardQuery, legionSettingsQuery } from "../../api/queries";
@@ -21,7 +21,7 @@ import {
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
 import { LegionPhaseCell } from "./issues-table-columns";
-import { legionPhases, legionRolesText } from "./issues-table-model";
+import { formatPhaseTime, legionPhases, legionRolesText } from "./issues-table-model";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
 import { LegionSections } from "./LegionSections";
 
@@ -38,6 +38,33 @@ const HELD_FOR_CHILDREN: Record<string, true> = {
 /** A CI verdict in the Slots table's narrow column; the full word is its title. */
 const CI_SHORT: Record<string, string> = { green: "✓", failing: "✗", pending: "…" };
 const CHILD_WORK: Record<string, true> = { implementing: true, testing: true, reviewing: true };
+/** How many rows a live table shows before its "show all". */
+const FIRST_ROWS = 10;
+
+/** The button under a live table that shows all its rows, or the first ones again. */
+function ShowAll({
+  all,
+  count,
+  noun,
+  onToggle,
+}: {
+  all: boolean;
+  count: number;
+  noun: string;
+  onToggle: () => void;
+}): ReactNode {
+  if (count <= FIRST_ROWS) return null;
+  return (
+    <button
+      className={`self-start text-xs underline ${textSecondaryOnCanvas}`}
+      data-legion-show-all={noun}
+      onClick={onToggle}
+      type="button"
+    >
+      {all ? `Show the first ${FIRST_ROWS}` : `Show all ${count} ${noun}`}
+    </button>
+  );
+}
 
 export function LegionTab({
   issue,
@@ -102,6 +129,7 @@ function Slots({
   onOpenIssue: (key: string) => void;
 }): ReactNode {
   const phases = useMemo(() => legionPhases(board), [board]);
+  const [all, setAll] = useState(false);
   const cards = useMemo(() => board.columns.flatMap((column) => column.cards), [board]);
   const holders = cards
     .filter((card) => card.slot !== null)
@@ -128,9 +156,10 @@ function Slots({
       <p className={`text-xs ${textMutedOnSurface}`}>
         A slot is held for children only while its root is accepting, awaiting merge or awaiting a
         person; it is idle when, besides, nothing under the root is implementing, testing or
-        reviewing.
+        reviewing. Roles in a turn tells a working role from one between turns. CI: ✓ green, ✗
+        failing, … pending, — no verdict.
       </p>
-      <div className="max-h-[28rem] overflow-auto">
+      <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead className={textMutedOnSurface}>
             <tr>
@@ -144,7 +173,7 @@ function Slots({
             </tr>
           </thead>
           <tbody>
-            {holders.map((card) => {
+            {(all ? holders : holders.slice(0, FIRST_ROWS)).map((card) => {
               const phase = phases.get(card.key);
               return (
                 <tr
@@ -189,6 +218,7 @@ function Slots({
           </tbody>
         </table>
       </div>
+      <ShowAll all={all} count={holders.length} noun="slots" onToggle={() => setAll(!all)} />
     </section>
   );
 }
@@ -204,6 +234,8 @@ function WaitingLine({
 }): ReactNode {
   const queue = board.columns.find((column) => column.id === "queue")?.cards ?? [];
   const awaiting = board.columns.find((column) => column.id === "awaiting_person")?.cards ?? [];
+  const [all, setAll] = useState(false);
+  const now = Date.now();
   const why = (card: LegionBoardCard): string =>
     card.blocked_by.length > 0
       ? `held by ${card.blocked_by.join(", ")}`
@@ -219,20 +251,28 @@ function WaitingLine({
         {queue.length} roots waiting for a slot · {ready} ready · {blocked} held by a dependency ·{" "}
         {awaiting.length} awaiting a person
       </p>
-      <div className="max-h-[28rem] overflow-auto">
+      <p className={`text-xs ${textMutedOnSurface}`}>
+        In the daemon's own order: the issues awaiting a person first, then the roots by their place
+        in line. Waited is the time since the issue entered its phase.
+      </p>
+      <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead className={textMutedOnSurface}>
             <tr>
               <th className="px-1 py-1 font-normal">#</th>
               <th className="px-1 py-1 font-normal">Issue</th>
+              <th className="px-1 py-1 font-normal whitespace-nowrap">Waited</th>
               <th className="px-1 py-1 font-normal">Waiting</th>
             </tr>
           </thead>
           <tbody>
-            {[
-              ...awaiting.map((card) => ({ card, place: "person" })),
-              ...queue.map((card, index) => ({ card, place: String(index + 1) })),
-            ].map(({ card, place }) => (
+            {(() => {
+              const rows = [
+                ...awaiting.map((card) => ({ card, place: "person" })),
+                ...queue.map((card, index) => ({ card, place: String(index + 1) })),
+              ];
+              return all ? rows : rows.slice(0, FIRST_ROWS);
+            })().map(({ card, place }) => (
               <tr className={`border-t align-top ${borderDefault}`} key={`${place}-${card.key}`}>
                 <td className="px-1 py-1">{place === "person" ? "—" : place}</td>
                 <td className="px-1 py-1">
@@ -250,6 +290,13 @@ function WaitingLine({
                     {card.title}
                   </div>
                 </td>
+                <td
+                  className="px-1 py-1 whitespace-nowrap tabular-nums"
+                  data-legion-waited={card.key}
+                  title={card.phase_since ?? "Entry time unknown"}
+                >
+                  {formatPhaseTime(card.phase_since, now)}
+                </td>
                 <td className="px-1 py-1">
                   {place === "person" ? "awaiting a person" : why(card)}
                 </td>
@@ -258,6 +305,12 @@ function WaitingLine({
           </tbody>
         </table>
       </div>
+      <ShowAll
+        all={all}
+        count={awaiting.length + queue.length}
+        noun="issues"
+        onToggle={() => setAll(!all)}
+      />
     </section>
   );
 }

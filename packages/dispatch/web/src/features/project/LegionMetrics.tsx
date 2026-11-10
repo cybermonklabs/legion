@@ -69,7 +69,8 @@ function perDay(
   label: string,
   unit: string,
   format: (value: number) => string,
-  value: (day: string) => number | null
+  value: (day: string) => number | null,
+  tickFormat?: (value: number) => string
 ): ChartSeries {
   const points = daysOf(report).map(({ day, partial }) => ({
     label: day,
@@ -81,6 +82,7 @@ function perDay(
     format,
     label,
     unit,
+    tickFormat,
     max: Math.max(1, ...points.map((point) => point.value ?? 0)),
     points,
   };
@@ -96,7 +98,11 @@ function closedByDay(report: LegionMetricsResponse): Map<string, LegionWorkTimeI
   return byDay;
 }
 
-/** Work time's graph: each UTC day's median and p90 work time of the issues that closed that day. */
+/** A value axis in hours: round numbers, each with its unit. */
+const hourTicks = (value: number): string => `${value.toLocaleString("en-US")}h`;
+
+/** Work time's graph: each UTC day's median and p90 work time of the issues that closed that day.
+ *  The p90 runs about six times the median, so each is drawn on its own value axis. */
 export function workTimeTrendSeries(report: LegionMetricsResponse): ChartSeries[] {
   const byDay = closedByDay(report);
   const of = (q: number) => (day: string) =>
@@ -105,8 +111,8 @@ export function workTimeTrendSeries(report: LegionMetricsResponse): ChartSeries[
       q
     );
   return [
-    perDay(report, "Median work time", "hours", formatHours, of(0.5)),
-    perDay(report, "p90 work time", "hours", formatHours, of(0.9)),
+    perDay(report, "Median work time", "hours, median", formatHours, of(0.5), hourTicks),
+    perDay(report, "p90 work time", "hours, p90", formatHours, of(0.9), hourTicks),
   ];
 }
 
@@ -165,7 +171,13 @@ export function splittingDaySeries(report: LegionMetricsResponse): ChartSeries[]
       count,
       (day) => filed.get(day) ?? 0
     ),
-    perDay(report, "Issues finished", "issues a day", count, (day) => byDay.get(day)?.length ?? 0),
+    perDay(
+      report,
+      "Issues finished (roots and children)",
+      "issues a day",
+      count,
+      (day) => byDay.get(day)?.length ?? 0
+    ),
   ];
 }
 

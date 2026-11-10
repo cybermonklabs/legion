@@ -25,6 +25,7 @@ import type {
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
+  borderStrong,
   chartParts,
   legionPhaseScale,
   surfaceBg,
@@ -173,7 +174,7 @@ export function LegionSections({
           />
           <TrendSection
             compare={source(compared.data)}
-            headline={`${report.splitting.filed.length.toLocaleString("en-US")} issues filed by Legion sessions · ${report.splitting.finished_roots} roots finished, ${report.splitting.children_per_root.toFixed(1)} children each on average · median work time ${formatHours(report.splitting.median_hours_roots_with_children)} for roots with children, ${formatHours(report.splitting.median_hours_roots_without_children)} without`}
+            headline={`${report.splitting.filed.length.toLocaleString("en-US")} issues filed by Legion sessions · of the ${report.work_time.issues.length.toLocaleString("en-US")} issues finished, ${report.splitting.finished_roots} were roots, with ${report.splitting.children_per_root.toFixed(1)} children each on average · median work time ${formatHours(report.splitting.median_hours_roots_with_children)} for roots with children, ${formatHours(report.splitting.median_hours_roots_without_children)} without`}
             id="splitting"
             report={report}
             title="Splitting and follow-ups"
@@ -308,7 +309,7 @@ function PhaseBreakdownSection({
   const ci = phase.bars.reduce((sum, bar) => sum + bar.segments.ci_wait, 0);
   const headline = [
     `${breakdown.issues.length.toLocaleString("en-US")} issues finished`,
-    `${formatHours(breakdown.hours)} of work in phases, from first worker event to merge, less parked and queued time`,
+    `${formatHours(breakdown.hours)} of work in phases, each hour counted once, from first worker event to merge, less parked and queued time`,
     biggest === undefined
       ? ""
       : `most of it ${biggest.label.toLowerCase()}: ${pct(biggest.share, 0)} (${formatHours(biggest.hours)})`,
@@ -327,13 +328,24 @@ function PhaseBreakdownSection({
   const label = (id: string) => breakdown.phases.find((one) => one.id === id)?.label ?? id;
   const mostly = (issue: (typeof breakdown.issues)[number]) => {
     const [id, spent] = Object.entries(issue.phases).sort((a, b) => b[1] - a[1])[0] ?? ["", 0];
-    return issue.hours === 0
-      ? ""
-      : `mostly ${label(id).toLowerCase()}, ${pct(spent / issue.hours, 0)}`;
+    const parts =
+      issue.hours === 0
+        ? []
+        : [`mostly ${label(id).toLowerCase()}, ${pct(spent / issue.hours, 0)}`];
+    if (issue.waiting_on_children_hours > 0) {
+      parts.push(`also waited ${formatHours(issue.waiting_on_children_hours)} on its children`);
+    }
+    return parts.join(" · ");
   };
   return (
     <Section headline={headline} id="phase_breakdown" title="Where the finished issues' time went">
       <PhaseBar breakdown={breakdown} onPick={setSortBy} picked={sortBy} />
+      {breakdown.waiting_on_children_hours > 0 ? (
+        <p className={`text-xs ${textSecondaryOnCanvas}`} data-legion-children-wait>
+          Roots also waited {formatHours(breakdown.waiting_on_children_hours)} on their children,
+          whose work is counted above.
+        </p>
+      ) : null}
       <p className={`text-xs ${textMutedOnSurface}`} data-legion-turn-note>
         {phase.observed_hours === 0
           ? "Not observed yet: in a turn and CI wait. They need the daemon's claim states and CI verdicts, which start with its pushed events; the phases above come from each issue's status history."
@@ -347,7 +359,7 @@ function PhaseBreakdownSection({
         </h3>
         {sortBy === null ? (
           <span className={`text-xs ${textMutedOnSurface}`}>
-            Pick a phase above to rank the issues by it.
+            Pick a phase in the bar or its legend to rank the issues by it.
           </span>
         ) : (
           <button
@@ -450,30 +462,39 @@ function PhaseBar({
             title={`${part.label}: ${formatHours(part.hours)}, ${pct(part.share, 0)}`}
             type="button"
           >
-            {part.share >= 0.06 ? `${part.label} ${pct(part.share, 0)}` : ""}
+            {/* A label shows only where its block has room: on a phone none do. */}
+            <span className="hidden md:inline">
+              {part.share >= 0.07 ? `${part.label} ${pct(part.share, 0)}` : ""}
+            </span>
           </button>
         ))}
       </div>
       <ul
-        className="grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3"
+        className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs lg:grid-cols-3"
         data-legion-phase-legend
       >
         {breakdown.phases.map((part) => (
           <li key={part.id}>
             <button
-              className="flex w-full items-center gap-2 text-left"
+              aria-pressed={picked === part.id}
+              className={`flex w-full cursor-pointer items-center gap-1.5 rounded border px-1.5 py-1 text-left text-[11px] sm:gap-2 sm:px-2 sm:text-xs hover:underline ${picked === part.id ? borderStrong : borderDefault}`}
               onClick={() => onPick(picked === part.id ? null : part.id)}
+              title={`Rank the issues by hours ${part.label.toLowerCase()}`}
               type="button"
             >
               <span
                 aria-hidden
                 className={`inline-block h-3 w-3 shrink-0 rounded-sm ${legionPhaseScale[part.id] ?? ""}`}
               />
-              <span className={`flex-1 ${textSecondaryOnCanvas}`}>{part.label}</span>
-              <span className={`tabular-nums ${textPrimaryOnCanvas}`}>
+              <span className={`min-w-0 flex-1 leading-tight sm:truncate ${textSecondaryOnCanvas}`}>
+                {part.label}
+              </span>
+              <span className={`shrink-0 tabular-nums ${textPrimaryOnCanvas}`}>
                 {formatHours(part.hours)}
               </span>
-              <span className={`w-10 text-right tabular-nums ${textMutedOnSurface}`}>
+              <span
+                className={`hidden w-10 text-right tabular-nums sm:inline ${textMutedOnSurface}`}
+              >
                 {pct(part.share, 0)}
               </span>
             </button>
@@ -528,11 +549,11 @@ function DeliverySection({
   if (mappings.isPending || delivery.isPending) return null;
   if (!measured || notMeasured(pipeline.error) || notMeasured(measures.error)) {
     return (
-      <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-delivery-unmeasured>
-        CI and deploys: not measured for this project yet. Dispatch measures one deploy repository
-        {deployRepo === undefined ? "" : ` (${deployRepo})`}, and {project} maps none of its
-        repositories to it.
-      </p>
+      <Section
+        headline={`Not measured for this project yet. Dispatch measures one deploy repository${deployRepo === undefined ? "" : ` (${deployRepo})`}, and ${project} maps none of its repositories to it.`}
+        id="delivery"
+        title="CI and deploys"
+      />
     );
   }
   const ci = pipeline.data?.pr_checks.run;

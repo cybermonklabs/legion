@@ -44,10 +44,71 @@ const SOURCE_LABEL: Record<LegionTimelineSpan["source"], string> = {
   asks: "Dispatch's asks",
 };
 
-/** One lane of the axis: its name and its stretches, each with its label and fill. */
+/** One stretch of a lane: its label and fill, hatched where a root's phase overlaps the hours it
+ *  waited on its children. */
+interface LaneSpan {
+  readonly span: LegionTimelineSpan;
+  readonly label: string;
+  readonly fill: string;
+  readonly hatched?: boolean;
+}
+
+/** One lane of the axis: its name and its stretches. */
 interface Lane {
   readonly name: string;
-  readonly spans: readonly { span: LegionTimelineSpan; label: string; fill: string }[];
+  readonly spans: readonly LaneSpan[];
+}
+
+/** The hatch drawn over a phase's hours a root spent waiting on its children. */
+const HATCH = {
+  backgroundImage:
+    "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.6) 0 3px, transparent 3px 7px)",
+};
+
+/** Splits each phase stretch where it overlaps a waiting-on-children stretch, so the Phase lane
+ *  tells the same story as the lane under it: those hours are "planning · waiting on children". */
+function splitByChildWait(
+  spans: readonly LaneSpan[],
+  waits: readonly LegionTimelineSpan[]
+): LaneSpan[] {
+  const cuts = waits.map((wait) => [Date.parse(wait.from), Date.parse(wait.to)] as const);
+  return spans.flatMap((one) => {
+    const from = Date.parse(one.span.from);
+    const to = Date.parse(one.span.to);
+    const bounds = [
+      ...new Set([from, to, ...cuts.flat().filter((point) => point > from && point < to)]),
+    ].sort((a, b) => a - b);
+    const pieces: LaneSpan[] = [];
+    for (let index = 0; index + 1 < bounds.length; index++) {
+      const start = bounds[index] as number;
+      const end = bounds[index + 1] as number;
+      const hatched = cuts.some(([a, b]) => a <= start && end <= b);
+      const previous = pieces.at(-1);
+      if (previous !== undefined && Boolean(previous.hatched) === hatched) {
+        pieces[pieces.length - 1] = {
+          ...previous,
+          span: {
+            ...previous.span,
+            to: new Date(end).toISOString(),
+            hours: (end - Date.parse(previous.span.from)) / 3_600_000,
+          },
+        };
+        continue;
+      }
+      pieces.push({
+        ...one,
+        hatched,
+        label: hatched ? `${one.label.toLowerCase()} · waiting on children` : one.label,
+        span: {
+          ...one.span,
+          from: new Date(start).toISOString(),
+          to: new Date(end).toISOString(),
+          hours: (end - start) / 3_600_000,
+        },
+      });
+    }
+    return pieces;
+  });
 }
 
 function when(iso: string): string {
@@ -117,7 +178,13 @@ function TimelineBody({
     });
     const roles = [...new Set(timeline.turns.map((span) => span.name))].sort();
     return [
-      { name: "Phase", spans: timeline.phases.map(phase) },
+      {
+        name: "Phase",
+        spans: splitByChildWait(
+          timeline.phases.map(phase),
+          timeline.segments.filter((span) => span.name === "waiting_on_children")
+        ),
+      },
       {
         name: "Where the hours went",
         spans: timeline.segments.map((span) => ({
@@ -146,6 +213,16 @@ function TimelineBody({
   const empty = lanes.filter((lane) => lane.spans.length === 0).map((lane) => lane.name);
   const shown = lanes.filter((lane) => lane.spans.length > 0);
   const all = shown.flatMap((lane) => lane.spans.map((one) => one.span));
+  // The colour key of the Phase lane and the child lanes, each phase once in the order drawn.
+  const phaseKey = [
+    ...new Map(
+      shown
+        .filter((lane) => lane.name === "Phase" || lane.name.startsWith("Child "))
+        .flatMap((lane) => lane.spans.filter((one) => !one.hatched))
+        .map((one) => [one.label, one.fill] as const)
+    ),
+  ];
+  const hatchedAny = shown.some((lane) => lane.spans.some((one) => one.hatched));
   const start = Math.min(
     ...all.map((span) => Date.parse(span.from)),
     timeline.started_at === null ? Number.POSITIVE_INFINITY : Date.parse(timeline.started_at)
@@ -211,6 +288,24 @@ function TimelineBody({
           <LaneRow at={at} key={lane.name} lane={lane} onOpenIssue={onOpenIssue} />
         ))}
       </div>
+      <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]" data-legion-timeline-key>
+        {phaseKey.map(([label, fill]) => (
+          <li className="flex items-center gap-1" key={label}>
+            <span aria-hidden className={`inline-block h-3 w-3 rounded-sm ${fill}`} />
+            <span className={textSecondaryOnCanvas}>{label}</span>
+          </li>
+        ))}
+        {hatchedAny ? (
+          <li className="flex items-center gap-1">
+            <span
+              aria-hidden
+              className={`inline-block h-3 w-3 rounded-sm ${legionPhaseScale.planning ?? ""}`}
+              style={HATCH}
+            />
+            <span className={textSecondaryOnCanvas}>hatched: the root waiting on its children</span>
+          </li>
+        ) : null}
+      </ul>
       {empty.length === 0 ? null : (
         <p className={`text-xs ${textMutedOnSurface}`} data-legion-timeline-empty>
           Nothing recorded: {empty.join(", ")}.
@@ -282,18 +377,19 @@ function LaneRow({
         )}
       </span>
       <div className={`relative h-5 rounded-sm ${surfaceMutedBg}`} data-legion-lane={lane.name}>
-        {lane.spans.map(({ span, label, fill }) => {
+        {lane.spans.map(({ span, label, fill, hatched }) => {
           const left = at(span.from);
           const width = Math.max(at(span.to) - left, 0.3);
           return (
             <span
               className={`absolute top-0 h-5 overflow-hidden rounded-sm px-0.5 text-[10px] leading-5 whitespace-nowrap ${fill}`}
+              data-legion-hatched={hatched ? "" : undefined}
               data-legion-span={span.name}
               key={`${span.from}-${label}`}
-              style={{ left: `${left}%`, width: `${width}%` }}
+              style={{ left: `${left}%`, width: `${width}%`, ...(hatched ? HATCH : {}) }}
               title={`${label}: ${when(span.from)} to ${when(span.to)}, ${formatHours(span.hours)}, from ${SOURCE_LABEL[span.source]}`}
             >
-              {width > 6 ? label : ""}
+              {width > 12 ? label : width > 6 ? (label.split(" · ")[0] ?? "") : ""}
             </span>
           );
         })}

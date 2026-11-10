@@ -8,10 +8,12 @@ import (
 )
 
 // The phase breakdown (dispatch://INFRA-979): where the finished issues' work hours went, by
-// phase, each issue's and all of them together. The hours are the bars' (work time less queued),
-// and two of Dispatch's own records come first: an hour an ask held is waiting on a person, and an
-// hour a child worked through is waiting on children; every other hour is its phase's. It reads
-// the observed timeline or the status-history fallback alike, so it needs no observation.
+// phase, each issue's and all of them together, each hour counted once. The hours are the bars'
+// (work time less queued). An hour an ask held is waiting on a person. An hour a root waited while
+// a child worked is the child's work, which the child's own row counts, so it is left out of the
+// root's parts, the total, the shares and the ranking, and reported apart
+// (WaitingOnChildrenHours). Every other hour is its phase's. It reads the observed timeline or the
+// status-history fallback alike, so it needs no observation.
 
 // BreakdownPhase is one part of the breakdown: its id (a board column id where the phase has one,
 // so a page colours it as the issues table does), its label, its hours and its share.
@@ -28,13 +30,18 @@ type BreakdownIssue struct {
 	Title  string             `json:"title"`
 	Hours  float64            `json:"hours"`
 	Phases map[string]float64 `json:"phases"`
+	// WaitingOnChildrenHours is the root's hours while a child worked, outside Hours.
+	WaitingOnChildrenHours float64 `json:"waiting_on_children_hours"`
 }
 
 // PhaseBreakdown is the finished issues' hours by part, in the parts' order, and each issue's.
 type PhaseBreakdown struct {
-	Hours  float64          `json:"hours"`
-	Phases []BreakdownPhase `json:"phases"`
-	Issues []BreakdownIssue `json:"issues"`
+	Hours float64 `json:"hours"`
+	// WaitingOnChildrenHours is every root's hours while a child worked: counted once already,
+	// as the children's own work, so outside Hours and the shares.
+	WaitingOnChildrenHours float64          `json:"waiting_on_children_hours"`
+	Phases                 []BreakdownPhase `json:"phases"`
+	Issues                 []BreakdownIssue `json:"issues"`
 }
 
 const (
@@ -57,7 +64,6 @@ var breakdownParts = []struct {
 	{"accepting", "Accepting", []string{legion.PhaseAccepting}},
 	{"merging", "Merging", legion.MergerPhases},
 	{breakdownPerson, "Waiting on a person", []string{legion.PhaseAwaitingPerson}},
-	{breakdownChildren, "Waiting on children", nil},
 	{"held", "Held", []string{legion.PhaseHeld}},
 	{breakdownOther, "Other", nil},
 }
@@ -70,7 +76,7 @@ func precedenceIndex(segment Segment) int {
 func (c *computation) phaseBreakdown(finished []*Issue) PhaseBreakdown {
 	out := PhaseBreakdown{Phases: []BreakdownPhase{}, Issues: make([]BreakdownIssue, 0, len(finished))}
 	totals := map[string]time.Duration{}
-	var whole time.Duration
+	var whole, waited time.Duration
 	for _, issue := range finished {
 		view := c.viewOf(issue)
 		rest := normalize(c.barSpansOf(issue))
@@ -82,13 +88,19 @@ func (c *computation) phaseBreakdown(finished []*Issue) PhaseBreakdown {
 		}
 		take(breakdownPerson, view.claims(precedenceIndex(SegmentWaitingOnPerson)))
 		take(breakdownChildren, view.claims(precedenceIndex(SegmentWaitingOnChildren)))
+		children := spent[breakdownChildren]
+		delete(spent, breakdownChildren)
 		for _, part := range breakdownParts {
 			if len(part.phases) > 0 {
 				take(part.id, phaseSpansOf(view.timeline, part.phases...))
 			}
 		}
 		spent[breakdownOther] += totalOf(rest)
-		row := BreakdownIssue{Key: issue.Key, Title: issue.Title, Phases: map[string]float64{}}
+		row := BreakdownIssue{
+			Key: issue.Key, Title: issue.Title, Phases: map[string]float64{},
+			WaitingOnChildrenHours: hours(children),
+		}
+		waited += children
 		var issueTotal time.Duration
 		for id, spentHere := range spent {
 			if spentHere <= 0 {
@@ -103,6 +115,7 @@ func (c *computation) phaseBreakdown(finished []*Issue) PhaseBreakdown {
 		out.Issues = append(out.Issues, row)
 	}
 	out.Hours = hours(whole)
+	out.WaitingOnChildrenHours = hours(waited)
 	for _, part := range breakdownParts {
 		spent := totals[part.id]
 		if spent <= 0 {

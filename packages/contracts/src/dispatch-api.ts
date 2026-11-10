@@ -5191,11 +5191,16 @@ export interface LegionBreakdownIssue {
   readonly title: string;
   readonly hours: number;
   readonly phases: Readonly<Record<string, number>>;
+  /** The root's hours while a child worked: the child's own row counts them, so they are
+   *  outside `hours`. */
+  readonly waiting_on_children_hours: number;
 }
 
 /** The finished issues' work hours by part, and each issue's, most hours first. */
 export interface LegionPhaseBreakdown {
   readonly hours: number;
+  /** Every root's hours while a child worked, counted once already as the children's work. */
+  readonly waiting_on_children_hours: number;
   readonly phases: readonly LegionBreakdownPhase[];
   readonly issues: readonly LegionBreakdownIssue[];
 }
@@ -5244,8 +5249,9 @@ export interface LegionMetricsResponse {
     readonly median_hours_roots_with_children: number;
     readonly median_hours_roots_without_children: number;
   };
-  /** Where the finished issues' work hours went, by phase: waiting on a person (an ask held the
-   *  hour) and waiting on children (a child worked through it) first, then each phase. Each
+  /** Where the finished issues' work hours went, by phase, each hour once: waiting on a person
+   *  (an ask held the hour) first, then each phase; a root's hours while a child worked are
+   *  reported apart, since the child's row counts them. Each
    *  part's id is a board column's where it has one, so a page colours it as the issues table
    *  does. Read from the status history where the daemon observed nothing. */
   readonly phase_breakdown: LegionPhaseBreakdown;

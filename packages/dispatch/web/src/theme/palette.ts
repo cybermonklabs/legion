@@ -79,3 +79,17 @@ export const EMERALD_700 = swatch("emerald-700", 0.508, 0.118, 165.612);
 export const EMERALD_800 = swatch("emerald-800", 0.432, 0.095, 166.913);
 export const EMERALD_900 = swatch("emerald-900", 0.378, 0.077, 168.94);
 export const EMERALD_950 = swatch("emerald-950", 0.262, 0.051, 172.552);
+
+// The Legion phase scale's hues (dispatch://INFRA-979): one clearly different colour per phase.
+export const VIOLET_300 = swatch("violet-300", 0.811, 0.111, 293.571);
+export const VIOLET_950 = swatch("violet-950", 0.283, 0.141, 291.089);
+export const INDIGO_700 = swatch("indigo-700", 0.457, 0.24, 277.023);
+export const TEAL_300 = swatch("teal-300", 0.855, 0.138, 181.071);
+export const TEAL_950 = swatch("teal-950", 0.277, 0.046, 192.524);
+export const LIME_300 = swatch("lime-300", 0.897, 0.196, 126.665);
+export const LIME_950 = swatch("lime-950", 0.274, 0.072, 132.109);
+export const FUCHSIA_700 = swatch("fuchsia-700", 0.518, 0.253, 323.949);
+export const STONE_400 = swatch("stone-400", 0.709, 0.01, 56.259);
+export const STONE_950 = swatch("stone-950", 0.147, 0.004, 49.25);
+export const ORANGE_200 = swatch("orange-200", 0.901, 0.076, 70.697);
+export const ORANGE_950 = swatch("orange-950", 0.266, 0.079, 36.259);

@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestThePhaseBreakdownSharesOutEachIssuesBarHours: an issue's breakdown adds up to its work time
-// less its queued time, an ask's hours are waiting on a person, a child's working hours are its
-// root's waiting on children, and the rest go to the phases the status history draws, with no
-// observation at all.
+// TestThePhaseBreakdownSharesOutEachIssuesBarHours: each hour is counted once. An issue's parts add
+// up to its work time less its queued time and less the hours it waited while a child worked
+// (the child's own row counts those), an ask's hours are waiting on a person, and the rest go to
+// the phases the status history draws, with no observation at all.
 func TestThePhaseBreakdownSharesOutEachIssuesBarHours(t *testing.T) {
 	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(10)).
 		statusAt(hour(0), "in_progress").
@@ -33,13 +33,18 @@ func TestThePhaseBreakdownSharesOutEachIssuesBarHours(t *testing.T) {
 		for _, spent := range row.Phases {
 			sum += spent
 		}
-		if want := work[key].Hours - work[key].QueuedHours; math.Abs(sum-want) > 0.001 || math.Abs(row.Hours-want) > 0.001 {
+		if want := work[key].Hours - work[key].QueuedHours - row.WaitingOnChildrenHours; math.Abs(sum-want) > 0.001 || math.Abs(row.Hours-want) > 0.001 {
 			t.Errorf("%s: the breakdown holds %g h (row %g), want its bar hours %g", key, sum, row.Hours, want)
 		}
 	}
 	got := rows["INFRA-1"].Phases
-	if got[breakdownPerson] != 1 || got[breakdownChildren] != 2 {
-		t.Errorf("the root waited %g h on a person and %g h on children, want 1 and 2: %v", got[breakdownPerson], got[breakdownChildren], got)
+	if got[breakdownPerson] != 1 || rows["INFRA-1"].WaitingOnChildrenHours != 2 || got[breakdownChildren] != 0 {
+		t.Errorf("the root waited %g h on a person and %g h on children (%g among its parts), want 1, 2 and none: %v",
+			got[breakdownPerson], rows["INFRA-1"].WaitingOnChildrenHours, got[breakdownChildren], got)
+	}
+	if report.PhaseBreakdown.WaitingOnChildrenHours != 2 || report.PhaseBreakdown.Hours != 8+2 {
+		t.Errorf("the breakdown holds %g h with %g h waiting on children apart, want 10 and 2",
+			report.PhaseBreakdown.Hours, report.PhaseBreakdown.WaitingOnChildrenHours)
 	}
 	var shares float64
 	for _, phase := range report.PhaseBreakdown.Phases {

@@ -226,29 +226,87 @@ for (const [status, background, foreground] of [
     pair(foreground, foreground),
     pair(background, background)
   );
-/** Legion workflow segments reuse the lifecycle scale and its contrast-checked pairs. */
-export const legionPhaseScale: Record<string, string> = {
-  queue: issueStatusScale.todo ?? "",
-  design: issueStatusScale.triage ?? "",
-  planning: issueStatusScale.backlog ?? "",
-  implementing: issueStatusScale.in_progress ?? "",
-  testing: issueStatusScale.testing ?? "",
-  reviewing: issueStatusScale.needs_review ?? "",
-  accepting: issueStatusScale.retro ?? "",
-  merging: issueStatusScale.done ?? "",
-  awaiting_person: issueStatusScale.icebox ?? "",
-  held: issueStatusScale.icebox ?? "",
-  /** Two parts the finished-issue phase breakdown adds (dispatch://INFRA-979): a root's hours
-   *  while its children work, and hours on no phase. */
-  waiting_on_children: "bg-amber-200 text-amber-950 dark:bg-amber-200 dark:text-amber-950",
-  other: "bg-slate-200 text-slate-900 dark:bg-slate-200 dark:text-slate-900",
-};
-registerText(
-  "legion phase: waiting on children",
-  pair(P.AMBER_950, P.AMBER_950),
-  pair(P.AMBER_200, P.AMBER_200)
+/** One clearly different colour per Legion phase (dispatch://INFRA-979), each a contrast-checked
+ *  pair: the issues table, the status bar, the board and the Legion tab all draw a phase with it. */
+const LEGION_PHASES = [
+  [
+    "queue",
+    "bg-slate-300 text-slate-950 dark:bg-slate-300 dark:text-slate-950",
+    P.SLATE_300,
+    P.SLATE_950,
+  ],
+  [
+    "design",
+    "bg-violet-300 text-violet-950 dark:bg-violet-300 dark:text-violet-950",
+    P.VIOLET_300,
+    P.VIOLET_950,
+  ],
+  ["planning", "bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
+  [
+    "implementing",
+    "bg-indigo-700 text-white dark:bg-indigo-700 dark:text-white",
+    P.INDIGO_700,
+    P.WHITE,
+  ],
+  [
+    "testing",
+    "bg-teal-300 text-teal-950 dark:bg-teal-300 dark:text-teal-950",
+    P.TEAL_300,
+    P.TEAL_950,
+  ],
+  [
+    "reviewing",
+    "bg-amber-300 text-amber-950 dark:bg-amber-300 dark:text-amber-950",
+    P.AMBER_300,
+    P.AMBER_950,
+  ],
+  [
+    "accepting",
+    "bg-lime-300 text-lime-950 dark:bg-lime-300 dark:text-lime-950",
+    P.LIME_300,
+    P.LIME_950,
+  ],
+  [
+    "merging",
+    "bg-fuchsia-700 text-white dark:bg-fuchsia-700 dark:text-white",
+    P.FUCHSIA_700,
+    P.WHITE,
+  ],
+  [
+    "awaiting_person",
+    "bg-rose-300 text-rose-950 dark:bg-rose-300 dark:text-rose-950",
+    P.ROSE_300,
+    P.ROSE_950,
+  ],
+  [
+    "held",
+    "bg-stone-400 text-stone-950 dark:bg-stone-400 dark:text-stone-950",
+    P.STONE_400,
+    P.STONE_950,
+  ],
+  [
+    "waiting_on_children",
+    "bg-orange-200 text-orange-950 dark:bg-orange-200 dark:text-orange-950",
+    P.ORANGE_200,
+    P.ORANGE_950,
+  ],
+  [
+    "other",
+    "bg-slate-200 text-slate-900 dark:bg-slate-200 dark:text-slate-900",
+    P.SLATE_200,
+    P.SLATE_900,
+  ],
+] as const;
+export const legionPhaseScale: Record<string, string> = Object.fromEntries(
+  LEGION_PHASES.map(([phase, classes]) => [phase, classes])
 );
-registerText("legion phase: other", pair(P.SLATE_900, P.SLATE_900), pair(P.SLATE_200, P.SLATE_200));
+for (const [phase, , background, foreground] of LEGION_PHASES) {
+  registerText(
+    `legion phase: ${phase}`,
+    pair(foreground, foreground),
+    pair(background, background)
+  );
+}
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";
