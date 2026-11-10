@@ -17,6 +17,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { InfoHint } from "../../components/InfoHint";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
   borderDefault,
@@ -53,6 +54,7 @@ import {
   compareGroups,
   facetCounts,
   groupValue,
+  ISSUES_TAB_HIDDEN,
   type Item,
   isEpic,
   matchesFilters,
@@ -62,9 +64,12 @@ import {
 } from "./issues-table-model";
 import { GroupRow, IssueRow, TableHeaderCell } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
+import { phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
+/** Held outside the component so the stored layout is read once per project, not per render. */
+const ISSUES_TAB_LAYOUT = { hiddenByDefault: ISSUES_TAB_HIDDEN };
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
@@ -105,8 +110,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     useTableView();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const layout = useTableLayout(project);
-  const { attachAbove, attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [expanded, setExpanded] = useState<ExpandedState>(true);
@@ -134,6 +137,14 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     listingError,
     missingParents,
   } = useProjectIssueItems(project, { wantsDone, registry });
+  // The box and the pinned widths follow the window and the longest key the listing holds, so
+  // the Key column writes a key in full at every width.
+  const layout = useTableLayout(
+    project,
+    useMemo(() => all.reduce((most, issue) => Math.max(most, issue.key.length), 0), [all]),
+    ISSUES_TAB_LAYOUT
+  );
+  const { attachAbove, attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   // The issues behind a number the reader clicked on the Legion tab, if they arrived by one.
   const picked = useMemo(() => readSelection(params), [params]);
   const items = useMemo(() => {
@@ -159,7 +170,16 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion);
+  // One scale for the Time per phase bars: the largest total among the rows the table lists.
+  const phaseHoursMax = useMemo(
+    () =>
+      items.reduce(
+        (most, item) => Math.max(most, item.phaseHours ? phaseHoursTotal(item.phaseHours) : 0),
+        0
+      ) || undefined,
+    [items]
+  );
+  const columns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion, phaseHoursMax);
 
   const table = useReactTable({
     data: items,
@@ -384,8 +404,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {unreadableAncestors > 0 ? (
           <p className={dangerText} role="alert">
-            Could not load {unreadableAncestors}{" "}
-            {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown epic.{" "}
+            {unreadableAncestors} {unreadableAncestors === 1 ? "parent" : "parents"} did not load.{" "}
+            <InfoHint label="About the parents that did not load">
+              A row whose parent did not load reads Unknown epic. Every other row is as it was.
+            </InfoHint>{" "}
             <button type="button" onClick={() => void ancestry.refetch()}>
               Retry loading ancestors
             </button>
@@ -398,7 +420,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {hasLegion && legion.isError ? (
           <p className={dangerText} role="alert">
-            Could not refresh Legion data.{" "}
+            Legion data did not refresh.{" "}
             <button type="button" onClick={() => void legion.refetch()}>
               Retry Legion data
             </button>
@@ -411,7 +433,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         <IssueTableStatus
           table={table}
           items={allItems}
-          epics={epics}
           hasLegion={hasLegion}
           board={legion.data}
         />
@@ -456,7 +477,13 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         </p>
         {interrupted ? (
           <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
-            <p>{interruptedDescription}</p>
+            <p>
+              {interruptedDescription}{" "}
+              <InfoHint label="About the unfinished action">
+                Finish reads the project again and sends only the steps that are left. Dismiss
+                forgets them. Writes already sent stand either way.
+              </InfoHint>
+            </p>
             <button
               type="button"
               onClick={finish}
@@ -475,8 +502,11 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {unansweredEpic ? (
           <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-            The selected issues have not been moved. Find the epic in the project before moving
-            them.{" "}
+            Nothing was moved into it.{" "}
+            <InfoHint label="About the epic with no answer">
+              Dispatch sent the epic and got no answer, so it may exist. Find it in the project
+              before you move issues into it.
+            </InfoHint>{" "}
             <button type="button" onClick={dismissUnansweredEpic}>
               Dismiss
             </button>

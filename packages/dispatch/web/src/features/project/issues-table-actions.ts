@@ -415,7 +415,7 @@ export function useIssueTableActions({
   const kinds: Record<TableAction["kind"], ResumableAction> = {
     newEpic: {
       describe: (record) =>
-        `New epic${record.target ? ` ${record.target}` : ""}: ${record.keys.join(", ")} are not yet adopted. Finish checks which open issues still need to move.`,
+        `New epic${record.target ? ` ${record.target}` : ""}: ${record.keys.join(", ")} not adopted.`,
       resume: async (record, current) => {
         // A creation still in Pending changes can be retried; one the reader discarded is gone
         // with its step, so there is no epic and nothing to adopt — Finish says which it is.
@@ -444,8 +444,7 @@ export function useIssueTableActions({
       },
     },
     startNext: {
-      describe: (record) =>
-        `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
+      describe: (record) => `Start next: ${record.keys.join(", ")} may not have moved up.`,
       resume: async (record, current) => {
         await runStartNext(
           record,
@@ -463,8 +462,7 @@ export function useIssueTableActions({
       },
     },
     merge: {
-      describe: (record) =>
-        `Merge ${record.source} into ${record.target}: remaining open issues, the merge reason and closing the source still need to be checked.`,
+      describe: (record) => `Merge ${record.source} into ${record.target}: unfinished.`,
       resume: async (record, current) => {
         if (current.find((issue) => issue.key === record.source)?.status === "done") return;
         const members = mergeMembers(current, record.source ?? "");

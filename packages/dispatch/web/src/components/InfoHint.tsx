@@ -2,7 +2,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import {
   borderDefault,
   card,
-  focusVisibleRing,
+  focusRingColour,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
@@ -37,11 +37,14 @@ export function InfoHint({
   };
   return (
     <>
+      {/* Below 1280px every button is 44px by 44px (styles.css), which is the hit area this
+          wants and far more circle than it wants to draw: the button itself draws nothing, and
+          the 16px circle inside it is the (i) the reader sees, at every width. */}
       <button
         aria-describedby={open ? textId : undefined}
         aria-expanded={open}
         aria-label={label}
-        className={`inline-flex size-5 shrink-0 items-center justify-center rounded-full border text-[0.625rem] leading-none font-semibold ${borderDefault} ${textMutedOnCanvas} ${focusVisibleRing}`}
+        className="group inline-flex size-5 shrink-0 items-center justify-center outline-none"
         onBlur={() => setHovered(false)}
         onClick={(event) => {
           // A header's own control: the press is the hint's, never the sort's.
@@ -54,7 +57,11 @@ export function InfoHint({
         ref={anchorRef}
         type="button"
       >
-        i
+        <span
+          className={`inline-flex size-4 items-center justify-center rounded-full border text-[0.625rem] leading-none font-semibold group-focus-visible:ring-2 ${borderDefault} ${textMutedOnCanvas} ${focusRingColour}`}
+        >
+          i
+        </span>
       </button>
       {open ? (
         <AnchoredPanel

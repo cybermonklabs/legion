@@ -562,10 +562,10 @@ Every data column sorts and filters; Title is typed text, other filters reuse `M
 
 When `GET /api/v1/settings/legion` names the project, the List subscribes to `legionBoardQuery` over the existing `/ws/live` socket.
 `buildItems` joins its board cards by key; the board's column ids, labels and order define Phase, and its queue cards replace the locally derived queue membership and positions.
-Phase is visible by default; Slot, Roles in a turn and CI verdict start hidden, and all four reuse the table's column filters and sorting.
+Phase is visible by default; Slot, Roles and CI start hidden, and all four reuse the table's column filters and sorting. Each of the four names itself in one word and holds its explanation in an `InfoHint` (`components/InfoHint.tsx`), which the column picker and Group by read past through `ColumnMeta.label`; a header carrying a control is drawn beside the sort control rather than inside it (`ColumnMeta.control`), so pressing the hint sorts nothing.
 A configured project awaiting its board has no derived queue fallback.
-The bar counts each issue once under its board phase or, without one, its Dispatch status, and shows the board header's slot use, cap and read time.
-When the board reports no event or heartbeat for 120 seconds, the bar keeps the last known facts and marks Legion data stale since the recorded update time, including the server's error.
+The bar's segments run in one lifecycle order, `LIFECYCLE_ORDER` in `issues-table-model.ts`: Triage, Icebox, Backlog, Todo, Queue, In progress, Design, Planning, Implementing, Testing, Needs review, Reviewing, Accepting, Merging, Waiting on a person, Held, Waiting on children, Other, Retro, Done. Each issue is counted once, an empty segment is not drawn, and the Phase column's filter, facet order and group headings read the same list. Testing is one segment for the Legion phase and the Dispatch status alike, and a press on it narrows to both; In progress and Needs review hold no Legion issue, since one the board does not hold yet counts under the phase its status stands for. Above the segments the bar reads as counts — queued, running, epics, slots in use against the cap — with the read time and what each count means in one hint.
+When the board reports no event or heartbeat for 120 seconds, the bar keeps the last known facts and reads `Stale since` the recorded update time, with the server's own error in its hint.
 The daemon settings control is on the Settings page, not the issues table; no second daemon reader or separate Legion view is offered.
 Without a Legion setting the table omits these columns and ignores their URL controls, preserving its Dispatch-derived queue.
 

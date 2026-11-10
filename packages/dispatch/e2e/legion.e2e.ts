@@ -34,9 +34,9 @@ test("the issues table shows the daemon's phases and issue facts @legion @phone"
     await page.goto(`/projects/${LEGION_PROJECT}`);
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
-    await expect(page.locator("[data-legion-slots]")).toHaveText("2 of 4 slots in use");
+    await expect(page.locator("[data-legion-slots]")).toHaveText("2/4 slots");
     await page.getByRole("button", { name: "Columns", exact: true }).click();
-    for (const name of ["Slot", "Roles in a turn", "CI verdict"]) {
+    for (const name of ["Slot", "Roles", "CI"]) {
       await page.getByRole("checkbox", { name, exact: true }).check();
     }
     await page.keyboard.press("Escape");
@@ -174,7 +174,7 @@ test("a project without a Legion setting gains phase columns when Settings names
   try {
     await page.goto(`/projects/${LEGION_PROJECT}`);
     await expect(page.getByRole("button", { name: "Board" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Phase", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("columnheader").filter({ hasText: /^Phase/ })).toHaveCount(0);
 
     // The Settings page, beside the Delivery settings.
     await page.goto("/settings");
@@ -194,7 +194,7 @@ test("a project without a Legion setting gains phase columns when Settings names
     // The project page offers no Legion view of its own (dispatch://INFRA-979): the issues
     // table carries the Legion columns.
     await page.goto(`/projects/${LEGION_PROJECT}`);
-    await expect(page.getByRole("button", { name: "Phase", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader").filter({ hasText: /^Phase/ })).toBeVisible();
     await expect(page.locator('[data-issue-row="ACME-1"] [data-legion-phase]')).toContainText(
       "Implementing"
     );
@@ -267,7 +267,7 @@ test("the Settings page refuses a bad daemon URL and Remove takes the phase colu
 
     await page.goto(`/projects/${LEGION_PROJECT}`);
     await expect(page.getByRole("button", { name: "Board" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Phase", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("columnheader").filter({ hasText: /^Phase/ })).toHaveCount(0);
   } finally {
     await context.close();
     await daemon.close();
@@ -342,7 +342,9 @@ test("the Legion tab says where the finished issues' time went, then each metric
   try {
     await page.goto(`/projects/${LEGION_PROJECT}/legion`);
     // One column, in the order a reader asks, each section with its headline line.
-    await expect(page.locator("[data-legion-section]")).toHaveCount(4);
+    // Six: the four metrics, the CI-and-deploys line under them and the finished issues'
+    // own table (`LegionSections.test.tsx` lists the same six).
+    await expect(page.locator("[data-legion-section]")).toHaveCount(6);
     const headline = (id: string) =>
       page.locator(`[data-legion-section="${id}"] [data-legion-headline]`);
     await expect(headline("phase_breakdown")).toContainText("2 issues finished");
@@ -365,7 +367,7 @@ test("the Legion tab says where the finished issues' time went, then each metric
 
     // Each chart has its axes, its legend and the two controls.
     const work = page.locator('[data-legion-section="work_time"]');
-    await expect(work.locator("[data-chart-unit]").first()).toHaveText("hours");
+    await expect(work.locator("[data-chart-unit]").first()).toContainText("hours");
     await expect(work.getByRole("group", { name: "Work time to merge view" })).toBeVisible();
     await expect(work.locator('select[data-chart-compare="Work time to merge"]')).toBeVisible();
 

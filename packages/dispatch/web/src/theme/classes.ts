@@ -1,5 +1,3 @@
-import type { IssueStatus } from "@legion/contracts/dispatch-tools";
-
 import type { Swatch } from "./palette";
 import * as P from "./palette";
 
@@ -153,6 +151,9 @@ export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
 export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
+/** The focus ring's colour with no `focus-visible:` of its own, for a ring a parent's
+ *  `group-focus-visible:` turns on (an icon drawn inside a larger hit area). */
+export const focusRingColour = "ring-sky-600 dark:ring-sky-400";
 /** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a
  * native `<select>` laid over a badge): the ring shows on the wrapper when the control has
  * keyboard focus. */
@@ -275,9 +276,9 @@ const ISSUE_STATUS_ROWS = [
     P.CARBON_GRAY_100,
   ],
 ] as const;
-export const issueStatusScale = Object.fromEntries(
+export const issueStatusScale: Record<string, string> = Object.fromEntries(
   ISSUE_STATUS_ROWS.map(([status, classes]) => [status, classes])
-) as Record<IssueStatus, string>;
+);
 for (const [status, , light, lightText, dark, darkText] of ISSUE_STATUS_ROWS) {
   registerText(`issue status scale: ${status}`, pair(lightText, darkText), pair(light, dark));
 }
@@ -921,6 +922,11 @@ export const errorCodeBlockText = "text-slate-900 dark:text-rose-300";
 /** A highlighted artifact card's accent ring: fixed both schemes, purely decorative (the card
  * also gets a background/border change elsewhere), so no contrast check applies. */
 export const highlightRing = "ring-2 ring-sky-400";
+
+/** The mark on the one segment of the issues bar the table is showing alone: a ring inside the
+ *  segment's own edges, so marking it moves nothing. Sits on whatever phase colour the segment
+ *  carries, which is why it is the canvas's own strongest ink rather than an accent. */
+export const pickedSegmentRing = "ring-2 ring-inset ring-slate-900 dark:ring-white";
 
 /** A composer reference chip's border: fixed both schemes (its `sky-800`/`sky-300` text is
  * `badgeMed.text`'s own values, reused directly; its hover border is `controlHoverBorder`). */

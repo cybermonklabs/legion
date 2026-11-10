@@ -25,15 +25,18 @@ opening a thread uses a full-height view with a bottom-pinned composer. Controls
 minimum touch targets.
 
 The project's List is one issues table. Projects with a Legion daemon setting also show Phase,
-including time in phase, and offer Slot, Roles in a turn and CI verdict in Columns (hidden by
-default). Phase groups and sorts in the workflow order the board route supplies; its queue
-positions replace Dispatch-derived positions. Each column uses the table's searchable filters.
-The bar counts each issue under its Legion phase, or under its Dispatch status when it has no
-phase, and shows the daemon's slots in use against its cap and last update. When no event or
-heartbeat has arrived for 120 seconds, the bar keeps the known rows and marks the Legion data
-stale since that update. `POST /api/v1/legion/events` updates columns, groups and the bar through
-`/ws/live`, without a reload or a second
-daemon reader. The daemon settings control is on the Settings page. Projects
+including time in phase, and offer Slot, Roles and CI in Columns (hidden by default). Each of
+those columns names itself in one word and keeps its explanation behind the (i) in its header.
+The bar above the table runs one lifecycle order — Triage, Icebox, Backlog, Todo, Queue, In
+progress, Design, Planning, Implementing, Testing, Needs review, Reviewing, Accepting, Merging,
+Waiting on a person, Held, Waiting on children, Other, Retro, Done — and counts each issue once.
+Phase groups and sorts in that order; its queue positions replace Dispatch-derived positions.
+Each column uses the table's searchable filters. Above the segments the bar reads as counts:
+queued, running, epics, and slots in use against the cap, with the read time in its hint. When
+no event or heartbeat has arrived for 120 seconds, the bar keeps the known rows and reads
+`Stale since` that update, the daemon's error behind its own hint.
+`POST /api/v1/legion/events` updates columns, groups and the bar through `/ws/live`, without a
+reload or a second daemon reader. The daemon settings control is on the Settings page. Projects
 without a Legion setting have no Legion columns and keep Dispatch-derived queue positions.
 
 The stored-observation browser coverage is `e2e/issues-table-legion.e2e.ts`, alongside

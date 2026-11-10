@@ -4,6 +4,7 @@ import {
   COLUMN_MIN,
   COLUMN_SIZES,
   COMPACT_COLUMN_MIN,
+  keyColumnWidth,
   PHONE_PINNED_SHARE,
   PINNED,
   PINNED_SHARE,
@@ -22,8 +23,21 @@ import { readLayout, writeLayout } from "./issues-table-storage";
  * height is what this sets. A scroll does none of these, and the virtualizer commits on every
  * visible range, so measuring there would be a reflow per scrolled row.
  */
-export function useTableLayout(project: string) {
-  const saved = useMemo(() => readLayout(project), [project]);
+export function useTableLayout(
+  project: string,
+  longestKeyChars = 0,
+  {
+    hiddenByDefault,
+    keyHoldsTitle = false,
+  }: {
+    /** Which columns this surface opens with hidden; a reader's own choice still wins. */
+    hiddenByDefault?: Readonly<Record<string, boolean>>;
+    /** Whether below 640 px the title is drawn under the key in the Key cell. The Key column
+     *  then takes the room the two shared, and the Title column is not pinned beside it. */
+    keyHoldsTitle?: boolean;
+  } = {}
+) {
+  const saved = useMemo(() => readLayout(project, hiddenByDefault), [project, hiddenByDefault]);
   const [sizing, setSizing] = useState<ColumnSizingState>(saved.sizing);
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
   const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);
@@ -48,17 +62,25 @@ export function useTableLayout(project: string) {
   }, [project, sizing, order, visibility]);
 
   const responsive = useMemo(() => {
+    // The Key column never cuts a key: its floor is what the project's longest key needs.
+    const keyFloor = longestKeyChars > 0 ? keyColumnWidth(longestKeyChars) : 0;
     const widths = Object.fromEntries(
       Object.entries(COLUMN_SIZES).map(([id, fallback]) => [
         id,
-        Math.max(COLUMN_MIN[id] ?? 116, sizing[id] ?? fallback),
+        Math.max(COLUMN_MIN[id] ?? 116, sizing[id] ?? fallback, id === "key" ? keyFloor : 0),
       ])
     );
     // On a phone the key and title are the row, so they take most of the box, leaving an edge of
     // the next column to show the table scrolls sideways; wider boxes keep room for the rest.
     const budget = boxWidth * (boxWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
     if (boxWidth < 640) {
-      widths.key = COMPACT_COLUMN_MIN.key ?? widths.key ?? 88;
+      widths.key = Math.max(COMPACT_COLUMN_MIN.key ?? widths.key ?? 88, keyFloor);
+      if (keyHoldsTitle) {
+        // The title is a second line inside the Key cell, so the key column takes the room the
+        // two had between them and the title column is left out of the pinned pair.
+        widths.key = Math.max(widths.key, budget - (widths.select ?? 44));
+        return { sizing: widths, pinned: ["select", "key"] };
+      }
       widths.title = Math.max(
         COMPACT_COLUMN_MIN.title ?? 120,
         Math.min(widths.title ?? 380, budget - (widths.select ?? 44) - (widths.key ?? 88))
@@ -74,7 +96,7 @@ export function useTableLayout(project: string) {
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && width() > budget) pinned.pop();
     return { sizing: widths, pinned };
-  }, [boxWidth, sizing]);
+  }, [boxWidth, sizing, longestKeyChars, keyHoldsTitle]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;

@@ -22,12 +22,17 @@ import {
   textMutedOnCanvas,
 } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
-import { useIssueTableColumns } from "./issues-table-columns";
-import { IssueTablePager } from "./issues-table-controls";
+import { buildIssuePath } from "../refs/routes";
+import { COLUMN_LABELS, useIssueTableColumns } from "./issues-table-columns";
+import { ColumnsMenu, IssueTablePager } from "./issues-table-controls";
 import { useProjectIssueItems } from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import { ALL_ROWS, type ColumnId, type Item, PAGE_SIZES } from "./issues-table-model";
 import { IssueRow, TableHeaderCell } from "./issues-table-rows";
+
+/** A grid that draws every row of its page measures none of them: nothing reads a row's height
+ *  when the box has no height of its own. */
+const NO_MEASURE = () => {};
 
 /** The width of the trailing cell every row keeps, where the Issues tab draws its hover action
  *  and a grid draws nothing: one table shape, so a column's width means the same on both. */
@@ -47,6 +52,9 @@ export interface GridColumn<Row> {
   readonly filter?: "picks" | "text" | false;
   readonly size?: number;
   readonly info?: string;
+  /** Whether this column stays on a narrow screen, where the rest go behind the column
+   *  picker. A grid with no primary column keeps every column at every width. */
+  readonly primary?: boolean;
 }
 
 /** What one row of a grid is made of: the caller's row, and the issue it names as the issues
@@ -133,6 +141,8 @@ export function IssueGrid<Row extends { key: string }>({
   pageSize = 50,
   empty,
   keyHref,
+  fit = "window",
+  primary,
 }: {
   project: string;
   /** The table's accessible name. */
@@ -148,10 +158,37 @@ export function IssueGrid<Row extends { key: string }>({
   empty?: ReactNode;
   /** Where a row's Key link goes; the issue's own page when absent. A keyboard open follows it. */
   keyHref?: (row: Row) => string;
+  /** How tall the table's box is. `window` is a measured box the rows scroll inside, which is
+   *  what a table that owns its page wants. `rows` is no box at all: the table grows to the
+   *  rows of its page and the page scrolls, which is what one section of a page wants. */
+  fit?: "window" | "rows";
+  /** The registry columns that stay below 640 px, beside the ones a `GridColumn` marks. A grid
+   *  that names none keeps every column at every width. */
+  primary?: readonly ColumnId[];
 }): ReactNode {
   const [params, setParams] = useSearchParams();
-  const layout = useTableLayout(layoutKey);
+  /** Which columns a narrow screen keeps: the caller's registry picks and its own columns that
+   *  ask for it. Empty means this grid has no narrow layout of its own. */
+  const primaryIds = useMemo(
+    () =>
+      new Set<string>([
+        ...(primary ?? []),
+        ...columns.flatMap((entry) =>
+          typeof entry !== "string" && entry.primary === true ? [entry.id] : []
+        ),
+      ]),
+    [columns, primary]
+  );
+  const layoutOptions = useMemo(() => ({ keyHoldsTitle: primaryIds.size > 0 }), [primaryIds.size]);
+  const layout = useTableLayout(
+    layoutKey,
+    useMemo(() => rows.reduce((most, row) => Math.max(most, row.key.length), 0), [rows]),
+    layoutOptions
+  );
   const { attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
+  /** Below 640 px, in a grid that named its primary columns: the key carries the title and the
+   *  rest of the columns wait in the picker. */
+  const narrow = boxWidth < 640 && primaryIds.size > 0;
   const userState = useQuery(userStateQuery());
   const registry = useAgentRegistry(false);
   const { allItems, hasLegion } = useProjectIssueItems(project, { wantsDone: true, registry });
@@ -175,20 +212,36 @@ export function IssueGrid<Row extends { key: string }>({
       if (typeof entry === "string") {
         const found = byId.get(entry);
         if (found === undefined) return [];
-        if (entry !== "key" || keyHref === undefined) return [found];
+        if (entry !== "key" || (keyHref === undefined && !narrow)) return [found];
         // The Key column goes where the caller sends it: the Legion tab's rows open an issue's
-        // timeline rather than its page, and the keyboard's open follows the same link.
+        // timeline rather than its page, and the keyboard's open follows the same link. Below
+        // 640 px it carries the title as a second line, because a row needs both and a phone
+        // has room for one column.
         return [
           {
             ...found,
             cell: ({ row }) => {
               const entryRow = rowFor.get(row.original.issue.key);
-              const href = entryRow === undefined ? undefined : keyHref(entryRow.row);
+              const href =
+                entryRow === undefined || keyHref === undefined
+                  ? buildIssuePath({ key: row.original.issue.key, kind: "issue" })
+                  : keyHref(entryRow.row);
               return (
-                <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
-                  <Link className={`${linkText} ${linkHoverText}`} data-issue-link to={href ?? "#"}>
-                    {row.original.issue.key}
-                  </Link>
+                <span className="flex min-w-0 flex-col gap-1">
+                  <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
+                    <Link className={`${linkText} ${linkHoverText}`} data-issue-link to={href}>
+                      {row.original.issue.key}
+                    </Link>
+                  </span>
+                  {narrow ? (
+                    <Link
+                      className={`line-clamp-2 min-w-0 break-words ${linkText} ${linkHoverText}`}
+                      data-grid-key-title
+                      to={href}
+                    >
+                      {row.original.issue.title}
+                    </Link>
+                  ) : null}
                 </span>
               );
             },
@@ -226,7 +279,16 @@ export function IssueGrid<Row extends { key: string }>({
                 },
           size: custom.size ?? 160,
           minSize: 116,
-          meta: { control: true, ...(custom.filter === "text" ? { text: true } : {}) },
+          meta: {
+            control: true,
+            // What the column picker calls it: its own header where that is words, else the
+            // registry's name for an id it shares, else the id.
+            label:
+              typeof custom.header === "string"
+                ? custom.header
+                : (COLUMN_LABELS[custom.id as ColumnId] ?? custom.id),
+            ...(custom.filter === "text" ? { text: true } : {}),
+          },
           cell: ({ row }) => {
             const found = rowFor.get(row.original.issue.key);
             if (found === undefined) return null;
@@ -237,7 +299,7 @@ export function IssueGrid<Row extends { key: string }>({
         } satisfies ColumnDef<Item>,
       ];
     });
-  }, [columns, registryColumns, rowFor, keyHref]);
+  }, [columns, registryColumns, rowFor, keyHref, narrow]);
 
   const shownIds = useMemo(() => tableColumns.map((column) => String(column.id)), [tableColumns]);
   const prefix = stateKey === undefined ? undefined : `${stateKey}.`;
@@ -275,6 +337,17 @@ export function IssueGrid<Row extends { key: string }>({
     pageIndex: 0,
     pageSize: pageSize === "all" ? ALL_ROWS : pageSize,
   });
+  /** What the table shows. Below 640 px in a grid with primary columns, everything that is
+   *  neither the key nor primary waits in the column picker, and the title is not a column at
+   *  all because the Key cell carries it. A column the reader has shown or hidden is theirs. */
+  const visibility = useMemo(() => {
+    if (!narrow) return layout.visibility;
+    const narrowed: Record<string, boolean> = {};
+    for (const id of shownIds) {
+      if (id !== "key" && !primaryIds.has(id)) narrowed[id] = false;
+    }
+    return { ...narrowed, ...layout.visibility, title: false };
+  }, [narrow, shownIds, primaryIds, layout.visibility]);
 
   const table = useReactTable({
     data: items,
@@ -282,7 +355,7 @@ export function IssueGrid<Row extends { key: string }>({
     state: {
       sorting,
       columnFilters: filters,
-      columnVisibility: layout.visibility,
+      columnVisibility: visibility,
       pagination,
       columnSizing: responsive.sizing,
       columnOrder: layout.order.filter((id) => shownIds.includes(id)),
@@ -305,14 +378,23 @@ export function IssueGrid<Row extends { key: string }>({
   });
 
   const pageRows = table.getRowModel().rows;
+  // A grid that grows to its rows draws every one of them: a page is at most 100 rows, and a
+  // virtualizer needs a scroll box of its own to measure against, which this mode has not.
   const virtualizer = useVirtualizer({
-    count: pageRows.length,
+    count: fit === "rows" ? 0 : pageRows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 64,
     getItemKey: (index) => pageRows[index]?.id ?? index,
     initialRect: { width: 1000, height: 600 },
     overscan: 12,
   });
+  const drawn =
+    fit === "rows"
+      ? pageRows.map((row, index) => ({ index, key: row.id }))
+      : virtualizer.getVirtualItems().map((virtual) => ({
+          index: virtual.index,
+          key: String(virtual.key),
+        }));
 
   const openColumn = columns.find(
     (entry) => typeof entry !== "string" && entry.id === openFilter
@@ -326,10 +408,15 @@ export function IssueGrid<Row extends { key: string }>({
   return (
     <div className="space-y-3">
       <div
-        className={`min-w-0 overflow-auto rounded-xl border ${borderDefault}`}
+        className={`min-w-0 rounded-xl border ${fit === "rows" ? "overflow-x-auto" : "overflow-auto"} ${borderDefault}`}
         ref={attachBox}
+        data-grid-fit={fit}
         data-testid="issue-grid-scroll"
-        style={{ height: boxHeight, overflowAnchor: "none", scrollPaddingTop: 64 }}
+        style={{
+          height: fit === "rows" ? undefined : boxHeight,
+          overflowAnchor: "none",
+          scrollPaddingTop: 64,
+        }}
       >
         <table
           aria-label={label}
@@ -362,22 +449,22 @@ export function IssueGrid<Row extends { key: string }>({
             ))}
           </thead>
           <tbody>
-            {virtualizer.getVirtualItems()[0] ? (
+            {fit === "rows" || drawn[0] === undefined ? null : (
               <tr aria-hidden style={{ height: virtualizer.getVirtualItems()[0]?.start ?? 0 }} />
-            ) : null}
-            {virtualizer.getVirtualItems().map((virtual) => {
-              const row = pageRows[virtual.index];
+            )}
+            {drawn.map(({ index, key }) => {
+              const row = pageRows[index];
               if (row === undefined) return null;
               return (
                 <IssueRow
-                  index={virtual.index}
-                  key={row.id}
-                  measure={virtualizer.measureElement}
+                  index={index}
+                  key={key}
+                  measure={fit === "rows" ? NO_MEASURE : virtualizer.measureElement}
                   row={row}
                 />
               );
             })}
-            {virtualizer.getVirtualItems().length > 0 ? (
+            {fit === "rows" || drawn.length === 0 ? null : (
               <tr
                 aria-hidden
                 style={{
@@ -385,7 +472,7 @@ export function IssueGrid<Row extends { key: string }>({
                     virtualizer.getTotalSize() - (virtualizer.getVirtualItems().at(-1)?.end ?? 0),
                 }}
               />
-            ) : null}
+            )}
           </tbody>
         </table>
         {pageRows.length === 0 ? (
@@ -394,9 +481,14 @@ export function IssueGrid<Row extends { key: string }>({
           </p>
         ) : null}
       </div>
-      {pagination.pageSize >= ALL_ROWS && items.length <= PAGE_SIZES[0] ? null : (
-        <IssueTablePager table={table} items={items} pagerRef={pagerRef} />
-      )}
+      <div className="flex flex-wrap items-center gap-3">
+        {pagination.pageSize >= ALL_ROWS && items.length <= PAGE_SIZES[0] ? (
+          <div className="flex-1" ref={pagerRef} />
+        ) : (
+          <IssueTablePager items={items} pagerRef={pagerRef} table={table} />
+        )}
+        <ColumnsMenu columns={table.getAllLeafColumns()} />
+      </div>
     </div>
   );
 }

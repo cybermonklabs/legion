@@ -1,5 +1,5 @@
 import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
-import { COLUMN_SIZES, PINNED } from "./issues-table-model";
+import { PINNED } from "./issues-table-model";
 
 /**
  * The one owner of what the table keeps in the browser for a project: the layout the reader
@@ -41,13 +41,10 @@ export interface TableAction {
  *  discarded in Pending changes. */
 export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-/** Phase is shown where a Legion daemon serves the project; Slot, Roles and CI wait in the
- *  column picker, as Updated does. */
-const EMPTY_LAYOUT: TableLayout = {
-  sizing: {},
-  order: [],
-  visibility: { updated: false, slot: false, roles: false, ci: false },
-};
+/** A table with nothing saved and no rule of its own: every column it holds is shown. Which
+ *  columns start hidden is the surface's own rule, not storage's, and travels in `readLayout`'s
+ *  second argument (the Issues tab's is `ISSUES_TAB_HIDDEN`). */
+const EMPTY_LAYOUT: TableLayout = { sizing: {}, order: [], visibility: {} };
 
 function readStore(project: string): Record<string, unknown> {
   try {
@@ -70,7 +67,15 @@ function writeStore(project: string, fields: Record<string, unknown>): void {
   }
 }
 
-export function readLayout(project: string): TableLayout {
+/**
+ * What the reader saved for this table, over what the surface starts with. `hiddenByDefault`
+ * is the surface's own rule — the Issues tab hides Updated and the Legion columns, a grid on a
+ * page hides nothing — and a column the reader has since shown or hidden wins over it.
+ *
+ * A width, an order and a visibility are kept for any column id, not only the registry's, so a
+ * grid's own column keeps what the reader did to it.
+ */
+export function readLayout(project: string, hiddenByDefault: VisibilityState = {}): TableLayout {
   const saved = readStore(project);
   const asRecord = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value)
@@ -78,30 +83,29 @@ export function readLayout(project: string): TableLayout {
       : {};
   const sizing = Object.fromEntries(
     Object.entries(asRecord(saved.sizing)).filter(
-      ([id, size]) =>
-        id in COLUMN_SIZES &&
-        typeof size === "number" &&
-        Number.isFinite(size) &&
-        size >= 36 &&
-        size <= 2000
+      ([, size]) => typeof size === "number" && Number.isFinite(size) && size >= 36 && size <= 2000
     )
   );
   const order = Array.isArray(saved.order)
     ? [
         ...new Set<string>(
-          saved.order.filter((id: unknown) => typeof id === "string" && id in COLUMN_SIZES)
+          saved.order.filter((id: unknown): id is string => typeof id === "string")
         ),
       ]
     : [];
   const visibility = Object.fromEntries(
     Object.entries(asRecord(saved.visibility)).filter(
-      ([id, visible]) => id in COLUMN_SIZES && !PINNED.includes(id) && typeof visible === "boolean"
+      ([id, visible]) => !PINNED.includes(id) && typeof visible === "boolean"
     )
   );
   return {
     sizing: sizing as ColumnSizingState,
     order,
-    visibility: { ...EMPTY_LAYOUT.visibility, ...visibility } as VisibilityState,
+    visibility: {
+      ...EMPTY_LAYOUT.visibility,
+      ...hiddenByDefault,
+      ...visibility,
+    } as VisibilityState,
   };
 }
 

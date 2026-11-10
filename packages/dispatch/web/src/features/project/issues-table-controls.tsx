@@ -4,6 +4,7 @@ import { type ReactNode, type RefObject, useCallback, useRef, useState } from "r
 import { useSearchParams } from "react-router-dom";
 import type { IssueSummary, LegionBoardResponse } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
+import { InfoHint } from "../../components/InfoHint";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
@@ -12,6 +13,7 @@ import {
   dangerText,
   issueStatusScale,
   legionPhaseScale,
+  pickedSegmentRing,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
@@ -22,15 +24,14 @@ import {
 } from "../../theme/classes";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
+import { columnLabel } from "./issues-table-columns";
 import {
   ALL_ROWS,
   countIssueStates,
   defaultView,
   type Item,
-  NO_PHASE,
   PAGE_SIZES,
   readUrl,
-  runningIssueStatuses,
   writeUrl,
 } from "./issues-table-model";
 
@@ -60,7 +61,7 @@ export function ColumnFilter({
   onOpenChange: (open: boolean) => void;
 }): ReactNode {
   const meta = column.columnDef.meta;
-  const name = String(column.columnDef.header);
+  const name = columnLabel(column);
   if (meta?.text) {
     const value = (column.getFilterValue() as string | undefined) ?? "";
     return (
@@ -208,7 +209,7 @@ export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): 
                 onChange={column.getToggleVisibilityHandler()}
                 type="checkbox"
               />
-              {String(column.columnDef.header)}
+              {columnLabel(column)}
             </label>
           ))
       }
@@ -237,117 +238,176 @@ export function Action({
   );
 }
 
+/** A state's colour: a Legion phase runs on the phase scale, a Dispatch status on its own. */
+const scaleOf = (column: string): Readonly<Record<string, string>> =>
+  column === "phase" ? legionPhaseScale : issueStatusScale;
+
+/**
+ * Each segment's width as a percentage of the bar, from the counts: its share of the issues,
+ * never under `floorPercent` of the bar, so a count of one is still wide enough to press and
+ * to read. The segments together are the whole bar, so none of it is cut off: what the floors
+ * take, the segments above the floor give, which is why the share each of those keeps is
+ * settled by raising one segment to the floor at a time.
+ */
+export function segmentWidths(counts: readonly number[], floorPercent = 3): number[] {
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  if (total <= 0) return counts.map(() => 100 / Math.max(counts.length, 1));
+  const widths = counts.map((count) => (100 * count) / total);
+  const atFloor = new Set<number>();
+  for (;;) {
+    const room = 100 - atFloor.size * floorPercent;
+    const rest = widths.reduce((sum, width, index) => (atFloor.has(index) ? sum : sum + width), 0);
+    const under = widths.findIndex(
+      (width, index) => !atFloor.has(index) && (rest <= 0 || (room * width) / rest < floorPercent)
+    );
+    if (under === -1) {
+      return widths.map((width, index) =>
+        atFloor.has(index) ? floorPercent : rest <= 0 ? room / widths.length : (room * width) / rest
+      );
+    }
+    atFloor.add(under);
+  }
+}
+
 export function IssueTableStatus({
   table,
   items,
-  epics,
   hasLegion = false,
   board,
 }: {
   table: Table<Item>;
   items: readonly Item[];
-  epics: readonly IssueSummary[];
   hasLegion?: boolean;
   board?: LegionBoardResponse;
 }): ReactNode {
-  const stateCounts = countIssueStates(items);
-  let queuedCount = 0;
-  let runningCount = 0;
-  for (const item of items) {
-    if (item.queue !== undefined) queuedCount += 1;
-    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
-  }
+  // Only the states with issues behind them: an empty phase is neither a segment nor a legend
+  // item. The order is the lifecycle's, from `countIssueStates`.
+  const shown = countIssueStates(items).filter(({ count }) => count > 0);
+  const widths = segmentWidths(shown.map(({ count }) => count));
+  const filterOf = (column: string) =>
+    (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
+  /** This state is among those the table lists: every one, while nothing is picked. */
+  const isLit = (column: string, id: string) => {
+    const current = filterOf(column);
+    return current.length === 0 || current.includes(id);
+  };
+  /** The table shows this state alone, which is what a second press undoes. */
+  const isPicked = (column: string, id: string) => {
+    const current = filterOf(column);
+    return current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
+  };
+  /** Show this state alone, or every state again where it is the one already shown. The
+   *  segment and its legend item do the same thing. */
+  const pick = (column: string, id: string) => {
+    const entry = shown.find((state) => state.column === column && state.id === id);
+    if (entry === undefined) return;
+    const wanted = hasLegion ? entry.picks : { status: entry.picks.status ?? [id] };
+    const undo = isPicked(column, id);
+    table.setColumnFilters((filters) => {
+      const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
+      if (undo) return next;
+      return [
+        ...next,
+        ...(wanted.phase === undefined ? [] : [{ id: "phase", value: [...wanted.phase] }]),
+        ...(wanted.status === undefined ? [] : [{ id: "status", value: [...wanted.status] }]),
+      ];
+    });
+  };
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div
         className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
       >
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in Legion's
-          queue
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
-          {epics.length === 1 ? "epic" : "epics"}
-        </span>
         {hasLegion && board ? (
           <>
             <span data-legion-slots>
-              {board.header.slots_in_use} of {board.header.slot_cap ?? "an unknown number of"} slots
-              in use
+              <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>
+                {board.header.slots_in_use}/{board.header.slot_cap ?? "?"}
+              </b>{" "}
+              slots
             </span>
             {board.header.read_ok && board.header.read_at ? (
-              <span className={`text-xs ${textMutedOnCanvas}`} data-legion-read-at>
-                Read{" "}
-                <time dateTime={board.header.read_at}>
-                  {new Date(board.header.read_at).toLocaleString()}
-                </time>
+              <span data-legion-read-at>
+                <InfoHint label="About these counts">
+                  Slots counts the workers at work. The second number is the most workers the daemon
+                  runs at once. The bar below counts every issue on this page. Each colour is one
+                  phase, and its width is its share of the issues. The list under the bar names each
+                  colour. Press a colour to show only that phase. Dispatch read the daemon at{" "}
+                  <time dateTime={board.header.read_at}>
+                    {new Date(board.header.read_at).toLocaleString()}
+                  </time>
+                  .
+                </InfoHint>
               </span>
             ) : (
               <span role="status" className={`text-xs ${dangerText}`} data-legion-read-error>
                 {board.header.read_at ? (
                   <>
-                    Legion data is stale since{" "}
+                    Stale since{" "}
                     <time dateTime={board.header.read_at}>
                       {new Date(board.header.read_at).toLocaleString()}
                     </time>
                   </>
                 ) : (
-                  "Legion data is stale: the daemon has never answered"
+                  "Stale: the daemon has never answered"
                 )}
-                {board.header.read_error ? `: ${board.header.read_error}` : ""}
+                {board.header.read_error ? (
+                  <InfoHint label="About the stale data">{board.header.read_error}</InfoHint>
+                ) : null}
               </span>
             )}
           </>
         ) : null}
       </div>
+      {/* The bar is colour alone: at fifteen phases a segment is too narrow for a word, and a
+          bare count names nothing. The legend under it carries the names, and is the touch
+          target for each phase (the page's 44px control minimum is off on the segments). */}
       <fieldset
         aria-label={hasLegion ? "Issues by phase or status" : "Issues by status"}
-        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+        className={`flex h-6 min-w-0 overflow-hidden rounded-md border-0 p-0 md:h-5 ${surfaceMutedBg}`}
         role={hasLegion ? "group" : undefined}
       >
-        {stateCounts.map(({ id, label, column, count, picks }) => {
-          const current = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
-          const on = current.length === 0 || current.includes(id);
-          const wanted = hasLegion ? picks : { status: picks.status ?? [id] };
-          // Pressed again, the segment lets every state through rather than narrowing further.
-          const showsThisAlone =
-            current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
-          const scale: Readonly<Record<string, string>> =
-            column === "phase" ? legionPhaseScale : issueStatusScale;
-          return (
+        {shown.map(({ id, label, column, count }, index) => (
+          <button
+            aria-label={`${label} ${count}`}
+            className={`h-full p-0 ${scaleOf(column)[id] ?? ""} ${
+              isPicked(column, id) ? pickedSegmentRing : isLit(column, id) ? "" : "opacity-30"
+            }`}
+            key={`${column}:${id}`}
+            onClick={() => pick(column, id)}
+            style={{ width: `${widths[index] ?? 0}%`, minWidth: 0, minHeight: 0 }}
+            title={`${label}: ${count}`}
+            type="button"
+          />
+        ))}
+      </fieldset>
+      <ul
+        aria-label={hasLegion ? "Phases and statuses" : "Statuses"}
+        className="mt-1 flex flex-wrap gap-x-1"
+        data-issues-legend
+      >
+        {shown.map(({ id, label, column, count }) => (
+          <li key={`${column}:${id}`}>
             <button
-              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${scale[id] ?? ""} ${on ? "" : "opacity-30"}`}
-              key={`${column}:${id}`}
-              onClick={() =>
-                table.setColumnFilters((filters) => {
-                  const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
-                  if (showsThisAlone) return next;
-                  return [
-                    ...next,
-                    ...(wanted.phase === undefined
-                      ? []
-                      : [{ id: "phase", value: [...wanted.phase] }]),
-                    ...(wanted.status === undefined
-                      ? []
-                      : [{ id: "status", value: [...wanted.status] }]),
-                  ];
-                })
-              }
-              title={`${label}: ${count}`}
-              // Each segment takes width in proportion to its count, so the bar spans the box
-              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead.
-              style={{ flexGrow: count }}
+              aria-label={`${label}: ${count}`}
+              aria-pressed={isPicked(column, id)}
+              className={`inline-flex min-h-11 items-center gap-1.5 rounded px-2 text-xs whitespace-nowrap md:min-h-7 ${surfaceMutedHoverBg} ${
+                isPicked(column, id)
+                  ? `font-semibold ${textPrimaryOnCanvas}`
+                  : textSecondaryOnCanvas
+              } ${isLit(column, id) ? "" : "opacity-50"}`}
+              onClick={() => pick(column, id)}
               type="button"
             >
-              {label} {count}
+              <span
+                aria-hidden="true"
+                className={`size-3 shrink-0 rounded-sm ${scaleOf(column)[id] ?? ""}`}
+              />
+              {label} <span className="tabular-nums">{count}</span>
             </button>
-          );
-        })}
-      </fieldset>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -375,11 +435,15 @@ export function IssueTableToolbar({
           onChange={(event) => {
             setSearch(event.target.value);
           }}
-          placeholder="Search issues: key, title, epic, assignee, author, labels"
+          placeholder="Search issues"
           type="search"
           value={search}
           maxLength={SEARCH_QUERY_MAX}
         />
+        <InfoHint label="About the search">
+          The search reads the key, the title, the epic, the assignee, the author and the labels. A
+          row must match every word.
+        </InfoHint>
         <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
           Group by
           <select
@@ -396,7 +460,7 @@ export function IssueTableToolbar({
               .filter((column) => column.getCanGroup())
               .map((column) => (
                 <option key={column.id} value={column.id}>
-                  {String(column.columnDef.header)}
+                  {columnLabel(column)}
                 </option>
               ))}
           </select>

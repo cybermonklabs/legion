@@ -356,10 +356,22 @@ const legionBoard: LegionBoardResponse = {
       ],
     },
   ],
+  phase_hours: { "CORE-2": { implementing: 6, planning: 2 } },
   settings: {},
   setting_sources: {},
   computed_at: "2026-09-10T00:00:00Z",
 };
+
+test("an issue's hours by phase come from the board, and an issue without them has none", () => {
+  const rows = buildItems(
+    [1, 2].map((n) => issue(`CORE-${n}`)),
+    (actor) => actor.id,
+    [],
+    undefined,
+    legionBoard
+  );
+  expect(rows.map((row) => row.phaseHours)).toEqual([undefined, { implementing: 6, planning: 2 }]);
+});
 
 test("the daemon queue replaces Dispatch rank, including membership, without a derived fallback", () => {
   const issues = [1, 2, 3, 4, 5].map((n) => issue(`CORE-${n}`, { labels: ["legion"] }));
@@ -394,7 +406,7 @@ test("phase facets and workflow ordering come from the board, not alphabetical o
     rows
       .filter((row) =>
         matchesFilters(row, [
-          { id: "slot", value: ["slot 0"] },
+          { id: "slot", value: ["0"] },
           { id: "roles", value: ["implementer"] },
           { id: "ci", value: ["failing"] },
         ])

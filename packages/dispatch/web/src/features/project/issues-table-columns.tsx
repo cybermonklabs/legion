@@ -1,11 +1,13 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { InfoHint } from "../../components/InfoHint";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
+  borderDefault,
   checkboxAccent,
   linkHoverText,
   linkText,
@@ -31,11 +33,12 @@ import {
   formatPhaseTime,
   type Item,
   legionPhaseLabel,
-  legionRolesText,
   legionSlotText,
+  legionSlotValue,
   matchesFilters,
   NO_PHASE,
 } from "./issues-table-model";
+import { PhaseHoursBar, phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {
@@ -51,6 +54,9 @@ declare module "@tanstack/react-table" {
     /** The header holds a control of its own — a hint, a switch — so it is drawn beside the
      *  sort button rather than inside it: a press on that control sorts nothing. */
     control?: boolean;
+    /** The column's own name in words, for a header that draws more than its name: the column
+     *  picker and the Group by list read it rather than the header node. */
+    label?: string;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
@@ -58,13 +64,53 @@ declare module "@tanstack/react-table" {
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
 
+/** A header that says what the column is, with what it means behind an (i). */
+function HeaderWithHint({ children, hint }: { children: string; hint: string }): ReactNode {
+  return (
+    <span className="flex items-center gap-1">
+      {children}
+      <InfoHint label={`About ${children}`}>{hint}</InfoHint>
+    </span>
+  );
+}
+
+/** Each column's name in words: the column picker, the Group by list and a header's hint read
+ *  it, so a column whose header draws a control still has one name. */
+export const COLUMN_LABELS: Record<ColumnId, string> = {
+  asks: "Open asks",
+  assignee: "Assignee",
+  author: "Created by",
+  ci: "CI",
+  phase_hours: "Time per phase",
+  claim: "Claimed by",
+  created: "Created",
+  epic: "Epic",
+  key: "Key",
+  labels: "Labels",
+  phase: "Phase",
+  priority: "Priority",
+  queue: "Queue",
+  roles: "Roles",
+  select: "Select",
+  slot: "Slot",
+  status: "Status",
+  title: "Title",
+  updated: "Updated",
+};
+/** What a list of columns calls one: its registry label, else whatever its header says. */
+export const columnLabel = (column: { id: string; columnDef: ColumnDef<Item> }): string =>
+  column.columnDef.meta?.label ?? String(column.columnDef.header ?? column.id);
+
 /** How each column renders and sorts, for the reader `userState` describes. Keyed by the
  *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
  *  else about a column — whether it filters, what a row files under, what it groups by, how
  *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
  *  never disagree. */
 const renderings = (
-  userState: UserState | undefined
+  userState: UserState | undefined,
+  phaseMode: "hours" | "share",
+  setPhaseMode: (mode: "hours" | "share") => void,
+  phaseHoursMax: number | undefined
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -181,13 +227,18 @@ const renderings = (
     cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
   },
   phase: {
-    header: "Phase",
+    header: () => (
+      <HeaderWithHint hint="The board column the daemon holds the issue in, and how long it has stood there.">
+        Phase
+      </HeaderWithHint>
+    ),
     accessorFn: (item) => item.legion?.id ?? NO_PHASE,
     sortingFn: (a, b) =>
       (a.original.legion?.order ?? Number.MAX_SAFE_INTEGER) -
         (b.original.legion?.order ?? Number.MAX_SAFE_INTEGER) ||
       (a.original.queue ?? Number.MAX_SAFE_INTEGER) - (b.original.queue ?? Number.MAX_SAFE_INTEGER),
     sortDescFirst: false,
+    meta: { control: true },
     cell: ({ row }) =>
       row.original.legion ? (
         <LegionPhaseCell phase={row.original.legion} />
@@ -196,27 +247,83 @@ const renderings = (
       ),
   },
   slot: {
-    header: "Slot",
+    header: () => (
+      <HeaderWithHint hint="The worker slot the issue holds. A child holds its tree root's slot.">
+        Slot
+      </HeaderWithHint>
+    ),
     // A child holds its root's slot, so it sorts and reads by that slot too.
     accessorFn: (item) =>
       item.legion ? (item.legion.card.slot ?? item.legion.card.tree_slot ?? undefined) : undefined,
     sortUndefined: "last",
     sortDescFirst: false,
+    meta: { control: true },
     cell: ({ row }) => (
-      <span className="tabular-nums" data-legion-fact="slot">
-        {row.original.legion ? legionSlotText(row.original.legion.card) : "No slot"}
+      <span
+        className="tabular-nums"
+        data-legion-fact="slot"
+        // A child works in its tree root's slot, which the number alone does not say.
+        title={row.original.legion ? legionSlotText(row.original.legion.card) : undefined}
+      >
+        {legionSlotValue(row.original)}
       </span>
     ),
   },
   roles: {
-    header: "Roles in a turn",
-    accessorFn: (item) => (item.legion ? legionRolesText(item.legion.card) : NO_PHASE),
+    header: () => (
+      <HeaderWithHint hint="The roles that are in a turn on this issue now. None reads as between turns.">
+        Roles
+      </HeaderWithHint>
+    ),
+    accessorFn: (item) =>
+      item.legion === undefined
+        ? NO_PHASE
+        : item.legion.card.roles.length === 0
+          ? "between turns"
+          : item.legion.card.roles.join(", "),
+    meta: { control: true },
     cell: ({ getValue }) => <span data-legion-fact="roles">{getValue<string>()}</span>,
   },
   ci: {
-    header: "CI verdict",
+    header: () => (
+      <HeaderWithHint hint="What the issue's pull request checks said when the daemon last read them.">
+        CI
+      </HeaderWithHint>
+    ),
     accessorFn: (item) => item.legion?.card.checks_verdict ?? "No verdict",
+    meta: { control: true },
     cell: ({ getValue }) => <span data-legion-fact="checks">{getValue<string>()}</span>,
+  },
+  phase_hours: {
+    header: () => (
+      <span className="flex items-center gap-1">
+        Time per phase
+        <InfoHint label="About time per phase">
+          The hours Legion spent on the issue, by phase. Hours draws every bar against the longest
+          on the page. Share draws every bar full length, each block its own share.
+        </InfoHint>
+        <button
+          aria-label={`Show ${phaseMode === "hours" ? "shares" : "hours"}`}
+          className={`rounded border px-1 text-[0.625rem] ${borderDefault}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setPhaseMode(phaseMode === "hours" ? "share" : "hours");
+          }}
+          type="button"
+        >
+          {phaseMode === "hours" ? "Hours" : "Share"}
+        </button>
+      </span>
+    ),
+    accessorFn: (item) => (item.phaseHours ? phaseHoursTotal(item.phaseHours) : undefined),
+    sortUndefined: "last",
+    sortDescFirst: true,
+    enableColumnFilter: false,
+    meta: { control: true },
+    cell: ({ row }) =>
+      row.original.phaseHours === undefined ? null : (
+        <PhaseHoursBar hours={row.original.phaseHours} max={phaseHoursMax} mode={phaseMode} />
+      ),
   },
   epic: {
     header: "Epic",
@@ -297,10 +404,14 @@ export const LEGION_COLUMNS: readonly ColumnId[] = ["phase", "slot", "roles", "c
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
-  hasLegion = false
+  hasLegion = false,
+  /** The largest total of the rows on the page, so every bar of the Time per phase column is
+   *  drawn against one scale. */
+  phaseHoursMax?: number
 ): ColumnDef<Item>[] {
+  const [phaseMode, setPhaseMode] = useState<"hours" | "share">("hours");
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState);
+    const rendering = renderings(userState, phaseMode, setPhaseMode, phaseHoursMax);
     const shown = hasLegion ? COLUMNS : COLUMNS.filter((c) => !LEGION_COLUMNS.includes(c.id));
     return shown.map((column) => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
@@ -316,6 +427,8 @@ export function useIssueTableColumns(
         ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
         ...(column.filter === undefined ? {} : { filterFn: picks ? inPicks : "includesString" }),
         meta: {
+          label: COLUMN_LABELS[column.id],
+          ...rendering[column.id]?.meta,
           ...(column.filter?.kind === "text" ? { text: true } : {}),
           ...(picks?.order === undefined ? {} : { order: picks.order }),
           ...(picks?.show === undefined ? {} : { show: picks.show }),
@@ -323,7 +436,7 @@ export function useIssueTableColumns(
         },
       };
     });
-  }, [userState, compact, hasLegion]);
+  }, [userState, compact, hasLegion, phaseMode, phaseHoursMax]);
 }
 
 /** A Legion phase as the issues table writes it: the board column's label, the time in phase,

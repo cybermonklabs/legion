@@ -265,7 +265,7 @@ test("an epic creation committed without an answer never sends parent writes to 
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   await named;
   expect((await screen.findByTestId("landed-without-answer")).textContent).toContain(
-    "The selected issues have not been moved"
+    "Nothing was moved into it"
   );
   expect(send).not.toHaveBeenCalled();
   expect(
@@ -354,7 +354,7 @@ test("a stopped epic creation retries its committed request under the same key",
   expect(created.size).toBe(1);
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   const recovery = screen.getByRole("region", { name: "Interrupted table action" });
-  expect(recovery.textContent).toContain("not yet adopted");
+  expect(recovery.textContent).toContain("not adopted");
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() => expect(rows[0]?.parent).toBe("CORE-9"));
   await waitFor(() =>
@@ -706,7 +706,7 @@ test("ancestor reads have one retry policy rather than multiplying inner and out
   client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
     issue("CORE-1", { parent: "CORE-9" }),
   ]);
-  await screen.findByText(/Could not load 1 ancestor;/);
+  await screen.findByText(/1 parent did not load\./);
   expect(get.mock.calls.length).toBe(3);
 });
 
@@ -789,6 +789,50 @@ test("the status bar has no Done cell while closed issues are unloaded", async (
   expect(within(bar).queryByText(/Done/)).toBeNull();
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   expect(screen.getByRole("option", { name: "Done, not loaded" })).toBeDefined();
+});
+
+// The bar is colour alone, so the legend under it is what says which colour is which state,
+// and pressing a legend item is pressing its segment.
+test("the legend names each state the bar draws, in the bar's order, and the segments say nothing", async () => {
+  table([
+    issue("CORE-1", { status: "todo" }),
+    issue("CORE-2", { status: "in_progress" }),
+    issue("CORE-3", { status: "in_progress" }),
+  ]);
+  const bar = await screen.findByRole("group", { name: "Issues by status" });
+  expect([...bar.querySelectorAll("button")].map((segment) => segment.textContent)).toEqual([
+    "",
+    "",
+  ]);
+  const legend = screen.getByRole("list", { name: "Statuses" });
+  expect([...legend.querySelectorAll("button")].map((item) => item.textContent?.trim())).toEqual([
+    "Todo 1",
+    "In progress 2",
+  ]);
+});
+
+test("pressing a legend item shows that state alone, and pressing it again shows every state", async () => {
+  const user = userEvent.setup();
+  table([
+    issue("CORE-1", { status: "todo" }),
+    issue("CORE-2", { status: "in_progress" }),
+    issue("CORE-3", { status: "in_progress" }),
+  ]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const item = screen.getByRole("button", { name: "In progress: 2" });
+  await user.click(item);
+  await waitFor(() => expect(document.querySelectorAll("[data-issue-row]").length).toBe(2));
+  expect(item.getAttribute("aria-pressed")).toBe("true");
+  // The bar marks the segment the table is showing alone.
+  const bar = screen.getByRole("group", { name: "Issues by status" });
+  expect(
+    [...bar.querySelectorAll("button")].filter((segment) =>
+      segment.className.includes("ring-inset")
+    ).length
+  ).toBe(1);
+  await user.click(item);
+  await waitFor(() => expect(document.querySelectorAll("[data-issue-row]").length).toBe(3));
+  expect(item.getAttribute("aria-pressed")).toBe("false");
 });
 
 test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still opens that view", async () => {
@@ -1540,7 +1584,7 @@ test("one unreadable ancestor leaves every other row its epic", async () => {
       issue(`CORE-${index + 1}`, { parent: index === 0 ? "CORE-99" : `CORE-${100 + index}` })
     )
   );
-  expect((await screen.findByRole("alert")).textContent).toContain("Could not load 1 ancestor");
+  expect((await screen.findByRole("alert")).textContent).toContain("1 parent did not load");
   await waitFor(() => expect(screen.getAllByText("Unknown epic").length).toBe(1));
 });
 

@@ -22,6 +22,9 @@ export interface Item {
     readonly label: string;
     readonly order: number;
   };
+  /** The issue's hours by Legion phase, from the board's own `phase_hours`; absent for an
+   *  issue with no phase work and for every issue of a project with no daemon. */
+  readonly phaseHours?: Readonly<Record<string, number>>;
   readonly queue?: number;
   readonly epic: string;
   readonly epicKey?: string;
@@ -34,7 +37,9 @@ export interface Item {
 }
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
 export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
-export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
+/** The page sizes the pager offers. 10 is here for a grid that is one section of a page, where
+ *  a page of rows stands in the page's own flow rather than in a box of its own. */
+export const PAGE_SIZES = [10, 25, 50, 100, ALL_ROWS];
 /** The statuses an issue is being worked in, as the status bar counts them. */
 export const runningIssueStatuses: readonly IssueStatus[] = [
   "in_progress",
@@ -91,6 +96,7 @@ export type ColumnId =
   | "slot"
   | "roles"
   | "ci"
+  | "phase_hours"
   | "epic"
   | "assignee"
   | "author"
@@ -208,6 +214,13 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   if (hours < 24) return `${hours} h ${minutes % 60} m`;
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
+/** The Slot column's value: the slot number the issue works in, its tree root's for a child,
+ *  as text. A row with no slot, and every row of a project with no daemon, reads "No slot". */
+export function legionSlotValue(item: Item): string {
+  const card = item.legion?.card;
+  const slot = card?.slot ?? card?.tree_slot;
+  return slot === undefined || slot === null ? "No slot" : String(slot);
+}
 /** A Legion phase's label as the views write it: the board column's label, and "(retro)" after
  *  Merging while the issue is in retro, whose turn is the implementer's, so a Merging issue with
  *  the implementer in a turn reads as what it is. */
@@ -310,9 +323,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "slot",
     size: 96,
     min: 116,
-    filter: one((item) => (item.legion ? legionSlotText(item.legion.card) : NO_PHASE), {
-      groups: false,
-    }),
+    filter: one((item) => legionSlotValue(item), { groups: false }),
   },
   {
     id: "roles",
@@ -332,6 +343,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 164,
     filter: one((item) => item.legion?.card.checks_verdict ?? "No verdict", { groups: false }),
   },
+  // Sorted by the hours it draws and filtered by nothing: a bar is read, not picked from.
+  { id: "phase_hours", size: 220, min: 160 },
   { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
   {
     id: "assignee",
@@ -407,9 +420,30 @@ export const COMPACT_COLUMN_MIN: Readonly<Record<string, number>> = Object.fromE
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
   )
 );
+/**
+ * The width the Key column needs to write a key of `chars` characters in full, at any box
+ * width: the glyphs at the cell's 12px monospace type, the cell's padding, and the room the
+ * unread dot takes beside them. A key cut to "INFRA-255…" names no issue, so this is a floor
+ * the phone layout keeps as the wide one does.
+ */
+export function keyColumnWidth(chars: number): number {
+  return Math.min(176, Math.ceil(chars * 7.4) + 34);
+}
+
 export const PINNED: readonly string[] = COLUMNS.filter((column) => column.pinned).map(
   (column) => column.id
 );
+/** The columns the Issues tab opens with hidden, until the reader shows them in the column
+ *  picker: Phase is shown where a Legion daemon serves the project; Slot, Roles, CI and Time
+ *  per phase wait there, as Updated does. The tab's own rule, not every table's: a grid on a
+ *  page shows every column its caller named. */
+export const ISSUES_TAB_HIDDEN: Readonly<Record<string, boolean>> = {
+  updated: false,
+  slot: false,
+  roles: false,
+  ci: false,
+  phase_hours: false,
+};
 /** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
  *  and title are what identify a row, so they take most of it. */
 export const PINNED_SHARE = 0.6;
@@ -494,6 +528,7 @@ export function buildItems(
     return {
       issue,
       legion: legion.get(issue.key),
+      phaseHours: board?.phase_hours?.[issue.key],
       queue: positions.get(issue.key),
       epic: epicName,
       epicKey: epic?.key,
