@@ -16,13 +16,14 @@ import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { liveTextQueryOptions } from "../doc/live-text";
 import {
   DOCUMENT_DRAWN_ATTRIBUTE,
   ProofDocument,
   type ProofDocumentProps,
 } from "../doc/ProofDocument";
-import { BLOCK_ID_ATTRIBUTE, scrollBlockToTop } from "../doc/scroll-block";
+import { scrollBlockToTop } from "../doc/scroll-block";
 import { holdSection, type SectionHold } from "./pane-placement";
 
 /**

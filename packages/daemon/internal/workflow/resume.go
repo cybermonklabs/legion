@@ -44,16 +44,18 @@ import (
 // again, and a queued root's members are started by the promotion that opens the tree, which
 // gives each mid-phase member its own start (admit's startMidPhaseMembers): a start queued here
 // instead would re-point the claim at a tree with no lifecycle, and would put the member in the
-// line's first part ahead of its own root. It is the lifecycle rather than the root's slot
-// because a slot now counts one issue at work, and a running tree holds none of its own while
-// its issues wait in the line.
+// line's first part ahead of its own root. It is the lifecycle rather than the root's row
+// because a row says the daemon has started that one issue and nothing about the tree: a root
+// that arrived from another tree carries one while the tree of its own has still to be opened
+// (record.KeepsSlot).
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
-// mid-phase child, through the outbox's start like every other start (StartOrOwe): its claim is
-// resumed by rule at once, and the task that carries its phase on (ResumePhaseTask, the merger's
-// with the head its round approved) waits for the issue's slot; the outbox does not deliver it
-// to a claim still holding its phase's task. A role a start already covers (StartFor) gets no
-// second. The sweep runs first so the resume reads the trees it closed as lingering.
+// mid-phase child, through the outbox's start like every other start (StartOrOwe): one row that
+// resumes the claim by rule and carries the task that takes its phase on (ResumePhaseTask, the
+// merger's with the head its round approved), which the outbox does not deliver to a claim still
+// holding its phase's task, and which waits for the issue's admission slot as every start of a
+// phase worker does. A role a start already covers (StartFor) gets no second. The sweep runs
+// first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err

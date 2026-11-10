@@ -229,11 +229,10 @@ test("destroying the editor cancels the request and the redraw timer", async () 
       if (!block) throw new Error("the document draws a code block");
       typeInto(view, 0, "\n  B --> C");
 
-      handle.destroy();
-      // The harness destroys the handle again when this case ends, which a destroyed editor
-      // refuses; once is what is under test.
-      handle.destroy = () => {};
-      await until(() => view.isDestroyed);
+      // `destroy` is idempotent and answers with the editor's own teardown, so the harness may
+      // call it again when this case ends.
+      await handle.destroy();
+      expect(view.isDestroyed).toBe(true);
       expect(requests).toHaveLength(1);
       expect(requests[0]?.cancels).toBe(1);
 

@@ -5,9 +5,9 @@ import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
 import { paintBlock, paintBlockInSlices } from "../refs/paint-block";
 import { NOTHING_TO_LINK } from "../refs/RefLink";
 import { useRenderedMarkdown } from "../refs/useRenderedMarkdown";
+import { BLOCK_ID_ATTRIBUTE } from "./block-id";
 import { leadingBlocks } from "./document-blocks";
 import { firstScreenAwaits, takeFirstScreen } from "./first-screen";
-import { BLOCK_ID_ATTRIBUTE } from "./scroll-block";
 
 /** The class the preview's own element carries, which `styles.css` skips the off-screen blocks
  *  of exactly as it skips the editor's (`content-visibility`). */

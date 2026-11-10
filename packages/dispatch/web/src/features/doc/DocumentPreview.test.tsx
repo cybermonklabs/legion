@@ -13,8 +13,8 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "../refs/parse-worker-fixture";
+import { BLOCK_ID_ATTRIBUTE } from "./block-id";
 import { DocumentPreview, takesTheBuiltBlocks } from "./DocumentPreview";
-import { BLOCK_ID_ATTRIBUTE } from "./scroll-block";
 
 /** The address these rows read the page at; no row puts a server draw in the page, so none of
  *  them adopts one. */

@@ -43,7 +43,7 @@ import {
   routeIsInbox,
   routeProjectOf,
 } from "./features/refs/routes";
-import type { PaletteMode } from "./features/search/SearchPalette";
+import { useRecordRecents } from "./features/search/recents";
 import { ConnectionPill } from "./features/shell/ConnectionPill";
 import {
   AgentRegistryPoller,
@@ -493,9 +493,14 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
-  // Which palette is open, and `null` for none: `$mod+k` and the rail's Search control list this
-  // page's actions and the hits, `/` searches only, and `g p` lists projects.
-  const [paletteMode, setPaletteMode] = useState<PaletteMode | null>(null);
+  // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
+  // bar: this page's actions, the person's recent items, the projects a query names and the
+  // hits, with a chip saying what it will act on.
+  const [barOpen, setBarOpen] = useState(false);
+  // What the person opened, for the bar to list back while its box is empty. It is recorded in
+  // the shell rather than on each page, so every way into an item - a link, the bar itself, a
+  // reload - records it.
+  useRecordRecents();
   const [sidebarHidden, setSidebarHidden] = useUserPreference(
     "shell.sidebar",
     (stored) => stored === "hidden",
@@ -589,22 +594,24 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
     {
-      // Opens only: while the palette is open the `dialog` scope is the only one consulted, and
-      // the palette's own `$mod+k` binding closes it.
+      // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
+      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
+      // the key reaches the bar from inside a document's editor too.
       id: "search",
       inEditable: true,
       keys: "$mod+k",
       label: "Search and actions",
-      run: () => setPaletteMode("all"),
+      run: () => setBarOpen(true),
     },
     {
-      // No row: chosen from `$mod+k`'s palette it would only reopen that palette with its actions
-      // taken away.
+      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
+      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
+      // shadows it with its own filter box.
       id: "search-only",
       keys: "/",
-      label: "Search only",
+      label: "Search",
       palette: false,
-      run: () => setPaletteMode("search"),
+      run: () => setBarOpen(true),
     },
     {
       id: "help",
@@ -628,10 +635,13 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => routeProject !== undefined,
     },
     {
+      // The same bar again, where a reader after a project types its name: its projects are
+      // rows of the one list. No row, for `/`'s reason.
       id: "go-project",
       keys: "g p",
       label: "Go to project…",
-      run: () => setPaletteMode("projects"),
+      palette: false,
+      run: () => setBarOpen(true),
     },
     {
       id: "inbox-drawer",
@@ -727,7 +737,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
       onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
-      onSearch={() => setPaletteMode("all")}
+      onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
         // first while any is unsent, naming each once - this tab's, and every other tab's, which
@@ -935,13 +945,13 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         ) : (
           <ReservedMarginColumn collapsed={marginHidden} width={marginWidth} />
         )}
-        {/* The palette is mounted on every route, closed: it keeps the last `/` search and the
-            row a close is about to run, so unmounting it when nothing is open would lose both.
-            Closed it draws nothing, so the frames before its chunk arrives look exactly as the
-            frames after. */}
+        {/* The bar is mounted on every route, closed: the row a close is about to run is run by
+            the closed bar's own effect, once the close has put focus back where it was, so
+            unmounting it when nothing is open would lose that row. Closed it draws nothing, so
+            the frames before its chunk arrives look exactly as the frames after. */}
         {theRouteIsDrawn ? (
           <Suspense fallback={null}>
-            <SearchPalette mode={paletteMode} onClose={() => setPaletteMode(null)} />
+            <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
           </Suspense>
         ) : null}
         {inboxDrawerOpen ? (

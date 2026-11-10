@@ -132,9 +132,9 @@ func (a *adoptionHarness) count(query string, args ...any) int {
 	return n
 }
 
-// plannerStarts is the number of planner starts queued for key in tree at generation. A start
-// of a phase worker is two rows (workflow.StartOrOwe) and only the one carrying the task is the
-// start: the other is the relaunch, which brings the role's session back and asks it nothing.
+// plannerStarts is the number of planner starts queued for key in tree at generation that carry
+// a task. A phase worker's start is one such row (workflow.StartOrOwe); a start with no task is
+// a role admission brings back beside it, which asks that role nothing.
 func (a *adoptionHarness) plannerStarts(key, tree string, generation uint64) int {
 	a.t.Helper()
 	return a.count(`select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'

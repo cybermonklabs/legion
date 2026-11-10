@@ -511,6 +511,20 @@ export type SearchResultsPageAbsentAs<V> = { readonly [K in keyof SearchResultsP
  * `search-answer.ts` compares against cannot drift apart. */
 export const SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE = "embedder_unavailable";
 
+/** The operator forms `GET /api/v1/search` reads in the words a person wrote: a `"phrase"` in
+ *  quotes, the `OR` between two words, and a `-word` the search leaves out. Each is generated
+ *  into Go as `contracts.SearchOperatorPhrase`, `SearchOperatorOr` and `SearchOperatorExclude`,
+ *  so the string Dispatch answers and the string a client reads it by cannot drift apart. */
+export const SEARCH_OPERATOR_PHRASE = "phrase";
+export const SEARCH_OPERATOR_OR = "or";
+export const SEARCH_OPERATOR_EXCLUDE = "exclude";
+export const SEARCH_OPERATORS = [
+  SEARCH_OPERATOR_PHRASE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_EXCLUDE,
+] as const;
+export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
+
 // GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
 // `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
 // schema decides those names (Go's pmdoc.LinkKinds), so any other string is admitted beside the

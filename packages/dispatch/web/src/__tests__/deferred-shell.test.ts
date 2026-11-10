@@ -32,8 +32,8 @@ const parts: readonly { readonly name: string; readonly module: string }[] = [
 ];
 
 /** Every module `app.tsx` imports statically and keeps at runtime, as it writes the specifier.
- *  A type-only import is dropped: the build erases it, so it reaches no chunk - which is how
- *  `app.tsx` names the palette's `PaletteMode` while taking the palette itself from here. */
+ *  A type-only import is dropped: the build erases it, so it reaches no chunk, and a part whose
+ *  type `app.tsx` names may be imported from its own module while the part itself comes here. */
 const staticImports = [...app.matchAll(/^import\s(?!type\s)[^;]*?from "([^"]+)";$/gms)].map(
   ([, specifier]) => specifier as string
 );

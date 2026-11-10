@@ -37,15 +37,28 @@ afterEach(() => {
   Object.assign(api, originalApi);
 });
 
+/** A read this row makes and never answers: the query is still waiting when the root goes, and
+ *  nothing of it is asserted. What matters is that it answers from here rather than from the
+ *  network, which would fail the file (`web/src/__tests__/setup.ts`). */
+function neverAnswers(): Promise<never> {
+  return new Promise<never>(() => {});
+}
+
 /** The shell's first commit at `route`, as the markup that commit put in the page. The providers
- *  are the ones `AuthenticatedApp` wraps it in. Nothing fetches in a render, so what the two
- *  reads below answer reaches no assertion here; they are answered because the shell's own
- *  effects make them as the root is torn down, and a read that reaches the network fails the
- *  file (`web/src/__tests__/setup.ts`). The viewport is desktop, where the margin is a column
+ *  are the ones `AuthenticatedApp` wraps it in. Nothing fetches in a render, so what the reads
+ *  below answer reaches no assertion here; they are answered because the shell's own effects
+ *  make them as the root is torn down, and a read that reaches the network fails the file
+ *  (`web/src/__tests__/setup.ts`). The viewport is desktop, where the margin is a column
  *  beside the document rather than a sheet over it. */
 function firstCommitAt(route: string): string {
   api.getInbox = async () => [];
   api.listIssues = async () => [];
+  // The shell records the item the page is on for the search bar to list back
+  // (`features/search/recents.ts`), which reads the issue or the project document the route
+  // names. Both reads are the page's own in the running app; here the shell stands alone, so
+  // they are the shell's and are answered by nothing.
+  api.getIssue = neverAnswers;
+  api.getProjectArtifact = neverAnswers;
   window.matchMedia = ((query: string) =>
     ({
       addEventListener: () => {},

@@ -45,9 +45,9 @@ export const AgentRegistryPoller = lazy(() =>
   import("../refs/agent-registry").then((module) => ({ default: module.AgentRegistryPoller }))
 );
 
-/** The search palette, mounted closed on every route: it keeps the last `/` search and the row a
- *  close is about to run, so the shell mounts it from the start and it draws nothing until a key
- *  opens it. `app.tsx` takes its `PaletteMode` as a type, which the build erases. */
+/** The search bar, mounted closed on every route: the row a close is about to run is run by the
+ *  closed bar's own effect, so the shell mounts it from the start and it draws nothing until a
+ *  key opens it. `app.tsx` names nothing of its module, so it holds no static import of it. */
 export const SearchPalette = lazy(() =>
   import("../search/SearchPalette").then((module) => ({ default: module.SearchPalette }))
 );
