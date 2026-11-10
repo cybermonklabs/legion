@@ -2459,6 +2459,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/requirements": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description List `requirement` blocks by the attributes they declare: ?target= is the thing a requirement is about, ?status= what it has reached, and one of the two is required - a request carrying neither is 400 INVALID_QUERY, because this route exists to answer an attribute and never to list every requirement there is. Both together list the requirements matching both. One page of ?limit= (1-200, default 50) from ?offset=, newest change first: {requirements, total, limit, offset}, total counting every requirement the filters match. Each row is {issue, artifact_id, block_id, ref, target, status, excerpt} - where the requirement lives, its two attributes, and the opening of its words; a caller reads the whole requirement through its document. A requirement that declares neither attribute is in no answer of this route. This is not GET /api/v1/issues/{key}/coverage, which reports what the requirements of one issue lack. */
+    get: operations["getApiV1Requirements"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/schema/blocks": {
     parameters: {
       query?: never;
@@ -4646,6 +4663,12 @@ export interface components {
       opened_to_merge: components["schemas"]["DeliverySpread"];
       opened_to_production: components["schemas"]["DeliverySpread"];
     };
+    ListRequirementsResponse: {
+      limit: number;
+      offset: number;
+      requirements: components["schemas"]["RequirementLine"][] | null;
+      total: number;
+    };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
     };
@@ -5022,6 +5045,15 @@ export interface components {
       plan_tasks: number;
       ref: string;
       text: string;
+    };
+    RequirementLine: {
+      artifact_id: string;
+      block_id: string;
+      excerpt: string;
+      issue: string;
+      ref: string;
+      status: string;
+      target: string;
     };
     ResidentRooms: {
       rooms: string[] | null;
@@ -11633,6 +11665,38 @@ export interface operations {
       };
     };
   };
+  getApiV1Requirements: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ListRequirementsResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1SchemaBlocks: {
     parameters: {
       query?: {
@@ -12473,6 +12537,7 @@ export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
+export type ListRequirementsResponse = components["schemas"]["ListRequirementsResponse"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
@@ -12524,6 +12589,7 @@ export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
 export type ReplyBlock = components["schemas"]["ReplyBlock"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
+export type RequirementLine = components["schemas"]["RequirementLine"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
 export type RoomCounters = components["schemas"]["RoomCounters"];

@@ -87,7 +87,11 @@ func IndexBlocks(
 	}
 
 	// The blocks whose text this version changed (new, changed or restored), and those it deleted.
+	// requirementTargets and requirementStatuses carry a `requirement` block's two attributes into
+	// the index so a route can filter on them; every other block type holds null in both, which is
+	// what the partial indexes of 20261110184749 are partial on.
 	var ids, types, sums, excerpts []string
+	var requirementTargets, requirementStatuses []*string
 	var textIDs []string
 	var texts []*string
 	for _, block := range nodes {
@@ -100,6 +104,8 @@ func IndexBlocks(
 		}
 		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, hexSum)
 		excerpts = append(excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		target, status := requirementAttributes(block)
+		requirementTargets, requirementStatuses = append(requirementTargets, target), append(requirementStatuses, status)
 		textIDs, texts = append(textIDs, block.ID), append(texts, &body)
 	}
 	deleted := make([]string, 0, len(stored))
@@ -117,17 +123,20 @@ func IndexBlocks(
 	}
 	if len(ids) > 0 {
 		if _, err := tx.Exec(ctx, `
-			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
-			select $1::uuid, b.id, a.ref_key || '#' || b.id, b.type, b.sum, b.excerpt, $2, $3
-			from unnest($4::text[], $5::text[], $6::text[], $7::text[]) as b (id, type, sum, excerpt)
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, requirement_target, requirement_status)
+			select $1::uuid, b.id, a.ref_key || '#' || b.id, b.type, b.sum, b.excerpt, $2, $3, b.requirement_target, b.requirement_status
+			from unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+				as b (id, type, sum, excerpt, requirement_target, requirement_status)
 			cross join (select ref_key from artifacts where id = $1::uuid) a
 			on conflict (artifact_id, block_id) do update set
 				type = excluded.type,
 				text_sha256 = excluded.text_sha256,
 				excerpt = excluded.excerpt,
 				changed_version = excluded.changed_version,
-				changed_at = excluded.changed_at
-		`, artifactID, version, versionAt, ids, types, sums, excerpts); err != nil {
+				changed_at = excluded.changed_at,
+				requirement_target = excluded.requirement_target,
+				requirement_status = excluded.requirement_status
+		`, artifactID, version, versionAt, ids, types, sums, excerpts, requirementTargets, requirementStatuses); err != nil {
 			return nil, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
 		}
 	}
@@ -919,4 +928,33 @@ func innermostBlocks(blocks []model.ArtifactBlock, starts []int) []int {
 		}
 	}
 	return holders
+}
+
+// requirementAttributes is the `target` and `status` a `requirement` block declares, for the two
+// columns 20261110184749 added to document_blocks. A block of any other type carries neither, and
+// a requirement that declares one and not the other carries null in the column it leaves out: the
+// partial indexes over these columns index what is present, so null is "this block declares none"
+// rather than "unknown", and a route filtering on a value never matches a block that omits it.
+//
+// An attribute the author wrote as empty is held to be absent, so `target: ""` does not occupy the
+// index with a row no query asks for. The schema gives both attributes a "" default, so a block
+// written with neither reaches here with either no attribute at all or an empty one, and both read
+// the same way.
+func requirementAttributes(block model.ArtifactBlock) (target, status *string) {
+	if block.Type != "requirement" {
+		return nil, nil
+	}
+	for _, attribute := range block.Attributes {
+		value := attribute.Value
+		if value == "" {
+			continue
+		}
+		switch attribute.Name {
+		case "target":
+			target = &value
+		case "status":
+			status = &value
+		}
+	}
+	return target, status
 }

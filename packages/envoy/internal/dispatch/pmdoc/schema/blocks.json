@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "types": [
     {
       "name": "callout",
@@ -71,7 +71,14 @@
       "name": "requirement",
       "content": "paragraph+",
       "render": "host",
-      "attributes": {}
+      "attributes": {
+        "target": {
+          "kind": "string"
+        },
+        "status": {
+          "kind": "string"
+        }
+      }
     },
     {
       "name": "plan_task",

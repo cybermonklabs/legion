@@ -9898,6 +9898,45 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/requirements": {
+      "get": {
+        "description": "List `requirement` blocks by the attributes they declare: ?target= is the thing a requirement is about, ?status= what it has reached, and one of the two is required - a request carrying neither is 400 INVALID_QUERY, because this route exists to answer an attribute and never to list every requirement there is. Both together list the requirements matching both. One page of ?limit= (1-200, default 50) from ?offset=, newest change first: {requirements, total, limit, offset}, total counting every requirement the filters match. Each row is {issue, artifact_id, block_id, ref, target, status, excerpt} - where the requirement lives, its two attributes, and the opening of its words; a caller reads the whole requirement through its document. A requirement that declares neither attribute is in no answer of this route. This is not GET /api/v1/issues/{key}/coverage, which reports what the requirements of one issue lack.",
+        "operationId": "getApiV1Requirements",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRequirementsResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/schema/blocks": {
       "get": {
         "description": "The typed document block schema as JSON.",
@@ -19783,6 +19822,35 @@
         ],
         "type": "object"
       },
+      "ListRequirementsResponse": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/RequirementLine"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requirements",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "ListUsersResponse": {
         "properties": {
           "users": {
@@ -21410,6 +21478,41 @@
           "checks",
           "plan_tasks",
           "gaps"
+        ],
+        "type": "object"
+      },
+      "RequirementLine": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "artifact_id",
+          "block_id",
+          "ref",
+          "target",
+          "status",
+          "excerpt"
         ],
         "type": "object"
       },

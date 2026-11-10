@@ -580,6 +580,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
+	"GET /api/v1/requirements":          {Status: http.StatusOK, Response: listRequirementsResponse{}},
 	"POST /api/v1/issues/{key}/messages": {
 		Status: http.StatusCreated, Response: model.Message{}, Request: createMessageInput{}, Advice: writeAdvice{},
 	},
