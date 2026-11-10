@@ -249,13 +249,31 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	page.hasNextPage = answer.Data.Repository.PullRequests.PageInfo.HasNextPage
 	page.endCursor = answer.Data.Repository.PullRequests.PageInfo.EndCursor
 	for index, pull := range answer.Data.Repository.PullRequests.Nodes {
-		if pull == nil {
-			continue
-		}
 		_, pullRefused := refused[index]
+		if pull == nil || (pullRefused && headCommit(pull) == nil) {
+			// GitHub refused the node itself, or the head commit under it, rather than the
+			// Checks fields beneath that: the answer then holds neither the pull request's
+			// number nor its head commit, so nothing here can read that head and nothing can
+			// name it to read over REST on its own. This page is a page the query could not
+			// answer, exactly as a refusal of the repository is, and its heads are read over
+			// REST from the listing, which answers every number and every head commit
+			// (restOfRepository). The alternative is the one this replaced: a head no read of
+			// either kind ever reaches and no line ever names.
+			return page, fmt.Errorf("GitHub answered no readable pull request at node %d of the page for %s/%s: %s",
+				index, repository.owner, repository.repo, errorText(answer.Errors))
+		}
 		page.heads = append(page.heads, headOf(pull, pullRefused))
 	}
 	return page, nil
+}
+
+// headCommit is the head commit of one answered pull request, and nil where the answer holds
+// none: `commits(last: 1)` answered empty, or the commit under it refused and nulled.
+func headCommit(pull *graphQLPull) *graphQLCommit {
+	if len(pull.Commits.Nodes) == 0 {
+		return nil
+	}
+	return pull.Commits.Nodes[0].Commit
 }
 
 // headOf is one answered pull request as the pass takes it: its head commit, the check objects
@@ -264,13 +282,14 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 //
 // A pull request GitHub listed with no head commit is no head to read, exactly as one the REST
 // listing answered with no head.sha is: it is answered with an empty sha and the caller passes
-// over it.
+// over it. A refused pull request with no head commit never reaches here: the query cannot
+// answer that head at all, so its whole page is read over REST.
 func headOf(pull *graphQLPull, refused bool) queryHead {
 	head := queryHead{number: pull.Number}
-	if len(pull.Commits.Nodes) == 0 || pull.Commits.Nodes[0].Commit == nil {
+	commit := headCommit(pull)
+	if commit == nil {
 		return head
 	}
-	commit := pull.Commits.Nodes[0].Commit
 	head.sha = commit.OID
 	if refused {
 		head.overflow, head.why = true, "GitHub refused the head's Checks fields"

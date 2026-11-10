@@ -230,7 +230,9 @@ type Reconciler struct {
 // is that page's position in the repository, counting from zero, which is what names the heads
 // of it in a REST listing when the query for it is refused. number is the first head of the
 // page the pass did not finish, and zero is the whole page: a head below it was read by the
-// pass that left the cursor.
+// pass that left the cursor. counted says the heads of that page have already been counted
+// among the repository's known heads: the pass taking the cursor up reads the page again, and
+// counting it again would have the line report more open heads than the repository has.
 //
 // It lives in this process's memory beside the ETags the Reconciler keeps, and is written
 // nowhere. A restart loses it and deliberately begins a new cycle at the first head of the
@@ -242,6 +244,7 @@ type cursor struct {
 	after      string
 	page       int
 	number     int64
+	counted    bool
 }
 
 // rowState is what a pass learned of one reconciled repository from GitHub.
@@ -516,9 +519,10 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 // after them begins at, so the pass asks for one page, reads its heads, and asks for the next
 // with that cursor until GitHub says there is no next page.
 func (r *Reconciler) sweep(ctx context.Context, writer Writer, repository reconciled, from cursor, c *counts) (*stop, bool) {
-	if _, held := r.listed[repository.id]; from.page == 0 || !held {
-		// The pass begins this repository at its first page, so what the passes before it
-		// counted of the repository's heads is this cycle's and is counted again here.
+	if _, held := r.listed[repository.id]; !held || (from.page == 0 && !from.counted) {
+		// The pass begins this repository at a page no pass of this cycle has counted, which
+		// at its first page is the repository from the top: what the passes before it counted
+		// belonged to the cycle before this one, and the count starts again.
 		remember(&r.listed, repository.id, 0)
 	}
 	here := from
@@ -554,8 +558,24 @@ func (r *Reconciler) sweep(ctx context.Context, writer Writer, repository reconc
 				"repository", repository.owner+"/"+repository.repo, "page", here.page, "error", err)
 			return r.restOfRepository(ctx, writer, repository, here, c)
 		}
-		r.listed[repository.id] += countHeads(page.heads)
+		if !here.counted {
+			// The heads of a page are counted when a pass of this cycle first lists them and
+			// never again: the pass taking a cursor up reads the page it was cut short in
+			// again, and a second count of it would say the repository has heads it has not.
+			r.listed[repository.id] += countHeads(page.heads)
+			here.counted = true
+		}
 		for _, head := range page.heads {
+			// The pass's bound is checked between the heads of a page as well as between the
+			// pages, so a pass whose time is up stops writing here rather than writing every
+			// head left on a context that is already dead -- writes that fail, under a cursor
+			// moved past them, with the pass recorded as one that completed. The cursor is left
+			// at the last head the pass began, which is the first the next pass is sure it must
+			// read again.
+			if r.cutShort(ctx, c) {
+				r.resume = here
+				return nil, true
+			}
 			if head.sha == "" || head.number < here.number {
 				// A pull request GitHub listed with no head commit is no head to read, and a
 				// head below the cursor's number was read by the pass that left the cursor.
@@ -687,10 +707,18 @@ func (r *Reconciler) restOfRepository(ctx context.Context, writer Writer, reposi
 	}
 	window := min(from.page*pullsPerQuery, len(pulls))
 	pulls = pulls[window:]
-	r.listed[repository.id] += countPullHeads(pulls)
 	here := from
+	if !here.counted {
+		// Every head from the refused page to the end of the repository, which is what this
+		// read covers and what the pass that first reaches them counts. A pass taking the
+		// cursor up reads them again and counts none of them again (cursor.counted).
+		r.listed[repository.id] += countPullHeads(pulls)
+		here.counted = true
+	}
 	for _, pull := range pulls {
 		if pull.HeadSHA == "" || pull.Number < here.number {
+			// A pull request the listing answered with no head commit is no head to read, and
+			// one below the cursor was read by the pass that left the cursor.
 			continue
 		}
 		here.number = pull.Number
@@ -803,7 +831,7 @@ func order(rows []string, at cursor) []cursor {
 		visits = append(visits, cursor{repository: row})
 	}
 	if rows[start] == at.repository {
-		visits[0].after, visits[0].page, visits[0].number = at.after, at.page, at.number
+		visits[0] = at
 	}
 	return visits
 }
@@ -1126,9 +1154,11 @@ func (r *Reconciler) gap(rows int) time.Duration {
 	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
 }
 
-// known is the open heads the last cycle's queries listed, which is what the pass's line
-// reports as the heads there are to read. A pull request GitHub listed with no head commit is
-// no head to read, and counts for nothing here either (countHeads).
+// known is the open heads this cycle's listings answered, which is what the pass's line reports
+// as the heads there are to read: each page is counted by the pass that first lists it and by
+// no other, so a page two passes share counts once (cursor.counted). A pull request GitHub
+// listed with no head commit is no head to read, and counts for nothing here either
+// (countHeads).
 func (r *Reconciler) known() int {
 	heads := 0
 	for _, listed := range r.listed {

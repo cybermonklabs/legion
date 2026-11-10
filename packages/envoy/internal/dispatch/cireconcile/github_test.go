@@ -59,11 +59,12 @@ type fakeGitHub struct {
 	// makes GitHub slower than the pass's own bound (stall).
 	stalls map[string]time.Duration
 	// The state the GraphQL stand-in holds beside the REST one (graphql_test.go): the queries
-	// it was asked, the heads whose Checks fields it refuses, the pages of one repository it
-	// refuses whole, the rate limits it answers the next queries with, and how long one page's
-	// answer is held back.
+	// it was asked, the heads whose Checks fields it refuses, the heads whose node or head
+	// commit it answers null, the pages of one repository it refuses whole, the rate limits it
+	// answers the next queries with, and how long one page's answer is held back.
 	queries       []fakeQuery
 	refusedChecks map[string]struct{}
+	nulled        map[string]nulledHead
 	refusedPages  map[string]map[int]struct{}
 	graphQLLimits []graphQLLimit
 	graphQLStalls map[string]time.Duration
@@ -118,6 +119,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		limitOnce:     map[string]int{},
 		stalls:        map[string]time.Duration{},
 		refusedChecks: map[string]struct{}{},
+		nulled:        map[string]nulledHead{},
 		refusedPages:  map[string]map[int]struct{}{},
 		graphQLStalls: map[string]time.Duration{},
 		cursorPages:   map[string]int{},

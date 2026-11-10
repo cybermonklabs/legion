@@ -286,3 +286,49 @@ func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
 		t.Errorf("the pass read %d heads, want the one it could read: %v", got, line)
 	}
 }
+
+// A head the query cannot answer at all is read over REST, as every other head one query
+// cannot answer whole is. GitHub answers a field it refuses with null and an entry in errors,
+// and a refusal deep in one pull request nulls its way up to the first field that may be null:
+// the head commit, or the pull request node itself. Neither answer names a head to read -- the
+// node carries no number and the commit no oid -- so the page is read from the REST listing,
+// which answers both, and the pass says at WARN what GitHub gave. A head passed over here is a
+// head no read of either kind reaches and no line names: the record of it stays as it was for
+// as long as GitHub answers that way.
+func TestARefusedPullRequestWithNoHeadIsReadOverREST(t *testing.T) {
+	for name, nullify := range map[string]func(h *harness, sha string){
+		"the node":        func(h *harness, sha string) { h.github.nullNode(gitHubRepository, sha) },
+		"the head commit": func(h *harness, sha string) { h.github.nullHeadCommit(gitHubRepository, sha) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, reviewerAppID)
+			h.mapRepository(rowRepository)
+			refused, answered := head(7), head(8)
+			h.listHeads(refused, answered)
+			for _, pull := range []fakePull{refused, answered} {
+				h.github.setCheckRuns(gitHubRepository, pull.sha,
+					atHead(gitHubRepository, pull.sha, checkRun(100+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+				)
+			}
+			nullify(h, refused.sha)
+
+			h.pass()
+
+			for _, pull := range []fakePull{refused, answered} {
+				state := h.recordOf(pull, pull.number)
+				if state == nil {
+					t.Fatalf("head %d has no record: the query could not answer the head GitHub nulled, and the page is read over REST", pull.number)
+				}
+				if _, held := state.Checks["ci-ok"]; !held {
+					t.Errorf("the record of head %d holds %+v, want the run GitHub lists for it", pull.number, state.Checks)
+				}
+			}
+			if !h.logged("ci reconcile read a repository over REST") {
+				t.Errorf("the pass read a head it could not answer and said nothing about it:\n%s", h.logs.String())
+			}
+			if !h.logged("Something went wrong while executing your query") {
+				t.Errorf("the pass's line does not carry what GitHub gave:\n%s", h.logs.String())
+			}
+		})
+	}
+}

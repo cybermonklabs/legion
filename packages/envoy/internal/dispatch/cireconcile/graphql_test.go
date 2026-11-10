@@ -41,10 +41,23 @@ const (
 	// limitByErrorEntry is GitHub's primary GraphQL limit: HTTP 200, an errors entry of type
 	// RATE_LIMITED, a null repository, x-ratelimit-remaining 0 and x-ratelimit-reset.
 	limitByErrorEntry graphQLLimit = iota
+	// limitForbiddenByErrorEntry is that same primary limit at the other status GitHub answers
+	// one with, 403.
+	limitForbiddenByErrorEntry
 	// limitBySecondaryMessage is GitHub's secondary limit at its barest: HTTP 200 and a message
 	// about a secondary rate limit, with no errors type and no rate-limit header at all.
 	limitBySecondaryMessage
+	// limitBySecondaryRetryAfter is a secondary limit as GitHub usually sends one: the message
+	// and a retry-after of its own.
+	limitBySecondaryRetryAfter
+	// limitForbiddenBySecondaryMessage is a secondary limit at 403, which carries the message
+	// and no header at all.
+	limitForbiddenBySecondaryMessage
 )
+
+// secondaryLimitMessage is GitHub's own wording for a secondary limit, which is all such an
+// answer gives when it comes with no header and no error type.
+const secondaryLimitMessage = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
 
 // graphQLReset is how long the stand-in's rate-limited answers ask the App to wait.
 const graphQLReset = 90 * time.Second
@@ -152,6 +165,18 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	nodes := make([]any, 0, to-from)
 	var errors []any
 	for index, pull := range pulls[from:to] {
+		if refusal, held := f.headNulled(repository, pull.sha); held {
+			// GitHub refusing something under one node and nulling its way up: the node
+			// itself, or the head commit under it, comes back null beside an errors entry
+			// against the field it nulled. Neither leaves the answer naming a head to read.
+			nodes = append(nodes, refusal.node(pull))
+			errors = append(errors, map[string]any{
+				"type":    "SERVICE_UNAVAILABLE",
+				"path":    append([]any{"repository", "pullRequests", "nodes", index}, refusal.path...),
+				"message": "Something went wrong while executing your query. Please include `ABCD:1234` when reporting this issue.",
+			})
+			continue
+		}
 		node := map[string]any{"number": pull.number}
 		commit := map[string]any{"oid": pull.sha}
 		if f.checksRefused(repository, pull.sha) {
@@ -185,18 +210,30 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	f.encode(w, answer)
 }
 
-// answerQueryLimit writes one of GitHub's rate-limited answers to a query, each of which is an
-// HTTP 200 (githubapp.GraphQLRateLimit reads them, not the status).
+// answerQueryLimit writes one of GitHub's rate-limited answers to a query, at the status that
+// shape comes with: GitHub answers a limited query 200 as readily as 403, so the status is
+// never what tells one (githubapp.GraphQLRateLimit).
 func (f *fakeGitHub) answerQueryLimit(w http.ResponseWriter, limit graphQLLimit) {
 	switch limit {
-	case limitBySecondaryMessage:
+	case limitBySecondaryMessage, limitBySecondaryRetryAfter, limitForbiddenBySecondaryMessage:
+		if limit == limitBySecondaryRetryAfter {
+			w.Header().Set("Retry-After", strconv.Itoa(int(graphQLReset/time.Second)))
+		}
+		if limit == limitForbiddenBySecondaryMessage {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+		}
 		f.encode(w, map[string]any{
 			"data":   nil,
-			"errors": []any{map[string]any{"message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}},
+			"errors": []any{map[string]any{"message": secondaryLimitMessage}},
 		})
 	default:
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(graphQLReset).Unix(), 10))
+		if limit == limitForbiddenByErrorEntry {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+		}
 		f.encode(w, map[string]any{
 			"data": map[string]any{"rateLimit": rateLimitNode(), "repository": nil},
 			"errors": []any{map[string]any{
@@ -384,6 +421,51 @@ func (f *fakeGitHub) refuseChecks(repository, sha string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refusedChecks[repository+"@"+sha] = struct{}{}
+}
+
+// nulledHead is what a query answers for a head GitHub nulled: the node of the page, and the
+// rest of the errors entry's path after the node's index, which is the field GitHub refused and
+// nulled its way up from.
+type nulledHead struct {
+	node func(pull fakePull) any
+	path []any
+}
+
+// headNulled is the refusal the stand-in answers one head with, and false for every head it
+// answers whole.
+func (f *fakeGitHub) headNulled(repository, sha string) (nulledHead, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	refusal, held := f.nulled[repository+"@"+sha]
+	return refusal, held
+}
+
+// nullNode makes every query answer one head's whole pull request node null, which is what
+// GitHub does when it refuses a field under the node that may not be null: the answer then
+// names neither the pull request's number nor its head commit.
+func (f *fakeGitHub) nullNode(repository, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nulled[repository+"@"+sha] = nulledHead{
+		node: func(fakePull) any { return nil },
+		path: []any{"commits"},
+	}
+}
+
+// nullHeadCommit makes every query answer one head's commit null, the node itself standing: the
+// answer names the pull request and no commit of it to read the checks of.
+func (f *fakeGitHub) nullHeadCommit(repository, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nulled[repository+"@"+sha] = nulledHead{
+		node: func(pull fakePull) any {
+			return map[string]any{
+				"number":  pull.number,
+				"commits": map[string]any{"nodes": []any{map[string]any{"commit": nil}}},
+			}
+		},
+		path: []any{"commits", "nodes", 0, "commit"},
+	}
 }
 
 // refusePage makes every query for one page of one repository answer a null repository and an

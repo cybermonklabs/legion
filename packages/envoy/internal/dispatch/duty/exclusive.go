@@ -54,10 +54,17 @@ type LeaseReader interface {
 // single-key lock's one key spans both and reads objsubid 1. hashtext answers an int4, which can
 // be negative, while objid is an oid: the cast is the same reinterpretation Postgres makes of the
 // key itself, so a name whose hash is negative is found rather than missed.
+//
+// pg_locks holds every lock of every database of the server, so the read is kept to this
+// database's own, as every other advisory-lock read of this repository is: an advisory lock is
+// taken within one database, and two deployments on one server -- a test's database beside the
+// one the tests of another package run on -- would otherwise each read the other's lease as its
+// own.
 const leaseHeld = `
 	select exists (
 		select 1 from pg_locks
 		where locktype = 'advisory' and granted and objsubid = 2
+		  and database = (select oid from pg_database where datname = current_database())
 		  and classid = $1::oid and objid = hashtext($2)::oid)`
 
 // LeaseHeld reports whether some session of the database holds name's lease right now. It is the

@@ -144,6 +144,42 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
+// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes wait until
+// the pass making it has run out of its own bound. It is a CI bucket slower to answer than the
+// pass has left, which is the one thing that can take a pass past its bound in the middle of a
+// page its query answered whole: those heads cost no request of their own, so nothing else
+// about them can be slow.
+//
+// The count is the harness's rather than one pass's, so the pass after the one that was held
+// writes every head of its own without waiting.
+func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
+	open := h.reconciler.Open
+	writes := 0
+	h.reconciler.Open = func() (Writer, error) {
+		writer, err := open()
+		if err != nil {
+			return nil, err
+		}
+		return &holdingWriter{Writer: writer, hold: func(ctx context.Context) {
+			if writes++; writes == nth {
+				<-ctx.Done()
+			}
+		}}, nil
+	}
+}
+
+// holdingWriter is the CI record writer with hold run before each check run it is given
+// (holdWriteUntilTheBoundFalls).
+type holdingWriter struct {
+	Writer
+	hold func(ctx context.Context)
+}
+
+func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+	w.hold(ctx)
+	return w.Writer.Record(ctx, observation)
+}
+
 // startListener opens the listener's own store, which makes the bucket and watches it, and its
 // real summary loop, and mounts the listener's real webhook handler over them: the pass's job is
 // to make this listener settle, and a record alone does not prove that.
