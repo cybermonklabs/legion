@@ -164,7 +164,10 @@ type Population struct {
 //
 // github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
 // reach leaves that issue with none, since no metric's rule is written in terms of one.
-func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time) (*Population, error) {
+//
+// include names issues whose trees the reads cover whether or not they finished in the window:
+// the issue timeline reads one issue, open or closed (ReadIssue).
+func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, include ...string) (*Population, error) {
 	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}, reported: map[string]string{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
@@ -172,7 +175,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	if err := population.readFiled(ctx, pool, project, from, to); err != nil {
 		return nil, err
 	}
-	keys := population.scopeKeys(from, to)
+	keys := population.scopeKeys(from, to, include...)
 	// The eight reads below write disjoint fields — six take the keys above and write fields of
 	// those issues, the other two the project's reported set with its trees and the project's
 	// phase-work keys — so they run together rather than one after another, as the delivery
@@ -304,7 +307,7 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 // have finished in the window, every issue each one shares a tree with (its ancestors, since a
 // child's root is a tree of its own, and their descendants), and the issues the window's filings
 // name as their filer, whose phase at the filing metric 4 reports.
-func (p *Population) scopeKeys(from, to time.Time) []string {
+func (p *Population) scopeKeys(from, to time.Time, include ...string) []string {
 	wanted := map[string]bool{}
 	var reach func(key string)
 	reach = func(key string) {
@@ -327,6 +330,9 @@ func (p *Population) scopeKeys(from, to time.Time) []string {
 		if filed.Filer.Issue != "" {
 			reach(filed.Filer.Issue)
 		}
+	}
+	for _, key := range include {
+		reach(key)
 	}
 	// Every descendant of a reached issue, however deep: the roots reached above carry their
 	// trees, which segment 4 and metric 4's children-per-root read.

@@ -123,6 +123,16 @@ type issueView struct {
 // an hour no ask claimed is unknown, never idle.
 func (v *issueView) split(spans []Span) Segments {
 	var segments Segments
+	for segment, taken := range v.splitSpans(spans) {
+		segments.add(segment, totalOf(taken))
+	}
+	return segments
+}
+
+// splitSpans is split's spans rather than its hours: the stretches each segment took, which the
+// issue timeline draws (timeline_issue.go), so the timeline and the bars share one split.
+func (v *issueView) splitSpans(spans []Span) map[Segment][]Span {
+	taken := map[Segment][]Span{}
 	rest := normalize(spans)
 	observed := v.observedSpans()
 	for index, rule := range precedence {
@@ -133,13 +143,13 @@ func (v *issueView) split(spans []Span) Segments {
 		if rule.Segment != SegmentWaitingOnPerson {
 			claim = intersect(claim, observed)
 		}
-		taken := intersect(rest, claim)
-		segments.add(rule.Segment, totalOf(taken))
-		rest = subtract(rest, taken)
+		held := intersect(rest, claim)
+		taken[rule.Segment] = held
+		rest = subtract(rest, held)
 	}
-	segments.add(SegmentIdle, totalOf(intersect(rest, observed)))
-	segments.add(SegmentUnknown, totalOf(subtract(rest, observed)))
-	return segments
+	taken[SegmentIdle] = intersect(rest, observed)
+	taken[SegmentUnknown] = subtract(rest, observed)
+	return taken
 }
 
 // observedOf is how much of spans the daemon reported on.
