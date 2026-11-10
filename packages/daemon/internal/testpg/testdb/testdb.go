@@ -211,12 +211,26 @@ var dropCounts struct {
 // wide that path is; this count is how many chances it had.
 var unwarmedConnects atomic.Int64
 
-// CountUnwarmedConnects records that a pool opened made connections beyond the warmed ones.
-// internal/testpg calls it when a pool it warmed is torn down.
-func CountUnwarmedConnects(made, warmed int64) {
+// shedWarmConns is how many warm connections pgxpool destroyed under a pool this process warmed:
+// its Stat's MaxIdleDestroyCount and MaxLifetimeDestroyCount at teardown.
+//
+// It must read zero. A warm connection is destroyed only when it is older than MaxConnLifetime (an
+// hour by default) or has been idle longer than MaxConnIdleTime (thirty minutes) — pgxpool's
+// checkConnsHealth, which merely releases every other idle connection — and no test of this module
+// lives that long, so the warmed set is the set the test uses. That is a reading of the library's
+// defaults; this counter is the measurement of it, and the reason to keep it is the day somebody
+// changes them: a warm set that quietly stopped covering anything would leave
+// unwarmedConnects reading zero while every replacement went through the unretried Constructor.
+var shedWarmConns atomic.Int64
+
+// CountUnwarmedConnects records what a warmed pool did with its connections, read from its Stat at
+// teardown: how many it opened beyond the ones the fixture warmed, and how many warm ones pgxpool
+// destroyed for age or idleness. internal/testpg calls it when a pool it warmed is torn down.
+func CountUnwarmedConnects(made, warmed, shed int64) {
 	if beyond := made - warmed; beyond > 0 {
 		unwarmedConnects.Add(beyond)
 	}
+	shedWarmConns.Add(shed)
 }
 
 // Drop drops the database name through exec: plainly, then again while Postgres answers SQLSTATE
@@ -274,10 +288,10 @@ func Drop(ctx context.Context, exec execer, name string) error {
 
 // DropLine is one line naming what this process's drops did, for the package Main that prints it.
 func DropLine() string {
-	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s; %d connects, %d needed a retry, %d opened outside the warm set",
+	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s; %d connects, %d needed a retry, %d opened outside the warm set, %d warm connections shed",
 		dropCounts.drops.Load(), dropCounts.retried.Load(), dropCounts.forced.Load(),
 		time.Duration(dropCounts.longest.Load()).Round(time.Millisecond),
-		connectCounts.opened.Load(), connectCounts.retried.Load(), unwarmedConnects.Load())
+		connectCounts.opened.Load(), connectCounts.retried.Load(), unwarmedConnects.Load(), shedWarmConns.Load())
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

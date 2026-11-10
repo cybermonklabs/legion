@@ -126,7 +126,9 @@ func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 		// Read before Close, which keeps the counters but is where the pool's life ends: every
 		// connection beyond the warmed ones is an establishment pgxpool made itself, through the
 		// Constructor OnConnect cannot reach.
-		testdb.CountUnwarmedConnects(pool.Stat().NewConnsCount(), warmed)
+		stat := pool.Stat()
+		testdb.CountUnwarmedConnects(stat.NewConnsCount(), warmed,
+			stat.MaxIdleDestroyCount()+stat.MaxLifetimeDestroyCount())
 		pool.Close()
 	})
 	return pool
