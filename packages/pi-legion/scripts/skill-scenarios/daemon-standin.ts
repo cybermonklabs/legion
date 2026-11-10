@@ -116,7 +116,16 @@ const stateIn = (phase: string) =>
       withoutWebhookApp: [],
       caches: [],
     },
-    settings: { worker_boot_timeout_seconds: 120 },
+    // Every key any label's contract requires, not this checkout's alone: a label's agents load
+    // the plugin of their own checkout, and `legionSettings` is a loose object in each, so a body
+    // carrying both keys is described by both contracts while one carrying either alone is
+    // refused by the other. Measured on 2026-11-10: the base label, built from main `ff2a10ef`,
+    // whose contract requires `settings.max_fix_attempts`, had every state read of all 30 of its
+    // runs refused `a body the daemon API contract does not describe`, so its agents spent turns
+    // on the daemon and no reviewer of that label could reach the `read_record` the rule asks
+    // for — the negative control of k1 and k2 measured in a world of its own. A key a later
+    // contract drops stays here for as long as a label the rig builds still requires it.
+    settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
     consumers: [],
   });
 

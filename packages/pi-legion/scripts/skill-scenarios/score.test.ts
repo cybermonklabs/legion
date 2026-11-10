@@ -3325,6 +3325,54 @@ reviewRun(
   },
   [...header, ...turn]
 );
+// head-36: the stand-in answered the read 200 and the agent's own plugin refused the body, which
+// is what a label whose contract requires a key the stand-in stopped serving reads on every state
+// read (measured on 2026-11-10: all 30 runs of the base label, against 0 of the head's). An agent
+// whose `read_record` is refused cannot take the step the rule names and spends its turns on the
+// daemon, so the run is a rig error naming the refused read rather than a row of its own — and
+// without this the base arm, the negative control of k1 and k2, reports `0 pass` for the right
+// reason and the wrong reason at once.
+reviewRun(
+  "reviewer-text-findings-text-only-head-36",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [
+    ...header,
+    ...turn,
+    {
+      type: "message",
+      timestamp: "2026-09-30T17:40:30.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-read-refused",
+            name: "legion",
+            arguments: { op: "read_record", issue: "LWEVAL-1" },
+          },
+        ],
+      },
+    },
+    {
+      type: "message",
+      timestamp: "2026-09-30T17:40:31.000Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-read-refused",
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: "GET /legion/v1/state answered 200 with a body the daemon API contract does not describe: settings.max_fix_attempts: Invalid input: expected number, received undefined",
+          },
+        ],
+      },
+    },
+  ]
+);
 reviewRun("reviewer-text-findings-text-only-head-1", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -4320,7 +4368,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/12\t0/12\t0\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/12\t0/12\t1\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4615,6 +4663,16 @@ test("reviewer-text-findings, text-only: a wake sent before the record was read 
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-35\tpass=false\t.*event=APPROVE .*toldImplementer=false /
   );
+});
+// Catches: a scorer that reads a run whose agent could not read the daemon at all as a row of
+// its own. Each label's agents load the plugin of their own checkout, so a stand-in body one
+// contract describes and another does not breaks one label silently; the run is a rig error
+// naming the refused read, and a run whose reads all succeeded still scores (every row above).
+test("a daemon answer the agent's own contract refused is a rig error, not a failure", () => {
+  expect(out).toContain(
+    "reviewer-text-findings-text-only-head-36\trig error: the run's own agent had a daemon answer refused by its own checkout's contract: GET /legion/v1/state settings.max_fix_attempts"
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-36\tpass=");
 });
 // Catches: a scorer blind to "to that topic alone" (review-threads.md step 2).
 test("threads-closed, text-fixes: a wake copied to the architect fails", () => {

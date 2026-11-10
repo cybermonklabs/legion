@@ -1107,6 +1107,18 @@ function namesHead(sha: string, named: string): boolean {
 function namesCommit(text: string, sha: string): boolean {
   return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([found]) => sha.startsWith(found));
 }
+/** A daemon answer the agent's own plugin refused, as `LegionDaemonContractError` words it
+ * (`packages/pi-shared/src/daemon-client.ts`): the route, the status and what of the body that
+ * checkout's contract does not describe. A session prints it wherever the call was made, so it
+ * is read from the transcript's whole text rather than from one tool's results. */
+const CONTRACT_REFUSED =
+  /([A-Z]+ \/legion\/\S+) answered \d+ with a body the daemon API contract does not describe: ([^"\\\n]+)/;
+/** Every word of a transcript: each text part of each message, the tool results among them. */
+function transcriptText(entries: SessionEntry[]): string {
+  return entries
+    .flatMap((entry) => (entry.message?.content ?? []).map((part) => part.text ?? ""))
+    .join("\n");
+}
 /** The role a message of this loop is addressed to, which its topic ends with: a role topic is
  * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
  * run_project). The words are the role names themselves, not the `by` constants above, which
@@ -3795,10 +3807,29 @@ function unscored(
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
-  for (const role of BOOTS[scenario] ?? []) {
-    const booted = sessionIn(path.join(runDir, "sessions", role));
+  const halves: readonly (readonly [string, SessionEntry[]])[] = [
+    ["", entries],
+    ...(BOOTS[scenario] ?? []).map(
+      (role) => [role, sessionIn(path.join(runDir, "sessions", role))] as const
+    ),
+  ];
+  for (const [role, booted] of halves.slice(1)) {
     if (!booted.some((entry) => entry.message?.role === "assistant"))
       return `the ${role} half never started: sessions/${role} holds no transcript, or one with no assistant message`;
+  }
+  // A daemon answer the agent's own plugin refused is a rig error, whatever the run then did: an
+  // agent whose `read_record` is refused cannot take the step the rule names, and it spends its
+  // turns on the daemon instead of on its work. Each label's agents load the plugin of their own
+  // checkout, so a stand-in body one contract describes and another does not breaks one label
+  // alone and silently — measured on 2026-11-10, where every state read of all 30 base runs was
+  // refused because main `ff2a10ef`'s contract requires `settings.max_fix_attempts`, which the
+  // stand-in had stopped serving, and every base row still read `0 pass` for its own reasons, so
+  // no reader could tell the control from the fault. The stand-in now serves every key any
+  // label's contract requires, and this says so when one is missed again.
+  for (const [role, booted] of halves) {
+    const refused = CONTRACT_REFUSED.exec(transcriptText(booted));
+    if (refused !== null)
+      return `${role === "" ? "the run's own agent" : `the ${role} half`} had a daemon answer refused by its own checkout's contract: ${refused[1]} ${refused[2]}`;
   }
   // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
   // only when the recorder said both that it had subscribed and that it was stopped. A recorder

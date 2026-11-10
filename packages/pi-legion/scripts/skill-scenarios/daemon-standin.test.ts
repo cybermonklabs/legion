@@ -52,6 +52,12 @@ async function standin(role: string) {
     const state = LegionStateResponse.parse(await (await fetch(`${url}/legion/v1/state`)).json());
     return state.issues["LWEVAL-1"]?.phase;
   };
+  /** The settings the state read serves, as the body carries them: read before this checkout's
+   * schema, which keeps unknown keys, so a key an older contract requires is visible here. */
+  const settings = async () =>
+    z
+      .looseObject({ settings: z.record(z.string(), z.unknown()) })
+      .parse(await (await fetch(`${url}/legion/v1/state`)).json()).settings;
   const complete = async (handoff: boolean) => {
     const minted = await (
       await fetch(`${url}/legion/v1/grants`, {
@@ -85,7 +91,7 @@ async function standin(role: string) {
           z.looseObject({ path: z.string(), served: z.string().optional() }).parse(JSON.parse(line))
         )
     );
-  return { phase, complete, logged, stop: () => child.kill() };
+  return { phase, complete, logged, settings, stop: () => child.kill() };
 }
 
 // Catches: a stand-in that serves one frozen state, where a reviewer that obeys its own rule —
@@ -148,6 +154,32 @@ test.skipIf(skip)(
           .filter((line) => line.path !== "/legion/v1/state")
           .every((line) => line.served === undefined)
       ).toBe(true);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that serves the settings of this checkout's contract alone. Each label's
+// agents load the plugin of their own checkout, and `legionSettings` is a loose object in every
+// one of them, so a body carrying every key any label requires is described by all of them while
+// one carrying a subset is refused by the rest — silently, in that label alone. Measured on
+// 2026-11-10: the base label, built from main `ff2a10ef`, whose contract requires
+// `settings.max_fix_attempts`, had every state read of all 30 of its runs refused, against 0 of
+// the head label's, and every base row still read `0 pass` for its own reasons, so the negative
+// control of k1 and k2 was measured in a world of its own.
+test.skipIf(skip)(
+  "the state read serves every settings key a label's contract requires",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      // `max_fix_attempts` is main ff2a10ef's (contract 58, dropped by 59) and
+      // `worker_boot_timeout_seconds` is this checkout's; both are positive integers in each.
+      expect(await daemon.settings()).toMatchObject({
+        max_fix_attempts: expect.any(Number),
+        worker_boot_timeout_seconds: expect.any(Number),
+      });
     } finally {
       daemon.stop();
     }
