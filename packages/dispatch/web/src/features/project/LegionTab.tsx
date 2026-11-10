@@ -297,7 +297,7 @@ function WaitingLine({
               <span
                 className="tabular-nums whitespace-nowrap"
                 data-legion-waited={row.key}
-                title={row.since ?? "The daemon did not report when this wait started"}
+                title={row.since ?? "start of the wait not recorded"}
               >
                 {formatPhaseTime(row.since, now)}
               </span>
