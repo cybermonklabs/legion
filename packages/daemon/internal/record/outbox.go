@@ -36,6 +36,7 @@ const (
 	OutboxKindCheckLook         OutboxKind = "check_look"
 	OutboxKindCheckBound        OutboxKind = "check_bound"
 	OutboxKindPhaseEnded        OutboxKind = "phase_ended"
+	OutboxKindHookPrompt        OutboxKind = "hook_prompt"
 	OutboxKindIssueBundle       OutboxKind = "issue_bundle"
 	OutboxKindIssueRelease      OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
@@ -58,11 +59,12 @@ const (
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the one kind the daemon addresses to a role of
-// the issue that is not its architect (phase_ended), on a lane of its own because the board
-// lane's architect notices are ordered among themselves and one of them waits
+// none of them back. The role-message lane runs the two kinds the daemon addresses to a role of
+// the issue that is not its architect (phase_ended, hook_prompt), on a lane of its own because
+// the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended must hear it while that is news, not after whatever its tree's architect is owed.
+// phase ended, or given the words a hook fired on a move back, must hear it while that is news,
+// not after whatever its tree's architect is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -81,7 +83,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -898,6 +900,72 @@ func (p PhaseEnded) Message(issue string) string {
 		issue, p.From, p.To, follows, p.To, p.Reason)
 }
 
+// HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
+// put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
+// as the deployment spells it, Role the recipient, From the phase the work left and To the phase
+// it went back to, Count the hook's own count of that pair at the firing, Counts every
+// backward-move count of the issue after the move, PullRequest the issue's pull request as
+// `owner/name#n` where the issue has one, and Prompt the hook's own words.
+//
+// It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
+// news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
+// owed would reach the role rounds after the round the firing wrote it for.
+//
+// The daemon writes the facts and never substitutes anything into the hook's own words: Message
+// states the move, the counts and the pull request in sentences of the daemon's own, and then the
+// prompt exactly as the deployment wrote it, so a hook that spells a word in angle brackets says
+// that word. There is nothing for a hook to interpolate, because every fact it could ask for
+// stands above its words already.
+//
+// A role with no session holds no topic, and the row ends there undelivered with one log line, as
+// a phase-ended message nobody holds does: the words were written for the round the move back
+// opened, and a role that reads them later reads them of a round that is over.
+type HookPrompt struct {
+	Hook        string         `json:"hook"`
+	Role        claim.Role     `json:"role"`
+	From        phase.Phase    `json:"from"`
+	To          phase.Phase    `json:"to"`
+	Count       int            `json:"count"`
+	Counts      map[string]int `json:"counts"`
+	PullRequest string         `json:"pullRequest,omitempty"`
+	Prompt      string         `json:"prompt"`
+}
+
+func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
+
+// Message is what the runner publishes for issue: the daemon's own facts of the firing — the
+// hook, the move back, the count that fired it, every backward-move count of the issue and the
+// pull request where the issue has one — then a blank line, then the hook's words exactly as
+// written. The blank line is what marks the two apart, so a reader knows which sentences are the
+// daemon's and which are the deployment's. The pull-request sentence is left out for an issue
+// with no pull request.
+//
+// The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
+// two readings of one row read alike; a pair the map does not hold is left out. An empty map
+// reads `Counts by move: none.` rather than dropping the sentence: the firing counted the move
+// that fired it, so the map cannot normally be empty, and a sentence that says `none` tells a
+// reader of a row written any other way that the daemon counted nothing, where a missing sentence
+// would leave it to guess.
+func (p HookPrompt) Message(issue string) string {
+	listed := make([]string, 0, len(p.Counts))
+	for _, pair := range phase.BackwardPairs() {
+		if count, ok := p.Counts[pair]; ok {
+			listed = append(listed, fmt.Sprintf("%s=%d", pair, count))
+		}
+	}
+	counts := "none"
+	if len(listed) > 0 {
+		counts = strings.Join(listed, ", ")
+	}
+	pull := ""
+	if p.PullRequest != "" {
+		pull = fmt.Sprintf(" Pull request: %s.", p.PullRequest)
+	}
+	return fmt.Sprintf("Legion hook %s on %s: work went back from %s to %s."+
+		" Moves back this hook counts: %d. Counts by move: %s.%s\n\n%s",
+		p.Hook, issue, p.From, p.To, p.Count, counts, pull, p.Prompt)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {
@@ -1046,6 +1114,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindPhaseEnded:
 		value := PhaseEnded{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindHookPrompt:
+		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1221,6 +1295,22 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.TaskFollows && value.Role != claim.RoleImplementer {
 			return fmt.Errorf("only the implementer is told its task follows, since the phase the red opens is its own; the %s is not", value.Role)
+		}
+	case HookPrompt:
+		if value.Hook == "" {
+			return fmt.Errorf("a hook prompt carries the name of the hook that fired it")
+		}
+		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
+			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
+		}
+		if !phase.MovesBack(value.From, value.To) {
+			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
+		}
+		if value.Count <= 0 {
+			return fmt.Errorf("a hook prompt counts the move that fired it, so its count is one or more; it is %d", value.Count)
+		}
+		if value.Prompt == "" {
+			return fmt.Errorf("a hook prompt carries the hook's own words, which the daemon puts in front of the role")
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
