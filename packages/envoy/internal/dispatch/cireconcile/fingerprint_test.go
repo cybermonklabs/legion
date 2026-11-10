@@ -2,7 +2,9 @@ package cireconcile
 
 import (
 	"context"
+	"maps"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -408,5 +410,149 @@ func TestACutPassKeepsTheFingerprintsOfTheHeadsItRead(t *testing.T) {
 	line = h.passLine()
 	if got := number(t, line, "heads_unchanged"); got != len(pulls) {
 		t.Errorf("the pass counted %d unchanged heads, want all %d: %v", got, len(pulls), line)
+	}
+}
+
+// answeredSuites is the check suites of one answered pull request as a test changes them: the
+// slice the mapping itself reads, so a change made here reaches the objects and the
+// fingerprint.
+func answeredSuites(pull *graphQLPull) []graphQLSuite {
+	return pull.Commits.Nodes[0].Commit.CheckSuites.Nodes
+}
+
+// firstRun is the first check run of that pull request's head, whichever of its suites holds
+// one.
+func firstRun(t *testing.T, pull *graphQLPull) *graphQLRun {
+	t.Helper()
+	suites := answeredSuites(pull)
+	for i := range suites {
+		if len(suites[i].CheckRuns.Nodes) > 0 {
+			return &suites[i].CheckRuns.Nodes[0]
+		}
+	}
+	t.Fatal("the captured answer holds no check run, so there is no run to change")
+	return nil
+}
+
+// sameObjects reports whether two mappings of one head hold the very same check objects, which
+// is what makes a test of the fingerprint about the fingerprint.
+func sameObjects(t *testing.T, one, other queryHead) bool {
+	t.Helper()
+	if len(one.runs) != len(other.runs) || len(one.suites) != len(other.suites) {
+		return false
+	}
+	for i := range one.runs {
+		if !maps.EqualFunc(one.runs[i], other.runs[i], sameValue) {
+			return false
+		}
+	}
+	for i := range one.suites {
+		if !maps.EqualFunc(one.suites[i], other.suites[i], sameValue) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameValue compares two fields of a mapped object: the texts and numbers either builder
+// writes, and the one object inside an object, the App and its id.
+func sameValue(one, other any) bool {
+	nested, ok := one.(object)
+	if !ok {
+		return one == other
+	}
+	inner, ok := other.(object)
+	return ok && maps.Equal(nested, inner)
+}
+
+// The fingerprint is of the observations an answer maps to, not of the answer GitHub sent: two
+// answers this package maps to the very same objects fingerprint the same, and an answer whose
+// every field but one is the same fingerprints differently and is written.
+//
+// Both halves are load-bearing. A fingerprint of GitHub's own JSON would write every head again
+// for a field this package never reads; a fingerprint blind to a field the pass records would
+// leave a head holding the record of the pass before its checks ended, which is the failure the
+// pass exists to mend. It is read from the answer GitHub really gave, as the mapping test is
+// (testdata/graphql-page.json).
+func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
+	head := capturedHead(t)
+	if head.fingerprint == 0 {
+		t.Fatal("the head a query answered whole carries no fingerprint, so every pass would write it again")
+	}
+	if again := capturedHead(t); again.fingerprint != head.fingerprint {
+		t.Fatalf("one answer fingerprinted %d and then %d", head.fingerprint, again.fingerprint)
+	}
+
+	// GraphQL's enums are upper case where the webhook's fields are lower case, so the mapping
+	// lower-cases them: the same answer spelled the other way maps to the very same objects,
+	// and what the pass would write being the same, the fingerprint is too.
+	lowered := capturedPull(t)
+	suites := answeredSuites(lowered)
+	for i := range suites {
+		suites[i].Status = strings.ToLower(suites[i].Status)
+		suites[i].Conclusion = strings.ToLower(suites[i].Conclusion)
+		runs := suites[i].CheckRuns.Nodes
+		for j := range runs {
+			runs[j].Status = strings.ToLower(runs[j].Status)
+			runs[j].Conclusion = strings.ToLower(runs[j].Conclusion)
+		}
+	}
+	same := headOf(lowered, false)
+	if !sameObjects(t, same, head) {
+		t.Fatalf("the lower-cased answer maps to other objects than the one GitHub sent, so it says nothing about the fingerprint:\n%v\n%v",
+			same.runs, head.runs)
+	}
+	if same.fingerprint != head.fingerprint {
+		t.Errorf("two answers mapping to one set of objects fingerprinted %d and %d, so a pass would write a head GitHub has nothing new for",
+			same.fingerprint, head.fingerprint)
+	}
+
+	// Every field either builder maps, changed one at a time: each is a field of an observation
+	// the record holds, so each must take the head's fingerprint with it.
+	for _, change := range []struct {
+		what  string
+		apply func(*graphQLPull)
+	}{
+		{"a run's id", func(pull *graphQLPull) { firstRun(t, pull).DatabaseID++ }},
+		{"a run's name", func(pull *graphQLPull) { firstRun(t, pull).Name += " (rerun)" }},
+		{"a run's status", func(pull *graphQLPull) { firstRun(t, pull).Status = "IN_PROGRESS" }},
+		{"a run's conclusion", func(pull *graphQLPull) { firstRun(t, pull).Conclusion = "FAILURE" }},
+		{"a run's start", func(pull *graphQLPull) { firstRun(t, pull).StartedAt = "2026-10-06T21:00:00Z" }},
+		{"a run's completion", func(pull *graphQLPull) { firstRun(t, pull).CompletedAt = "2026-10-06T22:00:00Z" }},
+		{"a run's permalink", func(pull *graphQLPull) { firstRun(t, pull).Permalink += "?check_suite_focus=true" }},
+		{"the App that created a suite and its runs", func(pull *graphQLPull) { answeredSuites(pull)[0].App.DatabaseID++ }},
+		{"a suite's id", func(pull *graphQLPull) { answeredSuites(pull)[0].DatabaseID++ }},
+		{"a suite's status", func(pull *graphQLPull) { answeredSuites(pull)[0].Status = "COMPLETED" }},
+		{"a suite's conclusion", func(pull *graphQLPull) { answeredSuites(pull)[0].Conclusion = "SUCCESS" }},
+		{"a suite's update time", func(pull *graphQLPull) { answeredSuites(pull)[0].UpdatedAt = "2026-10-06T23:00:00Z" }},
+		{"the head commit", func(pull *graphQLPull) { pull.Commits.Nodes[0].Commit.OID = strings.Repeat("a", 40) }},
+		{"a run GitHub no longer answers", func(pull *graphQLPull) {
+			run := firstRun(t, pull)
+			for i := range answeredSuites(pull) {
+				nodes := answeredSuites(pull)[i].CheckRuns.Nodes
+				if len(nodes) > 0 && &nodes[0] == run {
+					answeredSuites(pull)[i].CheckRuns.Nodes = nodes[1:]
+				}
+			}
+		}},
+		{"a suite GitHub no longer answers", func(pull *graphQLPull) {
+			pull.Commits.Nodes[0].Commit.CheckSuites.Nodes = answeredSuites(pull)[1:]
+		}},
+	} {
+		t.Run(change.what, func(t *testing.T) {
+			pull := capturedPull(t)
+			change.apply(pull)
+			changed := headOf(pull, false)
+			if changed.overflow != "" {
+				t.Fatalf("the changed answer is one the pass would read over REST: %s", changed.overflow)
+			}
+			if sameObjects(t, changed, head) {
+				t.Fatalf("changing %s left the objects the pass records as they were, so it says nothing about the fingerprint", change.what)
+			}
+			if changed.fingerprint == head.fingerprint {
+				t.Errorf("changing %s left the fingerprint at %d, so the pass would write nothing for a head GitHub has news of",
+					change.what, changed.fingerprint)
+			}
+		})
 	}
 }

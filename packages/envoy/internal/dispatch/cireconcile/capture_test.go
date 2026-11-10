@@ -57,9 +57,9 @@ func capturedObjects(t *testing.T, name string) []object {
 	return items
 }
 
-// capturedHead is the pass's own mapping of the captured GraphQL page: the head GitHub answered
-// and the check objects it holds, through the code the pass runs.
-func capturedHead(t *testing.T) queryHead {
+// capturedPull is the one open pull request of the captured GraphQL page, as GitHub answered
+// it: the node the pass maps a head out of.
+func capturedPull(t *testing.T) *graphQLPull {
 	t.Helper()
 	var answer graphQLAnswer
 	if err := json.Unmarshal([]byte(captured(t, "graphql-page.json")), &answer); err != nil {
@@ -68,9 +68,16 @@ func capturedHead(t *testing.T) queryHead {
 	if answer.Data.Repository == nil || len(answer.Data.Repository.PullRequests.Nodes) == 0 {
 		t.Fatalf("the captured GraphQL answer holds no open pull request: %+v", answer)
 	}
-	head := headOf(answer.Data.Repository.PullRequests.Nodes[0], false)
-	if head.overflow {
-		t.Fatalf("the captured answer's head is one the pass would read over REST: %s", head.why)
+	return answer.Data.Repository.PullRequests.Nodes[0]
+}
+
+// capturedHead is the pass's own mapping of the captured GraphQL page: the head GitHub answered
+// and the check objects it holds, through the code the pass runs.
+func capturedHead(t *testing.T) queryHead {
+	t.Helper()
+	head := headOf(capturedPull(t), false)
+	if head.overflow != "" {
+		t.Fatalf("the captured answer's head is one the pass would read over REST: %s", head.overflow)
 	}
 	return head
 }

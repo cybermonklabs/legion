@@ -15,7 +15,7 @@ import (
 // The record every pass leaves in ci_reconcile_passes (migration
 // 20261110030133_ci_reconcile_passes), beside the one INFO line it logs.
 //
-// The line is the whole of what a pass used to say, and a container log rotates: the production
+// The line is all a pass says in the log, and a container log rotates: the production
 // pod's reached back 45 minutes, nine passes, which is not enough to answer why a head read six
 // hours ago still has no check. So each pass writes a row when it starts and fills the rest in
 // when it ends, and GET /api/v1/ci-reconcile/passes reads the last day of them back out
@@ -31,34 +31,38 @@ const (
 	PassRetention = 48 * time.Hour
 )
 
-// How a pass ended, as its row records it and the route answers it. These four are the whole
-// set, and the table's own check holds the column to them.
+// PassState is what a pass's row reads as: how the pass ended, for a row with an end time, and
+// how a row without one reads (RecentPasses). The first four are the whole set the table's own
+// check holds the outcome column to; the two below them are read off the row rather than
+// written to it, since a pass that never recorded its end wrote no outcome at all.
+type PassState string
+
 const (
 	// outcomeComplete is a pass that read everything it set out to read in this interval and
 	// ended of its own accord. It does not mean the pass closed a cycle: a pass that ends at the
 	// end of the order closes one (counts.cycle) and a pass that was never cut short still ran
 	// to the end of the order it was given.
-	outcomeComplete = "complete"
+	outcomeComplete PassState = "complete"
 	// outcomeDeadline is a pass its own five-minute bound cut short, which leaves the cursor at
 	// the head the next pass takes up.
-	outcomeDeadline = "deadline"
+	outcomeDeadline PassState = "deadline"
 	// outcomeRateLimit is a pass a shared GitHub rate limit ended where it stood.
-	outcomeRateLimit = "rate_limit"
+	outcomeRateLimit PassState = "rate_limit"
 	// outcomeCancelled is a pass the caller whose loop runs it cancelled, which is the process
 	// shutting down. It is recorded apart from the three above because the pass did not finish
 	// what it set out to read and nothing in its counts says so: the heads it never reached
 	// were not read, and a reader of a row that said `complete` would take the gap they leave
 	// for a pass that found nothing there.
-	outcomeCancelled = "cancelled"
+	outcomeCancelled PassState = "cancelled"
 
 	// PassStateRunning is a row with no end time whose pass is still running: its process is
 	// live, the lease is held and it is the newest row (RecentPasses says why all three).
-	PassStateRunning = "running"
+	PassStateRunning PassState = "running"
 	// PassStateAbandoned is a row with no end time whose pass is not running: the process was
 	// killed between the pass's start and its end, so nothing ever wrote the end. Nothing
 	// repairs such a row -- the prune deletes it with the rest after PassRetention -- because
 	// no later pass knows what this one had done when it died.
-	PassStateAbandoned = "ended_without_completing"
+	PassStateAbandoned PassState = "ended_without_completing"
 )
 
 // insertPass opens a pass's row. The counts and the outcome are left null: a pass that has not
@@ -148,7 +152,7 @@ func (r *Reconciler) endPass(id int64, c *counts, at *stop, cancelled bool) {
 	ctx, done := duty.LeaseCall()
 	defer done()
 	cursor := r.resume
-	if _, err := r.Pool.Exec(ctx, updatePass, id, passOutcome(c, at, cancelled),
+	if _, err := r.Pool.Exec(ctx, updatePass, id, string(passOutcome(c, at, cancelled)),
 		c.queries, c.points, c.restRequests, c.restNotModified, c.restHeads, c.records, c.heads, r.known(),
 		cursor.repository, cursor.page, cursor.number); err != nil {
 		r.Logger.Warn("ci reconcile pass recorded no end", "pass", id, "error", err)
@@ -165,7 +169,7 @@ func (r *Reconciler) endPass(id int64, c *counts, at *stop, cancelled bool) {
 // limit or at its own bound was over before its caller's shutdown reached it, and the limit or
 // the bound is what ended it. What a cancellation must never be read as is a pass that
 // finished.
-func passOutcome(c *counts, at *stop, cancelled bool) string {
+func passOutcome(c *counts, at *stop, cancelled bool) PassState {
 	switch {
 	case at != nil:
 		return outcomeRateLimit
@@ -189,9 +193,9 @@ type PassRecord struct {
 	// running and for one that died before it could record its end. State tells those apart.
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at"`
-	// State is one of PassStateRunning, outcomeComplete, outcomeDeadline, outcomeRateLimit,
-	// outcomeCancelled and PassStateAbandoned.
-	State string `json:"state"`
+	// State is the pass's own outcome once it has ended, and PassStateRunning or
+	// PassStateAbandoned for a row with no end time.
+	State PassState `json:"state"`
 	// Counts is what the pass did, null until it ended.
 	Counts *PassCounts `json:"counts"`
 	// Cursor is where the pass left the order for the pass after it, null until it ended. The
@@ -297,7 +301,7 @@ func RecentPasses(ctx context.Context, pool *store.Pool) ([]PassRecord, error) {
 
 // passState is the state the route answers: the outcome the pass recorded, or, for a row with no
 // end time, whether the three liveness facts hold (RecentPasses).
-func passState(pass PassRecord, running bool) string {
+func passState(pass PassRecord, running bool) PassState {
 	switch {
 	case pass.EndedAt != nil:
 		return pass.State
@@ -324,7 +328,7 @@ func scanPass(row pgx.Row) (pass PassRecord, live bool, err error) {
 		return PassRecord{}, false, fmt.Errorf("read the CI reconcile passes: %w", err)
 	}
 	if outcome != nil {
-		pass.State = *outcome
+		pass.State = PassState(*outcome)
 		pass.Counts = &counts
 		pass.Cursor = &cursor
 	}

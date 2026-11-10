@@ -134,9 +134,15 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	for stopped < len(after) && after[stopped]["rate_limited"] != "true" {
 		stopped++
 	}
-	if want := ciReconcileHeadName(ciReconcileLimitedHead - 1); after[stopped]["last_head"] != want {
-		t.Errorf("the pass the limit stopped read up to %q, want %q: the limited head was not read whole: %v",
-			after[stopped]["last_head"], want, after[stopped])
+	// The limited head was not read whole, so the pass the limit stopped read up to the head
+	// before it, and read no head at all where that pass began at the limited head itself --
+	// which of the two it is depends on where the pass before it left the cursor, and that is
+	// how many heads a one-second pass got through. Both say the one thing this is about;
+	// `last_head` naming the limited head, or a head past it, would be the pass counting a
+	// head whose second listing it never read.
+	if last := after[stopped]["last_head"]; last != "" && ciReconcileHeadNumber(t, last) >= ciReconcileLimitedHead {
+		t.Errorf("the pass the limit stopped read up to %q, want no head at or past %q: the limited head was not read whole: %v",
+			last, ciReconcileHeadName(ciReconcileLimitedHead), after[stopped])
 	}
 
 	// Once GitHub's reset has passed, the pass that reads again starts at the head the limit cut

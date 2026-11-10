@@ -133,7 +133,7 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 // waitForPass polls the recent passes until one answers want for id, and fails when it does not
 // within the bound. The pass it is waiting on runs in a goroutine of its own, so there is nothing
 // to wait on but the row.
-func waitForPass(t *testing.T, pool *store.Pool, id int64, want string) PassRecord {
+func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassRecord {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	var last []PassRecord
@@ -184,9 +184,11 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	// Long enough that the pass is still reading while the test reads the row, and short enough
-	// that the test does not wait on it: GitHub never answers the second page.
-	h.reconciler.PassTimeout = 3 * time.Second
+	// The window the test reads the open row in is the whole of this bound, since GitHub never
+	// answers the second page: ten seconds is long enough that a loaded machine still has the
+	// pass running when the two reads below reach the row, and short enough that the wait for
+	// the end of the pass is a wait and not a hang.
+	h.reconciler.PassTimeout = 10 * time.Second
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
 
 	_, _, finished := holdLease(t, h.pool, h.reconciler.Pass)

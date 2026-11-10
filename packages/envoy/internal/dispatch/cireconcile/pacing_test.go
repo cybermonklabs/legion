@@ -209,8 +209,14 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
-	h.reconciler.Pace = RequestPace
-	h.reconciler.PassTimeout = time.Second
+	// A deployment's own pause well above what the arithmetic comes to, so the gap under test
+	// is the work's rather than the ceiling's, and a bound whose nine tenths the pass's five
+	// REST requests divide into 900ms. The pass then spends 3.6 seconds of its five waiting --
+	// it waits before every request but its first -- which leaves 1.4 seconds for five requests
+	// to a loopback GitHub: a margin a loaded machine keeps, where a bound this pass fills nine
+	// tenths of would not.
+	h.reconciler.Pace = 2 * time.Second
+	h.reconciler.PassTimeout = 5 * time.Second
 
 	// The first pass of a process knows of no work yet and reads at the floor, which is the
 	// fastest it is ever allowed to read; it is the pass that learns the two heads there are.
@@ -224,17 +230,20 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 	h.pass()
 
 	// Two heads read over REST are two listings each, one page apiece, under the one repository
-	// whose identity the pass reads: five requests. Nine tenths of the one-second bound is
-	// 900ms, and 900ms over five requests is 180ms.
+	// whose identity the pass reads: five requests. Nine tenths of the five-second bound is
+	// 4.5 seconds, and 4.5 seconds over five requests is 900ms.
 	line := h.passLine()
-	if got, want := text(t, line, "pace"), (180 * time.Millisecond).String(); got != want {
-		t.Errorf("the pass paced itself at %s, want %s: five REST requests over nine tenths of a second: %v", got, want, line)
+	if got, want := text(t, line, "pace"), (900 * time.Millisecond).String(); got != want {
+		t.Errorf("the pass paced itself at %s, want %s: five REST requests over nine tenths of five seconds: %v", got, want, line)
 	}
 	if got := number(t, line, "heads_known"); got != 2 {
 		t.Errorf("the pass reports %d heads known, want the 2 open heads of the repository: %v", got, line)
 	}
 	if got := number(t, line, "heads_over_rest"); got != 2 {
 		t.Errorf("the pass read %d heads over REST, want both: %v", got, line)
+	}
+	if line["deadline_reached"] != false {
+		t.Errorf("the pass ran out of its bound, so what it read says nothing about the gap it set: %v", line)
 	}
 }
 
@@ -599,6 +608,9 @@ func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
 	for _, pull := range all {
 		h.github.refuseChecks(gitHubRepository, pull.sha)
 	}
+	// Only the first pass is bound, and only so that it is cut off at the stalled page: the two
+	// passes after it have every head of the repository to read and nothing to prove about a
+	// bound, so a bound on them would be a race between a loaded machine and 51 requests.
 	h.reconciler.PassTimeout = 3 * time.Second
 	// The first cycle takes two passes: the first is cut off at the second page, and the second
 	// reads that page and reaches the end of the order, which closes the cycle.
@@ -606,6 +618,7 @@ func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
 
 	h.pass()
 
+	h.reconciler.PassTimeout = 0
 	h.github.stallQuery(gitHubRepository, 1, 0)
 
 	h.pass()

@@ -180,7 +180,7 @@ func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 	if len(passes) != 1 || passes[0].ID != running {
 		t.Fatalf("the route answered %+v, want the one open pass %d", passes, running)
 	}
-	if passes[0].State != cireconcile.PassStateRunning {
+	if passes[0].State != string(cireconcile.PassStateRunning) {
 		t.Fatalf("the open pass reads %q, want %q", passes[0].State, cireconcile.PassStateRunning)
 	}
 	if passes[0].Counts != nil || passes[0].Cursor != nil {
@@ -209,7 +209,7 @@ func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T)
 	if len(passes) != 1 || passes[0].ID != killed {
 		t.Fatalf("the route answered %+v, want the one open pass %d", passes, killed)
 	}
-	if passes[0].State != cireconcile.PassStateAbandoned {
+	if passes[0].State != string(cireconcile.PassStateAbandoned) {
 		t.Fatalf("the killed pass reads %q, want %q: its heartbeat is 5s old and the live window is %s",
 			passes[0].State, cireconcile.PassStateAbandoned, processes.LiveWindow)
 	}

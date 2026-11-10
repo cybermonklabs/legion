@@ -2,8 +2,10 @@ package cireconcile
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/maphash"
 	"net/http"
 	"strings"
 	"time"
@@ -15,14 +17,15 @@ const (
 	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch maps: the
 	// largest head Legion has run carries 32 runs over 7 suites, and twenty of those is about
 	// 200 KiB of JSON. A page that does come back past the limit is read over REST instead
-	// (Reconciler.restOfRepository), so the size is a budget rather than a promise.
+	// (walk.restOfRepository), so the size is a budget rather than a promise.
 	pullsPerQuery = 20
 
 	// suitesPerQuery and runsPerQuery are the check suites of one head, and the check runs of
 	// one suite, that one query reads. A head with more suites than this, or one suite with more
 	// runs than this, is read over REST instead: GraphQL would page those connections with
 	// cursors of their own, one query for each page of each suite of each head, which is the
-	// per-head round trip this change exists to be rid of. GitHub caps either `first` at 100.
+	// per-head round trip a query of twenty heads exists to be rid of. GitHub caps either
+	// `first` at 100.
 	suitesPerQuery = 30
 	runsPerQuery   = 60
 
@@ -112,29 +115,29 @@ type queryPage struct {
 	heads       []queryHead
 	hasNextPage bool
 	endCursor   string
-	// points is what GitHub charged the query against the App's GraphQL budget (rateLimit.cost).
-	points int
 }
 
 // queryHead is one open pull request's head as the query answered it: its number, its head
 // commit, and the check objects of that commit mapped into the shape the webhook's own body
 // carries (checkRunObject, checkSuiteObject).
-//
-// overflow says the query could not answer this head whole, so the pass reads it over REST
-// instead and the objects here are not recorded: the head has more check suites than one query
-// asks for, one of its suites has more check runs than one query asks for, or GitHub refused or
-// nulled its Checks fields. A head read over REST is read exactly as every head was read before
-// this change -- paged, conditional on the ETags the pass kept -- so nothing is lost by it but
-// the round trips.
 type queryHead struct {
-	number   int64
-	sha      string
-	runs     []object
-	suites   []object
-	overflow bool
-	// why names the overflow in the pass's WARN, so a head read over REST at every pass says
-	// which of the three it is.
-	why string
+	number int64
+	sha    string
+	runs   []object
+	suites []object
+	// overflow is why the query could not answer this head whole, and empty for a head it
+	// answered whole. A head with a reason here is read over REST instead and the objects above
+	// are not recorded: the head has more check suites than one query asks for, one of its
+	// suites has more check runs than one query asks for, or GitHub refused or nulled its
+	// Checks fields. The reason is what the head's own line reports, so a head read over REST
+	// at every pass says which of the three it is. A head read over REST is read paged and
+	// conditional on the ETags the pass kept, so nothing is lost by it but the round trips.
+	overflow string
+	// fingerprint is the hash of the objects above, taken as they were mapped (mappedObject),
+	// and zero for a head the query could not answer whole. It is what the ETag of a listing is
+	// to a REST read: a head whose fingerprint is the one the pass already holds is written
+	// nothing at all (walk.visitHead).
+	fingerprint uint64
 }
 
 // graphQLAnswer is GitHub's `{data, errors}` envelope for headsQuery. Every connection is a
@@ -143,9 +146,7 @@ type queryHead struct {
 type graphQLAnswer struct {
 	Data struct {
 		RateLimit struct {
-			Cost      int    `json:"cost"`
-			Remaining int    `json:"remaining"`
-			ResetAt   string `json:"resetAt"`
+			Cost int `json:"cost"`
 		} `json:"rateLimit"`
 		Repository *struct {
 			PullRequests struct {
@@ -241,7 +242,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 		return queryPage{}, fmt.Errorf("decode the GraphQL answer for %s/%s: %w", repository.owner, repository.repo, err)
 	}
 	c.points += answer.Data.RateLimit.Cost
-	page := queryPage{points: answer.Data.RateLimit.Cost}
+	var page queryPage
 	refused, wholePage := refusedPulls(answer.Errors)
 	if wholePage || answer.Data.Repository == nil {
 		return page, fmt.Errorf("GitHub refused the GraphQL query for %s/%s: %s", repository.owner, repository.repo, errorText(answer.Errors))
@@ -257,8 +258,8 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 			// name it to read over REST on its own. This page is a page the query could not
 			// answer, exactly as a refusal of the repository is, and its heads are read over
 			// REST from the listing, which answers every number and every head commit
-			// (restOfRepository). The alternative is the one this replaced: a head no read of
-			// either kind ever reaches and no line ever names.
+			// (walk.restOfRepository). The alternative is a head no read of either kind reaches
+			// and no line ever names.
 			return page, fmt.Errorf("GitHub answered no readable pull request at node %d of the page for %s/%s: %s",
 				index, repository.owner, repository.repo, errorText(answer.Errors))
 		}
@@ -277,8 +278,9 @@ func headCommit(pull *graphQLPull) *graphQLCommit {
 }
 
 // headOf is one answered pull request as the pass takes it: its head commit, the check objects
-// of that commit, and whether the query could answer it whole. refused says GitHub answered an
-// errors entry against this pull request's own path, which is its Checks fields refused.
+// of that commit, the fingerprint of those objects, and, where the query could not answer the
+// head whole, why. refused says GitHub answered an errors entry against this pull request's own
+// path, which is its Checks fields refused.
 //
 // A pull request GitHub listed with no head commit is no head to read, exactly as one the REST
 // listing answered with no head.sha is: it is answered with an empty sha and the caller passes
@@ -292,47 +294,54 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 	}
 	head.sha = commit.OID
 	if refused {
-		head.overflow, head.why = true, "GitHub refused the head's Checks fields"
+		head.overflow = "GitHub refused the head's Checks fields"
 		return head
 	}
 	if commit.CheckSuites == nil {
-		head.overflow, head.why = true, "GitHub answered the head's check suites null"
+		head.overflow = "GitHub answered the head's check suites null"
 		return head
 	}
 	if commit.CheckSuites.PageInfo.HasNextPage {
-		head.overflow, head.why = true, fmt.Sprintf("the head has more than %d check suites", suitesPerQuery)
+		head.overflow = fmt.Sprintf("the head has more than %d check suites", suitesPerQuery)
 		return head
 	}
 	runs := 0
 	for _, suite := range commit.CheckSuites.Nodes {
 		if suite.CheckRuns == nil {
-			head.overflow, head.why = true, "GitHub answered a check suite's runs null"
+			head.overflow = "GitHub answered a check suite's runs null"
 			return head
 		}
 		if suite.CheckRuns.PageInfo.HasNextPage {
-			head.overflow, head.why = true, fmt.Sprintf("a check suite of the head has more than %d check runs", runsPerQuery)
+			head.overflow = fmt.Sprintf("a check suite of the head has more than %d check runs", runsPerQuery)
 			return head
 		}
 		runs += len(suite.CheckRuns.Nodes)
 	}
-	if len(commit.CheckSuites.Nodes) == 0 {
-		// A head with no suite has no run either, and both slices stay as they are: nil, which
-		// is what a head GitHub answered no object for has always carried.
-		return head
-	}
 	// The loop above walks every suite and every run of the head to validate it, so what the
 	// two slices come to is known before either is built: a head of 7 suites and 32 runs grew
 	// them through a dozen allocations and as many copies, once for every head of every page.
-	head.suites = make([]object, 0, len(commit.CheckSuites.Nodes))
+	// A head GitHub answered no object for keeps both slices as they are, nil, which is what
+	// such a head carries.
+	if len(commit.CheckSuites.Nodes) > 0 {
+		head.suites = make([]object, 0, len(commit.CheckSuites.Nodes))
+	}
 	if runs > 0 {
 		head.runs = make([]object, 0, runs)
 	}
+	// The objects and the head's fingerprint are built together, each field written into the
+	// object the pass records and into the hash as it is mapped (mappedObject). The order is
+	// the answer's own -- each suite, then the runs under it -- which is the order every pass
+	// reads a given answer in, and that is what two passes' fingerprints of one head must
+	// agree on.
+	var sum maphash.Hash
+	sum.SetSeed(fingerprintSeed)
 	for _, suite := range commit.CheckSuites.Nodes {
-		head.suites = append(head.suites, checkSuiteObject(suite, commit.OID))
+		head.suites = append(head.suites, checkSuiteObject(&sum, suite, commit.OID))
 		for _, run := range suite.CheckRuns.Nodes {
-			head.runs = append(head.runs, checkRunObject(run, suite, commit.OID))
+			head.runs = append(head.runs, checkRunObject(&sum, run, suite, commit.OID))
 		}
 	}
+	head.fingerprint = fingerprintOf(&sum)
 	return head
 }
 
@@ -359,21 +368,20 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 //
 // The head commit's oid is the webhook's head_sha: GraphQL's CheckRun has no head sha of its
 // own, and the commit the query read the suite from is the commit the run ran at.
-func checkRunObject(run graphQLRun, suite graphQLSuite, oid string) object {
-	item := object{
-		"id":           run.DatabaseID,
-		"name":         run.Name,
-		"status":       strings.ToLower(run.Status),
-		"conclusion":   strings.ToLower(run.Conclusion),
-		"head_sha":     oid,
-		"started_at":   run.StartedAt,
-		"completed_at": run.CompletedAt,
-		"html_url":     run.Permalink,
-	}
+func checkRunObject(sum *maphash.Hash, run graphQLRun, suite graphQLSuite, oid string) object {
+	item := mappedObject{item: make(object, 9), sum: sum}
+	item.number("id", run.DatabaseID)
+	item.text("name", run.Name)
+	item.text("status", strings.ToLower(run.Status))
+	item.text("conclusion", strings.ToLower(run.Conclusion))
+	item.text("head_sha", oid)
+	item.text("started_at", run.StartedAt)
+	item.text("completed_at", run.CompletedAt)
+	item.text("html_url", run.Permalink)
 	if suite.App != nil {
-		item["app"] = object{"id": suite.App.DatabaseID}
+		item.nest("app").number("id", suite.App.DatabaseID)
 	}
-	return item
+	return item.item
 }
 
 // checkSuiteObject is one check suite the query answered, in the webhook's own shape, as
@@ -381,112 +389,92 @@ func checkRunObject(run graphQLRun, suite graphQLSuite, oid string) object {
 // the App that created it, its status and conclusion the lower-cased enums, its updatedAt the
 // webhook's updated_at -- the field a suite's observation is ordered by -- and the commit's oid
 // the head_sha, which GraphQL's CheckSuite does not carry.
-func checkSuiteObject(suite graphQLSuite, oid string) object {
-	item := object{
-		"id":         suite.DatabaseID,
-		"status":     strings.ToLower(suite.Status),
-		"conclusion": strings.ToLower(suite.Conclusion),
-		"head_sha":   oid,
-		"updated_at": suite.UpdatedAt,
-	}
+func checkSuiteObject(sum *maphash.Hash, suite graphQLSuite, oid string) object {
+	item := mappedObject{item: make(object, 6), sum: sum}
+	item.number("id", suite.DatabaseID)
+	item.text("status", strings.ToLower(suite.Status))
+	item.text("conclusion", strings.ToLower(suite.Conclusion))
+	item.text("head_sha", oid)
+	item.text("updated_at", suite.UpdatedAt)
 	if suite.App != nil {
-		item["app"] = object{"id": suite.App.DatabaseID}
+		item.nest("app").number("id", suite.App.DatabaseID)
 	}
-	return item
+	return item.item
 }
 
-// FNV-1a's two constants, the 64-bit pair hash/fnv sums with. They are written out here rather
-// than taken from fnv.New64a because that answers a hash.Hash64, which is an interface, a heap
-// allocation and a method call for every byte: a pass fingerprints some 39 objects of each of
-// 833 heads, and this way the whole of it is arithmetic on a register.
-const (
-	fnvOffset uint64 = 14695981039346656037
-	fnvPrime  uint64 = 1099511628211
-)
+// fingerprintSeed is the seed every fingerprint this process takes is hashed with. One seed for
+// the whole process is what a fingerprint needs and all it needs: it is compared only with the
+// fingerprint the pass before took of the same head in this same process, and it is written
+// nowhere and sent nowhere.
+var fingerprintSeed = maphash.MakeSeed()
 
-// fingerprintOf is the hash of the check runs and check suites one query answered for a head:
-// what the ETag of a listing is to a REST read, and the one thing that tells a head GitHub has
-// nothing new for from a head it has. A pass holding it writes nothing at all for the head
-// whose next answer fingerprints the same (visitHead).
+// mappedObject is one check run or check suite as this package maps it: the object the pass
+// records, built field by field, and the head's fingerprint taken over those same fields as
+// they are written. The one call writes both, so the record and the fingerprint cannot come
+// apart -- a field added to an object is hashed by the call that adds it -- which is what the
+// fingerprint rests on.
 //
-// It hashes what would be written rather than what GitHub sent. These objects are the ones
-// checkRunObject and checkSuiteObject build, which is the shape the webhook's own body carries
-// and the shape contracts.GithubCIObservation maps, so two answers GitHub spelled differently
-// and this package maps to the same observations are the same work and fingerprint the same,
-// and an answer holding one observation more, or one field of one observation different,
-// fingerprints differently and is written. Hashing GitHub's raw JSON instead would write every
-// head again for a field this package never reads.
-//
-// The order the hash is taken in is fixed, which is what two passes must agree on: the two
-// counts, then the suites and the runs in the order headOf built them, and within one object
-// the fields combined by a sum, since a Go map has no order of its own and sorting the names of
-// every object of every head would be an allocation and a sort for each of them. Two distinct
-// fields of one object can only cancel in that sum if their name-and-value hashes collide,
-// which is the hash's business rather than the sum's.
+// The hash is of what would be written rather than of what GitHub sent: these are the values
+// contracts.GithubCIObservation maps, so two answers GitHub spelled differently and this
+// package maps to the same observations fingerprint the same, and an answer holding one
+// observation more, or one field of one observation different, fingerprints differently and is
+// written. Hashing GitHub's raw JSON instead would write every head again for a field this
+// package never reads.
+type mappedObject struct {
+	item object
+	sum  *maphash.Hash
+}
+
+// text writes one string field and number one whole-number field: into the object, under the
+// name the webhook's own body carries, and into the hash. A string goes into the hash with its
+// length before it, so no two fields can run together into one: `name=ab` beside `status=c`
+// hashes differently from `name=a` beside `status=bc`.
+func (m mappedObject) text(name, value string) {
+	m.item[name] = value
+	m.hash(name)
+	m.hash(value)
+}
+
+func (m mappedObject) number(name string, value int64) {
+	m.item[name] = value
+	m.hash(name)
+	m.eight(uint64(value))
+}
+
+// nest is the one object inside an object either builder writes: the App and its id.
+func (m mappedObject) nest(name string) mappedObject {
+	inner := object{}
+	m.item[name] = inner
+	m.hash(name)
+	return mappedObject{item: inner, sum: m.sum}
+}
+
+// hash writes one string into the fingerprint, its length first, and eight writes one number as
+// its eight bytes.
+func (m mappedObject) hash(text string) {
+	m.eight(uint64(len(text)))
+	_, _ = m.sum.WriteString(text)
+}
+
+func (m mappedObject) eight(value uint64) {
+	var bytes [8]byte
+	binary.LittleEndian.PutUint64(bytes[:], value)
+	_, _ = m.sum.Write(bytes[:])
+}
+
+// fingerprintOf is the hash one head's objects came to: what the ETag of a listing is to a REST
+// read, and the one thing that tells a head GitHub has nothing new for from a head it has. A
+// pass holding it writes nothing at all for the head whose next answer fingerprints the same
+// (walk.visitHead).
 //
 // Zero is no fingerprint -- what the Reconciler holds for a head no query has answered yet --
 // so a hash that comes out zero is answered one instead. That costs one answer in 2^64 a write
 // it did not need and can hide nothing: the two values stand for the same work either way.
-func fingerprintOf(runs, suites []object) uint64 {
-	sum := hashUint(hashUint(fnvOffset, uint64(len(suites))), uint64(len(runs)))
-	for _, item := range suites {
-		sum = hashUint(sum, hashObject(item))
+func fingerprintOf(sum *maphash.Hash) uint64 {
+	if hashed := sum.Sum64(); hashed != 0 {
+		return hashed
 	}
-	for _, item := range runs {
-		sum = hashUint(sum, hashObject(item))
-	}
-	if sum == 0 {
-		return 1
-	}
-	return sum
-}
-
-// hashObject is one mapped object's own hash: each field hashed from its name through its
-// value, and the fields' hashes added.
-func hashObject(item object) uint64 {
-	var sum uint64
-	for name, value := range item {
-		sum += hashValue(hashString(fnvOffset, name), value)
-	}
-	return sum
-}
-
-// hashValue folds one field's value into the sum. The three cases are every type the two
-// builders above put in an object: the text of a status, a name or a timestamp, the int64 of a
-// databaseId, and the one nested object, an app and its id.
-func hashValue(sum uint64, value any) uint64 {
-	switch held := value.(type) {
-	case string:
-		return hashString(sum, held)
-	case int64:
-		return hashUint(sum, uint64(held))
-	case object:
-		return hashUint(sum, hashObject(held))
-	default:
-		// Nothing reaches here today. A field of another type added to either builder hashes
-		// its rendering rather than nothing at all: a value this passed over would hold the
-		// fingerprint still while the observation under it changed, and the change would never
-		// be written. The allocation Sprint makes is the price of that, in a branch that does
-		// not run.
-		return hashString(sum, fmt.Sprint(value))
-	}
-}
-
-// hashString folds the bytes of one string into the sum, and hashUint the eight bytes of one
-// number, each as FNV-1a does: exclusive-or the byte in, then multiply by the prime.
-func hashString(sum uint64, text string) uint64 {
-	for i := range len(text) {
-		sum = (sum ^ uint64(text[i])) * fnvPrime
-	}
-	return sum
-}
-
-func hashUint(sum, value uint64) uint64 {
-	for range 8 {
-		sum = (sum ^ (value & 0xff)) * fnvPrime
-		value >>= 8
-	}
-	return sum
+	return 1
 }
 
 // refusedPulls reads GitHub's errors array: the indexes of the pull request nodes an entry is
