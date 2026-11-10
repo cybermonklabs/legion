@@ -2,6 +2,7 @@ import {
   AUTH_NO_IDENTITY,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -1038,13 +1039,20 @@ export class DispatchApiClient {
    *  `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`,
    *  `INVALID_KEYWORDS_ONLY`). The bar searches while a person types, so it passes the `signal`
    *  of the search it is still interested in: an aborted request ends the route's own work with
-   *  it, the embedding a search by meaning had asked for included. */
+   *  it, the embedding a search by meaning had asked for included. A request carrying any member
+   *  beyond `q`, `project`, `limit` and `offset` goes to `GET /api/v1/search/results` instead
+   *  (`everyBuildReadsSearch`), because a Dispatch released before that route refuses the path
+   *  outright rather than answering `GET /api/v1/search` with the member dropped, which is
+   *  unnarrowed rows under the filters a person chose. */
   search(
     query: string,
-    options: Omit<Query<"/api/v1/search", "get">, "q"> = {},
+    options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
     init: { signal?: AbortSignal } = {}
   ) {
-    return this.read("/api/v1/search", {}, { q: query, ...options }, init);
+    const request = { q: query, ...options };
+    return everyBuildReadsSearch(request)
+      ? this.read("/api/v1/search", {}, request, init)
+      : this.read("/api/v1/search/results", {}, request, init);
   }
 
   /**

@@ -32,6 +32,7 @@ import {
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedMessagePayloadSchema,
   type EditCommentInput,
+  everyBuildReadsSearch,
   type Handoff,
   HandoffRecordedPayloadSchema,
   type HandoffSummary,
@@ -57,6 +58,7 @@ import {
   type ReplyBlock,
   ReplyBlockSchema,
   retriesUnderKey,
+  SEARCH_MEMBERS_EVERY_BUILD_READS,
   serviceSubjectLabel,
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
@@ -1403,4 +1405,39 @@ test("a Kubernetes service subject renders as namespace/name, and anything else 
     "system:serviceaccount:legion:default:extra"
   );
   expect(serviceSubjectLabel("kubernetes-admin")).toBe("kubernetes-admin");
+});
+
+test("a search of the four members every build reads stays on GET /api/v1/search", () => {
+  expect(SEARCH_MEMBERS_EVERY_BUILD_READS).toEqual(["q", "project", "limit", "offset"]);
+
+  expect(everyBuildReadsSearch({})).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe" })).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe", project: "LEGION", limit: 20, offset: 40 })).toBe(
+    true
+  );
+
+  // Both clients build a request out of optional filters, so a filter nobody set is a key whose
+  // value is `undefined`. It narrows nothing and an older build drops nothing, so it is not
+  // carried.
+  expect(everyBuildReadsSearch({ q: "astrolabe", status: undefined })).toBe(true);
+  expect(
+    everyBuildReadsSearch({ q: "astrolabe", keywords_only: undefined, number_project: undefined })
+  ).toBe(true);
+});
+
+test("a search carrying anything beyond those four goes to GET /api/v1/search/results", () => {
+  const beyond: Record<string, unknown> = {
+    number_project: "INFRA",
+    status: "in_progress",
+    author: "sami@theorem.dev",
+    updated_since: "2026-11-01T00:00:00Z",
+    keywords_only: true,
+  };
+  for (const [member, value] of Object.entries(beyond)) {
+    expect(everyBuildReadsSearch({ q: "astrolabe", [member]: value })).toBe(false);
+  }
+
+  // The rule reads the request's own keys, so a member added after this test was written routes
+  // itself without anyone remembering to list it here.
+  expect(everyBuildReadsSearch({ q: "astrolabe", component: "search" })).toBe(false);
 });

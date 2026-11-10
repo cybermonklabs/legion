@@ -71,6 +71,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -270,6 +271,11 @@ export interface IssuePageRequest {
   readonly offset: number;
 }
 
+/** What the `dispatch search` command narrows by. It carries none of the five members the search
+ *  bar sends (`number_project`, `status`, `author`, `updated_since`, `keywords_only`): those
+ *  belong to the bar's own feature, and the command cannot narrow by them today. `search` reads
+ *  the request's keys rather than this shape, so the day one is added here it is routed to
+ *  `GET /api/v1/search/results` with nobody remembering to. */
 export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
@@ -906,8 +912,15 @@ export class DispatchClient {
     ]);
   }
 
+  /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
+   *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
+   *  build refuses rather than answering unnarrowed. */
   async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-    return this.#json("GET", ["api", "v1", "search"], undefined, { q: query, ...options });
+    const request = { q: query, ...options };
+    const path = everyBuildReadsSearch(request)
+      ? ["api", "v1", "search"]
+      : ["api", "v1", "search", "results"];
+    return this.#json("GET", path, undefined, request);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,

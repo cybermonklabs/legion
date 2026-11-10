@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ArchitectureSource, IssueSummary, ItemBlocks } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchGatewayError } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  DispatchClient,
+  DispatchGatewayError,
+  type SearchOptions,
+} from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
 
 interface RecordedRequest {
@@ -218,6 +223,44 @@ describe("DispatchClient", () => {
       method: "GET",
       headers: { Authorization: "Bearer secret", Accept: "application/json" },
     });
+  });
+
+  test("a search of q alone stays on /api/v1/search", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.search("astrolabe");
+
+    expect(new URL(requests[0]?.url ?? "").pathname).toBe("/api/v1/search");
+  });
+
+  // A member beyond `q`, `project`, `limit` and `offset` is one a Dispatch released before the
+  // results route drops, answering unnarrowed rows under the filters a person chose; that build
+  // answers the results path `404 no route` instead, which is a refusal. `SearchOptions` carries
+  // no such member today, so the test puts one on the request through a cast: the rule reads the
+  // request's own keys, so the day the command grows a filter it is routed without anyone
+  // remembering to.
+  test("a search carrying a member beyond those four asks for /api/v1/search/results", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.search("astrolabe", {
+      project: "LEGION",
+      status: "in_progress",
+    } as SearchOptions);
+
+    const url = new URL(requests[0]?.url ?? "");
+    expect(url.pathname + url.search).toBe(
+      "/api/v1/search/results?q=astrolabe&project=LEGION&status=in_progress"
+    );
   });
 
   test("lists this session's open asks with an optional server baseline", async () => {
