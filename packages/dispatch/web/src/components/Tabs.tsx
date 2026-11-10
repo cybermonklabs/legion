@@ -1,7 +1,12 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 
 import { Pill } from "./Pill";
-import { tabClassName, tabListClassName, tabStripClassName } from "./tab-classes";
+import {
+  tabClassName,
+  tabCountClassName,
+  tabListClassName,
+  tabStripClassName,
+} from "./tab-classes";
 
 export interface TabDefinition<Id extends string> {
   id: Id;
@@ -145,7 +150,7 @@ export function Tabs<Id extends string>({
             {tab.count === undefined ? null : (
               <>
                 {" "}
-                <Pill>{tab.count}</Pill>
+                <Pill className={tabCountClassName}>{tab.count}</Pill>
               </>
             )}
           </button>

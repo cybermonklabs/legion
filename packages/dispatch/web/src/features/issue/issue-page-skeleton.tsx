@@ -1,15 +1,13 @@
 import type { ReactNode } from "react";
 
-import { tabClassName, tabListClassName, tabStripClassName } from "../../components/tab-classes";
 import {
-  borderDefault,
-  borderStrong,
-  borderTransparent,
-  linkText,
-  skeletonBg,
-  textTransparent,
-} from "../../theme/classes";
-import { ISSUE_TAB_LABELS } from "./issue-tab-list";
+  tabClassName,
+  tabCountClassName,
+  tabListClassName,
+  tabStripClassName,
+} from "../../components/tab-classes";
+import { borderTransparent, card, skeletonBg, textTransparent } from "../../theme/classes";
+import { issueTabs } from "./issue-tab-list";
 
 /**
  * The two pieces of the issue page a reader has before the page itself: the header's box and the
@@ -23,8 +21,19 @@ import { ISSUE_TAB_LABELS } from "./issue-tab-list";
  * rather than for a frame (`features/doc/AfterTheFirstBatch.tsx`). So nothing the reader has not
  * already seen appears between the skeleton and the page.
  *
+ * Each box stands at the height of the part that lands in it, row by row, from that part's own
+ * classes. Measured on this pod at 1280x720 on an issue's Conversation, where a comment's
+ * `dispatch://` reference sat 483 px down the screen: the header's space stood at 177 px against
+ * the header's 146 px and the strip's at 37 px against the strip's 41 px, the document lost
+ * 27 px as the two landed 117 ms after that reference was first painted, the browser clamped the
+ * scroll by 7 px of it, and the reference went up 20 px - out from under a pointer resting on it
+ * (`e2e/heavy-bodies.e2e.ts`'s hover card of a comment of 8,000 list items, dispatch://INFRA-341).
+ *
  * Here rather than in `app.tsx` because both draw them: `app.tsx` is the entry chunk, which may
- * hold nothing a route draws, and these two boxes are all of the page that belongs there.
+ * hold nothing a route draws, and these two boxes are all of the page that belongs there. That
+ * is also why each box is built from the classes the part is built from rather than from the
+ * part itself: `components/tab-classes.ts` and the sizes named below carry no component into the
+ * shell's own task.
  *
  * `state` is the one thing in the header's box that is not a placeholder: what the header
  * would tell the reader about this issue without being asked - that it is closed, where its
@@ -34,31 +43,54 @@ import { ISSUE_TAB_LABELS } from "./issue-tab-list";
  */
 export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode {
   return (
-    <header className={`mb-6 border-b pb-6 ${borderDefault}`} data-testid="issue-header-box">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className={`text-sm font-semibold ${linkText}`}>
-          <span
-            className={`inline-block h-4 w-16 animate-pulse rounded align-middle ${skeletonBg}`}
-          />
-        </p>
-        <button
-          className={`rounded-lg border px-3 py-2 text-sm font-medium ${textTransparent} ${borderStrong}`}
-          disabled
-          type="button"
-        >
-          Pin issue
-        </button>
+    // The header's own frame: `IssueHeader`'s `mb-3 min-w-0 rounded-xl border p-3`, which is
+    // 26 px of border and padding and 12 px of margin under it.
+    <header className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`} data-testid="issue-header-box">
+      {/* The header's three rows, in the header's own wrapper: below 2xl its title block is
+          `basis-full`, so the title, the state controls and the details line each take a row of
+          their own, and the box keeps all three. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
+          {/* The key badge's box: the header's own `px-2.5 py-1.5` around a 20 px line, so
+              32 px. The placeholder inside is a block, not an inline box, so the line it makes
+              is exactly the line the key's own text makes. */}
+          <div className="flex shrink-0 items-center gap-1 self-start">
+            <p className="rounded-md px-2.5 py-1.5">
+              <span className={`block h-5 w-14 animate-pulse rounded ${skeletonBg}`} />
+            </p>
+          </div>
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            {/* The title's box: the heading's own `rounded-lg border px-2 py-1 md:py-0` around
+                its 28 px line. */}
+            <h1
+              className={`min-w-0 flex-1 rounded-lg border px-2 py-1 md:py-0 ${borderTransparent}`}
+            >
+              <span className={`block h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
+            </h1>
+            {/* The pin's box, at `components/PinButton.tsx`'s own size. It answers no press:
+                a press anywhere in this box hands the reader the header itself
+                (`ChromeAfterTheFirstBatch`), and the control they pressed for comes with it. */}
+            <button
+              aria-label="Pin issue"
+              className="min-h-11 min-w-11 shrink-0 rounded-lg md:min-h-8 md:min-w-8"
+              disabled
+              type="button"
+            />
+          </div>
+        </div>
+        {/* The state controls' row, at the size the header's own status pick stands at
+            (`min-h-11 md:min-h-8`), so the row is there whether or not `state` fills it. */}
+        <div className="flex min-h-11 w-full min-w-0 flex-wrap items-center gap-2 md:min-h-8 md:w-auto">
+          {state}
+        </div>
+        {/* The details line's row. The header's own never wraps - it scrolls sideways instead
+            (`flex-nowrap overflow-x-auto`) - so its height is its controls' and nothing else:
+            44 px, and 28 px from md, where `md:[&_button]:min-h-7` takes over. */}
+        <div className="flex h-11 w-full items-center gap-2 md:h-7">
+          <span className={`h-4 w-28 animate-pulse rounded ${skeletonBg}`} />
+          <span className={`h-4 w-40 animate-pulse rounded ${skeletonBg}`} />
+        </div>
       </div>
-      <h1
-        className={`mt-2 w-full rounded-lg border px-2 py-1 text-2xl font-semibold ${borderTransparent}`}
-      >
-        <span
-          className={`inline-block h-7 w-2/3 animate-pulse rounded align-middle ${skeletonBg}`}
-        />
-      </h1>
-      {state === undefined ? null : (
-        <div className="mt-2 flex flex-wrap items-center gap-2">{state}</div>
-      )}
     </header>
   );
 }
@@ -74,6 +106,12 @@ export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode
  * tablist's own weight: nothing of `Tabs` or the `Pill` it draws counts with follows the list
  * into the commit this box exists to keep them out of.
  *
+ * `artifactCount` is read for one thing: whether a tab of this issue carries a count. A count
+ * is the tallest thing a tab holds (`tabCountClassName`, 24 px against a label's 20 px), so a
+ * strip with one stands at 40 px and a strip without one at 36, and the box has to be the
+ * issue's own. `IssuePageFallback` has read no issue yet and passes none; it keeps the box for
+ * a page whose only content below is this skeleton's own rows.
+ *
  * Each tab is a pulsing box the width of its own name rather than a tab that reads as one: the
  * strip is what the reader presses, and nothing there answers a press or a screen reader.
  *
@@ -84,15 +122,26 @@ export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode
  * browser alone - is exactly the moment no first batch comes to draw the strip
  * (`features/doc/first-batch.ts`, dispatch://INFRA-341 R11).
  */
-export function IssueTabsSkeleton({ trailing }: { trailing?: ReactNode }): ReactNode {
+export function IssueTabsSkeleton({
+  artifactCount = 0,
+  trailing,
+}: {
+  artifactCount?: number;
+  trailing?: ReactNode;
+}): ReactNode {
   return (
     <div className={tabStripClassName(true)} data-testid="issue-tabs-box">
       <div aria-hidden="true" className={tabListClassName(true)}>
-        {ISSUE_TAB_LABELS.map((label) => (
-          <span className={tabClassName(true, false)} key={label}>
+        {issueTabs(artifactCount).map((tab) => (
+          <span className={tabClassName(true, false)} key={tab.id}>
             <span className={`animate-pulse rounded ${textTransparent} ${skeletonBg}`}>
-              {label}
+              {tab.label}
             </span>
+            {tab.count === undefined ? null : (
+              <span
+                className={`${tabCountClassName} w-6 shrink-0 animate-pulse rounded-full ${skeletonBg}`}
+              />
+            )}
           </span>
         ))}
       </div>

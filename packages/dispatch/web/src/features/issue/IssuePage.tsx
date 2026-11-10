@@ -593,6 +593,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       <ChromeAfterTheFirstBatch
         space={
           <IssueTabsSkeleton
+            artifactCount={(issue.data.artifacts ?? []).length}
             trailing={
               activeTab === "spec" && specToolbar !== undefined ? (
                 <ConnectionDot connection={specToolbar.connection} pending={specToolbar.pending} />
@@ -604,6 +605,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         <Suspense
           fallback={
             <IssueTabsSkeleton
+              artifactCount={(issue.data.artifacts ?? []).length}
               trailing={
                 activeTab === "spec" && specToolbar !== undefined ? (
                   <ConnectionDot

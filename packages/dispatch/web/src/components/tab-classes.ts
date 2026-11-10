@@ -36,3 +36,15 @@ export function tabClassName(compact: boolean, selected: boolean): string {
     ? `${box} border-b-2 font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
     : `${box} ${textSecondaryOnCanvas}`;
 }
+
+/** The box a tab's count pill stands in: 24 px, the `Pill`'s own `px-2 py-1 text-xs` height,
+ *  pinned here rather than left to that component.
+ *
+ *  A count is the tallest thing a compact tab holds - its label is a `text-sm` line of 20 px -
+ *  so it, not the label, is what a compact strip's 40 px is. The box the issue page keeps for
+ *  its strip reads this same class (`features/issue/issue-page-skeleton.tsx`), so the two
+ *  cannot disagree and the strip lands in a box of its own height. Without it the box stood at
+ *  37 px against the strip's 41 px, and the whole page under it moved 4 px when the strip
+ *  landed (dispatch://INFRA-341).
+ */
+export const tabCountClassName = "h-6";

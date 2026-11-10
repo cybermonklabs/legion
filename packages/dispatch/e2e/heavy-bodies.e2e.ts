@@ -346,6 +346,26 @@ test("the Inbox's ask card draws a reply of 8,000 list items without holding the
 // A hover card previews the target's body on one line (`MarkdownPreview`'s `paintOneLine`), so
 // the 8,000 items read as their 8,000 `x` separated by 7,999 spaces. The body still has to be
 // parsed whole, which is what froze the tab of a reader who only pointed at a reference.
+//
+// The row rests a pointer on the reference and waits out the card's open delay, so the page
+// under that pointer has to stand still, and for a while it did not. Measured frame by frame at
+// 1280x720 on this very page: the reference was first painted at 1,725 ms with its box 483 px
+// down the screen, and 148 ms later it was at 463 px. What moved it was the issue page's own
+// chrome landing in space of the wrong size - the header's space stood at 177 px against the
+// header's 146 px and the tab strip's at 37 px against the strip's 41 px - so the document lost
+// 27 px, the browser clamped the scroll by 7 px of that, and the reference went up the other 20,
+// leaving the resting pointer 2 px below it and the host refusing to draw a card for a link the
+// pointer is not on (`web/src/features/refs/RefPreview.tsx`, `thePointerIsOn`). Both boxes are
+// now their part's own height (`web/src/features/issue/issue-page-skeleton.tsx`), and the same
+// probe reads the reference at 483 px from its first paint to the end of the run.
+//
+// One change of that box is left and no space can hold it: at 4,685 ms the reference's own label
+// stops being the `dispatch://` address its author wrote and becomes the target's headline, which
+// is the target's 32,000 characters parsed, so the box goes from 36 px over two lines to 16 px on
+// one. Nothing knows that headline's size before it is read. It lands about three seconds after
+// the hover's 300 ms delay has run out, by which time the card is drawn; a reader it did catch
+// mid-delay would have their card the moment they moved again, which is what the host keeps a
+// still pointer's request for.
 test("a hover card of a comment of 8,000 list items draws without holding the main thread for a second", async ({
   browser,
 }) => {
