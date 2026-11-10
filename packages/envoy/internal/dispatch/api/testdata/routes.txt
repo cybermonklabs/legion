@@ -92,6 +92,7 @@ GET /api/v1/issues/{key}/comments any
 POST /api/v1/issues/{key}/comments any
 GET /api/v1/issues/{key}/coverage any
 GET /api/v1/issues/{key}/decisions any
+PUT /api/v1/issues/{key}/design-gates any
 GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer
