@@ -70,6 +70,22 @@ const promptShutdown = 3 * time.Second
 // dispatch://INFRA-1075).
 const eventFeedWait = 30 * time.Second
 
+// bootWait bounds a wait for a process this package started to serve: waitHealthy's wait for the
+// listening line and a 200 from /healthz, and registry_test's waits for a line a boot writes
+// before it serves. Like eventFeedWait it is a give-up bound and never a measurement: no test
+// here asserts anything about how long a boot takes, and the boot's cost is not this package's
+// to choose. Dispatch opens its pool and runs the migration pass over every migration of the set
+// (224 of them) before it serves, and a test's database is a clone that already holds them all,
+// so the pass reads the version table once per migration and applies none: that pass alone took
+// 13.2 s of a 15.5 s boot on an idle two-core box, and 28.0 s of a 29.9 s boot on CI's envoy-go
+// lane, where seven go test calls share four cores (run 42779139068 attempt 2, job 129723739595:
+// the boot's first line at 08:51:42.685, the document_search fill's first batch at 08:52:10.681,
+// "dispatch: listening" at 08:52:12.583). Against that boot the 30 s this wait once gave was
+// 0.3 s short, and failed a process that was serving by the time the failure was written. So the
+// number is far above what a loaded boot costs, and what it still catches is a process that
+// never serves at all: a boot that hangs, and a process the kernel never scheduled.
+const bootWait = 2 * time.Minute
+
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
 const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
@@ -1425,11 +1441,11 @@ func (p *dispatchProcess) listeningLine() string {
 	return `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(p.port)
 }
 
-// waitHealthy waits up to 30 s for the process to be healthy (healthyWithin), and fails the test
+// waitHealthy waits bootWait for the process to be healthy (healthyWithin), and fails the test
 // when it is not.
 func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	t.Helper()
-	if err := p.healthyWithin(30 * time.Second); err != nil {
+	if err := p.healthyWithin(bootWait); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1484,7 +1500,12 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 	if exited() {
 		return fmt.Errorf("Dispatch exited before it became healthy:\n%s", p.Output.String())
 	}
-	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+	// Which of the two waits ran out says what to read the output for: a boot still working its
+	// way to its listening line, or a server that logged it serves and did not answer on the port.
+	if !strings.Contains(p.Output.String(), listening) {
+		return fmt.Errorf("Dispatch never logged that it serves on its port, so its boot was unfinished %v after it started:\n%s", within, p.Output.String())
+	}
+	return fmt.Errorf("Dispatch logged that it serves but never answered /healthz 200 within %v:\n%s", within, p.Output.String())
 }
 
 // waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled, and requires it to
