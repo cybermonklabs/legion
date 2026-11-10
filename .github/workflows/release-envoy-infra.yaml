@@ -13,13 +13,16 @@ on:
     # Every input the plugin's and the command's builds read: packages/envoy (their module, and
     # through its go.work the Envoy module whose packages they compile in), the notices script that
     # writes their archives' notices, the list of the targets they build, the Pulumi CLI install the
-    # smoke test runs, and this workflow. Which of them cut a version, the version step decides from
-    # what the two compile.
+    # smoke test runs, with the tool manifest that names both sources of that CLI's row and the
+    # fetch helper the install reads them through, and this workflow. Which of them cut a version,
+    # the version step decides from what the two compile.
     paths:
       - "packages/envoy/**"
       - "scripts/go-third-party-notices.sh"
       - ".github/envoy-infra-targets.json"
       - ".github/actions/install-pulumi/**"
+      - ".github/ci-tools.yaml"
+      - ".github/scripts/ci-tools.sh"
       - ".github/workflows/release-envoy-infra.yaml"
   workflow_dispatch:
 
@@ -58,7 +61,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 2400 s, the 40 minutes
     # this job carried, plus its slowest retried step alone — the Go module download,
-    # 5 x 180 + 150 = 1050 s, above install-pulumi's 607 s. 2400 + 1050 = 3450 s -> 58 min.
+    # 5 x 180 + 150 = 1050 s, above install-pulumi's 741 s. 2400 + 1050 = 3450 s -> 58 min.
     timeout-minutes: 58
     permissions:
       contents: read
@@ -247,9 +250,9 @@ jobs:
       # is unpacked (.github/actions/install-pulumi).
       - name: Install the Pulumi CLI
         if: steps.version.outputs.skip != 'true'
-        # install-pulumi's own retry arithmetic: its curl of the release tarball,
-        # 8 x 60 + 127 = 607 s -> 11 min.
-        timeout-minutes: 11
+        # install-pulumi's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
+        # 741 s (the Budgets note in .github/workflows/ci.yaml's header) -> 13 min.
+        timeout-minutes: 13
         uses: ./.github/actions/install-pulumi
       # The schema the linux/amd64 plugin serves carries the version it was built with and names
       # the release this job creates as the place Pulumi downloads the plugin from: the download

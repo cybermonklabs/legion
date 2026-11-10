@@ -1,10 +1,14 @@
 name: Install uv
 description: >-
-  Installs the uv the worker image ships: the release `ARG UV_VERSION` in
-  packages/daemon/docker/worker.Dockerfile names, checked against that file's `ARG UV_SHA256`, as
-  the image's toolchain stage checks it. It lands off PATH, and its path is exported as
-  LEGION_TEST_UV for the tests that run it; they refuse on GitHub Actions without one. Needs the
-  repository checked out.
+  Installs the uv the worker image ships, off PATH, and exports its path as LEGION_TEST_UV for the
+  tests that run it; they refuse on GitHub Actions without one.
+
+  The `uv` row of .github/ci-tools.yaml pins the version and the sha256 of the uv binary itself,
+  and .github/scripts/check-ci-tools.sh holds that row's version and primary digest to the image's
+  own `ARG UV_VERSION` and `ARG UV_SHA256` in packages/daemon/docker/worker.Dockerfile, which is
+  what keeps this install and the image on one uv. The row's second source is the uv wheel PyPI
+  serves, which holds that same binary, so an outage of GitHub's release assets does not stop the
+  job.
 runs:
   using: composite
   steps:
@@ -12,26 +16,13 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        dockerfile=packages/daemon/docker/worker.Dockerfile
-        version=$(sed -n 's/^ARG UV_VERSION=//p' "$dockerfile")
-        sha256=$(sed -n 's/^ARG UV_SHA256=//p' "$dockerfile")
-        if [ -z "$version" ] || [ -z "$sha256" ]; then
-          echo "$dockerfile names no ARG UV_VERSION or ARG UV_SHA256" >&2
-          exit 1
-        fi
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
         dir="$RUNNER_TEMP/uv"
         mkdir -p "$dir"
-        # Retried, in the spelling .github/actions/install-changie explains: 8 bounded attempts,
-        # the last starting 127 s after the first, with `--fail` kept so a 504's body never lands
-        # in the tarball. 60 s per attempt: a release asset is tens of megabytes — the Bun
-        # release zip this repository measures is 51,794,595 bytes — and 60 s is the bound every
-        # release-asset fetch of this repository's CI carries (dispatch://INFRA-1545). This step
-        # measured at most 1 s across the 20 most recent successful ci.yaml push runs on main.
-        curl -fsSLo "$dir/uv.tar.gz" --retry 7 --retry-all-errors --max-time 60 \
-          "https://github.com/astral-sh/uv/releases/download/${version}/uv-x86_64-unknown-linux-gnu.tar.gz"
-        printf '%s  %s\n' "$sha256" "$dir/uv.tar.gz" > "$dir/SHA256SUMS"
-        sha256sum --check --strict "$dir/SHA256SUMS"
-        tar -xzf "$dir/uv.tar.gz" -C "$dir" --strip-components=1 uv-x86_64-unknown-linux-gnu/uv
-        rm "$dir/uv.tar.gz" "$dir/SHA256SUMS"
+        # The row names a `primary_member`, so what reaches this path is the uv binary itself,
+        # with the mode mktemp gave it and not the archive's.
+        ci_tools_fetch uv "$dir/uv"
+        chmod 0755 "$dir/uv"
         "$dir/uv" --version
         echo "LEGION_TEST_UV=$dir/uv" >> "$GITHUB_ENV"

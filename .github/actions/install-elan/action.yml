@@ -1,40 +1,33 @@
 name: Install elan
 description: >-
-  Installs elan v4.2.4, the Lean toolchain manager the airlock-lean job builds
-  packages/envoy/internal/broker/airlock/lean with, checked against its SHA-256 before it is run,
-  and puts ELAN_HOME and its bin on the job's environment for the later steps. ELAN_HOME is
-  $RUNNER_TEMP/elan, which ci.yaml's airlock-lean job caches on the content of that project's
-  lean-toolchain: with the cache restored this step finds elan and the Lean toolchain already
-  there and downloads nothing, and with it missed `lake` installs the toolchain lean-toolchain
-  names on its first build.
+  Installs elan, the Lean toolchain manager the airlock-lean job builds
+  packages/envoy/internal/broker/airlock/lean with, and puts ELAN_HOME and its bin on the job's
+  environment for the later steps. ELAN_HOME is $RUNNER_TEMP/elan, which ci.yaml's airlock-lean job
+  caches on the content of that project's lean-toolchain: with the cache restored this step finds
+  elan and the Lean toolchain already there and downloads nothing, and with it missed `lake`
+  installs the toolchain lean-toolchain names on its first build.
+
+  The `elan` row of .github/ci-tools.yaml names the version, the one sha256 of the whole release
+  tarball that both sources are checked against, and the second source this install reads when
+  GitHub's release assets do not serve the bytes: the copy of that tarball in
+  ghcr.io/cybermonklabs/legion/ci.
 runs:
   using: composite
   steps:
     - name: Install elan
       shell: bash
       run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
         elan_home="$RUNNER_TEMP/elan"
         echo "ELAN_HOME=$elan_home" >> "$GITHUB_ENV"
         echo "$elan_home/bin" >> "$GITHUB_PATH"
         if [ -x "$elan_home/bin/elan" ]; then
           exit 0
         fi
-        tarball="$RUNNER_TEMP/elan-x86_64-unknown-linux-gnu.tar.gz"
-        # Retried, because a release host that answers 504 or resets the connection is what fails
-        # this step (dispatch://INFRA-1545, R1). Where the verb is curl no helper is needed:
-        # `--retry 7 --retry-all-errors` makes 8 attempts whose last starts 127 s after the first,
-        # and `--max-time` bounds each attempt on its own, since curl resets that clock for every
-        # retry. `--fail`, the `f` of `-fsSL`, stays: without it curl writes a 504's body into the
-        # tarball, and the sha256sum below is then the only thing between that body and the job.
-        # .github/actions/install-changie/action.yml carries the full explanation of that spelling.
-        #
-        # 60 s per attempt: this is a GitHub release asset, the bound every release-asset fetch of
-        # this repository's CI carries, measured against the Bun release zip's 51,794,595 bytes.
-        # This tarball is 4,996,571 bytes, read from the asset's own content-length on 2026-11-08,
-        # so an attempt that needs the whole 60 s is a host serving it at 83 kB/s.
-        curl -fsSL --retry 7 --retry-all-errors --max-time 60 \
-          -o "$tarball" https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
-        echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  $tarball" | sha256sum -c -
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field elan primary)")"
+        ci_tools_fetch elan "$tarball"
         mkdir -p "$RUNNER_TEMP/elan-init"
         tar -xzf "$tarball" -C "$RUNNER_TEMP/elan-init" elan-init
         ELAN_HOME="$elan_home" "$RUNNER_TEMP/elan-init/elan-init" -y --no-modify-path --default-toolchain none

@@ -3,14 +3,17 @@ name: Dispatch browser suite
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-# over four shard machines, the three `-alone` projects get a machine each, and one merge job
-# joins what they wrote into a single report and publishes the run's flake rate.
+# over four shard machines, the three `-alone` projects get a machine each, the two-process job,
+# the fake-embedder job and the containerised visual review take one each, and one merge job
+# joins what the shard and alone legs wrote into a single report and publishes the run's flake
+# rate.
 #
 # Two lanes, one input. `pull-request` runs the two projects a pull request is held to, `chromium`
-# and `iphone`; `full` runs all eight parallel projects, the three `-alone` ones and the
-# two-process job. So an unlabelled pull request pays for the rows that answer it, and the merge
-# queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest, each
-# of which has the wall time for them.
+# and `iphone`, and the fake-embedder job, which holds a check of the pull request it is on;
+# `full` runs all eight parallel projects, the three `-alone` ones, the two-process job, the
+# visual review and that same embedder job. So an unlabelled pull request pays for the rows that
+# answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
+# run pay for the rest, each of which has the wall time for them.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -1151,6 +1154,122 @@ jobs:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
+  # The rows that read what the bar costs a model, which no other lane runs. The two tiers of
+  # the command bar are a claim about embeddings - a keystroke makes none and a pause makes
+  # exactly one - and the only thing that can read a count back is the fake embedder
+  # (e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
+  # (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
+  # no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
+  # This job is where it runs.
+  #
+  # On both lanes, where the alone and multiprocess jobs above run on `full` alone: this is one
+  # Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
+  # on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
+  # A lane that skipped it would leave the claim unread until the merge queue.
+  #
+  # Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
+  # shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
+  # job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
+  # null leg and is passed over by reading one, exactly as multiprocess is.
+  #
+  # No budget measured on this file's own runs yet, so the two below are derived from the
+  # multiprocess job's measured steps, which are the same steps on the same machine: its install
+  # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
+  # budget is those two plus that job's measured 135 s maximum for every step without one,
+  # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
+  # their own, as this file's head requires.
+  #
+  # That 660 s is the measured half of the rule this file's head writes, and it holds the
+  # Chromium install at the 4 minutes that step measured rather than at the ladder the step's
+  # own budget carries. Budget: that 660 s plus the arithmetic of this job's slowest retried
+  # step, the Chromium install's one `retry_fetch` call, 5 x 300 + 150 = 1650 s, above the
+  # setup-bun step's 1482 s and the workspace install's 1050 s. 660 + 1650 = 2310 s -> 39 min,
+  # which stands above the largest step budget of this job, the install's 28, so no job budget
+  # fires before a step's own and the `if: failure()` upload below still runs, which a
+  # cancelled job skips.
+  embedder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 39
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
+      # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      # The shard job's step of this name, at the same 1482 s its comment derives.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 25
+      # The shard job's step of this name, and its comment holds for this one: retried at the
+      # 180 s bound every Bun install of this repository's CI carries.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the specs import read some of contracts' values from its built dist/,
+        # through Playwright's own Node resolution (the shard job's step of the same name).
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build the Dispatch server for the embedder lane
+        # run-server.sh builds it too, inside the harness's boot wait; built here, the server
+        # finds it current and starts in seconds. The name carries the lane because
+        # .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
+        # the multiprocess job above has a step that builds the same binary.
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # Browsers only, no apt: the multiprocess job's step of this name says why that list is
+        # not needed.
+        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min. The call below is that
+        # job's, at the bound its comment derives: a download this job makes is held to the
+        # floor the rest of this repository's CI is held to, whoever makes the attempts inside
+        # it.
+        timeout-minutes: 28
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Browser-test the bar's two tiers against a counting embedder
+        timeout-minutes: 4
+        run: bun run e2e:embedder
+        working-directory: packages/dispatch
+      # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
+      # failed row, but a row that fails after its retries fails this job and this upload runs.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
   # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
   # set compared against a committed baseline, in light and in dark, at a desktop width and two
   # of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
@@ -1346,7 +1465,7 @@ jobs:
     # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
     # run would be reported as legs that uploaded nothing rather than as the build that never
     # handed them anything. The verdict step below names it as it names the rest.
-    needs: [binaries, shard, alone, multiprocess, visual]
+    needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
@@ -1522,8 +1641,8 @@ jobs:
           # This run's attempt's jobs, read once here and read again by reading three below.
           # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
           # that both readings take. The jobs API lists the caller's jobs too, so the script
-          # holds the name to this workflow's six - binaries, shard, alone, multiprocess,
-          # visual and merge; a called workflow's job is named
+          # holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
+          # embedder, visual and merge; a called workflow's job is named
           # `<the caller's job> / <this job>`, with a matrix leg in brackets after it.
           #
           # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.

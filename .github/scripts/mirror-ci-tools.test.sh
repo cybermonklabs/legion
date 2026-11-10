@@ -285,6 +285,7 @@ row() {
     version: 1.0.0
     digest: $WHOLE
     digest_of: the fixture's release tarball, whole
+    primary_source: github-release
     primary: $WHOLE_URL
     second_source: ghcr-mirror
     max_time: 7
@@ -298,6 +299,7 @@ YAML
     version: 2.0.0
     digest: $INNER
     digest_of: the binary inside the fixture's release tarball
+    primary_source: github-release
     primary: ""
     second_source: ghcr-mirror
     max_time: 7
@@ -584,7 +586,7 @@ printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 run_mirror
 check "fails" "$(is "$status" 1)"
 check "naming the row and the word" \
-  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads ghcr-mirror and npm\$")"
+  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases\$")"
 check "stops at that row, after the row before it was read" \
   "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)\$")"
 check "says of no row that it needs no copy" "$(is "$(contains "$out" 'needs no copy')" false)"

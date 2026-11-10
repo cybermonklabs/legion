@@ -286,25 +286,26 @@ case "$mode" in
     # readings take it rather than each parsing the job name again.
     #
     # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-    # after either caller's prefix. `binaries`, `merge`, `multiprocess` and `visual` are this
-    # workflow's other four jobs: they pass the name filter and get a null leg, so reading one
-    # passes them over and reading three names them as holding no row. `binaries` is in that
-    # filter because a build that failed leaves the shard and alone jobs skipped and no blob
-    # report anywhere, so a run read without it is reported as legs that uploaded nothing
-    # rather than as the build that handed them nothing. `visual` is in it because a run whose
-    # only red job is that one must not read "every leg of this workflow concluded success":
-    # the verdict step fails ci-ok either way, so the gate held, but the summary a person
-    # reads was wrong. ci.yaml's jobs do not get a null leg - the filter drops them first,
-    # which is what keeps them out of reading three, since that reading selects on conclusion
-    # alone. The two that come nearest are ci.yaml's own `dispatch-multiprocess` and
-    # `broker-multiprocess`, kept out only because the character before `multiprocess` is a
-    # hyphen and the filter wants a space or a line start.
+    # after either caller's prefix. `binaries`, `merge`, `multiprocess`, `embedder` and
+    # `visual` are this workflow's other five jobs: they pass the name filter and get a null
+    # leg, so reading one passes them over and reading three names them as holding no row.
+    # `binaries` is in that filter because a build that failed leaves the shard and alone jobs
+    # skipped and no blob report anywhere, so a run read without it is reported as legs that
+    # uploaded nothing rather than as the build that handed them nothing. `visual` is in it
+    # because a run whose only red job is that one must not read "every leg of this workflow
+    # concluded success": the verdict step fails ci-ok either way, so the gate held, but the
+    # summary a person reads was wrong. `embedder` is there for the same reason. ci.yaml's
+    # jobs do not get a null leg - the filter drops them first, which is what keeps them out
+    # of reading three, since that reading selects on conclusion alone. The two that come
+    # nearest are ci.yaml's own `dispatch-multiprocess` and `broker-multiprocess`, kept out
+    # only because the character before `multiprocess` is a hyphen and the filter wants a
+    # space or a line start.
     #
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
     # two or none.
     jq '[.[].jobs[] | select(.name |
-        test("(^| )(binaries|shard|alone|multiprocess|visual|merge)( \\(|$)"))]
+        test("(^| )(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
       | map({id, name, conclusion,
           leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
             // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")

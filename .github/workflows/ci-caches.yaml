@@ -408,9 +408,9 @@ jobs:
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 1800 s, the 30 minutes
     # this job was written with — one toolchain download and one build of the model on a miss,
     # and a run that finds the key costs the checkout alone — plus its slowest retried step
-    # alone: install-elan's curl of the elan release tarball, 8 x 60 + 127 = 607 s, this job's
-    # only retried call. 1800 + 607 = 2407 s -> 41 min.
-    timeout-minutes: 41
+    # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 741 s, this job's
+    # only retried call. 1800 + 741 = 2541 s -> 43 min.
+    timeout-minutes: 43
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -423,11 +423,11 @@ jobs:
           key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
           lookup-only: true
 
-      # install-elan's own retry arithmetic: its curl of the release tarball,
-      # 8 x 60 + 127 = 607 s -> 11 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
+      # 741 s (the Budgets note in .github/workflows/ci.yaml's header) -> 13 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
-        timeout-minutes: 11
+        timeout-minutes: 13
 
       # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
       # airlock-lean will find rather than elan alone.
