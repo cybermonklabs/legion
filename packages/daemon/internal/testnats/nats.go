@@ -244,9 +244,10 @@ func Connections(t testing.TB) []Connection {
 }
 
 // Connection is one client connection the server holds: the id it gave it, and the name the
-// client gave itself (nats.Name, which natsauth.Connect and this package's own Connect make
-// every client pass). The CID is what a check compares, since the server never reuses one within
-// its run, and the String is what a report prints.
+// client gave itself (nats.Name), empty for a client that gave none — a raw nats.Connect or a
+// child process's, which is the connection this package's leak check exists to catch. The CID is
+// what a check compares, since the server never reuses one within its run, and the String is what
+// a report prints.
 type Connection struct {
 	CID  uint64
 	Name string

@@ -81,12 +81,23 @@ const (
 	// for the work the drain's end cuts short to return before the budget runs out. Work still
 	// running at the budget's end, a call into a process that does not answer, is logged with each
 	// claim still deciding and not waited on: the next boot re-adopts each process a claim records
-	// and relaunches each launch left unrecorded. stampTimeout bounds the stamp, and storeCloseTimeout
-	// the store's close after it, so the daemon returns at most
-	// stopBudget+stampTimeout+storeCloseTimeout (22 s) after its stop begins, inside the 30 seconds a
-	// pod is given between SIGTERM and SIGKILL. Before the boot is recorded, a signal ends the daemon
-	// through each boot step's own bounds, as Run says.
-	stopBudget        = 10 * time.Second
+	// and relaunches each launch left unrecorded. natsCloseTimeout bounds the close of the
+	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
+	// after it, so the daemon returns at most
+	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
+	// inside the 30 seconds a pod is given between SIGTERM and SIGKILL. Before the boot is
+	// recorded, a signal ends the daemon through each boot step's own bounds, as Run says.
+	stopBudget = 10 * time.Second
+	// natsCloseTimeout bounds the close of the workflow's Envoy NATS connection on the stop path
+	// (closeWorkflowNATS). nats.Conn.Close flushes the outbound buffer while it holds the
+	// connection's own lock (nats.go v1.53.1, nats.go:6098-6101: nc.bw.flush() when the socket is
+	// up and no reconnect is in progress), that write goes through timeoutWriter, whose deadline
+	// is Opts.FlusherTimeout (nats.go:2295-2296, :6827), and the default is a minute
+	// (nats.go:67), which natsauth.Connect leaves as it is. So a server that has stopped reading
+	// from a full send buffer would hold the stop there for up to that minute. A connection the
+	// daemon stops waiting for costs nothing: the process is ending, and the server drops the
+	// socket when it goes.
+	natsCloseTimeout  = 2 * time.Second
 	stampTimeout      = 10 * time.Second
 	storeCloseTimeout = 2 * time.Second
 	// streamSocket is the worker stream's unix socket under the state directory: the one address
@@ -521,10 +532,14 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// connection is closed here, not the whole of workflowRuntime.stop: that also closes the token
 	// manager, whose Close waits for every running token_command with no bound
 	// (internal/appauth/tokencommand.go, Manager.Close), while the daemon's stop contract is that
-	// it returns at most stopBudget+stampTimeout+storeCloseTimeout (22 s) after its stop begins,
-	// inside a pod's 30 s grace. The close is harmless when the goroutine later reaches
-	// workflowRuntime.stop, because closing the connection is idempotent.
-	workflow.closeNATS()
+	// it returns at most stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after
+	// its stop begins, inside a pod's 30 s grace. The close itself is bounded as well
+	// (closeWorkflowNATS), because nats.Conn.Close flushes the connection's outbound buffer under
+	// its own lock with the default minute's write deadline, which a server that has stopped
+	// reading would otherwise hold the stop in, long past that contract. The close is harmless
+	// when the goroutine later reaches workflowRuntime.stop, because closing the connection is
+	// idempotent.
+	closeWorkflowNATS(workflow, log)
 
 	// The stop cancelled store queries in flight, and a pooled connection one of them ran on can
 	// still carry the read deadline that cancellation set, which failed the stamp with `stop boot N:
@@ -560,6 +575,26 @@ func (s *supervision) awaitStop(lived, failed <-chan error, bootID int64) error 
 		return err
 	default:
 		return nil
+	}
+}
+
+// closeWorkflowNATS closes the workflow's Envoy NATS connection and nothing else
+// (workflowRuntime.closeNATS), waiting for it up to natsCloseTimeout: nats.Conn.Close flushes the
+// outbound buffer under the connection's own lock, with a write deadline of a minute by default,
+// which the stop has no room for (natsCloseTimeout). It is safe on a nil workflow, as
+// workflowRuntime.closeNATS is.
+func closeWorkflowNATS(workflow *workflowRuntime, log *slog.Logger) {
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		workflow.closeNATS()
+	}()
+	timer := time.NewTimer(natsCloseTimeout)
+	defer timer.Stop()
+	select {
+	case <-closed:
+	case <-timer.C:
+		log.Warn("legion daemon stopped waiting for its NATS connection to close", "after", natsCloseTimeout.String())
 	}
 }
 

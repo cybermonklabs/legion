@@ -110,7 +110,7 @@ func leakCheck(t testing.TB, armed map[uint64]bool) {
 		t.Errorf("read the NATS server's connections at the end of %s: %v", t.Name(), err)
 	}
 	if len(left) > 0 {
-		t.Errorf("%s left %d client connection(s) %v open on the shared NATS server, which the next test to take it must wait out: a test closes every client it opens, and testnats.Connect closes the caller's for it",
+		t.Errorf("%s left %d client connection(s) %v open on the shared NATS server, so the next test to take it is failed in this test's name: a test closes every client it opens, and testnats.Connect closes the caller's for it",
 			t.Name(), len(left), left)
 	}
 	closeFixtureConnections()

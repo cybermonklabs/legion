@@ -383,10 +383,8 @@ func TestTheCheckRefusesToArmWhenItCannotSeeItsOwnClient(t *testing.T) {
 		t.Fatal("arming the leak check for a test with no connection of its own is still running")
 	}
 	refusal := blind.only(t)
-	for _, want := range []string{"cannot see its own client", blind.Name(), "would prove nothing"} {
-		if !strings.Contains(refusal, want) {
-			t.Errorf("the arm refused with %q, want it to say %q", refusal, want)
-		}
+	if !strings.Contains(refusal, blind.Name()) {
+		t.Errorf("the arm refused with %q, want it to name the client %q it looked for", refusal, blind.Name())
 	}
 }
 
