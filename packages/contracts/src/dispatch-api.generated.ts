@@ -2748,6 +2748,9 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3399,6 +3402,9 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3456,6 +3462,9 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4661,7 +4670,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -4703,8 +4717,13 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
       duplicate?: boolean;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;

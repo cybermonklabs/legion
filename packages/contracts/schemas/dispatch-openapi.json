@@ -10858,6 +10858,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -10964,6 +10981,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -13825,6 +13844,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -13925,6 +13961,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -14141,6 +14179,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -14241,6 +14296,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -19840,6 +19897,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/MessageDelivery"
@@ -19847,6 +19921,13 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
             ]
           },
           "id": {
@@ -19890,6 +19971,9 @@
           "in_reply_to",
           "broadcast_id",
           "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
           "deliveries",
           "reply_block"
         ],
@@ -20059,6 +20143,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/MessageDelivery"
@@ -20070,6 +20171,13 @@
           },
           "duplicate": {
             "type": "boolean"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "id": {
             "type": "string"
@@ -20112,6 +20220,9 @@
           "in_reply_to",
           "broadcast_id",
           "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
           "deliveries",
           "reply_block"
         ],

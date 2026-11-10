@@ -2124,11 +2124,16 @@ type Comment struct {
 	// agent. The ask's WaitingOn follows its newest reply's Turn except where an approval request
 	// overrides it (moved, or handed back after this reply). Nil on replies under a closed ask
 	// (nothing is waiting) and on every other comment.
-	Turn       *string           `json:"turn"`
-	Resolved   bool              `json:"resolved"`
-	ResolvedBy *Actor            `json:"resolved_by"`
-	ResolvedAt *string           `json:"resolved_at"`
-	EditedAt   *string           `json:"edited_at"`
+	Turn       *string `json:"turn"`
+	Resolved   bool    `json:"resolved"`
+	ResolvedBy *Actor  `json:"resolved_by"`
+	ResolvedAt *string `json:"resolved_at"`
+	EditedAt   *string `json:"edited_at"`
+	// DeletedAt and DeletedBy mark a comment its author deleted: the body is cleared, the body
+	// it held is kept in post_body_history, and every read of the comment gives the mark and no
+	// body. Nil on every comment that stands.
+	DeletedAt  *time.Time        `json:"deleted_at"`
+	DeletedBy  *Actor            `json:"deleted_by"`
 	Suggestion *Suggestion       `json:"suggestion"`
 	CreatedAt  time.Time         `json:"created_at"`
 	Mentions   []Mention         `json:"mentions"`
@@ -2395,9 +2400,17 @@ type Message struct {
 	InReplyTo *string `json:"in_reply_to"`
 	// BroadcastID names the broadcast this message is one recipient's copy of, and is null for
 	// every other message.
-	BroadcastID *string           `json:"broadcast_id"`
-	CreatedAt   time.Time         `json:"created_at"`
-	Deliveries  []MessageDelivery `json:"deliveries"`
+	BroadcastID *string   `json:"broadcast_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	// EditedAt is when the author last replaced the body, nil on a message nobody edited. Only
+	// an issue message can be edited; a message with no issue is refused (NOT_AN_ISSUE_MESSAGE).
+	EditedAt *time.Time `json:"edited_at"`
+	// DeletedAt and DeletedBy mark a message its author deleted: the body is cleared, the body
+	// it held is kept in post_body_history, and every read of the message gives the mark and no
+	// body. Nil on every message that stands.
+	DeletedAt  *time.Time        `json:"deleted_at"`
+	DeletedBy  *Actor            `json:"deleted_by"`
+	Deliveries []MessageDelivery `json:"deliveries"`
 	// ReplyBlock is the block of the message this reply answers, when it names one
 	// (in_reply_to_block); null on every other message.
 	ReplyBlock *ReplyBlock `json:"reply_block"`

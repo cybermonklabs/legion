@@ -858,11 +858,11 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		-- names (message_deliveries_session). An OR spanning messages and message_deliveries can
 		-- use neither index, and Postgres reads every root there is.
 		candidates as (
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by
 			from messages m
 			where m.in_reply_to is null and m.target = 'session:' || $3::text
 			union
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by
 			from messages m
 			join message_deliveries d on d.message_id = m.id
 			where m.in_reply_to is null and d.session_id = $3::text
@@ -884,6 +884,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		roots as (
 			select c.id::text as id, c.issue_key, c.author, c.body, c.target,
 			       c.in_reply_to::text as in_reply_to, c.broadcast_id, c.created_at, c.replies_to_block,
+			       c.edited_at, c.deleted_at, c.deleted_by,
 			       greatest(c.created_at, activity.latest) as moved,
 			       unread.root_id is not null as unread
 			from candidates c
@@ -947,20 +948,28 @@ func (s *server) loadMessage(ctx context.Context, q queryer, issueKey, id string
 }
 
 // messageColumns is the messages select list scanMessage reads, in scan order.
-const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block`
+const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block, edited_at, deleted_at, deleted_by`
 
 // scanMessage decodes one messageColumns row; extra receives any columns selected after them.
 func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	var message model.Message
-	var author []byte
+	var author, deletedBy []byte
 	dest := append([]any{
 		&message.ID, &message.IssueKey, &author, &message.Body, &message.Target, &message.InReplyTo, &message.BroadcastID, &message.CreatedAt, &message.RepliesToBlock,
+		&message.EditedAt, &message.DeletedAt, &deletedBy,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return model.Message{}, err
 	}
 	if err := json.Unmarshal(author, &message.Author); err != nil {
 		return model.Message{}, fmt.Errorf("decode message author: %w", err)
+	}
+	if len(deletedBy) > 0 {
+		var value model.Actor
+		if err := json.Unmarshal(deletedBy, &value); err != nil {
+			return model.Message{}, fmt.Errorf("decode message deleted_by: %w", err)
+		}
+		message.DeletedBy = &value
 	}
 	message.Deliveries = []model.MessageDelivery{}
 	return message, nil
@@ -992,10 +1001,10 @@ func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, seedIDs 
 	}
 	rows, err := q.Query(ctx, `
 		with recursive replies as (
-			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, in_reply_to as seed_id
+			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, edited_at, deleted_at, deleted_by, in_reply_to as seed_id
 			from messages where in_reply_to = any($1::uuid[])
 			union all
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, r.seed_id
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by, r.seed_id
 			from messages m join replies r on m.in_reply_to = r.id
 		)
 		select `+messageColumns+`, seed_id::text
