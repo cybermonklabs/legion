@@ -34,6 +34,14 @@ const (
 // whyNoCheck is the setup failure of a call that found no shared check at all.
 const whyNoCheck = "the shared public leak check could not be found"
 
+// CheckVar is the environment variable that names the shared check, the first place Resolve
+// looks. It is exported because the daemon tells a pane the check it resolved under this name
+// (runtime/tmux's panePairs), the Kubernetes runtime tells every role's container the installed
+// copy under it (runtime/sandbox's mainEnvironment, which owns the name against an operator's
+// own value), and a second copy of the string in either is one an edit here would silently part
+// from. internal/shim keeps a copy of its own on purpose, for the reason its comment gives.
+const CheckVar = "PUBLIC_LEAK_CHECK"
+
 // checkName is the shared check's file name, which is how it is found on PATH.
 const checkName = "public-leak-check.sh"
 
@@ -42,7 +50,7 @@ const checkName = "public-leak-check.sh"
 const pointerFile = "public-leak-check/path"
 
 // Resolve is the shared public leak check's path, found the way the check itself says to find
-// it: PUBLIC_LEAK_CHECK, then public-leak-check.sh on PATH, then the pointer file under the
+// it: CheckVar, then public-leak-check.sh on PATH, then the pointer file under the
 // configuration home, whose content is the path of the script. The guard's own Check option
 // stands in front of all three, and is how a test hands the guard a stand-in.
 //
@@ -54,8 +62,8 @@ func (g *Guard) Resolve() (string, error) {
 		return found(g.opts.Check, "the guard's own Check option")
 	}
 	env := g.base()
-	if named := value(env, "PUBLIC_LEAK_CHECK"); named != "" {
-		return found(named, "PUBLIC_LEAK_CHECK")
+	if named := value(env, CheckVar); named != "" {
+		return found(named, CheckVar)
 	}
 	if onPath, ok := lookpath.On(value(env, "PATH"), checkName); ok {
 		return onPath, nil
@@ -67,12 +75,12 @@ func (g *Guard) Resolve() (string, error) {
 		}
 	}
 	if config == "" {
-		return "", errors.New("PUBLIC_LEAK_CHECK names none, " + checkName + " is on no PATH entry, and there is no configuration home to read a pointer file from")
+		return "", errors.New(CheckVar + " names none, " + checkName + " is on no PATH entry, and there is no configuration home to read a pointer file from")
 	}
 	pointer := filepath.Join(config, pointerFile)
 	content, err := os.ReadFile(pointer)
 	if err != nil {
-		return "", fmt.Errorf("PUBLIC_LEAK_CHECK names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", checkName, pointer, err)
+		return "", fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
 	}
 	named := strings.TrimSpace(string(content))
 	if named == "" {

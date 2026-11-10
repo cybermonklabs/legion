@@ -128,7 +128,7 @@ func (r runner) madeInThePod(clone string, made []string) ([]string, error) {
 // runs the root-owned pre-push hook, which runs the leak guard a second time, over the same
 // updates guardPush has already cleared. It is not turned off and cannot be: no process in a pod
 // may name a hooks path that outranks the wrapper's, which is what makes the hook a guard. What
-// the second run costs is time, and the budget holds both runs (guardReserve).
+// the second run costs is time, and the budget holds both runs (GuardReserve).
 var gitPins = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
 
 // Request is one check of every workspace on a pod's disk.
@@ -451,16 +451,52 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 // no branch the remote advertises and none an earlier workspace of the same check took.
 const noSHA = "0000000000000000000000000000000000000000"
 
-// guardReserve is what the guard's own call leaves of a workspace's remaining time for the push
+// CheckRun is one run of the shared public leak check's push mode, measured in a pod: sixty
+// seconds asking the remote what it holds and another sixty in its credential path.
+const CheckRun = 120 * time.Second
+
+// pushAlone is the push itself, which is the whole of what GuardReserve was while the pre-push
+// hook was believed off for it.
+const pushAlone = 30 * time.Second
+
+// GuardReserve is what the guard's own call leaves of a workspace's remaining time for the push
 // it clears, and it holds two things rather than one. The push itself is thirty seconds, which
 // is all this reserve was while hooks were believed off for it. In a pod that push also runs the
 // shared public leak check a second time, in the pre-push hook the image's git wrapper points it
-// at (gitPins), and one run of that check's push mode can spend sixty seconds asking the remote
-// what it holds and another sixty in its credential path: 120 s. So the reserve is 150 s. A
-// smaller one has the workspace's bound end inside the hook's run, and work this check could
-// have rescued is then lost to a bound rather than refused by anyone — which is the one failure
-// this reserve exists to prevent, and which 30 s did not prevent in a pod.
-const guardReserve = 150 * time.Second
+// at (gitPins), and one run of that check's push mode is CheckRun. A smaller reserve has the
+// workspace's bound end inside the hook's run, and work this check could have rescued is then
+// lost to a bound rather than refused by anyone — which is the one failure this reserve exists
+// to prevent, and which 30 s did not prevent in a pod. It is exported with the two bounds below
+// because they are derived from it: a reserve that grew and bounds that did not would be the
+// same lost work again.
+const GuardReserve = CheckRun + pushAlone
+
+// readsBeforeThePush is the jj and git reads that find a workspace's unpushed work, which the
+// four minutes a workspace's bound once was left 90 s for.
+const readsBeforeThePush = 90 * time.Second
+
+// wholeDiskMargin is what the bound of a whole disk's check keeps over one workspace's: enough
+// for the workspaces a disk holds past the first, and the three minutes it has always kept.
+const wholeDiskMargin = 3 * time.Minute
+
+// WorkspaceTimeout and Timeout are this check's two bounds: one workspace's check and push, and
+// the whole check of a pod's disk. The daemon sets them on every request it makes
+// (internal/daemon's rescueWorkspaceTimeout and rescueTimeout are these), and a fixture that
+// drives this package as a pod's shim does bounds its own run by them (rescuetest.Disk.Check,
+// internal/shim's tests): a fixture bounded under GuardReserve would have every push refused
+// for want of time rather than checked.
+//
+// A workspace's bound holds three things in a pod, and each is measured: the reads that find
+// the unpushed work (readsBeforeThePush), the guard's own run of the shared check (CheckRun),
+// and what that guard leaves the push, which in a pod runs the same check a second time in the
+// pre-push hook (GuardReserve). 90 + 120 + 150 is 360 s, so a workspace's bound is six minutes
+// and the whole disk's, keeping wholeDiskMargin over it, nine. A bound that fits one run of the
+// check and not two ends inside the hook's run and loses the dying pod's work to a timeout
+// rather than refusing it, which is the failure these numbers exist to prevent.
+const (
+	WorkspaceTimeout = readsBeforeThePush + CheckRun + GuardReserve
+	Timeout          = WorkspaceTimeout + wholeDiskMargin
+)
 
 // guardPush runs the leak guard over the push this check is about to make, and is the error that
 // fails the workspace where the guard refuses that push or could not be made to run: either way
@@ -498,7 +534,7 @@ func guardPush(ctx context.Context, req Request, run runner, clone string, pushe
 	}
 	bound := ctx
 	if deadline, ok := ctx.Deadline(); ok {
-		left := time.Until(deadline) - guardReserve
+		left := time.Until(deadline) - GuardReserve
 		if left <= 0 {
 			return &leakguard.SetupFailure{What: what, Why: "the workspace's bound has no time left to check this push in"}
 		}

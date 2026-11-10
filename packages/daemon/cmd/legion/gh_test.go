@@ -10,12 +10,14 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // ghHelpDir holds the real gh's help of each command the resolver's tests read, saved from gh
@@ -869,11 +871,11 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	wrappers := ghWrapperDir(t)
 	// Every call passes the leak guard before gh runs, and a guard that can resolve no shared
 	// check refuses it, so these runs carry a stand-in check that clears every call
-	// (ghLeakCheck): what this test reads is which directory's token gh is run with, not what
+	// (ghCheckPasses): what this test reads is which directory's token gh is run with, not what
 	// the guard refuses, which TestLegionGhChecksTheCallWithTheLeakGuard reads.
 	env := map[string]string{
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": ghLeakCheck(t, ghCheckPasses),
+		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
 	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|1|credential.https://github.com.useHttpPath=true|1|1\n"
 	for _, tc := range []struct {
@@ -1108,14 +1110,6 @@ func ghCheckReading(status int) string {
 	return leakguardtest.Reading(status, report)
 }
 
-// ghLeakCheck writes a stand-in shared public leak check whose body is script into a directory of
-// the test's own and answers its path. The file's name is the real check's, so a test that names
-// it in PUBLIC_LEAK_CHECK resolves it as a pod does.
-func ghLeakCheck(t *testing.T, script string) string {
-	t.Helper()
-	return leakguardtest.Write(t, t.TempDir(), script)
-}
-
 // readRecord is what a stand-in wrote into its record file, and "" where it never wrote one.
 func readRecord(t *testing.T, path string) string {
 	t.Helper()
@@ -1166,7 +1160,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		ghRecord, checkRecord := filepath.Join(records, "gh"), filepath.Join(records, "check")
 		env := map[string]string{
 			"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-			"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": ghLeakCheck(t, check),
+			"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), check),
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord,
 		}
 		maps.Copy(env, extra)
@@ -1267,6 +1261,95 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 			}
 			if checked == "" || ranGh(ghRan) {
 				t.Errorf("the check recorded %q and gh %q; want the call checked and gh not run", checked, ghRan)
+			}
+		})
+	}
+}
+
+// A SIGTERM or a SIGHUP sent to `legion gh`'s own pid reaches the gh it is waiting for, which is
+// what an exec'd gh — the shape this replaced — ended on. Neither signal reaches gh by itself:
+// the child is given no process group of its own on purpose, so a terminal's SIGINT reaches it
+// with the rest of the group, but a signal sent to one pid reaches that pid alone. Without the
+// forwarding a SIGTERM would end at main's own signal.NotifyContext, whose cancellation the
+// child's context has taken off, and gh would run on with nobody waiting for it, while a SIGHUP
+// would kill `legion gh` where it stood and leave gh running.
+//
+// The stand-in gh records the signal it caught and exits with a status of its own, so what this
+// reads is both halves: gh ended on the signal, and its status came back through `legion gh`.
+func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		signal syscall.Signal
+		code   int
+	}{
+		{"SIGTERM", syscall.SIGTERM, 42},
+		{"SIGHUP", syscall.SIGHUP, 43},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			records := t.TempDir()
+			ghRecord, running := filepath.Join(records, "gh"), filepath.Join(records, "running")
+			// The stand-in traps both signals, says it is running once the traps are set, and
+			// then waits in ticks short enough that a trap runs within one of them: a shell runs
+			// no trap while a foreground command of its own is still going. The wait gives up
+			// after thirty seconds and exits 9, so a forwarding that never arrives is a failure
+			// naming it rather than a test binary that hangs until its deadline.
+			stub := filepath.Join(t.TempDir(), "gh")
+			script := ghStandInPrefix(help) +
+				"trap 'printf \"gh caught TERM\\n\" >>\"$GH_STANDIN_RECORD\"; exit 42' TERM\n" +
+				"trap 'printf \"gh caught HUP\\n\" >>\"$GH_STANDIN_RECORD\"; exit 43' HUP\n" +
+				": >\"$GH_STANDIN_RUNNING\"\n" +
+				"ticks=0\nwhile [ \"$ticks\" -lt 600 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
+				"printf 'gh caught nothing\\n' >>\"$GH_STANDIN_RECORD\"\nexit 9\n"
+			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command(os.Args[0], "gh", "pr", "list")
+			command.Dir = t.TempDir()
+			command.Env = []string{
+				testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"),
+				"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull,
+				"LEGION_GH_PATH=" + stub, "GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root,
+				"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				"GH_STANDIN_RECORD=" + ghRecord, "GH_STANDIN_RUNNING=" + running,
+			}
+			// Standard output and standard error are a file of the test's own rather than a
+			// pipe: gh's own `sleep` outlives the shell that trapped the signal by a tick, and
+			// a pipe would hold Wait until that grandchild let go of it.
+			printed, err := os.Create(filepath.Join(records, "printed"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer printed.Close()
+			command.Stdout, command.Stderr = printed, printed
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			// The signal is sent once gh itself is running: before that it would reach `legion
+			// gh` while the guard still has the call, which is no forwarding this test can read.
+			testwait.Eventually(t, "the stand-in gh to be running", func() bool {
+				_, err := os.Stat(running)
+				return err == nil
+			})
+			// The signal goes to this one pid, never to the group: gh shares this test binary's
+			// own group, and a group signal would end the test run with it.
+			if err := command.Process.Signal(tc.signal); err != nil {
+				t.Fatal(err)
+			}
+			waited := command.Wait()
+			exit, ok := waited.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("legion gh under %s = %v, want gh's own status: %s", tc.name, waited, readRecord(t, printed.Name()))
+			}
+			if exit.ExitCode() != tc.code {
+				t.Errorf("legion gh under %s exited %d, want gh's own %d: %s", tc.name, exit.ExitCode(), tc.code, readRecord(t, printed.Name()))
+			}
+			if want := "gh caught " + strings.TrimPrefix(tc.name, "SIG") + "\n"; !strings.Contains(readRecord(t, ghRecord), want) {
+				t.Errorf("gh recorded %q, want %q: the signal never reached it", readRecord(t, ghRecord), want)
 			}
 		})
 	}

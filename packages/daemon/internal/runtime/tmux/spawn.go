@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -292,7 +293,7 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add(dir[0], dir[1])
 	}
 	if in.LeakCheck != "" {
-		add("PUBLIC_LEAK_CHECK", in.LeakCheck)
+		add(leakguard.CheckVar, in.LeakCheck)
 	}
 	for _, name := range sortedKeys(in.OperatorEnv) {
 		add(name, in.OperatorEnv[name])

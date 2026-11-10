@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: the
@@ -308,7 +309,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// `legion gh` passes every call through the leak guard, which refuses one it can run no
 		// shared check for; what this test reads is which token each call carries, so its check
 		// clears every call and the guard's own visibility read is answered by the proxy.
-		"PUBLIC_LEAK_CHECK=" + ghLeakCheck(t, ghCheckPasses),
+		"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
 	runIn := func(dir string, env []string, name string, args ...string) (int, string) {
 		cmd := exec.Command(name, args...)

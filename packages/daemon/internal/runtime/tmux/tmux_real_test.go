@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -1851,22 +1852,41 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// leak check refuses the call. This pane stands for an operator's own machine, which under the
 	// tmux runtime carries that check itself — Legion installs none there, the check arrives
 	// through its own installer, and a machine without it refuses every public write. So the
-	// check is put where that installer puts it on a real machine: a `public-leak-check.sh` on
-	// the machine's own PATH, which is the route an installed command takes, and the one the
-	// daemon's own PATH carries it by from the shell that started the daemon. The pane is told
-	// nothing of it here: the daemon resolves it on its own machine and names it for the pane
-	// (resolveLeakCheck, panePairs), which is the whole of what this half of the test reads —
-	// the pane's own PATH below is a decoy directory and the test process's, and holds no check,
-	// so a pane that resolved for itself would find none and every call would be refused.
-	// What this test reads is which `legion` and which gh the pane resolves, not what the guard
-	// refuses, which cmd/legion's own tests read.
-	check := filepath.Join(t.TempDir(), "public-leak-check.sh")
-	if err := os.WriteFile(check, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	// check is put the way that installer puts it: its files under a data directory of the
+	// machine's, on no PATH at all, and a pointer file naming the script under the machine's
+	// configuration home, `<XDG_CONFIG_HOME>/public-leak-check/path`, which is the last of the
+	// three places the guard looks (docs/deployment.md, resolveLeakCheck, leakguard's Resolve).
+	// That configuration home is the daemon's own environment's, so the daemon reads the pointer
+	// and no pane can: a pane's XDG_CONFIG_HOME is the daemon's home under the state directory.
+	// The daemon's PUBLIC_LEAK_CHECK is emptied for the same reason the check is on no PATH —
+	// each would answer before the pointer file, and a pod running these tests carries one — so
+	// the pointer file is the only thing that can answer, and the pane's own
+	// PUBLIC_LEAK_CHECK below reads that a real pane was told a check found that way.
+	//
+	// The pane is told nothing else of it: the daemon resolves it on its own machine and names
+	// it for the pane (resolveLeakCheck, panePairs) — the pane's own PATH below is a decoy
+	// directory and the test process's, and holds no check, so a pane that resolved for itself
+	// would find none and every call would be refused. What this test reads besides that is
+	// which `legion` and which gh the pane resolves, not what the guard refuses, which
+	// cmd/legion's own tests read.
+	if found, err := exec.LookPath(leakguardtest.CheckName); err == nil {
+		t.Fatalf("this machine carries %s at %s, on the PATH the daemon is given: the daemon would resolve that one before the pointer file", leakguardtest.CheckName, found)
+	}
+	data := filepath.Join(t.TempDir(), ".local", "share", "public-leak-check")
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check := leakguardtest.Write(t, data, leakguardtest.Passes)
+	config := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(config, "public-leak-check"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "public-leak-check", "path"), []byte(check+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r := newRig(t, func(o *Options) {
 		o.GH = realGH
-		o.Environ = append(slices.Clone(o.Environ), "PATH="+filepath.Dir(check)+":"+os.Getenv("PATH"))
+		o.Environ = append(slices.Clone(o.Environ), leakguard.CheckVar+"=", "XDG_CONFIG_HOME="+config)
 	})
 	if err := workerbin.Install(r.stateDir, r.legion); err != nil {
 		t.Fatalf("workerbin.Install: %v", err)
@@ -1892,10 +1912,11 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	if env["PATH"] != want {
 		t.Fatalf("OMP's PATH = %q, want %q", env["PATH"], want)
 	}
-	// The pane's own PUBLIC_LEAK_CHECK is the check the daemon resolved on its machine: the
-	// runtime told it, nothing of the spec did, and the pane's PATH holds no check of its own.
-	if env["PUBLIC_LEAK_CHECK"] != check {
-		t.Fatalf("the pane's PUBLIC_LEAK_CHECK = %q, want the check the daemon resolved on its own machine, %q", env["PUBLIC_LEAK_CHECK"], check)
+	// The pane's own PUBLIC_LEAK_CHECK is the check the daemon resolved on its machine through
+	// the pointer file, the route a real operator's box takes: the runtime told it, nothing of
+	// the spec did, and neither the pane's PATH nor the daemon's holds a check of its own.
+	if env[leakguard.CheckVar] != check {
+		t.Fatalf("the pane's %s = %q, want the check the daemon resolved through its pointer file, %q", leakguard.CheckVar, env[leakguard.CheckVar], check)
 	}
 	// The agent's bash tool inherits OMP's environment: resolve and run `legion` and `gh` exactly
 	// there, in a directory that is no clone of another owner's repository, as the agent's

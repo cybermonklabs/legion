@@ -426,11 +426,11 @@ func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
 
 // The guard's call keeps a reserve of the workspace's bound for the push it clears, and that
 // reserve now holds two things: the push itself, and the second run of the shared check that a
-// pod's pre-push hook makes inside it (guardReserve, 150 s, and the gitPins comment for why the
+// pod's pre-push hook makes inside it (GuardReserve, 150 s, and the gitPins comment for why the
 // hook runs at all). A workspace bound that cannot hold the reserve is refused before the guard
-// runs at all, with nothing pushed — the fail-closed answer, and the reason the daemon's own
-// bound is six minutes (internal/daemon's rescueWorkspaceTimeout). The minute a bound was here
-// before is now such a bound, which is what this reads.
+// runs at all, with nothing pushed — the fail-closed answer, and the reason a workspace's own
+// bound is six minutes (WorkspaceTimeout, derived from the reserve). The minute a bound was
+// here before is now such a bound, which is what this reads.
 func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, "feature.txt", "work a bound too small never carries\n")

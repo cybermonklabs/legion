@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // A gh call that carries its body in a file publishes the file's text, not the file's name, and
@@ -39,7 +41,7 @@ func TestAGhCallsBodyFileIsRead(t *testing.T) {
 		{name: "-F body=@", args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "-F", "body=@" + body}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, standIn(t, passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			_, err := guard.GhCall(bound(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
 			if err == nil {
 				t.Fatal("the call was cleared, so the file's text reaches GitHub unread")
@@ -86,7 +88,7 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, standIn(t, passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			_, err := guard.GhCall(bound(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
 			failed := setupFailure(t, err)
 			if !strings.Contains(failed.Error(), tc.want) {
@@ -100,7 +102,7 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 // buffers and the guard records already (TestTheGhShapeScansWhatItBuffered): there is no file of
 // that name to open, and a guard that tried would turn every such call into a setup failure.
 func TestAGhCallsBodyFileOfStandardInputOpensNoFile(t *testing.T) {
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	if _, err := guard.GhCall(bound(t), GhRequest{
 		Args: []string{"pr", "comment", "1", "--body-file", "-"},
 		Repo: "invented-org/invented-repo",
@@ -116,7 +118,7 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 	if err := os.WriteFile(body, []byte("the box is in the other room\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	if _, err := guard.GhCall(bound(t), GhRequest{
 		Args: []string{"pr", "comment", "1", "--body-file", body},
 		Repo: "invented-org/invented-repo",
@@ -228,7 +230,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	t.Run("a file the argv never spells is read", func(t *testing.T) {
 		// The shape the table misses and the parse does not: `-dF <path>` is `--draft
 		// --body-file <path>` to gh, and the caller hands the file it read out of that.
-		guard := guardWith(t, standIn(t, passes), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		_, err := guard.GhCall(bound(t), GhRequest{
 			Args:  []string{"pr", "create", "-dF", unnamed},
 			Repo:  "invented-org/invented-repo",
@@ -239,7 +241,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 		}
 	})
 	t.Run("a caller that parsed no file reads none", func(t *testing.T) {
-		guard := guardWith(t, standIn(t, passes), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		if _, err := guard.GhCall(bound(t), GhRequest{
 			Args:  []string{"pr", "comment", "1", "--body-file", named},
 			Repo:  "invented-org/invented-repo",
@@ -249,7 +251,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 		}
 	})
 	t.Run("a caller that parsed nothing gets the table", func(t *testing.T) {
-		guard := guardWith(t, standIn(t, passes), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		_, err := guard.GhCall(bound(t), GhRequest{
 			Args: []string{"pr", "comment", "1", "--body-file", named},
 			Repo: "invented-org/invented-repo",
@@ -277,7 +279,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 		if err := os.WriteFile(body, []byte(escaped), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		guard := guardWith(t, standIn(t, passes), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		_, err := guard.GhCall(bound(t), GhRequest{
 			Args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "--input", body},
 			Repo: "invented-org/invented-repo",
@@ -289,8 +291,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 		}
 	})
 	t.Run("the buffered standard input", func(t *testing.T) {
-		asksForStdin := "if [ -z \"${PUBLIC_LEAK_CHECK_STDIN}\" ]; then exit 4; fi\nexit 0\n"
-		guard := guardWith(t, standIn(t, asksForStdin), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
 		_, err := guard.GhCall(bound(t), GhRequest{
 			Args:  []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "--input", "-"},
 			Stdin: strings.NewReader(escaped),
@@ -307,7 +308,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 		if err := os.WriteFile(body, []byte(`{"body": "the box is in the other \u0072oom"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		guard := guardWith(t, standIn(t, passes), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		if _, err := guard.GhCall(bound(t), GhRequest{
 			Args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--input", body},
 			Repo: "invented-org/invented-repo",
@@ -321,8 +322,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 // memory and scanned there. Input past the bound is a setup failure, which refuses the call,
 // never a truncated buffer handed to gh as though the guard had read the whole.
 func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
-	asksForStdin := "if [ -z \"${PUBLIC_LEAK_CHECK_STDIN}\" ]; then exit 4; fi\nexit 0\n"
-	guard := guardWith(t, standIn(t, asksForStdin), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
 	buffered, err := guard.GhCall(bound(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: bytes.NewReader(bytes.Repeat([]byte("a"), maxGhFile+1)),

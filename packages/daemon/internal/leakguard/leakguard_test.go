@@ -38,15 +38,6 @@ const (
 	cannotFinish = leakguardtest.CannotFinish
 )
 
-// standIn writes a stand-in shared check whose body is script into a directory of the test's own
-// and answers its path. The name is the real check's, so a test that puts the directory on PATH
-// is testing the same resolution a pod makes: leakguardtest.CheckName is that name, and a day it
-// parted from this package's own checkName is a day the resolution tests fail (check_test.go).
-func standIn(t *testing.T, script string) string {
-	t.Helper()
-	return leakguardtest.Write(t, t.TempDir(), script)
-}
-
 // answers is a visibility reader that answers visibility for every slug it is asked about, and
 // counts what it was asked.
 func answers(visibility Visibility, asked *[]string) func(context.Context, string) (Visibility, error) {
@@ -172,18 +163,18 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 	} {
 		t.Run(entry.name, func(t *testing.T) {
 			ctx := bound(t)
-			guard := guardWith(t, standIn(t, passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			if err := entry.checked(ctx, guard, false); err != nil {
 				t.Fatalf("a clean write: %v", err)
 			}
-			refused := refusal(t, entry.checked(ctx, guardWith(t, standIn(t, passes), Public), true))
+			refused := refusal(t, entry.checked(ctx, guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public), true))
 			if refused.By != byRules {
 				t.Errorf("a write naming a host was refused by %q, want the rules", refused.By)
 			}
 			if len(refused.Lines) != 1 || !strings.HasSuffix(refused.Lines[0], ": "+theClass) {
 				t.Errorf("the report is %q, want one line naming the class", refused.Lines)
 			}
-			byCheck := guardWith(t, standIn(t, refuses), Public)
+			byCheck := guardWith(t, leakguardtest.Write(t, t.TempDir(), refuses), Public)
 			err := entry.checked(ctx, byCheck, false)
 			if !entry.readsCheck {
 				if err != nil {
@@ -215,7 +206,7 @@ fi
 } > "${STANDIN_RECORD}"
 exit 0
 `
-	guard := guardWith(t, standIn(t, asksForStdin), Public, "STANDIN_RECORD="+record)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), asksForStdin), Public, "STANDIN_RECORD="+record)
 	body := "a body gh reads on its standard input"
 	buffered, err := guard.GhCall(bound(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
@@ -242,10 +233,7 @@ exit 0
 // What the gh shape buffered is scanned as a record of its own, so a body that never reaches an
 // argument is read all the same.
 func TestTheGhShapeScansWhatItBuffered(t *testing.T) {
-	asksForStdin := `if [ -z "${PUBLIC_LEAK_CHECK_STDIN}" ]; then exit 4; fi
-exit 0
-`
-	guard := guardWith(t, standIn(t, asksForStdin), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
 	body := "a body naming " + theHost + "\n"
 	buffered, err := guard.GhCall(bound(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
@@ -264,7 +252,7 @@ exit 0
 // The report names the record and the class and nothing else: not the text that matched, not the
 // component of the path that matched, and nothing the engine itself printed.
 func TestTheReportNamesTheRecordAndTheClass(t *testing.T) {
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	err := guard.Rules(bound(t), Record{Label: "commit 1a2b3c4 message", Text: "deployed from " + theHost + " this morning"})
 	refused := refusal(t, err)
 	want := []string{"commit 1a2b3c4 message: " + theClass}
@@ -283,7 +271,7 @@ func TestTheReportMasksAPathComponent(t *testing.T) {
 	// The component is built out of two pieces for the same reason theHost is: spelled whole, it
 	// would be a name this repository's own check refuses in this very file.
 	path := "packages/" + "agen" + "t-c/main.go"
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// A path record is read twice over, as a path by the path rules and as a text by the content
 	// rules, so a path that names the deployment repository earns both of that class's wordings.
 	refused := refusal(t, guard.Rules(bound(t), Record{Label: path, Text: path}))
@@ -302,7 +290,7 @@ func TestTheReportMasksAPathComponent(t *testing.T) {
 // nothing.
 func TestAVisibilityThatCannotBeReadRefuses(t *testing.T) {
 	guard := New(Options{
-		Check: standIn(t, passes),
+		Check: leakguardtest.Write(t, t.TempDir(), passes),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", errors.New("gh api exited 1")
 		},
@@ -324,7 +312,7 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 			var asked []string
 			record := filepath.Join(t.TempDir(), "record")
 			guard := New(Options{
-				Check:      standIn(t, "cat >/dev/null 2>&1\ntouch \"${STANDIN_RECORD}\"\nexit 0\n"),
+				Check:      leakguardtest.Write(t, t.TempDir(), "cat >/dev/null 2>&1\ntouch \"${STANDIN_RECORD}\"\nexit 0\n"),
 				Visibility: answers(visibility, &asked),
 				Env:        append(fixtureenv.Isolated(t.TempDir()), "STANDIN_RECORD="+record),
 			})
@@ -359,7 +347,7 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 		}
 	})
 	t.Run("the check exits 2", func(t *testing.T) {
-		guard := guardWith(t, standIn(t, cannotFinish), Public)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), cannotFinish), Public)
 		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
 		if !strings.Contains(failed.Why, "exit 2") {

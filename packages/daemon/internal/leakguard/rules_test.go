@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // The embedded rules compile, and they are the eight private-names.toml holds: the four classes
@@ -92,7 +94,7 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 	if _, err := engine.scan(ctx, []Record{{Label: "the title", Text: "a host at " + theHost}}); err == nil {
 		t.Fatal("a scan under a context that ended answered no error")
 	}
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	if err := guard.Rules(ctx, Record{Label: "the title", Text: "nothing of ours"}); err == nil {
 		t.Fatal("Rules under a context that ended passed the write")
 	} else {
@@ -132,7 +134,7 @@ func TestRepoFromURL(t *testing.T) {
 // line of this file carries an escape of its own.
 func TestTheInlineAllowCommentIsInert(t *testing.T) {
 	const escape = "gitleaks" + ":allow"
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	err := guard.Rules(bound(t), Record{
 		Label: "commit 1a2b3c4 message",
 		Text:  "moved the run to " + theHost + " # " + escape,

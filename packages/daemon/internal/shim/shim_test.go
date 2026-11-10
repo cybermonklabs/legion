@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -1167,12 +1168,15 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 			p := daemon.accept(t)
 			p.open(t)
 
-			// The bounds are the daemon's own (internal/daemon's rescueWorkspaceTimeout and
-			// rescueTimeout): the guard keeps a reserve of the workspace's bound for the push it
-			// clears, wide enough for the second run of the check a pod's pre-push hook makes
-			// (rescue.guardReserve), and a smaller bound here would be refused for want of time
-			// rather than checked.
-			request := shimwire.RescueUnpushed{ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", WorkspaceTimeoutMs: 360_000, TimeoutMs: 540_000}
+			// The bounds are the check's own, the ones the daemon sets on every request
+			// (rescue.WorkspaceTimeout and rescue.Timeout): the guard keeps a reserve of the
+			// workspace's bound for the push it clears, wide enough for the second run of the
+			// check a pod's pre-push hook makes (rescue.GuardReserve), and a smaller bound here
+			// would be refused for want of time rather than checked.
+			request := shimwire.RescueUnpushed{
+				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a",
+				WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
+			}
 			p.send(t, request)
 			got, ok := p.next(t).(shimwire.RescueUnpushedResult)
 			if !ok || got.ID != request.ID {

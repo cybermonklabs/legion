@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -176,19 +177,32 @@ func ghVisibilityRead(argv []string, env map[string]string) bool {
 // own descriptors, so gh's reading of its terminal — its colour, its spinner, its prompts — is
 // what an exec'd gh would have read.
 //
-// This child is configured unlike every other child of this module: it is given no process
-// group of its own (no procgroup.Configure) and no signal of this process is forwarded to it.
-// gh is an interactive program — its pager and its editor read the terminal and change its
-// mode — and a process group that is not the terminal's foreground group is stopped by SIGTTIN
-// or SIGTTOU the moment it does either, which is a `gh pr view` that hangs in a pane with no
-// way out. Sharing this process's group is what an exec'd gh had: the terminal signals gh with
-// the rest of the group, so there is nothing to forward, and a `legion gh` run outside a
-// terminal is in its parent's group exactly as the exec was.
+// This child is given no process group of its own (no procgroup.Configure), unlike every other
+// child of this module. gh is an interactive program — its pager and its editor read the
+// terminal and change its mode — and a process group that is not the terminal's foreground
+// group is stopped by SIGTTIN or SIGTTOU the moment it does either, which is a `gh pr view`
+// that hangs in a pane with no way out. Sharing this process's group is what an exec'd gh had:
+// a terminal's own SIGINT reaches gh with the rest of the group, so there is nothing to
+// forward, and a `legion gh` run outside a terminal is in its parent's group exactly as the
+// exec was.
+//
+// What the terminal does not send is forwarded instead: a SIGTERM or a SIGHUP sent to this
+// process's own pid (forwardTo). An exec'd gh ended on either, and without this a SIGTERM would
+// reach this process alone — main's signal.NotifyContext catches it and the child's context has
+// the cancellation taken off — leaving gh running with nobody waiting for it, and a SIGHUP,
+// which nothing here would catch, would kill this process where it stood and leave gh running.
+// Each goes to child.Process, the pid and not the group: the group is the terminal's to signal,
+// and a process-group signal from here would hit this process again and every sibling of it.
+// The forwarding is armed before the child is started, so that a signal arriving in the moment
+// between the fork and the wait is held in the channel rather than lost: until this process
+// holds a pid there is nothing to forward to, and the two names would otherwise be the
+// swallowed SIGTERM and the fatal SIGHUP again, in a window a loaded machine makes wide.
 //
 // Its context is this process's with the cancellation taken off (context.WithoutCancel): the
 // cancellation is not wanted — a signal that ends this process's context reaches gh as the
-// signal it was, from the terminal, and gh ends on it and answers with its own status, where
-// the cancellation would kill gh outright, mid-clone, and answer with a status nobody sent.
+// signal it was, forwarded here or from the terminal, and gh ends on it and answers with its
+// own status, where the cancellation would kill gh outright, mid-clone, and answer with a
+// status nobody sent.
 func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer) int {
 	child := exec.CommandContext(context.WithoutCancel(ctx), gh, args...)
 	child.Env = env
@@ -196,11 +210,17 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	if buffered != nil {
 		child.Stdin = bytes.NewReader(buffered)
 	}
+	// The forwarding is armed here, before the fork, and a signal that arrives before there is
+	// a pid to send it to waits in this channel (forwardTo).
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
 		return 1
 	}
+	defer forwardTo(child.Process, signals)()
 	err := child.Wait()
 	if err == nil {
 		return 0
@@ -214,6 +234,42 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 		return 128 + int(status.Signal())
 	}
 	return exited.ExitCode()
+}
+
+// forwardTo sends each signal it reads from signals on to process, until the returned stop is
+// called. Its caller arms that channel (signal.Notify) before it starts the child and calls
+// this once there is a pid: a signal that arrived in between is in the channel and goes on as
+// soon as this runs, so neither name is lost in the moment between the fork and the wait.
+//
+// The signal goes to the one pid, never to the group: gh shares this process's group, and a
+// signal sent to the group would come back to this process and reach every sibling in it. The
+// two names are what an exec'd gh ended on and what this process is itself ended by — a pane's
+// server sends SIGHUP to everything in it when the pane goes, and a stop sends SIGTERM — and
+// SIGINT is not among them: the terminal sends that to the whole foreground group, gh included,
+// so forwarding it would send gh a second one.
+//
+// It is for a process its caller waits for: stop ends the forwarding once that wait is over,
+// and a signal that arrives between the child's exit and stop is sent to a pid that is gone,
+// which Signal answers with an error this drops. The caller's channel is buffered, so the
+// runtime's own delivery never blocks on this.
+func forwardTo(process *os.Process, signals <-chan os.Signal) (stop func()) {
+	done := make(chan struct{})
+	forwarded := make(chan struct{})
+	go func() {
+		defer close(forwarded)
+		for {
+			select {
+			case sig := <-signals:
+				_ = process.Signal(sig)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-forwarded
+	}
 }
 
 // ghWrapperScript is the `gh` wrapper both runtimes install first on PATH: a script whose one

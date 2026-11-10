@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // Resolve looks in the order the shared check documents — PUBLIC_LEAK_CHECK, then
@@ -15,10 +16,10 @@ import (
 // names a check that is there.
 func TestResolveFindsTheCheckInTheDocumentedOrder(t *testing.T) {
 	home := t.TempDir()
-	onPath := standIn(t, passes)
-	named := standIn(t, passes)
-	pointed := standIn(t, passes)
-	option := standIn(t, passes)
+	onPath := leakguardtest.Write(t, t.TempDir(), passes)
+	named := leakguardtest.Write(t, t.TempDir(), passes)
+	pointed := leakguardtest.Write(t, t.TempDir(), passes)
+	option := leakguardtest.Write(t, t.TempDir(), passes)
 	pointer := filepath.Join(home, ".config", pointerFile)
 	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
 		t.Fatal(err)
@@ -142,7 +143,7 @@ func TestTheVisibilityReadIsTheOneTheSharedCheckMakes(t *testing.T) {
 func TestADestinationTheParserRefusesReadsNoVisibility(t *testing.T) {
 	var asked []string
 	guard := New(Options{
-		Check:      standIn(t, passes),
+		Check:      leakguardtest.Write(t, t.TempDir(), passes),
 		Visibility: answers(Public, &asked),
 		Env:        fixtureenv.Isolated(t.TempDir()),
 	})
@@ -170,7 +171,7 @@ func TestAChildCannotBeAskedForACredential(t *testing.T) {
 } > "${STANDIN_RECORD}"
 exit 0
 `
-	guard := guardWith(t, standIn(t, reports), Public, "STANDIN_RECORD="+record)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), reports), Public, "STANDIN_RECORD="+record)
 	if err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}); err != nil {
 		t.Fatalf("a clean text: %v", err)
 	}

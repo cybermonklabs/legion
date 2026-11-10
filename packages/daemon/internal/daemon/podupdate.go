@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -623,23 +624,16 @@ func (s *supervision) replacementDue(issue, round, pod string, checked *pushChec
 }
 
 // The push check's bounds: one workspace's check and push, and the whole check of a pod's disk.
-// The whole bound is what replacePodForRound adds to the replacement's own, since the check runs
-// inside it. rescueAnswerMargin is what the shim's bound leaves of the time the replacement has
-// left, for the answer to cross the stream: a check bounded at the whole of that time would be
-// read as a failure the moment it finished, and would run on in the pod beside the next one.
-//
-// A workspace's bound holds three things in a pod, and each is measured: the jj and git reads
-// that find the unpushed work, which the four minutes this bound was left 90 s for; the leak
-// guard's own run of the shared public leak check, whose push mode can spend sixty seconds
-// asking the remote what it holds and another sixty in its credential path, so 120 s; and what
-// that guard leaves the push, which in a pod runs the same check a second time in the pre-push
-// hook the image's git wrapper points it at, so 150 s for that run and the push itself
-// (internal/rescue's guardReserve and gitPins). 90 + 120 + 150 is 360 s, so the workspace's four
-// minutes are six. The whole check's bound keeps the margin over it that it had — three minutes,
-// enough for the workspaces a disk holds past the first — so seven are nine.
+// Both are internal/rescue's own, derived there from the reserve the guard leaves the push
+// (rescue.GuardReserve, which holds the second run of the shared check a pod's pre-push hook
+// makes) — so a reserve that grows moves them, which a literal here would not. The whole bound
+// is what replacePodForRound adds to the replacement's own, since the check runs inside it.
+// rescueAnswerMargin is what the shim's bound leaves of the time the replacement has left, for
+// the answer to cross the stream: a check bounded at the whole of that time would be read as a
+// failure the moment it finished, and would run on in the pod beside the next one.
 const (
-	rescueWorkspaceTimeout = 6 * time.Minute
-	rescueTimeout          = 9 * time.Minute
+	rescueWorkspaceTimeout = rescue.WorkspaceTimeout
+	rescueTimeout          = rescue.Timeout
 	rescueAnswerMargin     = 30 * time.Second
 )
 

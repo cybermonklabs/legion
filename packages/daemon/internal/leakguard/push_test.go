@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // A push's records are read from the commits it would add, out of a real repository: the
@@ -122,7 +123,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			if tc.newRef {
 				remoteSHA = noSHA
 			}
-			guard := guardWith(t, standIn(t, passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			err := guard.Push(bound(t), PushRequest{
 				Dir:    repo,
 				Remote: "origin",
@@ -160,7 +161,7 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	fixture.Run(repo, "git", "add", "-A")
 	fixture.Run(repo, "git", "commit", "--quiet", "-m", "a commit naming "+theHost)
 	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// The destination holds that commit at that ref already, so the push moves nothing and the
 	// commit's own text is none of its business.
 	err := guard.Push(bound(t), PushRequest{
@@ -190,7 +191,7 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 	fixture.Run(repo, "git", "add", "-A")
 	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the first commit")
 	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// The destination holds nothing: a ref the push creates, in a repository with no remote
 	// whose tracking refs could say otherwise.
 	err := guard.Push(bound(t), PushRequest{
@@ -243,7 +244,7 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
 	}
-	guard := guardWith(t, standIn(t, passes), Public)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	err := guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",

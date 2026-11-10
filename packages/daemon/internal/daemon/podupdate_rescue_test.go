@@ -61,35 +61,6 @@ func (r *podUpdateRig) awaitRescues(n int, what string) {
 	})
 }
 
-// The push check's two bounds hold two runs of the shared public leak check, not one. In a pod
-// the check's push runs through the image's git wrapper, whose `-c core.hooksPath` outranks the
-// `core.hooksPath=/dev/null` the check pins, so the pre-push hook runs the guard a second time
-// inside the push the guard has already cleared (internal/rescue's gitPins and guardReserve).
-// One run of the check's push mode is 120 s — sixty seconds asking the remote what it holds and
-// sixty in its credential path — so the reserve the guard leaves the push is that run plus the
-// 30 s the push itself always had, 150 s; the workspace's bound is the 90 s of jj and git reads
-// the old four minutes left, that guard run and that reserve, 360 s; and the whole check keeps
-// its three-minute margin over the workspace's, 540 s. A bound that fits one run and not two
-// ends inside the hook's run and loses the dying pod's work to a timeout rather than refusing
-// it, which is the failure these numbers exist to prevent.
-func TestTheRescueBoundsHoldTwoRunsOfTheSharedCheck(t *testing.T) {
-	const checkRun = 120 * time.Second
-	const pushItself = 30 * time.Second
-	const readsBeforeThePush = 90 * time.Second
-	if got, want := rescueWorkspaceTimeout, readsBeforeThePush+checkRun+checkRun+pushItself; got != want {
-		t.Errorf("rescueWorkspaceTimeout = %s, want %s: the reads, the guard's own run, the hook's run and the push", got, want)
-	}
-	if got, want := rescueWorkspaceTimeout, 6*time.Minute; got != want {
-		t.Errorf("rescueWorkspaceTimeout = %s, want %s", got, want)
-	}
-	if got, want := rescueTimeout, 9*time.Minute; got != want {
-		t.Errorf("rescueTimeout = %s, want %s", got, want)
-	}
-	if got, want := rescueTimeout-rescueWorkspaceTimeout, 3*time.Minute; got != want {
-		t.Errorf("the whole check keeps %s over a workspace's bound, want the three minutes it has always kept", got)
-	}
-}
-
 // Each state of the issue's workspace, from a pod with nothing to lose to one whose only copy of
 // a commit is jj's view: the pod is replaced once the check has carried what it found off the
 // disk, the remote holds each rescue branch, and the issue is told each branch it must bring in.

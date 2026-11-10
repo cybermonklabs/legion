@@ -272,17 +272,17 @@ func (d *Disk) RefuseWrites() {
 // Check runs the push check over the disk as a role's shim runs it (shim.rescue), under the
 // disk's environment, with rescue branches named from prefix.
 //
-// The bounds are the daemon's own (internal/daemon's rescueWorkspaceTimeout and rescueTimeout):
-// the guard's call keeps a reserve of the workspace's bound for the push it clears
-// (rescue.guardReserve, wide enough for the second run of the check a pod's pre-push hook
-// makes), so a fixture bounded under that reserve would have every push here refused for want
-// of time rather than checked. Nothing waits these out — they are what a check may spend, and
-// these tests spend milliseconds.
+// The bounds are the check's own, the ones the daemon sets on every request
+// (rescue.WorkspaceTimeout and rescue.Timeout, derived from rescue.GuardReserve): the guard's
+// call keeps that reserve of the workspace's bound for the push it clears, wide enough for the
+// second run of the check a pod's pre-push hook makes, so a fixture bounded under it would have
+// every push here refused for want of time rather than checked. Nothing waits these out — they
+// are what a check may spend, and these tests spend milliseconds.
 func (d *Disk) Check(ctx context.Context, prefix string) []shimwire.RescueWorkspace {
 	d.t.Helper()
 	return rescue.Run(ctx, rescue.Request{
 		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
-		WorkspaceTimeout: 6 * time.Minute, Deadline: time.Now().Add(9 * time.Minute),
+		WorkspaceTimeout: rescue.WorkspaceTimeout, Deadline: time.Now().Add(rescue.Timeout),
 	})
 }
 

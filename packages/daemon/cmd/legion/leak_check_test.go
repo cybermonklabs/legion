@@ -28,15 +28,6 @@ const theLeakCheckClass = "names a Tailscale MagicDNS host"
 // ref the push creates.
 const noSHA = "0000000000000000000000000000000000000000"
 
-// standInSharedCheck writes a stand-in shared check whose body is script — one of
-// leakguardtest's, which read their standard input as the real check does — and names it in
-// PUBLIC_LEAK_CHECK, which is where a pod names the real one: the command resolves its check the
-// way every other caller of the guard does, so nothing here reaches past the command's own seams.
-func standInSharedCheck(t *testing.T, script string) {
-	t.Helper()
-	t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), script))
-}
-
 // noSharedCheck leaves the command no check to resolve at all: nothing in PUBLIC_LEAK_CHECK, no
 // public-leak-check.sh on any PATH entry, and no pointer file under a configuration home of its
 // own. Every fixture a case needs is built before this, since it empties the PATH a child of the
@@ -145,7 +136,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			if tc.standIn == "" {
 				noSharedCheck(t)
 			} else {
-				standInSharedCheck(t, tc.standIn)
+				t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), tc.standIn))
 			}
 			// A local path names no github.com repository, so the guard reads no visibility and
 			// this test starts no gh.
@@ -202,7 +193,7 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 			if tc.standIn == "" {
 				noSharedCheck(t)
 			} else {
-				standInSharedCheck(t, tc.standIn)
+				t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), tc.standIn))
 			}
 			code, printed := leakCheck(t, tc.text, "text", kind)
 			if code != tc.code {

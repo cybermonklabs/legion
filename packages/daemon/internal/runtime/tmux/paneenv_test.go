@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -258,18 +259,6 @@ func TestNewRefusesARoleOverlayPIConfigFilesCannotName(t *testing.T) {
 	}
 }
 
-// standInCheck writes a stand-in shared public leak check in a directory of its own and answers
-// its path. The file's name is the real check's, so a daemon that finds it on its PATH resolves
-// it as the check's own documentation says to.
-func standInCheck(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "public-leak-check.sh")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 // daemonPATH is the PATH the fake runtime's options carry, which names the stub tmux New
 // resolves: a case that adds a directory to the daemon's PATH keeps that one on it.
 func daemonPATH(o *Options) string {
@@ -299,7 +288,7 @@ func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 		{
 			name: "PUBLIC_LEAK_CHECK in the daemon's own environment",
 			environ: func(t *testing.T, o *Options) string {
-				check := standInCheck(t)
+				check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 				o.Environ = append(slices.Clone(o.Environ), "PUBLIC_LEAK_CHECK="+check)
 				return check
 			},
@@ -307,7 +296,7 @@ func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 		{
 			name: "public-leak-check.sh on the daemon's PATH",
 			environ: func(t *testing.T, o *Options) string {
-				check := standInCheck(t)
+				check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 				o.Environ = append(slices.Clone(o.Environ), "PATH="+filepath.Dir(check)+":"+daemonPATH(o))
 				return check
 			},
@@ -315,7 +304,7 @@ func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 		{
 			name: "the pointer file under the daemon's configuration home",
 			environ: func(t *testing.T, o *Options) string {
-				check := standInCheck(t)
+				check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 				config := t.TempDir()
 				if err := os.MkdirAll(filepath.Join(config, "public-leak-check"), 0o700); err != nil {
 					t.Fatal(err)
