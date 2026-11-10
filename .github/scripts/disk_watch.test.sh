@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests for `disk_watch.py`: `start` writes the state file and leaves a sampler that outlives it,
-# the sampler's least value falls when the watched file system fills, `report` stops the sampler
-# and prints the four numbers, and it exits 0 whether the margin is ok or short and when there is
-# no state file at all.
+# the sampler's least value falls when the watched file system fills, it writes a tick of the
+# series every second and keeps the least memory and the greatest load it has seen, `report`
+# stops the sampler and prints the series, the three worst readings and the four numbers in that
+# order, and it exits 0 whether the margin is ok or short, when a reading was never made, when
+# there is no series file and when there is no state file at all.
 #
 # `start` runs here with a PATH holding python3 alone, so neither `go` nor `docker` is on it:
 # that is the runner this script must work on too (no Go toolchain, no Docker daemon, no
@@ -57,6 +59,16 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
 # alive <pid>: true/false for check.
 alive() { kill -0 "$1" 2>/dev/null && echo true || echo false; }
 
+# line_of <text> <regex>: the number of the first line that matches, or '' when none does. The
+# cases that read it are about the order the report prints its lines in, not their wording.
+line_of() { grep -n -- "$2" <<<"$1" | sed -n '1s/:.*//p' || true; }
+
+# The shapes the sampler writes and the report prints back: a time is RFC 3339 in UTC to the
+# second, and a tick carries three readings, each a number or the `unknown` of a reading this
+# kernel would not give.
+when_shape='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'
+tick_shape="^machine: $when_shape free \([0-9][0-9]*\|unknown\) kB, available memory \([0-9][0-9]*\|unknown\) kB, load \([0-9][0-9]*\.[0-9][0-9]*\|unknown\)$"
+
 watched="$work/watched"
 mkdir "$watched"
 state="$work/state.json"
@@ -91,6 +103,26 @@ check "least_kb fell below before_kb after 64 MiB was written" \
 check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
 rm -f "$watched/filler"
 
+echo "case: the sampler writes the machine to a series file beside the state"
+series="$state.series"
+check "the sampler left a series file" "$([ -f "$series" ] && echo true || echo false)"
+ticks=$(grep -c '' "$series" || true)
+shaped=$(grep -c -- "$tick_shape" "$series" || true)
+check "it has ticks in it" "$([ "$ticks" -ge 1 ] && echo true || echo false)"
+check "every line of it is a tick of the machine" "$(is "$shaped" "$ticks")"
+
+echo "case: the state carries the least memory and the greatest load, each with its time"
+check "the least free disk has the time it was read beside it" \
+  "$(contains "$(field "$state" least_kb_at)" "^$when_shape$")"
+check "the state carries a least available memory in kB" \
+  "$(contains "$(field "$state" least_memory_kb)" '^[0-9][0-9]*$')"
+check "that memory has the time it was read beside it" \
+  "$(contains "$(field "$state" least_memory_kb_at)" "^$when_shape$")"
+check "the state carries a greatest one-minute load" \
+  "$(contains "$(field "$state" greatest_load)" '^[0-9][0-9]*\.[0-9][0-9]*$')"
+check "that load has the time it was read beside it" \
+  "$(contains "$(field "$state" greatest_load_at)" "^$when_shape$")"
+
 echo "case: report stops the sampler"
 run_watch report --state "$state"
 check "exits 0" "$(is "$status" 0)"
@@ -98,13 +130,39 @@ check "prints the four numbers" "$(contains "$out" '^disk: before [0-9][0-9]* kB
 check "the sampler is gone" "$(is "$(alive "$pid")" false)"
 pid=""
 
+echo "case: report prints the series, then the three worst readings, then the disk line"
+# The sampler the case above stopped leaves its state and its series behind, so this second
+# report reads the same run and prints it in the order a person reads the log in.
+run_watch report --state "$state"
+check "exits 0" "$(is "$status" 0)"
+check "prints the ticks of the series" "$(contains "$out" "$tick_shape")"
+check "names the least free disk and when it was read" \
+  "$(contains "$out" "^machine: least free disk [0-9][0-9]* kB at $when_shape$")"
+check "names the least available memory and when it was read" \
+  "$(contains "$out" "^machine: least available memory [0-9][0-9]* kB at $when_shape$")"
+check "names the greatest one-minute load and when it was read" \
+  "$(contains "$out" "^machine: greatest one-minute load [0-9][0-9]*\.[0-9][0-9]* at $when_shape$")"
+first_tick=$(line_of "$out" "$tick_shape")
+worst_disk=$(line_of "$out" '^machine: least free disk ')
+worst_memory=$(line_of "$out" '^machine: least available memory ')
+worst_load=$(line_of "$out" '^machine: greatest one-minute load ')
+disk_line=$(line_of "$out" '^disk: before ')
+check "the series comes before the worst readings" \
+  "$([ "$first_tick" -lt "$worst_disk" ] && echo true || echo false)"
+check "the three worst readings come in that order" \
+  "$([ "$worst_disk" -lt "$worst_memory" ] && [ "$worst_memory" -lt "$worst_load" ] && echo true || echo false)"
+check "the disk line comes after all of them" \
+  "$([ "$worst_load" -lt "$disk_line" ] && echo true || echo false)"
+check "the disk line is the one it has always printed" \
+  "$(contains "$out" '^disk: before [0-9][0-9]* kB, least [0-9][0-9]* kB, used [0-9][0-9]* kB, margin \(ok\|short\)$')"
+
 echo "case: report prints the four numbers and exits 0 for a margin that is ok"
 ok_state="$work/ok.json"
 printf '{"path": "%s", "before_kb": 1000, "least_kb": 600, "sampler_pid": null}\n' "$watched" > "$ok_state"
 run_watch report --state "$ok_state"
 check "exits 0" "$(is "$status" 0)"
 check "prints before, least, used and an ok margin" \
-  "$(is "$out" 'disk: before 1000 kB, least 600 kB, used 400 kB, margin ok')"
+  "$(contains "$out" '^disk: before 1000 kB, least 600 kB, used 400 kB, margin ok$')"
 
 echo "case: report exits 0 for a short margin too"
 short_state="$work/short.json"
@@ -112,7 +170,32 @@ printf '{"path": "%s", "before_kb": 1000, "least_kb": 300, "sampler_pid": null}\
 run_watch report --state "$short_state"
 check "exits 0" "$(is "$status" 0)"
 check "prints the shortfall as a short margin" \
-  "$(is "$out" 'disk: before 1000 kB, least 300 kB, used 700 kB, margin short')"
+  "$(contains "$out" '^disk: before 1000 kB, least 300 kB, used 700 kB, margin short$')"
+
+echo "case: report names the readings no tick ever made and exits 0"
+bare_state="$work/bare.json"
+printf '{"path": "%s", "before_kb": 1000, "least_kb": 600, "least_kb_at": "2026-01-01T00:00:00Z", "sampler_pid": null}\n' \
+  "$watched" > "$bare_state"
+run_watch report --state "$bare_state"
+check "exits 0" "$(is "$status" 0)"
+check "names the disk reading the state does carry" \
+  "$(contains "$out" '^machine: least free disk 600 kB at 2026-01-01T00:00:00Z$')"
+check "says no available memory was read" \
+  "$(contains "$out" '^machine: no available memory was read$')"
+check "says no one-minute load was read" \
+  "$(contains "$out" '^machine: no one-minute load was read$')"
+check "prints the disk line all the same" \
+  "$(contains "$out" '^disk: before 1000 kB, least 600 kB, used 400 kB, margin ok$')"
+
+echo "case: report with no series file beside the state says so and exits 0"
+no_series_state="$work/no-series.json"
+printf '{"path": "%s", "before_kb": 1000, "least_kb": 300, "sampler_pid": null}\n' "$watched" > "$no_series_state"
+run_watch report --state "$no_series_state"
+check "exits 0" "$(is "$status" 0)"
+check "says there were no ticks to print" \
+  "$(contains "$out" "^machine: no series file to read at $no_series_state.series, no ticks were written$")"
+check "prints the disk line all the same" \
+  "$(contains "$out" '^disk: before 1000 kB, least 300 kB, used 700 kB, margin short$')"
 
 echo "case: report on a missing state file exits 0 and says so"
 run_watch report --state "$work/never-written.json"
