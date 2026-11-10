@@ -653,8 +653,8 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // named a project, and whether the fill that labels the stored rows has finished
 // (meaningStatementFor). A filtered request takes the joined one whatever the other two say,
 // because its comment arm is the only one of the three that applies those filters inside its
-// candidate limit. Statements rather than one predicate reading "$2 is empty",
-// or it is the row's project", because one generic plan of that OR has to serve both cases and
+// candidate limit. Statements rather than one predicate reading "$2 is empty, or it is the
+// row's project", because one generic plan of that OR has to serve both cases and
 // can lose the good plan of either: measured on the load-test deployment, the scoped form
 // takes a small project's windows through embeddings_kind_project (800 of 800 rows, 13.7 ms)
 // and the unscoped form takes every project's through embeddings_cosine (INFRA-988, migration

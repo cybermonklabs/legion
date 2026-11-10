@@ -8,15 +8,16 @@
 -- row of the table - 1,107,674 of them on the load-test deployment, where the deployment's own
 -- build of this index is what 20261109120000's four measured plans were taken on. The
 -- pre-deploy census refuses that too: a migration touching a table over
--- pgmigrate.CensusTableLimit (1 GiB) is refused unless it is exempt (pgmigrate/census.go:494-503)
+-- pgmigrate.CensusTableLimit (1 GiB) is refused unless it is exempt (pgmigrate/census.go,
+-- censusTable)
 -- and a census that refuses fails the deploy (cmd/dispatch/README.md, "Database migrations").
 --
 -- Apart, each half is exempt. ADD COLUMN of a nullable text with no default is a catalog-only
 -- ALTER (pgmigrate/exempt.go, catalogOnlyAlterTable), and a migration whose first line is
 -- `-- pgmigrate:non-transactional` holding exactly one non-unique
 -- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction
--- and is exempt from the size limit (pgmigrate/nontransactional.go:25-64,
--- pgmigrate/census.go:235-238). What the build takes on embeddings is SHARE UPDATE EXCLUSIVE,
+-- and is exempt from the size limit (pgmigrate/nontransactional.go, concurrentIndex, and
+-- pgmigrate/census.go, Census). What the build takes on embeddings is SHARE UPDATE EXCLUSIVE,
 -- which no ordinary read or write of the table waits on; what it costs instead is two passes
 -- over the table and a wait for every older snapshot between them.
 --
@@ -62,7 +63,8 @@
 -- Nothing has to be repaired by hand. The version is recorded only after a build that finished,
 -- so the next boot runs this migration again, and the runner drops an invalid index of this
 -- name on this table with DROP INDEX CONCURRENTLY and builds it again
--- (pgmigrate/nontransactional.go:66-73, dropOwnLeftover). IF NOT EXISTS alone would not cure
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). IF NOT EXISTS
+-- alone would not cure
 -- it: Postgres skips the statement for any relation of that name, an invalid index included,
 -- and a boot that skipped it that way would record the version over a half-built index for
 -- good. A build that keeps failing is a lock or an old snapshot the boot's log names, not an

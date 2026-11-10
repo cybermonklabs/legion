@@ -118,7 +118,7 @@ func meaningPlanOf(
 // the reason there are three statements rather than one predicate (meaningProjectScope). A
 // project-scoped search carries `e.project_key = $2` inside every candidate CTE, and for a
 // project holding few of a kind's rows the plan that answers it is an exact read of those rows
-// through embeddings_kind_project (migration 20261109120000) and a sort of them, not a walk of
+// through embeddings_kind_project (migration 20261110155257) and a sort of them, not a walk of
 // embeddings_cosine filtered down to them: on the load-test deployment that is 800 of 800
 // windows in 13.7 ms against 2 of 800 in 225 ms (INFRA-988). The unscoped statement's own plan
 // is the test above, which reads embeddings_cosine for all five arms; one "$2 is empty, or it

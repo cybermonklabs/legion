@@ -70,7 +70,7 @@
 --
 -- The pre-deploy census reports the table's size and refuses a migration touching a table over
 -- pgmigrate.CensusTableLimit (1 GiB), which embeddings is far over wherever it holds a million
--- 1,536-float vectors, unless the migration is exempt (pgmigrate/census.go:494-503); a census
+-- 1,536-float vectors, unless the migration is exempt (pgmigrate/census.go, censusTable); a census
 -- that refuses fails the deploy (cmd/dispatch/README.md, "Database migrations"). The column
 -- and the index are each exempt apart, which is why they are apart. ADD COLUMN of a nullable
 -- text with no default is a catalog-only ALTER (pgmigrate/exempt.go, catalogOnlyAlterTable),
