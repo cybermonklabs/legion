@@ -18,22 +18,26 @@ import (
 // raises pgx to drive the cases below again.
 //
 // The shapes the two parsers read differently are the point of the check, so each is driven here:
-// the one measured in this pod, and the ones the shell guard's own cases
-// (scripts/e2e/lib/loopback-dsn.test.ts) found. A refusal must name what pgx read of both
-// strings, so a reader of a failed proof sees which string moved the connection.
+// the one measured in this pod, the ones the shell guard's own cases
+// (scripts/e2e/lib/loopback-dsn.test.ts) found, and the six a password reaches a parser's own
+// text in (the last six below). A refusal is one fixed line: it names the fields that moved, or
+// which string a parser refused, and it holds no value. Each case asserts that whole line, and
+// each case whose DSN carries a password asserts the line holds no part of that password.
 func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
-	// pgx reads PGPORT where a DSN names no port, so a refusal below would name the port this
-	// machine's environment sets rather than pgx's own default of 5432. An empty value is one
-	// pgx skips. Each DSN below names its own host, user and database, so PGPORT is the one
-	// default an assertion reads.
+	// pgx reads PGPORT where a DSN names no port and PGUSER where a DSN names no user, so a
+	// refusal below would turn on this machine's environment rather than on the DSN. An empty
+	// value is one pgx skips, which leaves pgx's own default of 5432 for the port. A user has no
+	// such default — pgx takes the account the test runs as — so PGUSER is set here, and the one
+	// rewrite below that names no user reads it.
 	t.Setenv("PGPORT", "")
+	t.Setenv("PGUSER", "legion_test")
 	for _, tc := range []struct {
 		name     string
 		dsn      string
-		database string   // the database the rewrite asks for
-		want     string   // the rewrite, where the check takes the DSN
-		refuse   []string // what the refusal names, where the check refuses it
-		secret   string   // the password the DSN carries, which no refusal may print
+		database string // the database the rewrite asks for
+		want     string // the rewrite, where the check takes the DSN
+		refuse   string // the whole refusal, where the check refuses it
+		secret   string // the password the DSN carries, which no refusal may print
 	}{
 		{
 			// The DSN a Legion worker pod runs the live proofs on rewrites to the same server,
@@ -52,7 +56,7 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "a `?` right before the `@`, which the guard admits",
 			dsn:      "postgres://evil.example?@localhost/db",
 			database: "legion_live_proof_1",
-			refuse:   []string{"host localhost, port 5432, user evil.example?, database db", "pgx refuses it"},
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN: pgx refuses it",
 		},
 		{
 			// The same shape with a parameter pgx reads. libpq reads the host as localhost, since
@@ -63,16 +67,16 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "a `?` inside the user name",
 			dsn:      "postgres://evil.example?x=@localhost/db",
 			database: "legion_live_proof_1",
-			refuse:   []string{"host localhost", "host evil.example"},
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host and user from it",
 		},
 		{
 			// A second `@` inside the authority is a port of `5433@10.1.2.3` for libpq, which reads
-			// the host as localhost and admits the DSN. pgx refuses that port, and libpq and pgx
-			// both read the rewrite as host 10.1.2.3.
+			// the host as localhost and admits the DSN. pgx refuses that port, so the refusal is
+			// the line for the caller's DSN; libpq and pgx both read the rewrite as host 10.1.2.3.
 			name:     "a second `@` inside the authority",
 			dsn:      "postgres://legion_test@localhost:5433@10.1.2.3/db",
 			database: "legion_live_proof_1",
-			refuse:   []string{"pgx refuses it: invalid port", "host 10.1.2.3"},
+			refuse:   "LEGION_TEST_PG_DSN: pgx refuses it",
 		},
 		{
 			// A dbname the query sets outranks the path for libpq and for pgx, so a rewrite of the
@@ -80,17 +84,17 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "a `dbname` the query sets",
 			dsn:      "postgres://legion_test:s3cr3t@127.0.0.1:5433/postgres?dbname=other&sslmode=disable",
 			database: "legion_live_proof_1",
-			refuse:   []string{"pgx reads the rewrite as host 127.0.0.1, port 5433, user legion_test, database other"},
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another database from it",
 			secret:   "s3cr3t",
 		},
 		{
 			// A password holding a `#` ends the authority there for net/url, which reads the rest
-			// of that password as a port and names it in its own reason. The refusal carries
-			// net/url's fixed line instead, and what pgx read of the DSN, which is no password.
+			// of that password as a port and names it in its own reason. The refusal is the fixed
+			// line for the caller's DSN instead, and it carries no reading and no parser's text.
 			name:     "a password holding a `#`",
 			dsn:      "postgres://legion:s3cr3t#x@localhost/db",
 			database: "legion_live_proof_1",
-			refuse:   []string{"net/url cannot read it as a URL", "pgx reads LEGION_TEST_PG_DSN as host localhost, port 5432, user legion, database db"},
+			refuse:   "LEGION_TEST_PG_DSN: net/url refuses it",
 			secret:   "s3cr3t",
 		},
 		{
@@ -125,7 +129,83 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "the issue's DSN at the run's first rewrite",
 			dsn:      "postgres://evil.example?x=@localhost/db",
 			database: "postgres",
-			refuse:   []string{"host localhost", "host evil.example", "the rewrite must be host localhost"},
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host and user from it",
+		},
+		{
+			// The six cases below carry a password into text a parser quotes, which is where a
+			// refusal printed one before the rule DatabaseURL's comment holds. Each was driven
+			// through DatabaseURL by the two reviews of this change.
+			//
+			// A `?` in a password starts net/url's query there, so the password's head is the
+			// port and its tail the query. The rewrite keeps that query, and pgx refuses it as a
+			// parameter with no `=`, quoting it: that quotation was the password's tail. The
+			// password is `12?SECRET`, and the assertion takes `SECRET`, since `12` is also the
+			// port pgx reads from `u:12` and proves nothing there.
+			name:     "a password holding a `?`",
+			dsn:      "postgres://u:12?SECRET@localhost/db",
+			database: "legion_live_proof_1",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN: pgx refuses it",
+			secret:   "SECRET",
+		},
+		{
+			// A `/` in a password ends net/url's authority there, and `pa` is no port, so net/url
+			// refuses the DSN. pgx reads the whole string and stops in the query, which is the
+			// password's tail, and quoted it. The password is `pa/ss?word`, and the assertion
+			// takes `word`, the part of it that reached the printed line.
+			name:     "a password holding a `/` and a `?`",
+			dsn:      "postgres://legion:pa/ss?word@localhost/db",
+			database: "legion_live_proof_1",
+			refuse:   "LEGION_TEST_PG_DSN: net/url refuses it",
+			secret:   "word",
+		},
+		{
+			// A `#` in a password ends net/url's authority there too, and what follows is a
+			// fragment rather than a port, so net/url takes this DSN: the host is `u:12`, and the
+			// password's tail the fragment. The rewrite carries that fragment after the database
+			// name, where pgx reads it as part of the database, and pgx reads the host and the
+			// port from the password's head. All four fields moved, and the reading printed the
+			// password before this rule. The password is `12#SECRET`, and the assertion takes
+			// `SECRET`, since `12` is also the port pgx reads from `u:12`.
+			name:     "a password holding a `#` that leaves the DSN a URL",
+			dsn:      "postgres://u:12#SECRET@localhost/db",
+			database: "legion_live_proof_1",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host, port, user and database from it",
+			secret:   "SECRET",
+		},
+		{
+			// A percent sign that starts no byte, behind the `/` of the case above: net/url
+			// refuses the DSN over the port `pa`, and pgx stops at the token it cannot decode,
+			// which is the password's tail, and quoted it. The password is `pa/s%zzword`, and the
+			// assertion takes `s%zzword`, the part of it that reached the printed line.
+			name:     "a password holding a percent sign that starts no byte",
+			dsn:      "postgres://legion:pa/s%zzword@localhost/db",
+			database: "legion_live_proof_1",
+			refuse:   "LEGION_TEST_PG_DSN: net/url refuses it",
+			secret:   "s%zzword",
+		},
+		{
+			// A keyword/value connection string rather than a URL. net/url reads the whole of it
+			// as a path, and pgx reads it as keyword/value: a value ends at a space, so the space
+			// in the password leaves `cr3tword` a keyword with no `=`, which pgx quoted. The
+			// password is `s3 cr3tword`, and the assertion takes `cr3tword`, the part of it that
+			// reached the printed line.
+			name:     "a password holding a space, in a keyword/value string",
+			dsn:      "host=localhost user=legion password=s3 cr3tword dbname=postgres",
+			database: "legion_live_proof_1",
+			refuse:   "LEGION_TEST_PG_DSN: pgx refuses it",
+			secret:   "cr3tword",
+		},
+		{
+			// An `@` in a password: net/url ends the user name at the last `@` and reads the host
+			// localhost, pgx ends it at the first and reads the host `ss@localhost`. So pgx reads
+			// another host from the rewrite than from the DSN, and the reading printed the
+			// password's tail twice before this rule. The password is `p@ss`, and the assertion
+			// takes `ss`, the part of it pgx reads into the host.
+			name:     "a password holding an `@`",
+			dsn:      "postgres://legion:p@ss@localhost/db",
+			database: "legion_live_proof_1",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host from it",
+			secret:   "ss",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,10 +222,8 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			if err == nil {
 				t.Fatalf("DatabaseURL took %s and answered %s, want a refusal", tc.name, own)
 			}
-			for _, named := range tc.refuse {
-				if !strings.Contains(err.Error(), named) {
-					t.Fatalf("the refusal of %s does not name %q:\n%v", tc.name, named, err)
-				}
+			if err.Error() != tc.refuse {
+				t.Fatalf("the refusal of %s is:\n%v\nwant:\n%s", tc.name, err, tc.refuse)
 			}
 			if tc.secret != "" && strings.Contains(err.Error(), tc.secret) {
 				t.Fatalf("the refusal of %s prints the password:\n%v", tc.name, err)

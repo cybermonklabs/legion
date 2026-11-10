@@ -25,7 +25,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -134,7 +133,16 @@ func RandomName(prefix string) (string, error) {
 // it starts the query at the first `?`. libpq and pgx do neither. So a DSN whose host libpq reads
 // as loopback, which is the only DSN the live proofs' shell guard admits
 // (scripts/e2e/lib/loopback-dsn.sh), can rewrite into a URL pgx connects to another machine with.
-// The refusal says what pgx read of each string, and prints no password.
+//
+// A refusal names which of host, port, user and database pgx reads from the rewrite other than
+// the connection the rewrite was asked for. It prints no value and no text of either parser,
+// because the value it would print is the misreading itself: a password a parser reads as a
+// host, a port or a database is printed as that host, port or database, and the text a parser
+// quotes is the part of the string it stopped in. A string a parser refuses earns a fixed line
+// naming which string it was, the caller's DSN or the rewrite built from it, and nothing more.
+//
+// What that costs a reader of a refusal: they learn which fields moved, and not what they moved
+// to. The DSN is the caller's own, and the caller can read it.
 //
 // This check is the second of the two frames that hold a live proof to the server its caller
 // named, and it is the one place the Go half of those frames is written. The first frame is that
@@ -166,7 +174,7 @@ func (r rewrite) applied(read reading) reading {
 }
 
 // reading is what pgconn.ParseConfig read from a DSN: the four fields a rewrite keeps or sets,
-// and the four a refusal prints. It holds no password.
+// and the four a refusal names. It holds no password, and a refusal prints no value of it.
 type reading struct {
 	host     string
 	port     uint16
@@ -174,8 +182,31 @@ type reading struct {
 	database string
 }
 
-func (r reading) String() string {
-	return fmt.Sprintf("host %s, port %d, user %s, database %s", r.host, r.port, r.user, r.database)
+// moved names the fields of this reading that are not asked's, in the order the fields are
+// written above, and nothing where the two readings are the same. It is what a refusal says of a
+// rewrite: which fields moved, and no value of one.
+func (r reading) moved(asked reading) string {
+	var fields []string
+	if r.host != asked.host {
+		fields = append(fields, "host")
+	}
+	if r.port != asked.port {
+		fields = append(fields, "port")
+	}
+	if r.user != asked.user {
+		fields = append(fields, "user")
+	}
+	if r.database != asked.database {
+		fields = append(fields, "database")
+	}
+	switch len(fields) {
+	case 0:
+		return ""
+	case 1:
+		return fields[0]
+	default:
+		return strings.Join(fields[:len(fields)-1], ", ") + " and " + fields[len(fields)-1]
+	}
 }
 
 // readingOf is what pgx read from a DSN it took.
@@ -188,18 +219,19 @@ func readingOf(cfg *pgconn.Config) reading {
 // reads it as the reading of dsn with want in it, and a refusal and no DSN at all otherwise. name
 // is what the caller read dsn from, and it starts the refusal.
 //
+// Three strings go through a parser here: dsn through net/url, dsn through pgx, and the rewrite
+// through pgx. A parser that refuses one of them earns the fixed line that names which string it
+// was. Where pgx reads both strings, this function compares the rewrite's reading with dsn's
+// reading with want in it, and the refusal names the fields that differ. DatabaseURL's comment
+// says why no line holds a value.
+//
 // The answer stays a URL, which is the form the DSN came in. A reader downstream takes that form
 // and no keyword/value connection string (host=… dbname=…): packages/pi-legion's rig scenarios
 // read a run's database out of a DSN with new URL(), and Bun.SQL takes a URL.
 func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		// net/url's own reason quotes the text it stopped at, and that text can be part of the
-		// password (parseReason below), so the refusal is parseReason's fixed line and what pgx
-		// read of the same DSN, which holds no password.
-		before, beforeErr := pgconn.ParseConfig(dsn)
-		return "", fmt.Errorf("%s: %s\n\tpgx reads %s as %s",
-			name, parseReason(err), name, dsnReading(before, beforeErr))
+		return "", fmt.Errorf("%s: net/url refuses it", name)
 	}
 	if want.database != "" {
 		parsed.Path = "/" + want.database
@@ -208,52 +240,20 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 		parsed.Host = net.JoinHostPort(want.host, strconv.Itoa(int(want.port)))
 	}
 	rewritten := parsed.String()
-	before, beforeErr := pgconn.ParseConfig(dsn)
-	after, afterErr := pgconn.ParseConfig(rewritten)
-	if beforeErr == nil && afterErr == nil && readingOf(after) == want.applied(readingOf(before)) {
-		return rewritten, nil
-	}
-	refusal := fmt.Sprintf("the rewrite of %s is not the connection it was asked for:\n"+
-		"\tpgx reads %s as %s\n"+
-		"\tpgx reads the rewrite as %s",
-		name, name, dsnReading(before, beforeErr), dsnReading(after, afterErr))
-	if beforeErr == nil {
-		refusal += "\n\tthe rewrite must be " + want.applied(readingOf(before)).String()
-	}
-	return "", errors.New(refusal)
-}
-
-// dsnReading is what pgx read from one DSN, in one line: the four fields rewriteDSN compares, or
-// the refusal that stands in for them. It prints no password, since a refusal names the
-// connection string it refused and the string holds one.
-func dsnReading(cfg *pgconn.Config, err error) string {
+	before, err := pgconn.ParseConfig(dsn)
 	if err != nil {
-		return "nothing, because pgx refuses it: " + parseReason(err)
+		return "", fmt.Errorf("%s: pgx refuses it", name)
 	}
-	return readingOf(cfg).String()
-}
-
-// parseReason is why a parser refused a DSN, with no part of the DSN in it. Both parsers quote
-// the text they refused, and either quotation can hold the password. net/url names the URL and
-// the text it stopped at (url.Error): a password holding a `#`, a `?` or a `/` ends the
-// authority there, and net/url reads the rest of that password as a port it then names. So a
-// url.Error gives the fixed line below and no text of its own. pgx quotes the connection string
-// ahead of its own reason (pgconn.ParseConfigError, "cannot parse `<the DSN>`: <the reason>"),
-// and that reason is kept with the quoted string cut off the front of it. pgx redacts the
-// password itself, and says in pgconn/errors.go that the redaction is best effort, so this cuts
-// the string out rather than trust it.
-func parseReason(err error) string {
-	var badURL *url.Error
-	if errors.As(err, &badURL) {
-		return "net/url cannot read it as a URL"
+	after, err := pgconn.ParseConfig(rewritten)
+	if err != nil {
+		return "", fmt.Errorf("the rewrite of %s: pgx refuses it", name)
 	}
-	var refused *pgconn.ParseConfigError
-	if errors.As(err, &refused) {
-		if quoted := strings.LastIndex(err.Error(), "`: "); quoted >= 0 {
-			return err.Error()[quoted+len("`: "):]
-		}
+	if moved := readingOf(after).moved(want.applied(readingOf(before))); moved != "" {
+		return "", fmt.Errorf(
+			"the rewrite of %s is not the connection it was asked for: pgx reads another %s from it",
+			name, moved)
 	}
-	return err.Error()
+	return rewritten, nil
 }
 
 // runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and

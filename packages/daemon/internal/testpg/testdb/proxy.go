@@ -24,14 +24,15 @@ import (
 //
 // The server the proxy dials is the one pgconn.ParseConfig reads from dsn, and the URL it answers
 // is rewriteDSN's, which reads that URL back with the same parser: this helper moves the host of
-// a DSN, so it takes the check DatabaseURL's comment describes. The refusals name the reading
-// alone and print no password.
+// a DSN, so it takes the check DatabaseURL's comment describes. A refusal names the fields that
+// moved, or the string a parser refused, and prints no value of either, so it prints no
+// password.
 func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
 	const named = "the database URL to proxy"
 	target, err := pgconn.ParseConfig(dsn)
 	if err != nil {
-		t.Fatalf("read %s with pgx: %s", named, parseReason(err))
+		t.Fatalf("pgx refuses %s", named)
 	}
 	upstream := net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port)))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
