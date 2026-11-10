@@ -136,6 +136,9 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 		// citation_boundary_test.go holds. This row expected no citation while a boundary class
 		// decided these cases, and the parse corrected it (review round two, finding 1).
 		{"userinfo before github.com", "See https://user@github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		// An issue path with no host is the path of no URL at all: the finder matches the path
+		// rather than the host, so this is the row that says so.
+		{"an issue path with no host", "See /acme/widgets/issues/77 for context.", ""},
 		{"first linked citation in body order", "Unlinked #12, then #88, then https://github.com/acme/other/issues/5.", "ATTR-113"},
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {
