@@ -508,7 +508,7 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	for _, event := range written {
-		waitForPublished(t, 5*time.Second, database, counter, event)
+		waitForPublished(t, eventWait, database, counter, event)
 	}
 }
 
@@ -530,10 +530,17 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 
 	holder.stop()
 	stopped := time.Now()
-	waitFor(t, time.Second, "the standby publishing once the holder stopped", standby.outbox.Publishing)
+	// The span this wait proves: a take-over that waited for the hold to lapse could not come
+	// before publisherHoldOptions.TTL less its Renew after the stop, since the lapse falls one
+	// TTL after a renewal and the last renewal was at most one Renew before the stop. The
+	// release instead deletes the hold's row and notifies the standbys in one transaction
+	// (duty.Hold.Release), so the hand-over takes milliseconds. The row measures that span and
+	// still runs parallel: the margin between the two is thousands of milliseconds, which no
+	// batch's load on this machine fills (dispatch://INFRA-1075).
+	waitFor(t, publisherHoldOptions.TTL-publisherHoldOptions.Renew, "the standby publishing once the holder stopped", standby.outbox.Publishing)
 	t.Logf("the standby took the publisher hold %s after the holder stopped", time.Since(stopped).Round(time.Millisecond))
 	event := writeMessage(t, standby, "after the hand-over")
-	waitForPublished(t, time.Second, database, counter, event)
+	waitForPublished(t, eventWait, database, counter, event)
 }
 
 // A holder whose NATS connection is cut releases the publisher hold once it has been without NATS
@@ -638,7 +645,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	done := make(chan struct{})
 	go func() { standby.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	waitFor(t, 5*time.Second, "the standby trying the publisher hold once", func() bool {
+	waitFor(t, eventWait, "the standby trying the publisher hold once", func() bool {
 		return len(tracer.matching("insert into duty_holds")) > 0
 	})
 	// The standby's LISTEN connection's catch-up wake comes as it starts.

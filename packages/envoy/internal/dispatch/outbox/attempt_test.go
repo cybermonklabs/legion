@@ -92,7 +92,7 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	stop := started(t, outbox, time.Second)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
+	waitFor(t, eventWait, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
 	// nothing does, and this is the reading of that: the outbox parked with nothing pending and
 	// nothing scanned since it parked (restingOutbox). A batch sent again while NATS stays
@@ -137,7 +137,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
+	waitFor(t, eventWait, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if len(destinations) != 0 || attempts != 0 || publishedAt(t, database, event.ID) != nil {
 		t.Fatalf("published_destinations = %v, attempt_count = %d, published = %v, though the record write failed",
@@ -156,7 +156,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 		t.Fatalf("let the record write succeed: %v", err)
 	}
 	broker.Publish(model.Event{})
-	waitFor(t, 5*time.Second, "the event published once the store records again", func() bool {
+	waitFor(t, eventWait, "the event published once the store records again", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if destinations, attempts := publishedDestinations(t, database, event.ID); len(destinations) != 3 || attempts != 0 {

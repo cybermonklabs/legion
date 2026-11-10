@@ -481,7 +481,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()
-		waitFor(t, 5*time.Second, "the client noticing the cut", func() bool { return !client.Connected() })
+		waitFor(t, eventWait, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
 		outbox.scan(context.Background(), unfenced{})
 		var attempts int

@@ -493,7 +493,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first attempt backed off after reaching the claimant", func() bool {
+	waitFor(t, eventWait, "the first attempt backed off after reaching the claimant", func() bool {
 		destinations, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 && slices.Contains(destinations, claimantTopic)
 	})
