@@ -179,7 +179,8 @@ func TestEveryAnswerCarriesNosniffAndAMediaType(t *testing.T) {
 		{
 			name: "a handler that names none",
 			serve: func(w http.ResponseWriter, _ *http.Request) {
-				// A body opening with `<` is what net/http would sniff as text/html.
+				// net/http sniffs this body as text/plain; one opening with an HTML tag would
+				// sniff as text/html. Either is a type the server guessed rather than named.
 				_, _ = w.Write([]byte("<" + strings.Repeat("markup a person wrote. ", 200)))
 			},
 			code:      http.StatusOK,

@@ -57,8 +57,8 @@ func compressAnswers(handler http.HandlerFunc) http.HandlerFunc {
 			// bytes it was written before this existed, through a writer that adds one thing:
 			// the media type its handler may not have named. Without it the type would be
 			// whatever net/http sniffs from the answer's first bytes, which for a body opening
-			// with `<` is text/html, and nosniff holds a browser to a type the server set
-			// rather than to none at all.
+			// with an HTML tag (`<html`, `<script`, `<!--`) is text/html, and nosniff holds a
+			// browser to a type the server set rather than to none at all.
 			handler(&typedWriter{ResponseWriter: w}, r)
 			return
 		}

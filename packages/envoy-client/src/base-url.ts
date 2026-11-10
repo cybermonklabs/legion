@@ -1,5 +1,6 @@
 /**
- * The one reading of a base URL's trailing slashes this package has.
+ * The reading of a Dispatch base URL's trailing slashes that `dispatch-config.ts` and
+ * `dispatch-http.ts` share.
  *
  * It is a module of its own, importing nothing, because both of its readers need it and neither
  * may reach the other's imports: `dispatch-config.ts` resolves a credential and so reaches
