@@ -5,7 +5,8 @@
 // value axis, a time axis and a legend, and the one compare range. Every issue key opens that
 // issue's timeline (`onOpenIssue`).
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
 import {
@@ -56,6 +57,7 @@ import {
   workTimeIssueSeries,
   workTimeTrendSeries,
 } from "./LegionMetrics";
+import { useWidth } from "./useWidth";
 
 const SECTION = `flex min-w-0 flex-col gap-2 rounded border px-4 py-3 ${surfaceBg} ${borderDefault}`;
 const KEY_BUTTON = "font-mono text-xs underline decoration-dotted underline-offset-2";
@@ -108,8 +110,20 @@ export function LegionSections({
   const [chosen, setChosen] = useState<WindowChoice>({ kind: "preset", preset: "28d" });
   const [compare, setCompare] = useState<ChartRange | null>(null);
   const [scope, setScope] = useState<LegionMetricsScope>("all");
-  // Tree roots the reader left out of every metric (the largest tree's note offers one).
-  const [excluded, setExcluded] = useState<readonly string[]>([]);
+  // Tree roots the reader left out of every metric (the largest tree's note offers one), kept in
+  // the address as `exclude_tree` so a shared link keeps them.
+  const [params, setParams] = useSearchParams();
+  const excluded = useMemo(() => params.getAll("exclude_tree"), [params]);
+  const setExcluded = (roots: readonly string[]) =>
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete("exclude_tree");
+        for (const root of roots) next.append("exclude_tree", root);
+        return next;
+      },
+      { replace: true }
+    );
   const range = useMemo(
     () => metricsRange(chosen, Math.floor(Date.now() / 60_000) * 60_000),
     [chosen]
@@ -224,7 +238,7 @@ function LargestTreeNote({
           Every number on this page leaves out {excluded.join(", ")}'s tree.
         </p>
         <button className={button} onClick={() => onExclude([])} type="button">
-          Count it again
+          Count {excluded.join(", ")}'s tree again
         </button>
       </div>
     );
@@ -497,22 +511,6 @@ function PhaseBreakdownSection({
 /** About how wide one character of the bar's 12px label is, and the label's side padding. */
 const LABEL_CHAR_PX = 6.8;
 const LABEL_PAD_PX = 10;
-
-/** The bar's width in pixels, measured; before a measure (or where nothing measures, as in a
- *  test) a desktop width, so the labels are those a wide page draws. */
-function useWidth(): [(node: HTMLElement | null) => void, number] {
-  const [width, setWidth] = useState(1000);
-  const observer = useRef<ResizeObserver | null>(null);
-  const ref = useCallback((node: HTMLElement | null) => {
-    observer.current?.disconnect();
-    if (node === null || typeof ResizeObserver === "undefined") return;
-    observer.current = new ResizeObserver(([entry]) => {
-      if (entry !== undefined && entry.contentRect.width > 0) setWidth(entry.contentRect.width);
-    });
-    observer.current.observe(node);
-  }, []);
-  return [ref, width];
-}
 
 /** A segment's label for its width in pixels: its name and share where both fit, the share
  *  alone where only that does, else nothing (the legend names it). */

@@ -23,6 +23,7 @@ import {
 } from "../../theme/classes";
 import { legionPhaseLabel } from "./issues-table-model";
 import { formatHours } from "./LegionMetrics";
+import { useWidth } from "./useWidth";
 
 const SEGMENT_LABEL: Record<string, string> = {
   waiting_on_person: "Waiting on a person",
@@ -49,8 +50,18 @@ const SOURCE_LABEL: Record<LegionTimelineSpan["source"], string> = {
   asks: "Dispatch's asks",
 };
 
-/** The phases after implementing that a return to implementing counts as a send-back from. */
-const SENT_BACK_FROM = new Set(["testing", "reviewing", "accepting", "retro", "merging"]);
+/** The phases a return to implementing counts as a send-back from, each with its cause: a review,
+ *  or tests or CI (the tester, or the merger's red check). */
+const SENT_BACK_FROM: Record<string, "review" | "checks"> = {
+  reviewing: "review",
+  accepting: "review",
+  testing: "checks",
+  retro: "checks",
+  merging: "checks",
+};
+
+/** A duration in the figures: "none" for nothing, else hours as the tab writes them. */
+const duration = (hours: number): string => (hours <= 0 ? "none" : formatHours(hours));
 
 /** One stretch of a lane: its label and fill, hatched where a root's phase overlaps the hours it
  *  waited on its children, or grey and hatched where the issue was parked. */
@@ -278,28 +289,38 @@ function TimelineBody({
   const length = Math.max(end - start, 1);
   const at = (iso: string) => ((Date.parse(iso) - start) / length) * 100;
   const hours = timeline.segment_hours;
-  // Each return to implementing from a later phase is one send-back.
-  const sentBack = timeline.phases.filter(
-    (span, index) =>
-      span.name === "implementing" && SENT_BACK_FROM.has(timeline.phases[index - 1]?.name ?? "")
-  ).length;
+  // Each return to implementing is one send-back, counted by the phase it came back from: a
+  // review (reviewing, accepting) or tests or CI (testing, and the merger's red check).
+  const causes = { review: 0, checks: 0 };
+  timeline.phases.forEach((span, index) => {
+    const cause = SENT_BACK_FROM[timeline.phases[index - 1]?.name ?? ""];
+    if (span.name === "implementing" && cause !== undefined) causes[cause] += 1;
+  });
+  const sentBack = causes.review + causes.checks;
   const figures = [
-    ["Work time", formatHours(timeline.work_hours)],
-    ["Parked", formatHours(timeline.parked_hours)],
-    ["Queued", formatHours(timeline.queued_hours)],
+    ["Work time", duration(timeline.work_hours)],
+    ["Parked", duration(timeline.parked_hours)],
+    ["Queued", duration(timeline.queued_hours)],
     ["Review rounds", `${timeline.review_rounds}`],
   ];
+  const byCause = [
+    causes.review > 0 ? `${causes.review} by a review` : "",
+    causes.checks > 0 ? `${causes.checks} by tests or CI` : "",
+  ].filter((part) => part !== "");
   const story = [
     `Phases read from ${SOURCE_LABEL[timeline.source]}.`,
     sentBack > 0
-      ? `Sent back to implementing ${sentBack === 1 ? "once" : `${sentBack} times`} over ${timeline.review_rounds} review round${timeline.review_rounds === 1 ? "" : "s"}.`
+      ? sentBack === 1
+        ? `Sent back to implementing once, ${causes.review === 1 ? "by a review" : "by tests or CI"}.`
+        : `Sent back to implementing ${sentBack} times: ${byCause.join(", ")}.`
       : timeline.sent_back
         ? "Sent back to implementing at least once."
         : "Never sent back to implementing.",
   ];
+  const [axisRef, axisWidth] = useWidth();
   return (
     <>
-      <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+      <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs sm:gap-x-4">
         {figures.map(([label, value]) => (
           <div className="flex items-baseline gap-1" key={label}>
             <dt className={textMutedOnSurface}>{label}</dt>
@@ -315,9 +336,11 @@ function TimelineBody({
           <div className="flex items-baseline gap-1">
             <dt className={textMutedOnSurface}>Tree</dt>
             <dd>
+              {/* Inline in the line of figures, not a 44px control box of its own. */}
               <button
                 className="font-mono underline decoration-dotted"
                 onClick={() => onOpenIssue(timeline.root)}
+                style={{ minHeight: 0, minWidth: 0 }}
                 type="button"
               >
                 {timeline.root}
@@ -340,17 +363,34 @@ function TimelineBody({
           : "Nothing recorded splits this issue's hours into turns, CI waits, asks or children, so the row of where the hours went is left out."}
       </p>
       <div
-        className="grid grid-cols-[minmax(7rem,11rem)_1fr] items-center gap-x-2 gap-y-1"
+        className="grid grid-cols-1 items-center gap-x-2 gap-y-0.5 md:grid-cols-[minmax(7rem,11rem)_1fr] md:gap-y-1"
         data-legion-timeline-axis
       >
-        <span />
-        <div className={`flex justify-between text-[11px] ${textMutedOnSurface}`}>
-          <span>{when(new Date(start).toISOString())}</span>
-          <span>{when(new Date(start + length / 2).toISOString())}</span>
-          <span>{when(new Date(end).toISOString())}</span>
+        <span className="hidden md:block" />
+        {/* Each date on one line: a narrow page drops the year. */}
+        <div
+          className={`flex justify-between text-[11px] whitespace-nowrap ${textMutedOnSurface}`}
+          data-legion-timeline-dates
+          ref={axisRef}
+        >
+          {[start, start + length / 2, end].map((time) => {
+            const iso = new Date(time).toISOString();
+            return (
+              <span key={time}>
+                <span className="hidden sm:inline">{iso.slice(0, 5)}</span>
+                {iso.slice(5, 10)} {iso.slice(11, 16)}
+              </span>
+            );
+          })}
         </div>
         {shown.map((lane) => (
-          <LaneRow at={at} key={lane.name} lane={lane} onOpenIssue={onOpenIssue} />
+          <LaneRow
+            at={at}
+            key={lane.name}
+            lane={lane}
+            onOpenIssue={onOpenIssue}
+            widthPx={axisWidth}
+          />
         ))}
       </div>
       <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]" data-legion-timeline-key>
@@ -426,19 +466,35 @@ function TimelineBody({
   );
 }
 
+/** About how wide one character of a stretch's 10px label is, and the label's side padding. */
+const SPAN_CHAR_PX = 5.8;
+const SPAN_PAD_PX = 6;
+
+/** A stretch's in-bar label for its width in pixels: the label where it fits, its first part
+ *  ("planning" of "planning · waiting on children") where only that does, else none. */
+function spanLabel(label: string, px: number): string {
+  const fits = (text: string) => text.length * SPAN_CHAR_PX + SPAN_PAD_PX <= px;
+  if (fits(label)) return label;
+  const first = label.split(" · ")[0] ?? "";
+  return first !== label && fits(first) ? first : "";
+}
+
 function LaneRow({
   at,
   lane,
   onOpenIssue,
+  widthPx,
 }: {
   at: (iso: string) => number;
   lane: Lane;
   onOpenIssue: (key: string) => void;
+  /** The lane's width in pixels, for which labels fit. */
+  widthPx: number;
 }): ReactNode {
   const child = lane.name.startsWith("Child ") ? lane.name.slice("Child ".length) : null;
   return (
     <>
-      <span className={`truncate text-xs ${textMutedOnSurface}`} title={lane.name}>
+      <span className={`mt-1 truncate text-xs md:mt-0 ${textMutedOnSurface}`} title={lane.name}>
         {child === null ? (
           lane.name
         ) : (
@@ -469,13 +525,7 @@ function LaneRow({
               title={`${label}: ${when(span.from)} to ${when(span.to)}, ${formatHours(span.hours)}, from ${SOURCE_LABEL[span.source]}`}
             >
               {/* An unknown stretch carries no text: the key names it. */}
-              {span.name === "unknown"
-                ? ""
-                : width > 12
-                  ? label
-                  : width > 6
-                    ? (label.split(" · ")[0] ?? "")
-                    : ""}
+              {span.name === "unknown" ? "" : spanLabel(label, (width / 100) * widthPx)}
             </span>
           );
         })}
