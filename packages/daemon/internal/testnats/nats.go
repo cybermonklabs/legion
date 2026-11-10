@@ -209,6 +209,20 @@ func drained(t testing.TB) {
 	}
 }
 
+// Connections is what the server itself says its open client connections are, each by id and
+// name, as the drain reads them; it fails t when the monitoring endpoint cannot be read. A test
+// of what a process leaves behind on the shared server reads the server's own account rather
+// than the connections it can see from inside its own process, since a connection the process
+// has forgotten is exactly what such a test is looking for.
+func Connections(t testing.TB) []string {
+	t.Helper()
+	connections, err := clientConnections()
+	if err != nil {
+		t.Fatalf("read the NATS server's connections: %v", err)
+	}
+	return connections
+}
+
 // monitorClient bounds each monitoring request, so one the server never answers cannot outlast the
 // drain's own bound.
 var monitorClient = &http.Client{Timeout: 5 * time.Second}
