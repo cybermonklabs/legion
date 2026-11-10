@@ -120,9 +120,6 @@ const DaemonLine = z.looseObject({
   at: z.string(),
   path: z.string(),
   status: z.number(),
-  /** On a `GET /legion/v1/state`, the phase that read was answered with (daemon-standin.ts), so
-   * a reader can tell the read_record that saw `accepting` from one taken before it. */
-  served: z.string().optional(),
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
   to: z.string().optional(),
@@ -1008,40 +1005,26 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // (review-threads.md step 1). The round ends on both halves, so an accepted completion can
   // land before the review's webhook, and a push in that gap voids the approval — the
   // reviewer's own round-1 finding, which `workflow/review.go` makes load-bearing. So the
-  // ordering the run must show is: the reviewer calls `read_record`, the record it is answered
-  // with stands in `accepting`, and the publish follows that answer.
+  // ordering the run must show is: the reviewer reads the record, that read answers `accepting`,
+  // and the publish follows the answer.
   //
-  // Both halves of that are read, the agent's call and the server's answer, because neither
-  // alone says it. The call is the reviewer's own (`read_record` and no other op), since other
-  // callers read the same route — `handoff_complete` reads the state before it posts
-  // (`pi-shared/src/legion-phase-ops.ts`) and the phase reminder reads it to check the record —
-  // so a reviewer that completed again after its acceptance and published would otherwise pass
-  // without ever having read the record. The answer is the stand-in's own line, which records
-  // the phase each state read served (`served`), taken at or after the call: a call's timestamp
-  // is the assistant message's, written before the tool ran, so the publish is ordered against
-  // the server's line and never against the call.
-  const daemonLines = parsed(path.join(runDir, "daemon.log"), DaemonLine);
+  // The read is the reviewer's own call and its own answer, both read from the tool's result: the
+  // `legion` tool records the record it was answered with as a typed field (`details.record`), and
+  // the result's timestamp is written when the tool returned, so it orders the publish without
+  // any help from the server's log — where the call's own timestamp, written with the assistant
+  // message, would not. Other callers read the same route — `handoff_complete` reads the state
+  // before it posts (`pi-shared/src/legion-phase-ops.ts`), the phase reminder reads it to check
+  // the record — so a reviewer that completed again after its acceptance and published would pass
+  // on any reading taken from that route rather than from this call.
   const entries = session(runDir);
+  const sender = sessionId(entries) ?? "";
   const results = outcomes(entries);
-  const readRecord = steps(entries).find(
-    (step) =>
-      step.tool === "legion" &&
-      step.args.op === "read_record" &&
-      /"phase"\s*:\s*"accepting"/.test(results.get(step.id)?.text ?? "")
-  );
-  const readAfter =
-    readRecord === undefined
-      ? undefined
-      : daemonLines.find(
-          (line) =>
-            line.path === "/legion/v1/state" &&
-            line.status === 200 &&
-            line.served === "accepting" &&
-            line.at >= readRecord.at
-        )?.at;
+  const readAfter = steps(entries)
+    .filter((step) => namesReadRecord(step))
+    .map((step) => results.get(step.id))
+    .find((result) => AcceptingRecord.safeParse(result?.details).success)?.at;
   const toldImplementer =
-    readAfter !== undefined &&
-    publishedTo(runDir, "reviewer", "implementer", [world.head], readAfter);
+    readAfter !== undefined && publishedTo(runDir, sender, "implementer", [world.head], readAfter);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1124,6 +1107,21 @@ function transcriptText(entries: SessionEntry[]): string {
  * run_project). The words are the role names themselves, not the `by` constants above, which
  * name the roles of the gh calls the stand-in recorded. */
 type Role = "implementer" | "reviewer" | "architect";
+/** A `read_record` answer that showed the issue in `accepting`: the `legion` tool returns the
+ * record as a typed field of its result (`details.record`), so the phase is read from the field
+ * rather than from the words of the text. */
+const AcceptingRecord = z.looseObject({
+  record: z.looseObject({ phase: z.literal("accepting") }),
+});
+/** Whether a call is a `read_record` of the `legion` tool, whichever tool carried it: the native
+ * call, a `write` to `xd://legion`, or a call made from an `eval` cell, which is how a session may
+ * reach any tool of its own. What the call asked for is the rule's step; which tool carried it is
+ * no part of it, as on the publish side. */
+function namesReadRecord(step: { tool: string; args: Record<string, unknown> }): boolean {
+  if (step.tool === "legion" || step.tool === "write" || step.tool === "eval")
+    return strings(step.args).some((text) => /read_record/.test(text));
+  return false;
+}
 /** One line of `<run>/published.jsonl`. The file is the recorder's own record of its run as much
  * as of the run's messages (record-publishes.ts): it opens with `recording`, written once the
  * subscription is registered with the server, ends with `closed`, written when the rig stops it,
@@ -1139,22 +1137,26 @@ const PublishedMessage = z.looseObject({
 const PublishedLine = z.union([
   z.looseObject({ at: z.string(), recording: z.string() }),
   z.looseObject({ at: z.string(), closed: z.string() }),
+  z.looseObject({ at: z.string(), unreadable: z.string() }),
   PublishedMessage,
 ]);
 /** A message that reached a role topic: the fact, not an intention read out of an agent's code. */
-interface Publish {
-  readonly at: string;
-  readonly topic: string;
-  readonly message: string;
-  readonly sender: string;
-}
-/** Whether the run's record is whole: the recorder said it had subscribed and said it was
- * stopped, so every message of the run between those two lines is in the file. */
-function recordWhole(runDir: string): { opened: boolean; closed: boolean } {
+type Publish = z.infer<typeof PublishedMessage>;
+/** How the run's record stands: whether the recorder said it had subscribed, whether it said it
+ * was stopped, and the first message it could not read, each of which decides whether any send of
+ * the run can be read at all (`unscored`). */
+function recordState(runDir: string): {
+  opened: boolean;
+  closed: boolean;
+  unreadable: string | undefined;
+} {
   const lines = parsed(path.join(runDir, "published.jsonl"), PublishedLine);
   return {
     opened: lines.some((line) => "recording" in line),
     closed: lines.some((line) => "closed" in line),
+    unreadable: lines
+      .flatMap((line) => ("unreadable" in line ? [String(line.unreadable)] : []))
+      .at(0),
   };
 }
 /** Every message Envoy accepted on a role topic of this run, in the order it accepted them, or
@@ -1172,26 +1174,20 @@ function recordWhole(runDir: string): { opened: boolean; closed: boolean } {
  *
  * Who sent a message is the sender Envoy recorded (`source_session`) against the session id of
  * that half's own transcript, and nothing else: the rig writes no mark of its own into the
- * record, so one writer decides one fact. */
-function publishes(runDir: string, by?: Role): Publish[] {
-  const sender = by === undefined ? undefined : sessionOf(runDir, by);
+ * record, so one writer decides one fact. The caller passes that id, since every caller already
+ * holds the transcript it means — a second rule for finding a half's transcript here would be a
+ * second answer to one question, and a missing one would read as another half's messages. A run
+ * of a scored scenario whose transcript names no session is a rig error (`unscored`). */
+function publishes(runDir: string, sender?: string): Publish[] {
   const sent: Publish[] = [];
   for (const line of parsed(path.join(runDir, "published.jsonl"), PublishedLine)) {
-    // The two ends of the record are the recorder's own lines (`recordWhole`), not messages.
+    // The record's other kinds are the recorder's own words about its run (`recordState`).
     const message = PublishedMessage.safeParse(line);
     if (!message.success) continue;
-    const { at, topic, sender: from } = message.data;
-    if (sender !== undefined && from !== sender) continue;
-    sent.push({ at, topic, message: message.data.message, sender: from });
+    if (sender !== undefined && message.data.sender !== sender) continue;
+    sent.push(message.data);
   }
   return sent;
-}
-/** The session id the agent of `role` ran as: a half the rig boots after the first keeps its
- * transcript in `<run>/sessions/<role>`, and the run's first agent in `<run>/sessions`
- * (rig.sh's worker_boot). */
-function sessionOf(runDir: string, role: Role): string | undefined {
-  const own = path.join(runDir, "sessions", role);
-  return sessionId(existsSync(own) ? sessionIn(own) : session(runDir));
 }
 /** Whether a message of this run reached `role`'s topic naming one of `names`. The loop after an
  * approval that leaves text threads open runs in `accepting`, where the daemon starts no phase
@@ -1206,8 +1202,14 @@ function sessionOf(runDir: string, role: Role): string | undefined {
  * require passes an empty list, which no message satisfies rather than every message satisfying
  * it. `after` is a time Envoy's own record is ordered against, so a message that reached the
  * topic before it is no answer to what happened then. */
-function publishedTo(runDir: string, by: Role, role: Role, names: string[], after = ""): boolean {
-  return publishes(runDir, by).some(
+function publishedTo(
+  runDir: string,
+  sender: string,
+  role: Role,
+  names: string[],
+  after = ""
+): boolean {
+  return publishes(runDir, sender).some(
     (sent) =>
       sent.at > after &&
       sent.topic.endsWith(`-${role}`) &&
@@ -1224,22 +1226,27 @@ function publishedTo(runDir: string, by: Role, role: Role, names: string[], afte
  * the three roles of this loop alone: a copy to the tester's or the merger's topic is the same
  * act, and a reader that knew only three role names passed a run that sent one (measured by the
  * deep pass of 2026-11-09 on a copy of `threads-closed-text-fixes-head-1`). */
-function sentOnlyTo(runDir: string, by: Role, role: Role): boolean {
-  return publishes(runDir, by).every((sent) => sent.topic.endsWith(`-${role}`));
+function sentOnlyTo(runDir: string, sender: string, role: Role): boolean {
+  return publishes(runDir, sender).every((sent) => sent.topic.endsWith(`-${role}`));
 }
 /** Every message of this run that reached `role`'s topic, in the order Envoy accepted them, as
  * the rig's own reader wants them: what the next agent is handed, since Envoy delivers each one
  * and a half given only the last would be missing a wake its own run sent. */
 function publishesTo(runDir: string, role: string): Publish[] {
-  return publishes(runDir).filter((sent) => sent.topic.endsWith(`-${role}`));
+  // The run's first agent's own messages: the harness hands these to the half the rig boots next
+  // (rig.sh's reviewer_wake), whose wake is the agent before it and nobody else, and the score
+  // reads that half's sends under the same filter.
+  return publishes(runDir, sessionId(session(runDir)) ?? "").filter((sent) =>
+    sent.topic.endsWith(`-${role}`)
+  );
 }
 /** Whether the agent sent the architect the message a thread no text fix can close takes: one
  * route, and the architect is the only role that can move the issue for it
  * (review-threads.md step 4). */
-function toldArchitect(runDir: string, by: Role, threads: z.infer<typeof Threads>): boolean {
+function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof Threads>): boolean {
   return publishedTo(
     runDir,
-    by,
+    sender,
     "architect",
     threads.flatMap((thread) => [thread.id, thread.path])
   );
@@ -1407,8 +1414,13 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   );
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
+  // Each half's own session id, which is what the sender Envoy recorded is read against; a
+  // transcript naming none makes the run a rig error (`unscored`), so no message is attributed
+  // to a half this cannot name.
+  const fixSender = sessionId(fixSession) ?? "";
+  const reviewSender = sessionId(reviewSession) ?? "";
   const told =
-    toldArchitect(runDir, "implementer", threads) || toldArchitect(runDir, "reviewer", threads);
+    toldArchitect(runDir, fixSender, threads) || toldArchitect(runDir, reviewSender, threads);
   // The two sends this scenario's agents own. The loop runs in `accepting`, where the daemon
   // starts no phase, so a step that sends none leaves the next role never learning its turn
   // began: the implementer's push is told to the reviewer's topic with the new head, and the
@@ -1416,19 +1428,14 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // which is the architect's gate because READY reads the round's first approval. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  const toldReviewer = publishedTo(
-    runDir,
-    "implementer",
-    "reviewer",
-    tip === undefined ? [] : [tip]
-  );
+  const toldReviewer = publishedTo(runDir, fixSender, "reviewer", tip === undefined ? [] : [tip]);
   // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
-  const toReviewerAlone = sentOnlyTo(runDir, "implementer", "reviewer");
+  const toReviewerAlone = sentOnlyTo(runDir, fixSender, "reviewer");
   const toldArchitectOfHead = publishedTo(
     runDir,
-    "reviewer",
+    reviewSender,
     "architect",
     tip === undefined ? [] : [tip]
   );
@@ -3838,11 +3845,19 @@ function unscored(
   // parser's old fault in a new place. That is a rig error, as a run whose agent got no model
   // turn is.
   if (RECORDED.includes(scenario)) {
-    const record = recordWhole(runDir);
+    const record = recordState(runDir);
     if (!record.opened)
       return "<run>/published.jsonl has no `recording` line: the publish recorder never subscribed to the bus";
     if (!record.closed)
       return "<run>/published.jsonl has no `closed` line: the publish recorder did not run to the end of the run, so what it missed is unknown";
+    if (record.unreadable !== undefined)
+      return `<run>/published.jsonl holds a message of ${record.unreadable} the recorder could not read, so what reached that topic is unknown`;
+    // Who sent a message is read against each half's own session id, so a half whose transcript
+    // names none leaves every message of the run unattributed.
+    for (const [role, booted] of halves) {
+      if (sessionId(booted) === undefined)
+        return `${role === "" ? "the run's own agent" : `the ${role} half`} has a transcript that names no session, so no message of the record can be read as its own`;
+    }
   }
   for (const call of calls) {
     const named: string[] = [];

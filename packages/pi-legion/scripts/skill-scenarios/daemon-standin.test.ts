@@ -82,16 +82,7 @@ async function standin(role: string) {
       }),
     });
   };
-  const logged = () =>
-    (Bun.file(path.join(dir, "daemon.log")).text() as Promise<string>).then((text) =>
-      text
-        .split("\n")
-        .filter((line) => line !== "")
-        .map((line) =>
-          z.looseObject({ path: z.string(), served: z.string().optional() }).parse(JSON.parse(line))
-        )
-    );
-  return { phase, complete, logged, settings, stop: () => child.kill() };
+  return { phase, complete, settings, stop: () => child.kill() };
 }
 
 // Catches: a stand-in that serves one frozen state, where a reviewer that obeys its own rule —
@@ -126,34 +117,6 @@ test.skipIf(skip)(
       expect(await daemon.phase()).toBe("testing");
       expect((await daemon.complete(true)).status).toBe(200);
       expect(await daemon.phase()).toBe("testing");
-    } finally {
-      daemon.stop();
-    }
-  },
-  600_000
-);
-
-// Catches: a log that records every `GET /legion/v1/state` the same way, where a scenario asking
-// whether the agent read the record after its completion was accepted cannot tell that read from
-// the claim boot's own, which answers `reviewing`. The score reads the phase the answer carried
-// (`served`), so each read says which record the agent was shown.
-test.skipIf(skip)(
-  "each state read records the phase it served, and no other route carries one",
-  async () => {
-    const daemon = await standin("reviewer");
-    try {
-      expect(await daemon.phase()).toBe("reviewing");
-      expect((await daemon.complete(true)).status).toBe(200);
-      expect(await daemon.phase()).toBe("accepting");
-      const lines = await daemon.logged();
-      expect(
-        lines.filter((line) => line.path === "/legion/v1/state").map((line) => line.served)
-      ).toEqual(["reviewing", "accepting"]);
-      expect(
-        lines
-          .filter((line) => line.path !== "/legion/v1/state")
-          .every((line) => line.served === undefined)
-      ).toBe(true);
     } finally {
       daemon.stop();
     }

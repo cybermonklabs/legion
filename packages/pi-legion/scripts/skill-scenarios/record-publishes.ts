@@ -34,7 +34,8 @@
  * `sender` the session Envoy recorded and `subject` the NATS subject the copy arrived on. An
  * envelope that is not one of this run's role messages is passed over, and one that reaches a
  * role topic of this run without the fields an envelope carries is a defect of the listener or of
- * this reader: it is logged, counted and left out, never guessed at.
+ * this reader, never an act an agent did not do: it is logged and written as
+ * `{"at","unreadable","subject"}`, which makes every run of the record a rig error.
  */
 import { appendFileSync } from "node:fs";
 import { connect } from "nats";
@@ -53,25 +54,36 @@ if (url === undefined || url === "") {
 
 /** What the listener puts on the bus, as far as this reads it: the fields every envelope of a
  * message carries (`contracts.Envelope`, `messageEnvelope` in
- * `packages/envoy/cmd/listener/api.go`). A frame that is not a message — a receipt, a cursor, a
- * Dispatch event — fails this parse and is passed over; one on a role topic of this run that
- * fails it is reported. */
+ * `packages/envoy/cmd/listener/api.go`, where `payload_summary` is written for every message and
+ * `payload` only for one of more than one line). A frame that is not a message — a receipt, a
+ * cursor, a Dispatch event — fails this parse and is passed over; one on a role topic of this run
+ * that fails it is written into the record as `unreadable`, which makes the run a rig error
+ * (score.ts's `unscored`), because a message this cannot read is this reader's limit and never an
+ * act an agent did not do. `source_session` is read alone and never `source`: the two are
+ * different kinds — `source` is `agent` for every agent's publish — so a message with no session
+ * would otherwise carry a sender that belongs to no half. */
 const Envelope = z.looseObject({
   event_id: z.string().min(1),
   topic: z.string().min(1),
   issued_at: z.number(),
+  payload_summary: z.string(),
   payload: z.string().optional(),
-  payload_summary: z.string().optional(),
-  source: z.string().optional(),
   source_session: z.string().optional(),
-  dedupe_key: z.string().optional(),
 });
 
 const line = (value: Record<string, unknown>) =>
   appendFileSync(outFile, `${JSON.stringify(value)}\n`);
 const now = () => new Date().toISOString();
 
-const nats = await connect({ servers: url, name: `skill-scenarios-record-${prefix}` });
+// No reconnect: core NATS loses whatever was published while a connection is down, so a drop
+// must end this process rather than leave it recording a record with a hole in it. The loop then
+// ends with no closing line and every run of the record is a rig error, which is the one answer
+// that is true — what was sent in the gap is unknown.
+const nats = await connect({
+  servers: url,
+  name: `skill-scenarios-record-${prefix}`,
+  reconnect: false,
+});
 const subscription = nats.subscribe("notifications.>");
 // The flush is what makes the next line true: a subscription is registered with the server when
 // the server has answered, and without this the rig could boot an agent whose first message this
@@ -118,9 +130,10 @@ for await (const message of subscription) {
     console.error(
       `record-publishes.ts: ${message.subject} carries a ${topic} message this cannot read: ${envelope.error.message}`
     );
+    line({ at: now(), unreadable: topic, subject: message.subject });
     continue;
   }
-  const { event_id, issued_at, payload, payload_summary, source, source_session } = envelope.data;
+  const { event_id, issued_at, payload, payload_summary, source_session } = envelope.data;
   if (written.has(event_id)) continue;
   written.add(event_id);
   line({
@@ -128,17 +141,20 @@ for await (const message of subscription) {
     topic,
     // A message of one line is its summary and its payload is empty; a longer one is the payload
     // whole (`messageEnvelope`, `packages/envoy/cmd/listener/api.go`).
-    message: payload !== undefined && payload !== "" ? payload : (payload_summary ?? ""),
-    sender: source_session ?? source ?? "",
+    message: payload !== undefined && payload !== "" ? payload : payload_summary,
+    sender: source_session ?? "",
     subject: message.subject,
   });
 }
 
-// The subscription ended without a stop: the connection is gone, or the server closed it. No
-// closing line is written, so the record is unfinished and every run that reads it is a rig
-// error rather than a run that published nothing.
-const failure = await nats.closed();
-console.error(
-  `record-publishes.ts: the subscription ended before the run did${failure === undefined ? "" : `: ${failure}`}`
-);
-process.exit(1);
+// The loop ended. A stop ended it on purpose and `stop` has written the closing line and is
+// closing the connection, so this exits with it; anything else — the connection dropped, the
+// server closed it — leaves no closing line, so the record is unfinished and every run that
+// reads it is a rig error rather than a run that published nothing.
+if (!closing) {
+  const failure = await nats.closed();
+  console.error(
+    `record-publishes.ts: the subscription ended before the run did${failure === undefined ? "" : `: ${failure}`}`
+  );
+  process.exit(1);
+}

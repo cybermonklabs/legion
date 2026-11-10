@@ -68,8 +68,8 @@ async function recording(name: string, prefix: string) {
    * line, and then what the file holds. */
   const stopped = async () => {
     recorder.kill("SIGTERM");
-    await recorder.exited;
-    return await written();
+    const status = await recorder.exited;
+    return { status, lines: await written() };
   };
   return {
     client,
@@ -137,8 +137,11 @@ test.skipIf(skip)(
       // first when it had subscribed, and the second when the rig stopped it (score.ts's
       // `unscored` reads a record without both as a rig error).
       const whole = await run.stopped();
-      expect(whole[0]).toMatchObject({ recording: "legion-proof-lweval-1-" });
-      expect(whole.at(-1)).toMatchObject({ closed: "stopped" });
+      expect(whole.lines[0]).toMatchObject({ recording: "legion-proof-lweval-1-" });
+      expect(whole.lines.at(-1)).toMatchObject({ closed: "stopped" });
+      // A stop is the end this file is written for, so it is no failure: a non-zero status with
+      // the same log is how a reader would be told a recorder died when it had not.
+      expect(whole.status).toBe(0);
     } finally {
       await run.stop();
     }
@@ -178,6 +181,37 @@ test.skipIf(skip)(
         topic: "notifications.role.legion-mine-lweval-1-reviewer",
         message: "the fixes are pushed\nthe head to read is def5678",
       });
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that passes over a message of this run it cannot read. What it could not
+// read is this reader's limit and never an act an agent did not do, so the line goes into the
+// record and `unscored` reads the run as a rig error (score.ts), where a silent skip would score
+// the message as never sent.
+test.skipIf(skip)(
+  "a message of this run the recorder cannot read is written as unreadable",
+  async () => {
+    const run = await recording("unreadable", "legion-odd-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-odd-lweval-1-reviewer";
+      // An envelope with no `issued_at` and no body: a frame of this topic that the listener's own
+      // shape does not describe.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify({ event_id: "e-odd", topic, source_session: "01a0f2cc" })
+      );
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the fixes are pushed");
+      expect((await run.written()).some((line) => line.unreadable === topic)).toBe(true);
+      expect(lines).toHaveLength(1);
     } finally {
       await run.stop();
     }

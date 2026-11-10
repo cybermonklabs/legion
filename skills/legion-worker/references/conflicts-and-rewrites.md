@@ -105,7 +105,7 @@ fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point
   `READY_NOT_APPROVED` reads the approval, and only whether one was recorded
   (`packages/daemon/internal/api/ready.go`) — and what carries a result across one push is the
   carry rule in `skill://legion-worker/references/merge-gate.md` with the architect's acceptance.
-  It must be one expression: jj unions positional filesets, so two
+  The fileset must be one expression: jj unions positional filesets, so two
   separate `'~.legion' '~docs/solutions'` arguments select every file and exclude nothing. Where
   `.legion/` is gone, jj warns `No matching entries for paths: .legion` on stderr; the hash is
   unaffected.

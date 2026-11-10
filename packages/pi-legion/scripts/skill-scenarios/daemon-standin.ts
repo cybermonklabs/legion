@@ -152,11 +152,6 @@ interface LogLine {
   readonly at: string;
   readonly path: string;
   readonly status: number;
-  /** On a `GET /legion/v1/state`, the phase that read was answered with: the record the tool's
-   * `read_record` hands the agent. A scenario that asks whether the agent read the record after
-   * its completion was accepted reads this, since every read of that route answers 200 and only
-   * the phase it served says which record the agent was shown (score.ts's reviewerTextFindings). */
-  readonly served?: string;
   readonly grantId?: string;
   readonly sessionId?: string;
   readonly mintedGrantId?: string;
@@ -310,18 +305,16 @@ const server = Bun.serve({
         body = undefined;
       }
     }
-    const stateRead = request.method === "GET" && path === "/legion/v1/state";
     const { response, mintedGrantId } =
       request.method === "POST"
         ? handle(path, body)
-        : stateRead
+        : request.method === "GET" && path === "/legion/v1/state"
           ? { response: json(200, stateIn(servedPhase)) }
           : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
     const line: LogLine = {
       at: new Date().toISOString(),
       path,
       status: response.status,
-      ...(stateRead ? { served: servedPhase } : {}),
       ...(stringField(body, "grantId") === undefined
         ? {}
         : { grantId: stringField(body, "grantId") }),
