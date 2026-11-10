@@ -69,9 +69,10 @@ function harness(issues: IssueSummary[] = [issue("CORE-1"), issue("CORE-2")]) {
   });
 }
 
-function draw(tree: ReactNode) {
+function draw(tree: ReactNode, boxWidth = 1000) {
   // The unit DOM has no layout engine, and the grid's rows are virtual: supply the box's own
-  // height, which is all the virtualizer measures.
+  // height, which is all the virtualizer measures, and its width, which is what decides whether
+  // the table is drawn for a phone.
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
     configurable: true,
@@ -79,6 +80,12 @@ function draw(tree: ReactNode) {
       return this.dataset.testid === "issue-grid-scroll" ? 600 : (descriptor?.get?.call(this) ?? 0);
     },
   });
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = function bounds(this: HTMLElement) {
+    const measured = rect.call(this) as DOMRect;
+    if (this.dataset.testid !== "issue-grid-scroll") return measured;
+    return { ...measured.toJSON(), width: boxWidth, height: 600 } as DOMRect;
+  };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={["/projects/CORE/legion"]}>
@@ -90,6 +97,7 @@ function draw(tree: ReactNode) {
     client.clear();
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+    HTMLElement.prototype.getBoundingClientRect = rect;
   });
   return view;
 }
@@ -206,4 +214,107 @@ test("the Key link goes where keyHref sends it", async () => {
   expect(within(grid).getByRole("link", { name: "CORE-1" }).getAttribute("href")).toBe(
     "/projects/CORE/legion/CORE-1"
   );
+});
+
+// The Issues tab opens with Time per phase hidden; that is the tab's rule, not the table's, so
+// a grid that asks for the column gets it.
+test("a grid shows a registry column the Issues tab hides", async () => {
+  harness();
+  draw(
+    <IssueGrid<Row>
+      columns={["key", "phase_hours"]}
+      label="Finished issues"
+      layoutKey="CORE.finished"
+      project="CORE"
+      rows={[{ hours: 9, key: "CORE-1" }]}
+    />
+  );
+  const grid = await screen.findByRole("table", { name: "Finished issues" });
+  expect(within(grid).getByRole("columnheader", { name: /Time per phase/ })).toBeDefined();
+});
+
+test("a column the reader hides stays hidden there and nowhere else", async () => {
+  const user = userEvent.setup();
+  harness();
+  draw(
+    <>
+      {["one", "two"].map((name) => (
+        <IssueGrid<Row>
+          columns={["key", hoursColumn]}
+          key={name}
+          label={`Grid ${name}`}
+          layoutKey={`CORE.${name}`}
+          project="CORE"
+          rows={[{ hours: 9, key: "CORE-1" }]}
+        />
+      ))}
+    </>
+  );
+  const first = await screen.findByRole("table", { name: "Grid one" });
+  expect(within(first).getByRole("columnheader", { name: /Hours/ })).toBeDefined();
+
+  await user.click(screen.getAllByRole("button", { name: "Columns" })[0] as HTMLElement);
+  await user.click(await screen.findByRole("checkbox", { name: "Hours" }));
+
+  expect(within(first).queryByRole("columnheader", { name: /Hours/ })).toBeNull();
+  const second = screen.getByRole("table", { name: "Grid two" });
+  expect(within(second).getByRole("columnheader", { name: /Hours/ })).toBeDefined();
+  expect(
+    JSON.parse(localStorage.getItem("dispatch.project-table.CORE.one") ?? "{}").visibility
+  ).toEqual({ hours: false });
+  expect(
+    JSON.parse(localStorage.getItem("dispatch.project-table.CORE.two") ?? "{}").visibility
+  ).toEqual({});
+});
+
+// happy-dom lays nothing out, so what is asserted is the box itself: no height to scroll inside
+// and no vertical overflow, and every row of the page in the table rather than a virtual window.
+test("fit=rows draws every row of the page with no box to scroll inside", async () => {
+  harness();
+  const rows = Array.from({ length: 25 }, (_, index) => ({
+    hours: index,
+    key: `CORE-${index + 1}`,
+  }));
+  const view = draw(
+    <IssueGrid<Row>
+      columns={["key", hoursColumn]}
+      fit="rows"
+      label="Finished issues"
+      layoutKey="CORE.finished"
+      pageSize={25}
+      project="CORE"
+      rows={rows}
+    />
+  );
+  const grid = await screen.findByRole("table", { name: "Finished issues" });
+  expect(within(grid).getAllByRole("row").slice(1)).toHaveLength(25);
+  const box = view.container.querySelector<HTMLElement>("[data-testid=issue-grid-scroll]");
+  expect(box?.style.height).toBe("");
+  expect(box?.className).toContain("overflow-x-auto");
+  expect(box?.className).not.toContain("overflow-auto");
+});
+
+test("a phone keeps the primary columns and reads the title under the key", async () => {
+  harness([issue("CORE-1", { title: "The pager reads the rows it shows" })]);
+  const view = draw(
+    <IssueGrid<Row>
+      columns={["key", "title", { ...hoursColumn, primary: true }]}
+      label="Finished issues"
+      layoutKey="CORE.finished"
+      project="CORE"
+      primary={["ci"]}
+      rows={[{ hours: 9, key: "CORE-1" }]}
+    />,
+    390
+  );
+  const grid = await screen.findByRole("table", { name: "Finished issues" });
+  // The primary column stays; Title has no column of its own.
+  expect(within(grid).getByRole("columnheader", { name: /Hours/ })).toBeDefined();
+  expect(within(grid).queryByRole("columnheader", { name: /Title/ })).toBeNull();
+  // The title is in the Key cell, and the key is written in full.
+  const keyCell = view.container
+    .querySelector("[data-grid-key-title]")
+    ?.closest("td") as HTMLElement;
+  expect(within(keyCell).getByText("CORE-1")).toBeDefined();
+  expect(within(keyCell).getByText("The pager reads the rows it shows")).toBeDefined();
 });

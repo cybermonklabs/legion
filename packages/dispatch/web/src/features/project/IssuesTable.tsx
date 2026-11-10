@@ -54,6 +54,7 @@ import {
   compareGroups,
   facetCounts,
   groupValue,
+  ISSUES_TAB_HIDDEN,
   type Item,
   isEpic,
   matchesFilters,
@@ -67,6 +68,8 @@ import { phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
+/** Held outside the component so the stored layout is read once per project, not per render. */
+const ISSUES_TAB_LAYOUT = { hiddenByDefault: ISSUES_TAB_HIDDEN };
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
@@ -138,7 +141,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   // the Key column writes a key in full at every width.
   const layout = useTableLayout(
     project,
-    useMemo(() => all.reduce((most, issue) => Math.max(most, issue.key.length), 0), [all])
+    useMemo(() => all.reduce((most, issue) => Math.max(most, issue.key.length), 0), [all]),
+    ISSUES_TAB_LAYOUT
   );
   const { attachAbove, attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
   // The issues behind a number the reader clicked on the Legion tab, if they arrived by one.

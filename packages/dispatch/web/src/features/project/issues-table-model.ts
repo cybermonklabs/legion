@@ -37,7 +37,9 @@ export interface Item {
 }
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
 export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
-export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
+/** The page sizes the pager offers. 10 is here for a grid that is one section of a page, where
+ *  a page of rows stands in the page's own flow rather than in a box of its own. */
+export const PAGE_SIZES = [10, 25, 50, 100, ALL_ROWS];
 /** The statuses an issue is being worked in, as the status bar counts them. */
 export const runningIssueStatuses: readonly IssueStatus[] = [
   "in_progress",
@@ -431,6 +433,17 @@ export function keyColumnWidth(chars: number): number {
 export const PINNED: readonly string[] = COLUMNS.filter((column) => column.pinned).map(
   (column) => column.id
 );
+/** The columns the Issues tab opens with hidden, until the reader shows them in the column
+ *  picker: Phase is shown where a Legion daemon serves the project; Slot, Roles, CI and Time
+ *  per phase wait there, as Updated does. The tab's own rule, not every table's: a grid on a
+ *  page shows every column its caller named. */
+export const ISSUES_TAB_HIDDEN: Readonly<Record<string, boolean>> = {
+  updated: false,
+  slot: false,
+  roles: false,
+  ci: false,
+  phase_hours: false,
+};
 /** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
  *  and title are what identify a row, so they take most of it. */
 export const PINNED_SHARE = 0.6;

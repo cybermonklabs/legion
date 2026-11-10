@@ -342,9 +342,9 @@ test("the Legion tab says where the finished issues' time went, then each metric
   try {
     await page.goto(`/projects/${LEGION_PROJECT}/legion`);
     // One column, in the order a reader asks, each section with its headline line.
-    // Five: the four metrics and the CI-and-deploys line under them
-    // (`LegionSections.test.tsx` lists the same five).
-    await expect(page.locator("[data-legion-section]")).toHaveCount(5);
+    // Six: the four metrics, the CI-and-deploys line under them and the finished issues'
+    // own table (`LegionSections.test.tsx` lists the same six).
+    await expect(page.locator("[data-legion-section]")).toHaveCount(6);
     const headline = (id: string) =>
       page.locator(`[data-legion-section="${id}"] [data-legion-headline]`);
     await expect(headline("phase_breakdown")).toContainText("2 issues finished");
