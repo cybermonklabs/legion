@@ -13,6 +13,7 @@ import {
   dangerText,
   issueStatusScale,
   legionPhaseScale,
+  pickedSegmentRing,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
@@ -33,7 +34,6 @@ import {
   readUrl,
   writeUrl,
 } from "./issues-table-model";
-import { useWidth } from "./useWidth";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -238,18 +238,9 @@ export function Action({
   );
 }
 
-/** The width a segment keeps on a phone, where a share of the bar would be too narrow to
- *  press: the 44px touch floor every control below 1280px keeps (styles.css), which wraps
- *  fifteen segments to two rows at 390px rather than cutting any of them off. */
-const SEGMENT_MIN_PX = 44;
-
-/** The width one segment needs to hold a piece of text, in pixels: the glyphs at the bar's
- *  12px type, where a character measures 7.2px in Chromium, plus the segment's padding and a
- *  pixel of slack. Measuring each of fifteen segments on every render would cost more than it
- *  tells; a segment this gets wrong by a character drops to its count, which always fits. */
-function textWidth(text: string): number {
-  return text.length * 7.2 + 10;
-}
+/** A state's colour: a Legion phase runs on the phase scale, a Dispatch status on its own. */
+const scaleOf = (column: string): Readonly<Record<string, string>> =>
+  column === "phase" ? legionPhaseScale : issueStatusScale;
 
 /**
  * Each segment's width as a percentage of the bar, from the counts: its share of the issues,
@@ -289,12 +280,39 @@ export function IssueTableStatus({
   hasLegion?: boolean;
   board?: LegionBoardResponse;
 }): ReactNode {
-  const stateCounts = countIssueStates(items);
-  const [barRef, barWidth] = useWidth();
-  const widths = segmentWidths(stateCounts.map(({ count }) => count));
-  // A phone holds each segment to a pressable width and wraps the bar to a second row; a wide
-  // page lays every segment on one row, each as wide as its share.
-  const compact = barWidth < 640;
+  // Only the states with issues behind them: an empty phase is neither a segment nor a legend
+  // item. The order is the lifecycle's, from `countIssueStates`.
+  const shown = countIssueStates(items).filter(({ count }) => count > 0);
+  const widths = segmentWidths(shown.map(({ count }) => count));
+  const filterOf = (column: string) =>
+    (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
+  /** This state is among those the table lists: every one, while nothing is picked. */
+  const isLit = (column: string, id: string) => {
+    const current = filterOf(column);
+    return current.length === 0 || current.includes(id);
+  };
+  /** The table shows this state alone, which is what a second press undoes. */
+  const isPicked = (column: string, id: string) => {
+    const current = filterOf(column);
+    return current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
+  };
+  /** Show this state alone, or every state again where it is the one already shown. The
+   *  segment and its legend item do the same thing. */
+  const pick = (column: string, id: string) => {
+    const entry = shown.find((state) => state.column === column && state.id === id);
+    if (entry === undefined) return;
+    const wanted = hasLegion ? entry.picks : { status: entry.picks.status ?? [id] };
+    const undo = isPicked(column, id);
+    table.setColumnFilters((filters) => {
+      const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
+      if (undo) return next;
+      return [
+        ...next,
+        ...(wanted.phase === undefined ? [] : [{ id: "phase", value: [...wanted.phase] }]),
+        ...(wanted.status === undefined ? [] : [{ id: "status", value: [...wanted.status] }]),
+      ];
+    });
+  };
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div
@@ -312,9 +330,9 @@ export function IssueTableStatus({
               <span data-legion-read-at>
                 <InfoHint label="About these counts">
                   Slots counts the workers at work. The second number is the most workers the daemon
-                  runs at once. The bar below counts every issue on this page. Each segment is one
-                  phase, and its width is its share of the issues. Press a segment to show only that
-                  phase. Dispatch read the daemon at{" "}
+                  runs at once. The bar below counts every issue on this page. Each colour is one
+                  phase, and its width is its share of the issues. The list under the bar names each
+                  colour. Press a colour to show only that phase. Dispatch read the daemon at{" "}
                   <time dateTime={board.header.read_at}>
                     {new Date(board.header.read_at).toLocaleString()}
                   </time>
@@ -341,62 +359,55 @@ export function IssueTableStatus({
           </>
         ) : null}
       </div>
+      {/* The bar is colour alone: at fifteen phases a segment is too narrow for a word, and a
+          bare count names nothing. The legend under it carries the names, and is the touch
+          target for each phase (the page's 44px control minimum is off on the segments). */}
       <fieldset
         aria-label={hasLegion ? "Issues by phase or status" : "Issues by status"}
-        className={`flex min-h-11 min-w-0 flex-wrap rounded-md border-0 p-0 md:min-h-7 md:flex-nowrap ${surfaceMutedBg}`}
-        ref={barRef}
+        className={`flex h-6 min-w-0 overflow-hidden rounded-md border-0 p-0 md:h-5 ${surfaceMutedBg}`}
         role={hasLegion ? "group" : undefined}
       >
-        {stateCounts.map(({ id, label, column, count, picks }, index) => {
-          const current = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
-          const on = current.length === 0 || current.includes(id);
-          const wanted = hasLegion ? picks : { status: picks.status ?? [id] };
-          // Pressed again, the segment lets every state through rather than narrowing further.
-          const showsThisAlone =
-            current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
-          const scale: Readonly<Record<string, string>> =
-            column === "phase" ? legionPhaseScale : issueStatusScale;
-          const width = widths[index] ?? 0;
-          // What the segment is drawn at. A wide page gives each its share of the bar. A phone
-          // gives every segment the one pressable width instead: a share of 390px is too narrow
-          // to read a share from, and equal segments wrap to two rows rather than five. The
-          // label is written inside the segment only where the words fit.
-          const drawn = compact ? SEGMENT_MIN_PX : (barWidth * width) / 100;
-          const shown =
-            drawn >= textWidth(`${label} ${count}`)
-              ? `${label} ${count}`
-              : drawn >= textWidth(`${count}`)
-                ? `${count}`
-                : "";
-          return (
+        {shown.map(({ id, label, column, count }, index) => (
+          <button
+            aria-label={`${label} ${count}`}
+            className={`h-full p-0 ${scaleOf(column)[id] ?? ""} ${
+              isPicked(column, id) ? pickedSegmentRing : isLit(column, id) ? "" : "opacity-30"
+            }`}
+            key={`${column}:${id}`}
+            onClick={() => pick(column, id)}
+            style={{ width: `${widths[index] ?? 0}%`, minWidth: 0, minHeight: 0 }}
+            title={`${label}: ${count}`}
+            type="button"
+          />
+        ))}
+      </fieldset>
+      <ul
+        aria-label={hasLegion ? "Phases and statuses" : "Statuses"}
+        className="mt-1 flex flex-wrap gap-x-1"
+        data-issues-legend
+      >
+        {shown.map(({ id, label, column, count }) => (
+          <li key={`${column}:${id}`}>
             <button
-              aria-label={`${label} ${count}`}
-              className={`min-h-11 overflow-hidden px-1 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${scale[id] ?? ""} ${on ? "" : "opacity-30"}`}
-              key={`${column}:${id}`}
-              onClick={() =>
-                table.setColumnFilters((filters) => {
-                  const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
-                  if (showsThisAlone) return next;
-                  return [
-                    ...next,
-                    ...(wanted.phase === undefined
-                      ? []
-                      : [{ id: "phase", value: [...wanted.phase] }]),
-                    ...(wanted.status === undefined
-                      ? []
-                      : [{ id: "status", value: [...wanted.status] }]),
-                  ];
-                })
-              }
-              style={compact ? { width: SEGMENT_MIN_PX } : { width: `${width}%` }}
-              title={`${label}: ${count}`}
+              aria-label={`${label}: ${count}`}
+              aria-pressed={isPicked(column, id)}
+              className={`inline-flex min-h-11 items-center gap-1.5 rounded px-2 text-xs whitespace-nowrap md:min-h-7 ${surfaceMutedHoverBg} ${
+                isPicked(column, id)
+                  ? `font-semibold ${textPrimaryOnCanvas}`
+                  : textSecondaryOnCanvas
+              } ${isLit(column, id) ? "" : "opacity-50"}`}
+              onClick={() => pick(column, id)}
               type="button"
             >
-              {shown}
+              <span
+                aria-hidden="true"
+                className={`size-3 shrink-0 rounded-sm ${scaleOf(column)[id] ?? ""}`}
+              />
+              {label} <span className="tabular-nums">{count}</span>
             </button>
-          );
-        })}
-      </fieldset>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

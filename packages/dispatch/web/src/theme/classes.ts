@@ -923,6 +923,11 @@ export const errorCodeBlockText = "text-slate-900 dark:text-rose-300";
  * also gets a background/border change elsewhere), so no contrast check applies. */
 export const highlightRing = "ring-2 ring-sky-400";
 
+/** The mark on the one segment of the issues bar the table is showing alone: a ring inside the
+ *  segment's own edges, so marking it moves nothing. Sits on whatever phase colour the segment
+ *  carries, which is why it is the canvas's own strongest ink rather than an accent. */
+export const pickedSegmentRing = "ring-2 ring-inset ring-slate-900 dark:ring-white";
+
 /** A composer reference chip's border: fixed both schemes (its `sky-800`/`sky-300` text is
  * `badgeMed.text`'s own values, reused directly; its hover border is `controlHoverBorder`). */
 export const referencePillBorder = "border-sky-300";
