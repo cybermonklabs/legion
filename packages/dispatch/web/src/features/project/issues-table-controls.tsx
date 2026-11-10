@@ -239,28 +239,43 @@ export function Action({
 }
 
 /** The width a segment keeps on a phone, where a share of the bar would be too narrow to
- *  press: the bar wraps to a second row rather than cut a segment off. */
-const SEGMENT_MIN_PX = 88;
+ *  press: the 44px touch floor every control below 1280px keeps (styles.css), which wraps
+ *  fifteen segments to two rows at 390px rather than cutting any of them off. */
+const SEGMENT_MIN_PX = 44;
 
 /** The width one segment needs to hold a piece of text, in pixels: the glyphs at the bar's
- *  12px type, plus the segment's own padding. Measuring each of fifteen segments on every
- *  render would cost more than it tells; a segment that this call gets wrong by a character
- *  drops to its count, which always fits. */
+ *  12px type, where a character measures 7.2px in Chromium, plus the segment's padding and a
+ *  pixel of slack. Measuring each of fifteen segments on every render would cost more than it
+ *  tells; a segment this gets wrong by a character drops to its count, which always fits. */
 function textWidth(text: string): number {
-  return text.length * 6.6 + 14;
+  return text.length * 7.2 + 10;
 }
 
 /**
- * Each segment's width as a percentage of the bar, from the counts: a share of the issues,
- * floored so that a count of one is still wide enough to press, and then scaled back so the
- * segments together are the full bar and none of it is cut off.
+ * Each segment's width as a percentage of the bar, from the counts: its share of the issues,
+ * never under `floorPercent` of the bar, so a count of one is still wide enough to press and
+ * to read. The segments together are the whole bar, so none of it is cut off: what the floors
+ * take, the segments above the floor give, which is why the share each of those keeps is
+ * settled by raising one segment to the floor at a time.
  */
 export function segmentWidths(counts: readonly number[], floorPercent = 3): number[] {
   const total = counts.reduce((sum, count) => sum + count, 0);
   if (total <= 0) return counts.map(() => 100 / Math.max(counts.length, 1));
-  const floored = counts.map((count) => Math.max(floorPercent, (100 * count) / total));
-  const sum = floored.reduce((running, width) => running + width, 0);
-  return floored.map((width) => (100 * width) / sum);
+  const widths = counts.map((count) => (100 * count) / total);
+  const atFloor = new Set<number>();
+  for (;;) {
+    const room = 100 - atFloor.size * floorPercent;
+    const rest = widths.reduce((sum, width, index) => (atFloor.has(index) ? sum : sum + width), 0);
+    const under = widths.findIndex(
+      (width, index) => !atFloor.has(index) && (rest <= 0 || (room * width) / rest < floorPercent)
+    );
+    if (under === -1) {
+      return widths.map((width, index) =>
+        atFloor.has(index) ? floorPercent : rest <= 0 ? room / widths.length : (room * width) / rest
+      );
+    }
+    atFloor.add(under);
+  }
 }
 
 export function IssueTableStatus({
@@ -342,9 +357,11 @@ export function IssueTableStatus({
           const scale: Readonly<Record<string, string>> =
             column === "phase" ? legionPhaseScale : issueStatusScale;
           const width = widths[index] ?? 0;
-          // What the segment is drawn at: its share of the bar, or the pressable floor a phone
-          // holds it to. The label is written inside it only where the words fit.
-          const drawn = Math.max((barWidth * width) / 100, compact ? SEGMENT_MIN_PX : 0);
+          // What the segment is drawn at. A wide page gives each its share of the bar. A phone
+          // gives every segment the one pressable width instead: a share of 390px is too narrow
+          // to read a share from, and equal segments wrap to two rows rather than five. The
+          // label is written inside the segment only where the words fit.
+          const drawn = compact ? SEGMENT_MIN_PX : (barWidth * width) / 100;
           const shown =
             drawn >= textWidth(`${label} ${count}`)
               ? `${label} ${count}`
@@ -371,7 +388,7 @@ export function IssueTableStatus({
                   ];
                 })
               }
-              style={{ width: `${width}%`, minWidth: compact ? SEGMENT_MIN_PX : 0 }}
+              style={compact ? { width: SEGMENT_MIN_PX } : { width: `${width}%` }}
               title={`${label}: ${count}`}
               type="button"
             >
