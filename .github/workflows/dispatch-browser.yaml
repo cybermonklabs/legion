@@ -334,6 +334,18 @@ jobs:
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # WHY EVERY JOB THAT RUNS THE SUITE CARRIES THIS STEP. Playwright loads
+      # packages/dispatch/e2e/playwright.config.ts before it runs anything of this suite's own,
+      # and that config imports e2e/api.ts, which imports `@legion/contracts`. Playwright's
+      # runner is Node, which takes that package's `default` export condition - `dist/`, which is
+      # gitignored - so a checkout that has never built it dies while the config loads, with
+      # `Cannot find module @legion/contracts/dist/index.js`. No hook of the suite can be early
+      # enough: `globalSetup` runs after the config has loaded. A workstation gets the build from
+      # `bun run e2e`, which carries `build:contracts`; a job that runs Playwright itself needs
+      # this step.
+      - name: Build contracts for dispatch e2e
+        run: bun run build
+        working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -755,6 +767,12 @@ jobs:
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # The shard job's step of this name, for the reason it gives: Playwright's Node runner
+      # reads `@legion/contracts` out of a build this checkout has to make before the config
+      # loads.
+      - name: Build contracts for dispatch e2e
+        run: bun run build
+        working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -996,6 +1014,12 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # The shard job's step of this name, for the reason it gives: Playwright's Node runner
+      # reads `@legion/contracts` out of a build this checkout has to make before the config
+      # loads.
+      - name: Build contracts for dispatch e2e
+        run: bun run build
+        working-directory: packages/contracts
       - name: Build the Dispatch server
         # run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
@@ -1245,10 +1269,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # The e2e helpers the visual specs import read some of contracts' values from its built
-        # dist/, through the Node resolution packages/dispatch/e2e/global-setup.ts's
-        # buildContracts describes. That build is the reason no other job of this file carries a
-        # step of this name, and the reason this one does: the run inside the container reads
-        # DISPATCH_E2E_REUSE_SERVERS=1 and returns from `globalSetup` before it builds anything.
+        # dist/, through Playwright's own Node resolution (the shard job's step of the same name,
+        # which says why no hook of the suite can make this build). The run inside the container
+        # reads it from this same checkout, mounted there at its own path.
         run: bun run build
         working-directory: packages/contracts
       - name: Build dispatch dashboard

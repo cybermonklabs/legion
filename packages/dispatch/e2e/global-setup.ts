@@ -37,9 +37,7 @@
  *  (`e2e/harness-signin.ts`) the servers have no dev sign-in to check that with; there the one
  *  spec it runs signs a person in through the issuer and asks both processes who they are.
  */
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@playwright/test";
 
 import { resetFakeEnvoy, setLiveSessions } from "./agents";
@@ -122,32 +120,15 @@ async function refuseMissingBrowsers(projects: readonly FullProject[]): Promise<
   );
 }
 
-// `@legion/contracts` as Playwright's own runner reads it. The specs and `e2e/agents.ts` import
-// that package, and Playwright loads them under Node, which takes the package's `default` export
-// condition - `dist/`, which is gitignored - where a `bun` run takes its source. So a workspace
-// that has never built it dies at the first spec with `Cannot find module
-// @legion/contracts/dist/index.js`, naming no cause. Building it here costs a fraction of a
-// second and makes every run that starts a stack self-sufficient, CI's as much as a
-// workstation's: the shard and alone jobs of .github/workflows/dispatch-browser.yaml build no
-// contracts of their own, so this is where that build happens for them.
-async function buildContracts(): Promise<void> {
-  // `node:child_process`, not `Bun.spawn`: this hook runs inside Playwright's runner, which is
-  // node (`bunx playwright` honours the CLI's `#!/usr/bin/env node`), so no `Bun` global exists
-  // here. The build itself is bun's, as a child.
-  const built = spawn("bun", ["run", "build"], {
-    cwd: fileURLToPath(new URL("../../contracts", import.meta.url)),
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  const ended = Promise.withResolvers<number | null>();
-  built.once("exit", (code) => ended.resolve(code));
-  built.once("error", (error) => ended.reject(error));
-  if ((await ended.promise) !== 0) {
-    throw new Error(
-      `${named}: \`bun run build\` in packages/contracts failed, and Playwright's Node runner ` +
-        "reads that build; the error above is the build's own."
-    );
-  }
-}
+// WHY `@legion/contracts` IS NOT BUILT HERE. The specs and `e2e/agents.ts` import that package,
+// Playwright loads them under Node, and Node takes the package's `default` export condition -
+// `dist/`, which is gitignored - where a `bun` run takes its source. A checkout that has never
+// built it dies with `Cannot find module @legion/contracts/dist/index.js`. This hook cannot cure
+// that: `e2e/playwright.config.ts` imports `e2e/api.ts`, which imports the package, and
+// Playwright loads the config before it runs any hook, so the run is already dead when this file
+// is reached. The build belongs to whoever starts Playwright: `bun run e2e` and the package's
+// other e2e scripts carry `build:contracts`, and every CI job that runs the suite itself carries
+// a `Build contracts for dispatch e2e` step (.github/workflows/dispatch-browser.yaml).
 
 /** The environment a process of `stack` reads: this process's, with that stack's own variables
  *  under the plain names and the manifest dropped, so every lookup answers this stack rather than
@@ -243,7 +224,6 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // Before a directory is made or a server starts, so a run whose browsers are missing says so
   // whatever else is wrong with it.
   await refuseMissingBrowsers(config.filteredProjects);
-  await buildContracts();
   // `config.workers` is this run's resolved worker count, a `--workers` on the command line
   // included, and under `--shard` it is this process's own.
   const count = config.workers;
