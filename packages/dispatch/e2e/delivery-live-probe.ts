@@ -30,7 +30,7 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   LegionBoardResponse,
   LiveServerFrame,
   LiveSubscribe,
@@ -71,7 +71,7 @@ export interface ProbeFrameLine {
   readonly set: readonly string[] | null;
   readonly code?: string;
   readonly message?: string;
-  readonly freshness?: DeliveryTimelineResponse["freshness"];
+  readonly freshness?: DeliveryTimelineWithMeasures["freshness"];
   readonly stale?: readonly string[];
 }
 
@@ -221,7 +221,7 @@ function isServerFrame(value: unknown): value is DeliveryServerFrame {
   );
 }
 
-const isTimeline = (body: DeliveryLiveBody): body is DeliveryTimelineResponse => "prs" in body;
+const isTimeline = (body: DeliveryLiveBody): body is DeliveryTimelineWithMeasures => "prs" in body;
 const isMeasures = (body: DeliveryLiveBody): body is DeliveryMeasuresResponse =>
   "flags_source" in body;
 const isPipeline = (body: DeliveryLiveBody): body is DeliveryPipelineResponse => "days" in body;
@@ -354,12 +354,15 @@ function holds(body: DeliveryLiveBody): Sections {
   }
   return {
     counts: Object.fromEntries(
-      COUNTS.map((name) => [name, mapValues(body[name], (values) => Object.keys(values).length)])
+      COUNTS.map((name) => [
+        name,
+        mapValues(body[name] ?? {}, (values) => Object.keys(values).length),
+      ])
     ),
-    maps: Object.fromEntries(MAPS.map((name) => [name, Object.keys(body[name]).length])),
-    prs: body.prs.length,
-    runs: body.runs.length,
-    session_groups: body.session_groups.length,
+    maps: Object.fromEntries(MAPS.map((name) => [name, Object.keys(body[name] ?? {}).length])),
+    prs: (body.prs ?? []).length,
+    runs: (body.runs ?? []).length,
+    session_groups: (body.session_groups ?? []).length,
     set: null,
   };
 }
@@ -615,7 +618,7 @@ function compareFields<F extends string>(
 
 /** The GET routes that answer the figures `body` holds, for the window it last applied. */
 function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
-  const query = (base: string, window: DeliveryTimelineResponse["window"]) => {
+  const query = (base: string, window: DeliveryTimelineWithMeasures["window"]) => {
     const params = new URLSearchParams(base);
     params.set("from", window.from);
     params.set("to", window.to);
@@ -626,15 +629,15 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isTimeline(body)) throw new Error("the timeline view's snapshot is not a timeline body");
       const params = query(view.query, body.window);
       return [
-        read<DeliveryTimelineResponse>(`/api/v1/delivery/timeline?${params}`, (answer) => ({
+        read<DeliveryTimelineWithMeasures>(`/api/v1/delivery/timeline?${params}`, (answer) => ({
           measures: compareFields(body.measures, answer.measures, MEASURE_FIELDS),
           prs: compareIds(
-            body.prs.map((pr) => pr.id),
-            answer.prs.map((pr) => pr.id)
+            (body.prs ?? []).map((pr) => pr.id),
+            (answer.prs ?? []).map((pr) => pr.id)
           ),
           runs: compareIds(
-            body.runs.map((run) => run.id),
-            answer.runs.map((run) => run.id)
+            (body.runs ?? []).map((run) => run.id),
+            (answer.runs ?? []).map((run) => run.id)
           ),
         })),
         read<DeliveryMeasuresResponse>(`/api/v1/delivery/measures?${params}`, (answer) => ({

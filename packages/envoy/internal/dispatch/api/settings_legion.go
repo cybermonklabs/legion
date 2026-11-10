@@ -40,14 +40,19 @@ func (s *server) listLegionSettings(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, settings)
 }
 
+// legionSettingInput is PUT /api/v1/settings/legion/{project}'s body: the daemon URL that
+// project's state is read from.
+type legionSettingInput struct {
+	// StateURL is the daemon's base URL, absolute http(s) with a host and no path.
+	StateURL string       `json:"state_url"`
+	Actor    *model.Actor `json:"actor"`
+}
+
 // putLegionSetting answers PUT /api/v1/settings/legion/{project}: name the daemon that project's
 // state is read from. An unknown project is 404 NOT_FOUND, and a state_url that is not an
 // absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		StateURL string       `json:"state_url"`
-		Actor    *model.Actor `json:"actor"`
-	}
+	var input legionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -105,6 +110,13 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// legionSettingsRelayInput is PUT /api/v1/legion/{project}/settings's body: the operator's
+// legion.yaml change, each key the dotted path of one setting.
+type legionSettingsRelayInput struct {
+	Changes map[string]json.RawMessage `json:"changes"`
+	Actor   *model.Actor               `json:"actor"`
+}
+
 // putLegionProjectSettings answers PUT /api/v1/legion/{project}/settings: relay an operator's
 // legion.yaml change to that project's daemon and answer what the daemon said.
 //
@@ -117,10 +129,7 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 // With no token file the relay sends no bearer, and whatever the daemon answers is what the
 // caller sees.
 func (s *server) putLegionProjectSettings(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Changes map[string]json.RawMessage `json:"changes"`
-		Actor   *model.Actor               `json:"actor"`
-	}
+	var input legionSettingsRelayInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

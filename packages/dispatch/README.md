@@ -56,10 +56,16 @@ runs the Vite development server for interface work.
 
 ## End-to-end tests
 
-`bun run e2e` builds the SPA and drives Playwright against the real Go Dispatch
+`bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
+against the real Go Dispatch
 server and Postgres. It runs Playwright through `e2e/run.ts`, which starts the
 harness (`e2e/harness-start.ts`: the fakes, then `e2e/run-server.sh`, then the
-plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server. The
+plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server.
+Playwright runs under Node, which reads `@legion/contracts` from that package's
+built `dist/`, so the script builds it first: a fresh checkout has no `dist/`
+and `bun install` makes none. `e2e/run.ts` refuses the run before it starts a
+harness or a Postgres when Playwright has not downloaded a browser the run
+needs, naming `bun run e2e:install` and how large that download is. The
 script builds the server
 with the caller's `go` into `packages/envoy/dispatch-e2e` and execs it, so a
 SIGTERM to the pid it hands its caller stops the server. It pins every server
@@ -109,6 +115,17 @@ credential-request feature is on, and tests seed its pending requests with
 deployment that configures none (`AGENTS.md` has the switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
+`DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
+server's meaning search at it: the server calls it as it calls Bedrock, and it counts the calls
+it was asked for, so a row reads back how many embeddings a stretch of typing cost. The rows of
+`e2e/search-tiers.e2e.ts` need it and are skipped without it, since a suite whose assertions
+count search hits counts the keyword answers Dispatch gives a deployment with no embedder:
+
+```bash
+cd packages/dispatch
+DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
+```
+
 Run the local harness with its isolated database available:
 
 ```bash
@@ -134,10 +151,13 @@ its lane's database before every row. A worker finds its lane by
 A lane's Postgres comes from one of two variables, and a run of more than one
 lane that sets neither is refused. On a machine with Docker and no Postgres
 binaries, `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest you
-name, which is what CI does. On a machine with a Postgres installation and no
-Docker, such as an issue pod, `DISPATCH_E2E_PG_BIN` is a directory holding
-`initdb` and `pg_ctl`. Each lane's data lives under the run's own temporary
-directory and goes with the run.
+name; CI's visual job uses it too, since it runs on the runner with only its
+Playwright command in a container. On a machine with a Postgres installation
+and no Docker, such as an issue pod or CI's shard and alone jobs, which run in
+a container carrying PostgreSQL 18 with `vector`, `DISPATCH_E2E_PG_BIN` is a
+directory holding `initdb` and `pg_ctl`.
+Each lane's data lives under the run's own temporary directory and goes with
+the run.
 
 ```bash
 cd packages/dispatch
@@ -322,6 +342,7 @@ Its `A9` section needs a server with an embedder, so the harness is started with
 (`e2e/run-server.sh`); without one that section prints its `SKIP:` line and every other section
 runs. The harness leaves the embedder off by default, so that a suite whose assertions count
 search hits counts the keyword answers Dispatch gives a deployment with no embedder.
+
 Against `bun run dispatch:local`:
 
 ```bash
@@ -338,9 +359,9 @@ document holds, a block of an issue in another tree, a `needs` naming a block ou
 — and a `when` the schema does not know, each `400 INVALID_MARKDOWN` naming the pointer or the
 attribute; a requirement's id through a `move`; `dispatch result` and `dispatch results`, with a
 check id no Verification document in reach holds refused `400 UNKNOWN_CHECK` and a pass counting a
-skipped case refused `400 RESULT_CONTRADICTS`; the one write a closed issue takes, a result for an
-`after_merge` check, beside the result for a `before_merge` check and the document write it still
-refuses `409 ISSUE_CLOSED`; the coverage flags `dispatch read --issue` prints after `Coverage: `,
+skipped case refused `400 RESULT_CONTRADICTS`; a closed issue's result for an `after_merge` check,
+which it takes beside a comment and a message, and the result for a `before_merge` check and the
+document write it still refuses `409 ISSUE_CLOSED`; the coverage flags `dispatch read --issue` prints after `Coverage: `,
 cleared by a check of the issue and by a check of a child, back when that check is deleted, with
 the missing plan task named only once the issue has a plan document; the gap an approval request's
 answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
@@ -441,8 +462,21 @@ docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 
 `e2e/seed.ts` empties its database before each scenario. Always set
 `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
-The suite has eleven projects. `chromium` runs every spec except the two plain-HTTP specs and the
-three the `-alone` projects below take. `iphone`
+
+The stubbed layer reads three variables of its own, and a run that is not recording needs none
+of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
+what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves the static file
+server off 4319, which is what a second checkout on one machine needs, since the server refuses
+to reuse one already listening rather than serve another checkout's build. And
+`DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
+one, which the nightly's re-record job uses so that it can see a committed recording no row
+writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
+the stubbed layer alone" to its workers; set by hand it waives every harness refusal and the
+preflight for the whole run, real-stack projects included.
+The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+three the `-alone` projects below take and the stubbed layer's own
+(`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
+run). `iphone`
 runs, from those same specs, only the tests tagged `@phone` (written at the end of the test's or
 its `test.describe`'s title); a test takes the tag when the phone viewport can change what it
 asserts, and not when it only reaches the same control by another route, which is in
@@ -450,8 +484,10 @@ asserts, and not when it only reaches the same control by another route, which i
 failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses
 Chromium with iPhone 13 viewport, touch, and user-agent emulation. A deployed run
-(`bun run e2e:deployed`) uses the same projects, so its `iphone` project also runs only the
-`@phone` tests. `webkit` and `firefox` select by tag as well, `@webkit` and `@firefox`: each
+(`bun run e2e:deployed`) uses the same projects but the two stubbed ones, so its `iphone`
+project also runs only the `@phone` tests. The stubbed layer is left out of a deployed run
+because it replays a recording against a build this checkout made, which says nothing about a
+deployed image, and because that command builds no `web/dist` for its server to serve. `webkit` and `firefox` select by tag as well, `@webkit` and `@firefox`: each
 tagged row exercises one engine behaviour the comment above the project in
 `e2e/playwright.config.ts` names, and a comment beside the tag names which. `webkit` covers
 where a caret lands beside a collaborator's cursor, and `firefox` covers text typed over what
@@ -472,10 +508,9 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
-themselves: `chromium-alone` runs `e2e/heavy-document-writes.e2e.ts` (a document write answers in
-under a second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second), and `firefox-alone` and `webkit-alone` run
-`e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
+themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
+(a card draws without holding the main thread for a second), and `firefox-alone` and
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
 unmeasurable. A project whose dependency has a failing row does not run at all.

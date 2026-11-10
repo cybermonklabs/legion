@@ -60,7 +60,7 @@ func TestAnHTTPSIssuerAndALoopbackIssuerAreTaken(t *testing.T) {
 // copy of (INFRA-1077's spec, "Which settings a projected token may change").
 func TestAProjectedCallerSetsThePlainDataRowsAndNothingElse(t *testing.T) {
 	for _, path := range []string{
-		"admission_cap", "review_round_cap", "max_fix_attempts", "linger_hours",
+		"admission_cap", "review_round_cap", "linger_hours",
 		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
 		"pod_update_retask_hours", "pod_update_notice_hours", "tree_stop_timeout_seconds",
 	} {

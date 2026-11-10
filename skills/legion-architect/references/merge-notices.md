@@ -41,12 +41,19 @@ the merge, which GitHub names as the actor of its own disables; then what was re
 reason (`manual`, `merge_conflict`, `manually_disabled`, `merge_commit_blocked`, …), when, and
 READY's head. It was not a failed merge, which comes as a `checks-red` instead. The daemon submits
 that merge no further, so the removal stands, and the issue stays in `awaiting_merge`. Read the
-pull request on GitHub. A `merge_conflict` conflicts with the base or with a pull request queued
-ahead of it: once the conflict is on the base, the daemon's own conflict check sends the issue
-back to `implementing` by itself. Otherwise ask a person with `dispatch ask` (the one who removed
-it, when the reason names a person rather than GitHub on its own), naming the pull request at
-READY's head and the reason; that person merges or queues it again under the repository's rules,
-and the merge closes the issue. Never bypass a rule.
+pull request on GitHub.
+A `merge_conflict` removal reaches you only when the head conflicts with the base itself (GitHub's
+merge state `DIRTY`), when GitHub answered no merge state for five minutes, or when it is the
+second such removal of this head: a conflict with a pull request queued ahead of it, which that
+merge state tells apart, the daemon submits once more at the same head and says so on the issue,
+telling you nothing.
+Where the conflict is on the base, the daemon's own conflict check sends the issue back to
+`implementing` by itself.
+Otherwise ask a person with `dispatch ask` (the one who removed it, when the reason names a person
+rather than GitHub on its own), naming the pull request at READY's head and the reason; that
+person merges or queues it again under the repository's rules when it should land, and the merge
+closes the issue.
+Never bypass a rule.
 
 ## `merge-waiting`
 

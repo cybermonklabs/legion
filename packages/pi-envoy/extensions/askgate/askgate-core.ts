@@ -245,6 +245,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import {
   bytesDigest,
   type FileDigest,
@@ -1945,7 +1946,7 @@ function textOf(content: unknown): string {
     if (typeof part === "string") parts.push(part);
     else if (isRecord(part) && part.type === "text" && typeof part.text === "string")
       parts.push(part.text);
-    else if (isRecord(part) && part.type === "image") parts.push("[image]");
+    else if (isRecord(part) && part.type === "image") parts.push(PICTURE_PLACEHOLDER);
   }
   return parts.join("\n");
 }

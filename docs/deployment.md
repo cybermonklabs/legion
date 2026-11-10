@@ -37,7 +37,7 @@ The secrets broker holds them as `github-app` secrets, which release installatio
 `LEGION_IMPLEMENT_APP` (agent tier) and `LEGION_REVIEW_APP` (human tier: each new grant waits for a person's approval in Dispatch, and a later release under the same live grant reuses it).
 Its `token_command` names `--ttl 12h`, because a human-tier request that names no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one:
 without the flag every renewal would wait for a person, and with it the approver reads the twelve hours on the card and decides them.
-A daemon that holds no App key uses them through `token_command`, as the live proofs do (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
+A daemon that holds no App key uses both Apps through `token_command`, as the live proofs do for the implement App (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
 
 ```yaml
 github_apps:
@@ -48,6 +48,9 @@ github_apps:
     app_id: "5341243"
     token_command: "agent-secrets LEGION_REVIEW_APP --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_REVIEW_APP\"'"
 ```
+
+The live proofs take the review App's tokens that way no longer.
+They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, into a key file of the run's own, and give the App a `private_key_command` that reads it, while the implement App keeps the `token_command` above (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`).
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
@@ -221,8 +224,8 @@ worker_backends:
 Each key is an issue role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`)
 and each value `omp` or `claude`; a role left out runs on Oh My Pi. What each harness may run is
 one table, `runtime.Backends` (`packages/daemon/internal/runtime/backend.go`): Claude Code runs the
-phase workers alone, since an architect is woken by notices on its Envoy role topic and Claude
-Code's print mode delivers no channel notification, and it runs them under either runtime — a tmux
+phase workers alone, since the architect's loop and the controller's are proven only on Oh My Pi,
+and it runs them under either runtime — a tmux
 pane here, and an issue pod under `runtime: kubernetes`, whose worker image carries the
 claude-envoy plugin and Claude Code's pin, from which the pod installs and verifies the pinned
 Claude Code at every launch (`docs/kubernetes.md`). The loader refuses a role on a harness that does
@@ -230,10 +233,13 @@ not run it, naming both, a role named twice, and any other value. The
 controller always runs on Oh My Pi.
 
 For such a role the pane's shim runs `legion claude-bridge -- claude -p --input-format stream-json
---output-format stream-json --verbose --replay-user-messages --permission-mode bypassPermissions
---strict-mcp-config …`. With `--replay-user-messages` Claude Code re-emits each user message it
-takes, and the bridge answers an Envoy delivery only then, so claude-envoy counts the delivery
-taken only once Claude Code has it.
+--output-format stream-json --verbose --replay-user-messages --thinking-display summarized
+--permission-mode bypassPermissions --strict-mcp-config …`.
+With `--replay-user-messages` Claude Code re-emits each user message it takes,
+and the bridge answers an Envoy delivery only then,
+so claude-envoy counts the delivery taken only once Claude Code has it.
+With `--thinking-display summarized` it writes the text of its thinking rather than a thinking block with none,
+so a worker's thinking reaches the pane and Dispatch's Agents page.
 The claim's own Claude Code directory, `<state_dir>/claude/<claim token>`, is the pane's
 `CLAUDE_CONFIG_DIR`: it holds the transcript, the MCP configuration the daemon writes (one server,
 `legion`, running claude-envoy's `dist/envoy-channel.js` on bun) and that server's phase-reminder
@@ -548,7 +554,7 @@ A running daemon applies a settings change without being restarted, from either 
 One arm is `PUT /legion/v1/operator/settings`, which takes the operator bearer or a projected Kubernetes ServiceAccount token the deployment named (`settings_route`; `docs/kubernetes.md`, "The settings route").
 The two credentials may change different keys.
 The operator bearer, and the file itself, may change every key but those fixed for the process.
-A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `max_fix_attempts`, `linger_hours`, the supervision limits and the update round's two bounds — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
+A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `linger_hours`, the supervision limits and the update round's two bounds — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
 `gates` and every key under it, `gates.design` included, is refused by that last rule: the API server and the launch specs each hold the design gate, and a gate is the rule that says a person decides a tree's specification, so the token a whole service holds is not the party that may switch that rule off, and that key stays the operator bearer's and the file's.
 That is why a person changing the admission cap from Dispatch's Legion view can, while the same path cannot reach `github_apps.<app>.private_key_command`, whose value the daemon would run, or `gates.design`, which decides whether a person approves a specification at all.
 The other is the file itself changing under the daemon, which a watcher on the directory holding `legion.yaml`, and on each directory holding a file a setting names, notices within a few seconds.
@@ -608,7 +614,6 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `instructions` | launch | `launch-specs` |
 | `launch_failure_limit` | decision | — |
 | `linger_hours` | decision | — |
-| `max_fix_attempts` | decision | — |
 | `nats_daemon_nkey_seed_file` | rebuild | `nats` |
 | `nats_nkey_seed_file` | rebuild | `nats` |
 | `nats_urls` | rebuild | `nats` |
@@ -709,6 +714,7 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `worker_boot_timeout_seconds` | rebuild | `runtime` |
 | `worker_rpc_timeout_seconds` | rebuild | `worker-stream` |
 | `worker_stop_timeout_seconds` | rebuild | `runtime` |
+| `worker_stall_backstop_hours` | fixed | — |
 | `worker_stream_port` | fixed | — |
 | `worker_wake_burst` | fixed | — |
 | `worker_wakes_per_minute` | fixed | — |
@@ -740,3 +746,5 @@ Each line below is the reason the route answers with, for the keys it names.
 - `pod_update_max_open_rounds`, `pod_update_rounds_per_minute` — the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it.
 
 - `worker_wakes_per_minute`, `worker_wake_burst` — the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it.
+
+- `worker_stall_backstop_hours` — the daemon's stall backstop reads each role's bound off the configuration the supervision booted on (internal/daemon's stallBackstop, supervision.cfg), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.

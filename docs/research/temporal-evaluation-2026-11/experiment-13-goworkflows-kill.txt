@@ -1,0 +1,79 @@
+Experiment 13, go-workflows: an activity whose process is killed inside it.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+library: github.com/cschleiden/go-workflows v1.4.2, an embedded Go library on the application's own PostgreSQL
+database: legion_golib_eval
+schema: exp13_28876_468946
+tables-the-library-created: [activities attributes history instances pending_events schema_migrations]
+instance-id: exp13-prompt-1794091091235156360
+workflow-name: exp13PromptWorkflow
+activity-name: prompt-into-session
+side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e13/exp13-side-effects.log
+activity-lock-documented-default: 2 minutes, held in activities.locked_until and extended by the holder's heartbeat
+activity-lock-this-run-used: 10s, shortened with backend.WithActivityLockTimeout: this run waits the lapse out rather than waiting two minutes for it
+activity-heartbeat-interval-this-run-used: 2s
+workflow-task-lock-this-run-used: 30s
+sticky-timeout-this-run-used: 5s
+[worker1] gwworker: pid=28885
+[worker1] gwworker: worker-name=exp13-session-host-1
+worker1-pid: 28885
+worker1-name: exp13-session-host-1
+[worker1] gwworker: workflow-started=exp13-prompt-1794091091235156360
+side-effect-1: attempt=1 pid=28885 at=2026-11-07T22:38:11.356704047Z
+release-file-exists-while-activity-blocked: false
+sql-before-kill-instances: state=Active(0) queue=default locked_until=null sticky_until=2026-11-07T22:38:16.342344Z worker=exp13-session-host-1 completed_at=null
+sql-before-kill-activities: activity_id=03e3f60b-5faf-4f32-ab7e-5105f7057baf event_type=ActivityScheduled queue=default schedule_event_id=1 locked_until=2026-11-07T22:38:21.353625Z worker=exp13-session-host-1 visible_at=null
+sql-before-kill-history: 3: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled
+sql-before-kill-pending_events: none
+activity-row-worker-before-kill: exp13-session-host-1
+kill-sent: true
+killed-pid: 28885
+kill-signal: SIGKILL
+killed-process-still-alive: false
+sql-after-kill-instances: state=Active(0) queue=default locked_until=null sticky_until=2026-11-07T22:38:16.342344Z worker=exp13-session-host-1 completed_at=null
+sql-after-kill-activities: activity_id=03e3f60b-5faf-4f32-ab7e-5105f7057baf event_type=ActivityScheduled queue=default schedule_event_id=1 locked_until=2026-11-07T22:38:21.353625Z worker=exp13-session-host-1 visible_at=null
+sql-after-kill-history: 3: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled
+sql-after-kill-pending_events: none
+state-for-an-activity-that-ran-with-its-outcome-unknown: none that says it ran: the activities row is written when the activity is scheduled and deleted when it completes, so a killed activity leaves the same row as one that was never picked up, differing only in locked_until and worker -- which say a worker claimed it, not that its body did anything
+in-flight-marker-in-the-schema: activities.locked_until and activities.worker, and nothing else: there is no attempt count, no started_at and no outcome-unknown state on the row, and history gets an ActivityCompleted or ActivityFailed event only once an attempt returns
+[worker2] gwworker: pid=28893
+[worker2] gwworker: worker-name=exp13-session-host-2
+[worker2] gwworker: replacement-polling=true
+replacement-pid: 28893
+replacement-worker-name: exp13-session-host-2
+side-effects-while-the-dead-process-lock-was-still-held: 1
+replacement-waited-for-the-lapse-seconds: 4s
+sql-while-lock-held-by-dead-process-instances: state=Active(0) queue=default locked_until=null sticky_until=2026-11-07T22:38:16.342344Z worker=exp13-session-host-1 completed_at=null
+sql-while-lock-held-by-dead-process-activities: activity_id=03e3f60b-5faf-4f32-ab7e-5105f7057baf event_type=ActivityScheduled queue=default schedule_event_id=1 locked_until=2026-11-07T22:38:21.353625Z worker=exp13-session-host-1 visible_at=null
+sql-while-lock-held-by-dead-process-history: 3: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled
+sql-while-lock-held-by-dead-process-pending_events: none
+activity-re-run: true
+seconds-from-kill-to-the-second-performance: 10.037
+what-the-lock-expiry-does-when-the-holder-never-returns: it is what releases the work: the row keeps locked_until and worker exactly as the dead process left them, and the first poller to find locked_until in the past takes the activity and runs its body again -- about 10s after the kill here, which is the 10s lock minus the time since the dead process's last heartbeat
+side-effect-2: attempt=2 pid=28893 at=2026-11-07T22:38:21.357965657Z
+sql-during-the-second-performance-instances: state=Active(0) queue=default locked_until=null sticky_until=2026-11-07T22:38:16.342344Z worker=exp13-session-host-1 completed_at=null
+sql-during-the-second-performance-activities: activity_id=03e3f60b-5faf-4f32-ab7e-5105f7057baf event_type=ActivityScheduled queue=default schedule_event_id=1 locked_until=2026-11-07T22:38:31.354433Z worker=exp13-session-host-2 visible_at=null
+sql-during-the-second-performance-history: 3: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled
+sql-during-the-second-performance-pending_events: none
+activity-row-worker-after-the-lapse: exp13-session-host-2
+activity-row-is-the-same-row-handed-to-another-worker: true
+sql-final-instances: state=Finished(2) queue=default locked_until=null sticky_until=2026-11-07T22:38:26.512181Z worker=exp13-session-host-2 completed_at=2026-11-07T22:38:21.512181Z
+sql-final-history: 6: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowExecutionFinished
+sql-final-activities-rows: 0
+sql-final-activity-scheduled-events: 1
+sql-final-activity-completed-events: 1
+sql-final-activity-failed-events: 0
+side-effect-line-1: attempt=1 pid=28885 at=2026-11-07T22:38:11.356704047Z
+side-effect-line-2: attempt=2 pid=28893 at=2026-11-07T22:38:21.357965657Z
+side-effect-performed-times: 2
+activity-completions-recorded-in-postgres: 1
+what-that-means: an activity whose outcome go-workflows never recorded is run again once its lock lapses: the library's guarantee for an activity is at-least-once, and the history records only the attempt that returned, so a side effect performed by a killed attempt is invisible to the workflow
+can-the-activity-be-pinned-to-one-process: no: the only routing go-workflows has is a queue, which is a name several workers may poll, and the activities row's worker column is written when a worker takes the lock rather than when the activity is scheduled -- nothing addresses a particular process
+what-holds-the-work-to-the-dead-process: activities.locked_until alone, for as long as it is in the future
+if-that-process-never-comes-back: the lock lapses 10s after its last heartbeat and the next poller runs the activity body again: no process identity, no attempt count and no operator action is involved
+limit: one instance, one activity, one kill, on one PostgreSQL, with the activity lock shortened from two minutes to 10s: it shows what go-workflows records and re-runs when the process inside an activity dies, not how a fleet of workers behaves, nor what happens when the database rather than the process is the thing that fails
+schema-dropped: exp13_28876_468946
+experiment 13: PASS

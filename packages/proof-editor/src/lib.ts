@@ -91,7 +91,8 @@ import {
 
 import { dispatchMarkPlugins, remarkDispatchMarksPlugin, dispatchMarkHandler } from './dispatch-marks';
 import type { MarkAction, RecordMarkPlacement, SelectionBarActionKind } from './dispatch-marks';
-import { commentOnSelection, dispatchActionBarPlugin } from './dispatch-action-bar';
+import { commentOnSelection, dispatchActionBarPlugin, setAccess } from './dispatch-action-bar';
+import type { ProofEditorAccess } from './dispatch-action-bar';
 import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
 import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
@@ -119,6 +120,7 @@ import { removeRecordMark, remarkRecordMark, retypeMark as retypeRecordMark } fr
 import type { RemarkOutcome, RetypeOutcome } from './record-mark-retype';
 
 export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverActionKind } from './dispatch-marks';
+export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
 export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
@@ -156,11 +158,16 @@ export interface CreateProofEditorOptions {
   awareness?: Awareness | null;
   /** Local user identity for cursor labels. */
   user: ProofEditorUser;
-  /** Render the document read-only. Defaults to false. */
-  readOnly?: boolean;
+  /** What the reader may do with the document: `'edit'` it, `'comment'` on it alone - the
+   *  selection bar offers Comment alone, for a selection that holds text, which writes no mark
+   *  and reports a `quote-comment` action, for a host whose server anchors the comment by its
+   *  quote - or only `'read'` it. Defaults to `'edit'`. */
+  access?: ProofEditorAccess;
   /** Fired for every mark-affecting user action: Comment/Suggest/Ask on the
    *  selection bar (the editor has already applied the mark locally with a
-   *  fresh markId over [from,to]; a rejected promise removes it), and
+   *  fresh markId over [from,to]; a rejected promise removes it), Comment on
+   *  a document with `'comment'` access (`quote-comment`: no mark is
+   *  written), and
    *  Reply/Resolve/Unresolve/Accept/Reject/Delete on the mark popover (no
    *  local mutation is applied for these — the host's server is expected to
    *  mutate and the change arrives back through the shared Y.Doc). */
@@ -185,6 +192,15 @@ export interface CreateProofEditorOptions {
   drawMermaid?: MermaidDrawer;
 }
 
+/**
+ * The host's whole hold on one editor.
+ *
+ * Every write on it answers a destroyed handle by doing nothing and reporting that it did: a
+ * host writes from effects, and React runs a child's cleanup after the parent's, so a write can
+ * arrive after the teardown (INFRA-2409). The reads are the exception, and `getMarkdown` is the
+ * one that throws after teardown, since its serializer lives in the editor's ctx, which
+ * `destroy` empties.
+ */
 export interface ProofEditorHandle extends TypedBlockCommands {
   view: EditorView;
   /** Serialize the current document to markdown via the configured serializer. */
@@ -193,8 +209,8 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   setMarkdown(markdown: string): void;
   /** Top offset of each mark's first span relative to the library root. */
   markOffsets(): Map<string, number>;
-  /** Toggle editability (e.g. for a readOnly flag change post-construction). */
-  setReadOnly(readOnly: boolean): void;
+  /** Changes what the reader may do with the document (`access`) post-construction. */
+  setAccess(access: ProofEditorAccess): void;
   /** Apply mark metadata received from a peer, re-anchoring by quote. Unified
    *  Proof marks (comment/suggestion/flagged/approved) only — see
    *  ./dispatch-marks.ts's module doc for why dispatchAsk marks are outside
@@ -222,7 +238,7 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   ): RemarkOutcome;
   /** Starts a comment on the current selection exactly as the selection bar's Comment button
    *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
-   *  while the document is read-only, where the bar offers no Comment. */
+   *  while the document is read-only and takes no comments, where the bar offers no Comment. */
   commentOnSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
@@ -253,8 +269,11 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   setReferences(references: EditorReferences | null): void;
   /** The stable id of the block containing the selection head, if any. */
   blockIdAtSelection(): string | null;
-  /** Tear down the editor and any collab bindings. */
-  destroy(): void;
+  /** Tears the editor and any collab binding down, the ProseMirror view first. Idempotent, and
+   *  every write on this handle does nothing afterwards. The promise settles when the editor's
+   *  own teardown, which runs after the view's, has finished; a host may ignore it, and a call
+   *  after the first answers an already settled one. */
+  destroy(): Promise<void>;
 }
 
 function installCollabCursorsWhenReady(
@@ -453,13 +472,12 @@ export async function createProofEditor(
 
   const view = editor.ctx.get(editorViewCtx);
 
-  let currentReadOnly = Boolean(opts.readOnly);
-  view.setProps({ editable: () => !currentReadOnly });
   view.setProps(brokenAskInputGuards); // no input throws in an off-rule ask (./ask-content.ts)
-  const setReadOnly = (readOnly: boolean) => {
-    currentReadOnly = readOnly;
-    view.setProps({ editable: () => !currentReadOnly });
+  const applyAccess = (access: ProofEditorAccess) => {
+    setAccess(view, access);
+    view.setProps({ editable: () => access === 'edit' });
   };
+  applyAccess(opts.access ?? 'edit');
 
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
@@ -495,18 +513,36 @@ export async function createProofEditor(
     documentRef: opts.documentRef,
     getState: () => view.state,
     dispatch: (transaction) => {
+      // A menu item a host kept across the teardown runs through here (INFRA-2409).
+      if (view.isDestroyed) return;
       view.dispatch(transaction);
     },
   });
 
+  // What `destroy` answers: the editor's own teardown, which runs after the view's and has no
+  // other signal. A call before the first destroy, and every call after it, answers this.
+  let torndown: Promise<void> = Promise.resolve();
+
   return {
     view,
-    ...typedBlockCommands,
+    insertTypedBlock(typeName, attrs) {
+      return view.isDestroyed ? false : typedBlockCommands.insertTypedBlock(typeName, attrs);
+    },
+    retypeBlock(blockId, typeName, attrs) {
+      return view.isDestroyed ? false : typedBlockCommands.retypeBlock(blockId, typeName, attrs);
+    },
+    setBlockAttributes(blockId, attrs) {
+      return view.isDestroyed ? false : typedBlockCommands.setBlockAttributes(blockId, attrs);
+    },
+    blockMenuItems() {
+      return view.isDestroyed ? [] : typedBlockCommands.blockMenuItems();
+    },
     getMarkdown(): string {
       const serializer = editor.ctx.get(serializerCtx);
       return serializer(view.state.doc);
     },
     setMarkdown(markdown: string): void {
+      if (view.isDestroyed) return;
       // Markdown import only: soft line breaks become spaces here and in the headless parser,
       // never in the shared parserCtx, which the clipboard plugin also runs text/plain pastes
       // through - a pasted "alpha\nbeta" must keep its line break. The commonmark preset's own
@@ -532,14 +568,22 @@ export async function createProofEditor(
       }
       return offsets;
     },
-    setReadOnly,
+    setAccess(access: ProofEditorAccess): void {
+      if (view.isDestroyed) return;
+      applyAccess(access);
+    },
     applyRemoteMarks(metadata: Record<string, StoredMark>, options?: { hydrateAnchors?: boolean }): void {
+      if (view.isDestroyed) return;
       applyRemoteMarksMutation(view, metadata, options);
     },
     removeMark(markId: string): void {
+      if (view.isDestroyed) return;
       removeRecordMark(view, markId);
     },
     retypeMark(markId: string, kind: SelectionBarActionKind): RetypeOutcome {
+      // A destroyed editor holds no document, so the mark reads nowhere: the same answer as a
+      // document that has lost it (INFRA-2409).
+      if (view.isDestroyed) return { refused: "missing" };
       return retypeRecordMark(view, markId, kind, opts.user.name);
     },
     remarkMark(
@@ -548,9 +592,11 @@ export async function createProofEditor(
       quote: string,
       placement: RecordMarkPlacement | null
     ): RemarkOutcome {
+      if (view.isDestroyed) return { refused: "gone" };
       return remarkRecordMark(view, markId, kind, opts.user.name, quote, placement);
     },
     commentOnSelection(): boolean {
+      if (view.isDestroyed) return false;
       return commentOnSelection(view);
     },
     focusMark(markId: string): void {
@@ -590,14 +636,26 @@ export async function createProofEditor(
       }
       return null;
     },
-    destroy(): void {
+    destroy(): Promise<void> {
+      // Idempotent: a second call would ask a ctx that no longer holds `collabServiceCtx` for it.
+      if (!alive) return torndown;
       alive = false;
       unregisterPopoverHook();
       editor.action((ctx) => {
         const collabService = ctx.get(collabServiceCtx);
         collabService.disconnect();
       });
-      void editor.destroy();
+      // The view goes before the ctx. `editor.destroy()` runs every plugin's cleanup first -
+      // which removes each `$ctx` slice, the commonmark presets' node and mark attributes among
+      // them - and only then destroys the ProseMirror view, so between the two the view is live
+      // over an emptied ctx: anything that redraws it there reads a slice that is gone and
+      // throws `Context "<slice>" not found, do you forget to inject it?` out of whatever called
+      // it, which in Dispatch is a React effect and so the page's error boundary (INFRA-2409).
+      // Every `view.isDestroyed` guard in this package and its hosts is written against this
+      // order: destroying the view here makes all of them hold before a slice can go.
+      view.destroy();
+      torndown = editor.destroy().then(() => {});
+      return torndown;
     },
   };
 }

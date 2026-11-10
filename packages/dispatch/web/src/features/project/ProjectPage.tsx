@@ -309,7 +309,7 @@ export function ProjectPage(): ReactNode {
             </>
           ) : (
             <>
-              <IssueFilters key={route.project} project={route.project} showStatus={false} />
+              <IssueFilters key={route.project} project={route.project} />
               <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
             </>
           )

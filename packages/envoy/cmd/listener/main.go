@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
+	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -41,6 +42,9 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// legionAgents is the Legion agent registry the /v1/legion/agents routes serve, or why it is
+	// unavailable. It keeps no cache, so it is in no list of caches.
+	legionAgents *legionAgentRegistry
 	// ciStore is nil on a listener that mounts no GitHub webhook route, the one route that uses it.
 	ciStore *cistore.Store
 	// roleLane is the role lane's own client (bus.ConnectRoleLane), nil in a test that builds the
@@ -830,6 +834,26 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 	})
 }
 
+// inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
+// this deployment's own windows derive it (bus.InactiveThresholdFor): main reads it before it
+// opens the session-consumer connection and gives it to that connection, so every consumer the
+// listener creates carries it (connectSessionDelivery, bus.ConnectSessionConsumers's
+// inactiveThreshold).
+//
+// It must stand above the sweep's worst bound - the session's record leaves the bucket, the
+// sweep's next pass deletes the consumer - because a consumer the server removes first takes
+// the session's position with it: the resume floor is recorded by the listener's own delete and
+// by nothing else, so a session whose consumer the server removed is created again at the
+// stream's end and loses every message stored while it was away.
+//
+// The record's life is the longer of the gone horizon and the bucket's maximum age, since
+// either can be what drops the record: the reaper deletes it a pass after the horizon, and the
+// bucket itself drops it at that age.
+func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweepInterval time.Duration) time.Duration {
+	_, goneHorizon := sessions.Windows()
+	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
+}
+
 func main() {
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
@@ -970,13 +994,16 @@ func main() {
 	// deployment's replica count and byte limit (listenerStreamOptions).
 	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
 	if err != nil {
-		log.Fatal(err)
+		// Named, because this step and the two below it are the whole of the start-up between the
+		// listening line and "webhooks open", and each one can end it with a bare error: a reader
+		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
+		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
 	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatal(err)
+		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
@@ -1006,7 +1033,7 @@ func main() {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("open the CI store: %v", err)
 		}
 	} else {
 		logger.Info("CI store not opened: no GitHub webhook route, so this listener records and settles no checks")
@@ -1086,6 +1113,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The session consumer sweep's period, the bound on how long a session that ended without
+	// deregistering keeps its consumer (startSessionConsumerSweep, session_consumer_sweep.go).
+	// It is neither reaper's: what it waits for is the state the session registry answers, and a
+	// pass of it frees a slot of the stream's consumer cap rather than taking anything away from
+	// a session.
+	sessionConsumerSweepInterval, err := envconf.PositiveDuration(logger.Slog(), os.LookupEnv, "ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL", defaultSessionConsumerSweepInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
 	sessions, err := session.OpenSessionRegistry(
 		client.Conn,
 		session.WithSessionReplicas(cfg.NATSReplicas),
@@ -1123,11 +1159,21 @@ func main() {
 	}
 	sessionCacheReadyCancel()
 
+	// The Legion agent registry (internal/legionagents) keeps no cache: every read is a read of its
+	// bucket, so it joins no warm-up or self-health. A listener that cannot open the bucket (a
+	// missing grant is the usual cause) logs one ERROR and serves on, its registry routes answering
+	// 503 while it retries the open in the background, with a backoff and at once after a reconnect
+	// (legionAgentRegistry). Its reconnect hook runs after the caches' rewatch, and moves its bucket
+	// handle onto a connection the bus dialled to replace a closed one; its drain hook ends the retry.
+	legionAgents := openLegionAgentRegistry(client.Conn, logger, legionagents.WithReplicas(cfg.NATSReplicas), legionagents.WithLogger(logger.Slog()))
+
 	// KV watchers are not bus subscriptions: tie them to the connection, so a disconnect stops each
 	// copy following its bucket, every recovered connection reads each bucket again, and the drain
 	// ends them before the connection's own.
 	caches := listenerCaches(registry, sessions, ciStore)
 	hookListenerKVWatchers(client, caches)
+	client.AddReconnectHook(legionAgents.reconnect)
+	client.AddDrainHook(legionAgents.close)
 
 	dedupeCache := dedupe.New(10 * time.Minute)
 
@@ -1222,7 +1268,16 @@ func main() {
 	// The session consumers a registration asks for are managed on a connection of their own
 	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
 	// delivery, which a listener of an earlier release serves too, rather than ending the start.
-	delivery := connectSessionDelivery(cfg.NATSURLs, logger)
+	//
+	// The threshold the server removes an idle session consumer after is derived from this
+	// deployment's own windows first and given to that connection, so every consumer the
+	// listener creates carries one that stands above its own sweep's worst bound: the session's
+	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
+	// records for longer than the default windows would otherwise have the server remove a
+	// consumer the listener's own delete had not reached, and with it the only record of where
+	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
+	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
+	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
 	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
 	// this task holds its machine's durable binding (below). Without its reply inbox no frame could
 	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.
@@ -1259,18 +1314,19 @@ func main() {
 	// (roleSetHandler, through session.SessionRegistry.Windows).
 	sessionLive, _ := sessions.Windows()
 	ready := &listenerDeps{
-		client:     client,
-		roleLane:   roleLaneClient,
-		consumers:  delivery,
-		registry:   registry,
-		sessions:   sessions,
-		ciStore:    ciStore,
-		caches:     caches,
-		consumer:   consumer,
-		streamName: bus.Stream,
-		wakes:      wakes,
-		delivery:   &deliveryConfig,
-		confirmed:  dedupe.New(10 * time.Minute),
+		client:       client,
+		roleLane:     roleLaneClient,
+		consumers:    delivery,
+		registry:     registry,
+		sessions:     sessions,
+		legionAgents: legionAgents,
+		ciStore:      ciStore,
+		caches:       caches,
+		consumer:     consumer,
+		streamName:   bus.Stream,
+		wakes:        wakes,
+		delivery:     &deliveryConfig,
+		confirmed:    dedupe.New(10 * time.Minute),
 
 		sendsToUnresponsive: sendsToUnresponsive,
 	}
@@ -1362,6 +1418,24 @@ func main() {
 	// (startKeptRoleSweep, role_keep_sweep.go).
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, 5*time.Minute))
 
+	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
+	// holds. The deregistration route deletes the consumer of a registration it removed, and a
+	// session whose pane closed or whose box went deregisters nothing: this is the bound under
+	// which such a consumer goes, one pass after the session's record leaves the envoy_sessions
+	// bucket - the reaper's first pass past the gone horizon, or the bucket's maximum age,
+	// whichever comes first - since a pass deletes only on a bucket that answers for the session
+	// no longer. It is also what retires the consumers a hub already holds from before the sweep
+	// existed. A pass that found a cold or stale copy of the session bucket would read the whole
+	// fleet as gone, so it runs only on the task holding this machine's durable binding and only
+	// over a copy that is ready, servable and needs no read (startSessionConsumerSweep,
+	// session_consumer_sweep.go).
+	kvLoopsDone = append(kvLoopsDone, startSessionConsumerSweep(kvLoopsCtx, &sessionConsumerSweep{
+		delivery: delivery,
+		sessions: sessions,
+		relays:   relays,
+		logger:   logger,
+	}, sessionConsumerSweepInterval))
+
 	// Phase 6b1: Collect the interest bucket's delete markers, which the reaper above leaves one of
 	// per dead session on a key that is never reused and which nothing else removes, so every
 	// restart's cache warm-up replays them before it serves (LEGION-374). The first pass runs now,
@@ -1452,6 +1526,32 @@ func main() {
 	})
 }
 
+// startSweep runs pass every interval, and once as the listener starts, which is the loop every
+// backstop sweep of the listener runs: the kept role lanes' (startKeptRoleSweep) and the session
+// consumers' (startSessionConsumerSweep). It runs under the context the listener's other KV
+// loops run under and returns a channel closed once its goroutine has returned, as they do
+// (store.Registry.StartReaper), so the shutdown ends it and waits for a pass in flight
+// (listenerLoops.kvLoopsDone). A pass that is still running when ctx ends is not cut short by
+// this loop: each pass watches ctx itself and the shutdown waits for it, so a sweep ends
+// between two of its own calls rather than inside one.
+func startSweep(ctx context.Context, interval time.Duration, pass func(context.Context)) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			pass(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return done
+}
+
 // listenerLoops are the background loops main starts once the durable binds: stop ends them,
 // monitorDone is closed once the self-health monitor has returned, and each of kvLoopsDone once
 // one of the loops that list a KV bucket (the reapers and the interest marker collector) has. A
@@ -1493,8 +1593,9 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 
 	// Ordered shutdown:
-	// 1. Session relays — publish no frame and ack nothing more; the messages they hold are
-	//    delivered again once their ack wait runs out.
+	// 1. Session relays — publish no frame and ack nothing more; each one pulling returns the
+	//    messages it holds to the server with a nak (sessionRelays.release), so they are
+	//    delivered again at once rather than after their ack wait.
 	// 2. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1502,6 +1603,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}
+	// A deregistration answers before its session consumer is deleted and leaves that delete
+	// running behind it (sessionDelivery.deleteAfterAnswer), so the stop waits for those still
+	// in flight once the server has stopped serving: a delete cut off here would leave its
+	// consumer for the sweep, and one started after the drain below would reach a closed
+	// connection.
+	parts.delivery.awaitDeletes(shutdownCtx)
 	// The session-consumer connection carries the consumer calls registrations make, which the HTTP
 	// server has stopped serving, and the relays' acks, which its drain lets reach the server,
 	// within what is left of the HTTP stop's budget.

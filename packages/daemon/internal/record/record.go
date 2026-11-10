@@ -295,7 +295,8 @@ type DeliveryHold struct {
 func (i Issue) AwaitingPerson() bool { return i.Phase == phase.AwaitingPerson && i.Awaiting != nil }
 
 // Answered says whether the issue is a root a person's answer released from awaiting_person, which
-// waits for its slot.
+// waits in the line for the resume of its architect, on the row it held through the wait
+// (KeepsSlot).
 func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.AnsweredAt != nil }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -385,7 +386,19 @@ type PhaseRow struct {
 	// --version <n>`, as its task's Handoff line says. Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	Rounds         int
+	// Rounds is how many times the issue moved back to an earlier phase while this role held it,
+	// counted on the implementer's row alone (workflow's recordRound): a reviewer's request for
+	// changes, a tester's fail, a worker's backward move, and the move the daemon makes on its own
+	// for a red CI verdict or a head that conflicts with its base. Every backward move raises it,
+	// because a completion's key is built from it (api/handoff.go) and two passes through a phase
+	// must not collide.
+	Rounds int
+	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
+	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
+	// implementer answers with a forward merge, which no reviewer asked for. review_round_cap
+	// compares Rounds - ConflictRounds with the cap, so such a round costs the issue nothing,
+	// whichever fact made the move (workflow's recordRound).
+	ConflictRounds int
 	Verdict        string
 	// Summary is what the role reported with its completion. The merger's is its READY packet,
 	// which the daemon posts when the issue reaches awaiting_merge.
@@ -503,13 +516,11 @@ type PullRequest struct {
 	// settlement comes to is the required set's to say (classify.HeadVerdict).
 	CheckedHead string
 	// Failing and Cancelled are the checks the settlement names as failed and as cancelled.
-	Failing         []string
-	Cancelled       []string
-	FixAttempts     int
-	BlockedAttempts int
-	CheckRuns       []AttemptRun
-	Generation      int64
-	Snapshot        string
+	Failing    []string
+	Cancelled  []string
+	CheckRuns  []AttemptRun
+	Generation int64
+	Snapshot   string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -523,12 +534,6 @@ type PullRequest struct {
 	// and otherwise queued on the move (Move.Repeats). A push for a move not made yet - one that
 	// returns the branch to a commit it held before, say - is not spent.
 	Moves []Move
-	// HeadCounted is the head the fix-attempt count last counted, a push onto a red verdict, kept
-	// across every head pushed on top of it until one is pushed onto a green verdict, or onto a
-	// settled head whose base branch requires no check and no workflow
-	// (classify.AdvancePullRequestHead); empty when no such attempt stands. The fix-attempt cap holds
-	// a red within that attempt (classify.FixAttemptCapHolds).
-	HeadCounted string
 	// Run is the head run: the pull request's judgement as it stood before the first head still
 	// waiting for a push of its move, and every head, settlement, required read, clearing of the
 	// head the required workflows were read at, and reopen applied since, replayed at each step and
@@ -536,7 +541,7 @@ type PullRequest struct {
 	// its bound with none left waiting.
 	Run *HeadRun
 	// PlannedRed is whether the newest head was the review App's (the tester's red tests): a red on
-	// it is planned, so the next head is not a fix attempt.
+	// it is planned, so it sends no work back (workflow's decideChecks).
 	PlannedRed bool
 	// Required is the checks the pull request's base branch requires (its rulesets' required status
 	// checks and its branch protection's), as the daemon last read them from GitHub
@@ -567,6 +572,21 @@ type PullRequest struct {
 	// yet, either), MergeabilityMergeable once GitHub can merge the head automatically, and
 	// MergeabilityConflicting once it cannot. "" means the read has never run.
 	Mergeability Mergeability
+	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
+	// whichever read made that judgement: the two-minute required-checks pass reading GitHub's
+	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
+	// for the head unmergeable on the base branch's own tip (workflow's mergeQueueConflict). A read
+	// that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's answer
+	// for a head sitting in the merge queue, neither writes nor clears it. "" means no head is held
+	// conflicting.
+	//
+	// A backward move made while it is non-empty and equal to HeadSHA is a conflict round, which
+	// review_round_cap does not count (PhaseRow.ConflictRounds): the implementer answers such a
+	// round with a forward merge, which moves HeadSHA and so ends the exemption with no write of
+	// its own. Mergeability beside it cannot carry the fact, because every pass rewrites it from
+	// GitHub's answer and that answer is UNKNOWN while the head is queued, so a move two minutes
+	// after the judgement would read as no conflict.
+	ConflictingHead string
 	// MergeSHA is the merge commit GitHub reported for the pull request, which the production
 	// check's agent looks for in production: empty until the merge, and for a pull request merged
 	// before the column existed. Nothing fills it later — no compare is left to — so the check's
@@ -603,13 +623,10 @@ type Named struct {
 	At     time.Time `json:"at,omitzero"`
 }
 
-// Judgement is the part of a pull request a head run replays: its head, its fix-attempt count and
-// marks, its planned mark, its CI settlement, what its base branch requires, and the moves it has
-// made. BlockedAttempts is what was reported, and is not replayed.
+// Judgement is the part of a pull request a head run replays: its head, its planned mark, its CI
+// settlement, what its base branch requires, and the moves it has made.
 type Judgement struct {
 	HeadSHA       string             `json:"headSha"`
-	FixAttempts   int                `json:"fixAttempts"`
-	HeadCounted   string             `json:"headCounted,omitempty"`
 	PlannedRed    bool               `json:"plannedRed,omitempty"`
 	CheckedHead   string             `json:"checkedHead,omitempty"`
 	Failing       []string           `json:"failing"`
@@ -1211,6 +1228,10 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
+	// records. It is what tells a holder the daemon records in another tree from one it records
+	// nowhere, which SessionClaimsTree's one boolean cannot.
+	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
@@ -1291,7 +1312,7 @@ type Store interface {
 	// (PullRequestReview.LegionSession).
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the fix-attempt counts and planned mark of a still-open one (the next generation runs on the same
+	// request, the planned mark of a still-open one (the next generation runs on the same
 	// branch and pull request), its design gate, each role's handoff, review rounds, verdict and
 	// summary, and a READY the gate refused. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again.
@@ -1391,8 +1412,11 @@ type Store interface {
 	ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error)
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
-	// identical one.
-	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error)
+	// identical one. Issue "" reads every issue of the project, which is what a wake about the
+	// project alone asks; an issue, and with it a role, narrow the read to that one claim's own
+	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
+	// nothing further, so an issue alone reads every role of that issue.
+	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
 
 	// DisarmPending says whether outbox still holds an unfinished auto_merge_disable row of issue:
 	// a finished row is deleted, so any row of the kind is one still to run or retrying.
@@ -1533,6 +1557,10 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
+	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' second statement
+	// without its first, for a caller that judges a run by its claim and reads no queued start
+	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
+	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -1559,14 +1587,23 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), and the task it holds,
-// nil for none, with the task's generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
+// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
+// generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
-	Pending      *supervise.Delivery
+	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
+	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
+	// does not), and 0 for a claim that has never retired and for one an earlier release retired,
+	// which recorded the moment nowhere. What it is for: its one reader weighs the write mark of a
+	// start row the issue owes against it, to tell a row the workflow wrote after the stop from one
+	// already written when the stop was recorded (admit's stopOutlivedStart). It says nothing about
+	// a claim that is not retired now, which is the only state that reader looks at.
+	RetiredAtWriteMark int64
+	Pending            *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

@@ -1,0 +1,50 @@
+Experiment 2, Temporal: the human gate.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+issue-id: EXP2-1794090959265017598
+workflow-id: exp2-gate-1794090959265017598
+release-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e2/exp2-release-1794090959265017598
+gate-status-while-waiting: Running
+gate-pending-activities-while-waiting: 0
+gate-pending-children-while-waiting: 0
+gate-pending-workflow-task-while-waiting: none
+gate-last-history-event-while-waiting: EVENT_TYPE_WORKFLOW_TASK_COMPLETED
+gate-history-events-while-waiting: 4
+gate-observed-idle-for: 3s
+gate-phase-before-any-approval: awaiting_person
+approvals-after-the-first-approval: 1
+withdrawals-after-the-first-approval: 1
+confirmation-steps-run: 1
+gate-phase-after-the-first-approval: awaiting_person
+next-phase-started-after-the-first-approval: false
+gate-pending-activities-after-the-first-approval: 0
+gate-phase-final: implementing
+approvals-total: 2
+versions-total: 1
+withdrawals-total: 1
+confirmation-steps-total: 2
+advanced-after-approval-number: 2
+next-phase-prompt: issue=EXP2-1794090959265017598 phase=implementing attempt=1
+last-signal-event-id: 19
+next-phase-scheduled-event-id: 29
+timed: gate-history-event-count: 35
+timed: gate-history-size-bytes: 5433
+timed: gate-history-size-bytes-source: DescribeWorkflowExecution.workflowExecutionInfo.historySizeBytes
+timed: signals-sent: 3
+timed: actions-from-signals: 3
+timed: actions-rule-applied: one Action per signal (Temporal Cloud's published rule)
+timed: queries-sent-by-this-driver: 4
+timed: namespace-retention-hours: 24
+timed: wall-clock-the-gate-actually-waited: 3s
+reasoned: active-storage-usd-for-one-gate-open-1-days: 0.000005476 (5433 bytes x 24 h x $0.042 per GB-hour)
+reasoned: active-storage-usd-for-one-gate-open-7-days: 0.000038335 (5433 bytes x 168 h x $0.042 per GB-hour)
+reasoned: active-storage-usd-for-one-gate-open-30-days: 0.000164294 (5433 bytes x 720 h x $0.042 per GB-hour)
+reasoned: active-storage-usd-for-1000-gates-open-30-days: 0.164294 (1000 x 5433 bytes x 720 h x $0.042 per GB-hour)
+reasoned: active-storage-usd-per-gate-for-the-namespace-retention-after-it-closes: 0.000005476 (5433 bytes x 24 h x $0.042 per GB-hour)
+reasoned: actions-while-waiting: zero: a workflow blocked on a signal with no timer running runs no workflow task and schedules nothing, so the days it waits cost Actions only through the signals that end the wait
+reasoned: what-a-pod-cannot-do: this run waited seconds; the lines above extend its measured bytes over days by arithmetic, and nothing here observed a workflow that really stood for days
+limit: one gate on one dev server, waiting seconds rather than days: it shows a blocked workflow holds no worker and that a new version withdraws an approval, while the cost of a real multi-day wait is arithmetic on this run's bytes, not a wait this pod sat through
+experiment 2: PASS

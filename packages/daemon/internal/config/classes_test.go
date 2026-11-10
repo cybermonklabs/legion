@@ -48,6 +48,10 @@ var classesDerived = map[string]string{
 	"Config.Warnings":              "derived: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, which no key of the file writes",
 	"Kubernetes.PluginsFromBinary": "derived: whether runtime.kubernetes.plugins was filled from the binary's linked pair rather than from the file",
 	"PathPattern.Regexp":           "derived: compiled from projects.<KEY>.merge.by_hand[], which carries the expression",
+	"Config.StallLimits":           "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session it starts; no legion.yaml key names them",
+	"StallLimits.CallBound":        "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.CallGrace":        "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.Step":             "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
 }
 
 // Every exported field of every struct the walk reaches is in the class table or in
@@ -167,7 +171,7 @@ func loaderTopLevelKeys() []string {
 		"envoy_token_file", "nats_nkey_seed_file", "nats_daemon_nkey_seed_file", "dispatch_url",
 		"dispatch_token_file", "projects", "gates", "github_apps", "linger_hours",
 		"production_check_hours", "pod_update_retask_hours", "pod_update_notice_hours",
-		"review_round_cap", "max_fix_attempts", "controller", "capabilities", "worker_backends",
+		"review_round_cap", "controller", "capabilities", "worker_backends",
 		"role_config_files", repositoryRenamesKey,
 	}
 	for _, duration := range durationKeys {
@@ -234,8 +238,8 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 		"runtime.kubernetes", "runtime.kubernetes.idle_release",
 		"runtime.kubernetes.idle_release.backstop_minutes",
 		"runtime.kubernetes.idle_release.idle_minutes", "runtime.kubernetes.namespace",
-		"runtime.tmux", "runtime.tmux.take_over", "state_dir", "worker_stream_port",
-		"worker_wake_burst", "worker_wakes_per_minute",
+		"runtime.tmux", "runtime.tmux.take_over", "state_dir", "worker_stall_backstop_hours",
+		"worker_stream_port", "worker_wake_burst", "worker_wakes_per_minute",
 	}
 	if !slices.Equal(fixed, want) {
 		t.Errorf("the fixed paths are %q, want %q", fixed, want)

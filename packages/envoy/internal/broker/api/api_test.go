@@ -140,7 +140,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := brokertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -377,6 +377,7 @@ type wireApproverGrant struct {
 	Enrollment wireEnrollmentInfo `json:"enrollment"`
 	Names      []string           `json:"names"`
 	Approver   *string            `json:"approver"`
+	DecidedBy  *string            `json:"decided_by"`
 	ExpiresAt  *time.Time         `json:"expires_at"`
 	CreatedAt  time.Time          `json:"created_at"`
 }
@@ -879,6 +880,12 @@ func TestAgentSecretRequestLifecycle(t *testing.T) {
 		listed.RecordID == nil || *listed.RecordID != recordID || listed.Enrollment.Slot != nil {
 		t.Fatalf("listed grant = %+v, want names [DEEL_API_KEY] granted on approval by %s, resting on record %s, on an enrollment with no slot", listed, testApprover, recordID)
 	}
+	// Who decided it travels beside whose grant it is. They are one person here and two for a
+	// grant the model judge approved, which records the record's own approver and names the
+	// judge as its decider; Dispatch's Live grants row reads this field to say who approved it.
+	if listed.DecidedBy == nil || *listed.DecidedBy != testApprover {
+		t.Fatalf("listed grant decided_by = %v, want %s, who approved it", listed.DecidedBy, testApprover)
+	}
 	if listed.ExpiresAt == nil || listed.ExpiresAt.Sub(time.Now()) > 15*time.Minute || listed.ExpiresAt.Sub(time.Now()) < 13*time.Minute {
 		t.Fatalf("listed grant expires_at = %v, want about 15 minutes from now, the default for a human-tier request naming no lifetime", listed.ExpiresAt)
 	}
@@ -983,8 +990,8 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (string, error) {
-				return "", fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)
+			policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				return secrets.Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)
 			},
 		}
 	})
@@ -1092,7 +1099,7 @@ func TestCreateRequestWithInvalidSessionIDIs400SessionIDInput(t *testing.T) {
 func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking who may decide this request", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -1172,7 +1179,7 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 	request := func(names ...string) wireCreateRequestResponse {
 		t.Helper()
 		status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-			map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "", names...), "session_id": nil})
+			map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking which answers link the record's page", names...), "session_id": nil})
 		if status != http.StatusOK {
 			t.Fatalf("POST /v1/requests %v = %d: %s", names, status, body)
 		}
@@ -1247,7 +1254,7 @@ func TestTheRecordReadRouteIsGone(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY"), "session_id": nil})
+		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking the record read route is gone", "DEEL_API_KEY"), "session_id": nil})
 	recordID := *decode[wireCreateRequestResponse](t, body).RecordID
 
 	status, body := ts.ui(t, http.MethodGet, "/v1/credential-requests/"+recordID, nil)
@@ -1323,7 +1330,7 @@ func TestRecordCancelledWithNoEventLeavesThePendingList(t *testing.T) {
 func TestCancelRequestThenCancelAgainIsTerminal(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking a session cancels its own request once", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -1352,7 +1359,7 @@ func TestCancelRequestThenCancelAgainIsTerminal(t *testing.T) {
 func TestRevokeGrantBySession(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking a session revokes its own grant", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)

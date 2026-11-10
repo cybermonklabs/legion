@@ -344,20 +344,26 @@ type DaemonInfo struct {
 type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
-	// the issues at work rather than the trees (dispatch://INFRA-980), so one tree with three
-	// working children holds three of these and a tree whose every issue only waits holds none.
+	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
+	// issue keeps its slot from the moment the daemon starts it
+	// until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot). So
+	// one tree with three started children holds three of these, and an issue waiting on a
+	// person, one in accepting, one held and one merging under a closed gate are each here,
+	// while one in awaiting_merge is in neither list.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: the issues whose work came back and
-	// wait for a slot before their worker is started again, oldest first, then the issues whose
-	// first phase can start, by their tree root's Dispatch rank. It carries children as well as
-	// roots, for the same reason `active` does.
+	// Waiting is the admission line, in the line's own order: the issues whose work came back,
+	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
+	// rank. It carries children as well as roots, for the same reason `active` does. An owed
+	// start in it holds no row and waits for one; an issue in it that holds a row already (the
+	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
+	// which takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
 	// waits in the line, and one whose root waits on a person. A slot is no longer one per tree,
-	// so a running tree can hold no slot at all — its root accepting or awaiting its merge while
-	// its children work, or every issue of it waiting — and `active` alone no longer tells a
-	// reader such as the controller which trees run. Never null; empty when no tree is live.
+	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
+	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
+	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees"`
 	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
 	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
@@ -446,6 +452,10 @@ type Issue struct {
 	// asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
+	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
+	// only for an issue that list names, a slot holder whose work came back among them, and
+	// absent for every other issue.
+	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -469,8 +479,9 @@ type Issue struct {
 // is `ask` with Ask, the id of the oldest question of its tree still with the person, or `gate`
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
-// absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the wait;
-// the root then waits at the front of admission's waiting line for its slot.
+// absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
+// wait; the answered root then stands in admission's waiting line as well, among the issues
+// whose work came back, oldest first, until the pass that resumes it.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`
@@ -501,7 +512,8 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // process's: a reader compares it with `locator.incarnation` to tell the running process's report
 // from a predecessor's. A socket path never appears in the view. A claim with no process (queued,
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
-// role never reports (the controller), has no capabilities.
+// role never reports (the controller), has no capabilities. A claim whose agent has stepped —
+// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
@@ -519,6 +531,50 @@ type ClaimView struct {
 	// before its first push). It is the worker's word, which nothing verifies.
 	UpdateRound string `json:"updateRound,omitempty"`
 	UpdateHead  string `json:"updateHead,omitempty"`
+	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
+	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
+	Step *StepView `json:"step,omitempty"`
+}
+
+// StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the
+// daemon last saw the claim's agent step, when the turn that step belongs to began, and the call
+// the agent is in. It is what says a worker mid-turn is still moving, so the stall backstop and
+// an operator read the same record.
+//
+// The call's arguments are never here: their length and an eight-byte fingerprint of them stand
+// for them, because a shell command routinely holds a credential and this record reaches every
+// surface an operator reads (supervise.StepRecord). Every field is absent where the record holds
+// nothing for it: a claim whose turn has begun and whose agent has called nothing carries
+// `turnStartedAt` alone; a call still open carries `startedAt` and no `endedAt`, which is the
+// shape a stalled turn leaves behind; `argsBytes` and `argsHash` are absent for a call the
+// daemon saw no arguments of.
+type StepView struct {
+	At            *time.Time `json:"at,omitempty"`
+	TurnStartedAt *time.Time `json:"turnStartedAt,omitempty"`
+	Tool          string     `json:"tool,omitempty"`
+	CallID        string     `json:"callId,omitempty"`
+	ArgsBytes     int        `json:"argsBytes,omitempty"`
+	ArgsHash      string     `json:"argsHash,omitempty"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	EndedAt       *time.Time `json:"endedAt,omitempty"`
+}
+
+// StepViewOf is step as a claim view shows it, and nil for the zero record — a claim whose agent
+// has neither begun a turn nor made a call the daemon saw — so no such claim carries the key.
+func StepViewOf(step supervise.StepRecord) *StepView {
+	if step == (supervise.StepRecord{}) {
+		return nil
+	}
+	return &StepView{
+		At:            instant(step.At),
+		TurnStartedAt: instant(step.TurnStartedAt),
+		Tool:          step.Tool,
+		CallID:        step.CallID,
+		ArgsBytes:     step.ArgsBytes,
+		ArgsHash:      step.ArgsHash,
+		StartedAt:     instant(step.StartedAt),
+		EndedAt:       instant(step.EndedAt),
+	}
 }
 
 // CapabilityReportView is one session's capability report as the state shows it: when the session
@@ -603,7 +659,6 @@ type PullRequestView struct {
 	// settingSourcesContract and above, and nil — off the wire entirely, `omitzero` — on the copy
 	// served to a caller below it (api's withoutSettingSources). Every producer of a view sets it.
 	RequiresChecks *bool `json:"requiresChecks,omitzero"`
-	FixAttempts    int   `json:"fixAttempts"`
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
@@ -689,6 +744,18 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 type SlotView struct {
 	Index      int       `json:"index"`
 	AdmittedAt time.Time `json:"admittedAt"`
+}
+
+// WaitingLineField is the name `waitingLine` carries on the wire, read from here by a test that
+// looks for the field rather than repeating the string.
+const WaitingLineField = "waitingLine"
+
+// WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
+// and the length of that list at this read. It says where the issue stands, not what holds it:
+// `admission.blocked` names what holds it.
+type WaitingLineView struct {
+	Place  int `json:"place"`
+	Length int `json:"length"`
 }
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull

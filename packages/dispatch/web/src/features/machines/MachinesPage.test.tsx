@@ -31,6 +31,8 @@ function session(sessionId: string, host: string, place?: TmuxPlace): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title: `Agent ${sessionId}`,
     tmux_place: place,
   };

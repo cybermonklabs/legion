@@ -34,9 +34,11 @@ questions, approve the spec, and review the pull request. Everything happens in
 
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` and takes the next free slot in the board's order.
-A slot is one issue with work, a root or a child, so a tree of four working issues holds four of
-them, and an issue that only waits — for its merge, on a blocker, on its own children or on you —
-holds none while its agents stay live.
+A slot is one issue the daemon has started, a root or a child, so a tree of four started issues
+holds four of them. An issue takes its slot when the daemon starts it and keeps it
+until it is done, leaves the workflow or waits only for its merge,
+so a wait of its own — on a blocker, on its children or on you — keeps the slot, and its agents
+stay live beside it.
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it, park it, or leave it for you.
 
@@ -146,12 +148,14 @@ The merge closes the issue: it moves to `done` the moment GitHub reports the pul
 A root with work still running beneath it is the exception: its merge is recorded and the issue
 waits until the last other issue of its tree is done or parked, so no child's finished work is cut
 off, and then it closes. The architect accepted the change before that, when the reviewer approved
-it, with a comment on the issue summarizing the evidence; the daemon refuses that acceptance while
-an issue beneath it is still being worked, so a parent is accepted after its children. After the
-close the role your project's `production_check` names — the tester, unless the setting is `off` —
-checks the change in production and records what it saw
+it, with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
+its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
+worked, so a parent is accepted after its children. After the close the role your project's
+`production_check` names — the tester, unless the setting is `off` — checks the change in
+production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check and no other write, so look in both places.
+closed issue takes a result for such a check, a comment and a message, and no other write, so
+look in both places.
 Each look that finds the deploy missing says when it wants to look again, and nothing else brings
 it back.
 The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work

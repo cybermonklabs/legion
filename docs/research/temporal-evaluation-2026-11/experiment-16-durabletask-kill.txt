@@ -1,0 +1,78 @@
+Experiment 16, durabletask-go: an activity whose process is killed inside it.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+library: github.com/dapr/durabletask-go v0.16.0, an embedded Go engine on the application's own PostgreSQL
+database: legion_golib_eval
+schema: exp16_28944_541676
+instance-id: exp16-prompt-1794091121907164649
+workflow-name: exp16PromptWorkflow
+activity-name: prompt-into-session
+side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e16/exp16-side-effects.log
+lock-documented-default: 2 minutes for both work-item kinds, in Instances.LockExpiration for a workflow and NewTasks.LockExpiration for an activity
+lock-this-run-used: 10s, set through PostgresOptions.WorkflowLockTimeout: this run waits the lapse out rather than waiting two minutes for it
+activity-lock-setting-read-from-the-library: PostgresOptions.ActivityLockTimeout exists and v0.16.0's PostgreSQL backend never reads it: getActivityWorkItem computes NewTasks.LockExpiration from WorkflowLockTimeout, so an activity's lock is the workflow lock
+heartbeat-while-an-activity-runs: none: the PostgreSQL backend has no extend for a locked work item, so the lock is a fixed deadline from the moment it was taken, running whether the activity is working or dead
+[worker1] dtworker: pid=28952
+worker1-pid: 28952
+tables-the-library-created: [history instances newevents newtasks]
+migration-table: none: the library has no migration table, it runs one script of CREATE TABLE IF NOT EXISTS every time a worker starts
+[worker1] dtworker: workflow-started=exp16-prompt-1794091121907164649
+side-effect-1: attempt=1 pid=28952 at=2026-11-07T22:38:42.058095188Z
+release-file-exists-while-activity-blocked: false
+sql-before-kill-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-before-kill-newtasks: newtasks seq=1 event=TaskScheduled(prompt-into-session) DequeueCount=1 LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=2026-11-07T22:38:52.057122Z VisibleTime=null
+sql-before-kill-newevents: no rows
+sql-before-kill-history: 3: WorkflowStarted ExecutionStarted TaskScheduled(prompt-into-session)
+newtasks-dequeuecount-before-kill: 1
+newtasks-lockedby-before-kill: legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec
+kill-sent: true
+killed-pid: 28952
+kill-signal: SIGKILL
+killed-process-still-alive: false
+sql-after-kill-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-after-kill-newtasks: newtasks seq=1 event=TaskScheduled(prompt-into-session) DequeueCount=1 LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=2026-11-07T22:38:52.057122Z VisibleTime=null
+sql-after-kill-newevents: no rows
+sql-after-kill-history: 3: WorkflowStarted ExecutionStarted TaskScheduled(prompt-into-session)
+state-for-an-activity-that-ran-with-its-outcome-unknown: none that says it ran: the NewTasks row is written when the activity is scheduled and deleted when it completes, so a killed activity leaves the same row as one that was never picked up. LockedBy and LockExpiration say a worker claimed it and DequeueCount says how often it was handed out, but nothing says the body did anything
+nearest-thing-to-an-attempt-counter-on-the-row: NewTasks.DequeueCount for an activity and NewEvents.DequeueCount for a workflow work item: both count hand-outs, not performances, and neither is visible to the workflow code
+[worker2] dtworker: pid=28959
+[worker2] dtworker: replacement-polling=true
+replacement-pid: 28959
+side-effects-while-the-dead-process-lock-was-still-held: 1
+replacement-waited-for-the-lapse-seconds: 4s
+sql-while-lock-held-by-dead-process-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-while-lock-held-by-dead-process-newtasks: newtasks seq=1 event=TaskScheduled(prompt-into-session) DequeueCount=1 LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=2026-11-07T22:38:52.057122Z VisibleTime=null
+sql-while-lock-held-by-dead-process-newevents: no rows
+sql-while-lock-held-by-dead-process-history: 3: WorkflowStarted ExecutionStarted TaskScheduled(prompt-into-session)
+activity-re-run: true
+seconds-from-kill-to-the-second-performance: 10.030
+what-the-lock-expiry-does-when-the-holder-never-returns: it is what releases the work: the NewTasks row keeps LockedBy and LockExpiration exactly as the dead process left them, and the first poller to find LockExpiration in the past takes the row, raises its DequeueCount and runs the activity body again -- about 10s after the kill here
+side-effect-2: attempt=2 pid=28959 at=2026-11-07T22:38:52.059612765Z
+sql-during-the-second-performance-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28952,2ae534f6-29fe-406e-a24a-4242d713a3ec LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-during-the-second-performance-newtasks: newtasks seq=1 event=TaskScheduled(prompt-into-session) DequeueCount=2 LockedBy=legion-infra-infra-1546,28959,341c89c4-cb6d-40c7-b4b5-03cdd18ea2ad LockExpiration=2026-11-07T22:39:02.0572Z VisibleTime=null
+sql-during-the-second-performance-newevents: no rows
+sql-during-the-second-performance-history: 3: WorkflowStarted ExecutionStarted TaskScheduled(prompt-into-session)
+newtasks-dequeuecount-during-the-second-performance: 2
+newtasks-lockedby-during-the-second-performance: legion-infra-infra-1546,28959,341c89c4-cb6d-40c7-b4b5-03cdd18ea2ad
+newtasks-row-is-the-same-row-handed-to-another-worker: true
+sql-final-instances: RuntimeStatus=COMPLETED Version=none LockedBy=legion-infra-infra-1546,28959,341c89c4-cb6d-40c7-b4b5-03cdd18ea2ad LockExpiration=null CompletedTime=2026-11-07T22:38:52.199911Z Output={"attempt":2,"pid":28959} FailureDetails=none
+sql-final-history: 6: WorkflowStarted ExecutionStarted TaskScheduled(prompt-into-session) WorkflowStarted TaskCompleted ExecutionCompleted
+sql-final-newtasks: no rows
+sql-final-newevents: no rows
+sql-final-taskscheduled-events: 1
+sql-final-taskcompleted-events: 1
+sql-final-taskfailed-events: 0
+side-effect-line-1: attempt=1 pid=28952 at=2026-11-07T22:38:42.058095188Z
+side-effect-line-2: attempt=2 pid=28959 at=2026-11-07T22:38:52.059612765Z
+side-effect-performed-times: 2
+activity-completions-recorded-in-postgres: 1
+what-that-means: an activity whose outcome durabletask-go never recorded is run again once its lock lapses: the library's guarantee for an activity is at-least-once, and the history records only the attempt that returned, so a side effect performed by a killed attempt is invisible to the workflow
+can-the-activity-be-pinned-to-one-process: no: the PostgreSQL backend's getActivityWorkItem takes the first NewTasks row whose lock has lapsed, with no queue, no worker filter and no routing of any kind -- LockedBy is written when a worker takes the row rather than when the activity is scheduled
+what-holds-the-work-to-the-dead-process: NewTasks.LockExpiration alone, for as long as it is in the future
+if-that-process-never-comes-back: the lock lapses 10s after it was taken and the next poller runs the activity body again, with DequeueCount one higher: no process identity, no maximum and no operator action is involved
+limit: one instance, one activity, one kill, on one PostgreSQL, with the lock shortened from two minutes to 10s: it shows what durabletask-go records and re-runs when the process inside an activity dies, not how a fleet of workers behaves, nor what happens when the database rather than the process is the thing that fails
+schema-dropped: exp16_28944_541676
+experiment 16: PASS

@@ -36,7 +36,8 @@ For each spec, ask, comment and message:
 
 - Write in `skill://asd-ste100`'s strict mode.
 - Write about the current design, never the person or how people reached it, and never quote or upload their words.
-- Link each source where the person wrote it, each id whole. With no link, state the design.
+- Link each source where the person wrote it. With no link, state the design.
+- Treat a person's stated preference or past answer as evidence of their taste, never as a ruling that settles the question: an answer given once is not a standing rule. A commit attributed to a person is not their decision, because agents commit the work.
 - In a spec, cite code by file and symbol, never a line number: it goes stale at the next edit.
 - A sentence citing a gate passing (test, review, check) also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
 - Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).
@@ -46,7 +47,6 @@ For each spec, ask, comment and message:
 
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
 - A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
-- Ask only for the person's authority, taste or risk appetite, when options differ on what they care about.
 - Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, answerable on a phone, and name nothing the reader cannot see from it ("the message above").
 - For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch; a single-digit count means expand the term or drop it, because a coinage reads as familiar to you. A count misses a coinage of common words, so read the draft for those too.
 - Measure each claim the ask rests on, its premise and each option's precondition. Where you cannot, mark the claim unverified and name the missing measurement; call an option unavailable only where a precondition demonstrably fails. A premise can go stale within the hour; no unmeasured number goes in one.
@@ -70,7 +70,7 @@ Choices—answered asks included—earn `decisions.md` `##` sections only if a d
 
 ## Old specs
 
-Rewrite a spec outside the outline whole in one version, its ask blocks moved with `doc-edit`'s `move`; restate each retelling, quotation or unlinked attribution as design, or cut it.
+Rewrite a spec outside the outline whole in one version, its ask blocks moved with `doc-edit`'s `move`.
 
 ## Approval
 

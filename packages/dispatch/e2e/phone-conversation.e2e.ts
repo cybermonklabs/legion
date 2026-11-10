@@ -127,7 +127,8 @@ test.beforeEach(async () => {
 // A send's composer is the one that shows its outcome, and the one on screen: a thread opened over
 // it while the message is on its way leaves it where it was, holding the draft until the answer,
 // and then it takes the next message.
-test("on a phone, a docked send keeps its composer through a thread and back, which then takes typing @phone", async ({
+// @pr: A write on the wire on a phone: a thread opened over a send leaves its composer, its draft and the answer where the reader finds them.
+test("on a phone, a docked send keeps its composer through a thread and back, which then takes typing @phone @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -689,7 +690,7 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
     await landed;
     await send.settled();
     const { replies } = await getComment(earlier.id);
-    expect(replies.filter((reply) => reply.body === "Reply into the void")).toHaveLength(1);
+    expect((replies ?? []).filter((reply) => reply.body === "Reply into the void")).toHaveLength(1);
   } finally {
     await alice.close();
   }
@@ -697,8 +698,8 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
 
 // On a phone the docked composer sits at the foot of the screen, and a refusal's row grows it
 // upward. `Jump to latest` shows while the reader is scrolled down, which is when they reach for
-// the refusal's Retry, or a closed issue's Discard draft, so it never sits over the composer.
-test("on a phone, Jump to latest covers none of the docked composer's Retry or Discard draft @phone", async ({
+// the refusal's Retry, so it never sits over the composer.
+test("on a phone, Jump to latest covers none of the docked composer's Retry @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -729,8 +730,8 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry or D
     await scrollToOldest(page);
     await expect(jump).toBeVisible();
     await expectUncovered(jump, form);
-    // Retry, pressed while the pill shows, goes out; the issue closes under it, and the server's
-    // refusal leaves Discard draft in its place.
+    // Retry, pressed while the pill shows, goes out; the issue closes under it, which takes the
+    // comment, and the composer that took it back from its refusal row is still uncovered.
     await page.unroute(comments);
     const send = await holdPosts(page, comments);
     await form.getByRole("button", { name: "Retry" }).click();
@@ -739,14 +740,15 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry or D
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    const posted = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
     send.release();
-    await expect(form.getByText("Couldn't send — issue is closed")).toBeVisible();
+    await posted;
+    await expect(form.getByText("Couldn't send — the server is down")).toHaveCount(0);
+    await expect(field).toHaveValue("");
 
     await scrollToOldest(page);
     await expect(jump).toBeVisible();
     await expectUncovered(jump, form);
-    await form.getByRole("button", { name: "Discard draft" }).click();
-    await expect(form).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -1154,7 +1156,9 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     // Where the reader comes from, so the back below leaves the issue rather than landing on
     // the Conversation, whose own dwell would write the mark whatever the thread did.
     await page.goto("/projects/CORE/issues");
-    const issueLink = page.getByRole("link", { name: new RegExp(issue.key) }).first();
+    const issueLink = page
+      .getByRole("table", { name: "Project issues table" })
+      .getByRole("link", { name: issue.key, exact: true });
     await drawn(issueLink, 1);
     await expect(issueLink).toBeVisible();
 

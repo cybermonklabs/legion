@@ -102,7 +102,8 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
 // two fresh renders.
-test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle", async ({
+// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order List and Board alike.
+test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

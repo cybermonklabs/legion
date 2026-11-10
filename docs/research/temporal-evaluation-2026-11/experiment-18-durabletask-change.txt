@@ -1,0 +1,66 @@
+Experiment 18, durabletask-go: a change against a recorded run.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+library: github.com/dapr/durabletask-go v0.16.0
+database: legion_golib_eval
+schema: exp18_28997_335859
+versioning-api-in-the-library: two: ctx.IsPatched(name), which runs new code only for a run that had not passed that point, and a versioned registry (AddVersionedWorkflowN) that pins a run to the version it started under
+side-by-side-deployment-available: no: the PostgreSQL backend has no queue and no routing, so every worker polls every instance -- two deployments of different code against one task hub would take each other's work items
+recorded-code: plan, implement, wait for a person, deliver
+changed-code: plan, review, implement, wait for a person, deliver: one new activity in the middle
+work-item-lock-this-run-used: 6s
+recorded-instance: exp18-unguarded-1794091142822506164
+sql-recorded-history: 9: WorkflowStarted ExecutionStarted TaskScheduled(plan) WorkflowStarted TaskCompleted TaskScheduled(implement) WorkflowStarted TaskCompleted TimerCreated
+sql-recorded-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28997,2113564e-e319-485a-b3a4-645ee9be1acc LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+steps-performed-while-recording: 4
+old-deployment-stopped-before-the-change: true
+durabletask: 2026/11/07 22:39:03 exp18-unguarded-1794091142822506164: workflow already completed; dropping work item
+what-the-changed-code-did-to-the-recorded-run: it ended the recorded run without finishing it: the engine found the recorded history disagreeing with the new code, failed the run and wrote the error on the Instances row, so the steps after the insertion point never ran
+steps-the-recorded-run-performed-in-the-end: plan implement implement
+inserted-activity-ran-against-the-recorded-run: false
+already-recorded-activity-run-again-by-the-changed-code: implement
+recorded-run-reached-its-last-step: false
+error-the-library-recorded: *errors.errorString: a previous execution called CreateTimer with sequence number 2, but the current execution doesn't have this action with this sequence number
+newevents-dequeuecount-for-the-recorded-run-in-14s: 0
+state-the-run-is-left-in: FAILED
+sql-after-the-change-instances: RuntimeStatus=FAILED Version=none LockedBy=legion-infra-infra-1546,28997,f07fc814-5534-4781-83a9-5dd015bebbd2 LockExpiration=null CompletedTime=2026-11-07T22:39:03.263668Z Output=none FailureDetails=164 bytes recorded
+sql-after-the-change-history: 13: WorkflowStarted ExecutionStarted TaskScheduled(plan) WorkflowStarted TaskCompleted TaskScheduled(implement) WorkflowStarted TaskCompleted TimerCreated WorkflowStarted EventRaised(release) TaskScheduled(implement) ExecutionCompleted
+sql-after-the-change-newevents: newevents seq=7 event=TimerFired DequeueCount=0 LockedBy=none LockExpiration=null VisibleTime=9999-12-31T23:59:59.999999Z
+history-the-old-code-recorded-is-still-its-prefix: true
+history-rows-before-the-change: 9
+history-rows-after-the-change: 13
+is-the-history-corrupted: no: the rows the old code recorded are still the run's history, in order; what the change costs is the rest of the run, not the record of what it did
+changed-deployment-stopped: true
+patched-recorded-run-status: COMPLETED
+sql-patched-instances: RuntimeStatus=COMPLETED Version=none LockedBy=legion-infra-infra-1546,28997,f3c47b67-5579-4025-8dac-4d1ab28436f7 LockExpiration=null CompletedTime=2026-11-07T22:39:03.638699Z Output=none FailureDetails=none
+sql-patched-history: 15: WorkflowStarted ExecutionStarted TaskScheduled(plan) WorkflowStarted TaskCompleted TaskScheduled(implement) WorkflowStarted TaskCompleted TimerCreated WorkflowStarted EventRaised(release) TaskScheduled(deliver) WorkflowStarted TaskCompleted ExecutionCompleted
+steps-the-patched-code-ran-for-its-recorded-run: plan implement deliver
+patch-skipped-the-new-step-for-the-recorded-run: true
+how-the-patch-decides: ctx.IsPatched returns false while the replay is not yet at the end of the recorded history, and true once it is, so a run that had already passed the point takes the old path and a run that had not takes the new one
+sql-versioned-run-while-recorded: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28997,89b1bfac-490c-44f3-b925-093c65e1070d LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+version-recorded-on-the-instance: null: the Instances row carries no version, so the pin lives only in the run's ExecutionStarted event
+versioned-recorded-run-status: COMPLETED
+sql-versioned-instances: RuntimeStatus=COMPLETED Version=none LockedBy=legion-infra-infra-1546,28997,c9e91b5e-350d-4cac-bf32-2d005a1303d1 LockExpiration=null CompletedTime=2026-11-07T22:39:04.307959Z Output=none FailureDetails=none
+steps-the-versioned-recorded-run-ran-under-the-newer-deployment: plan implement deliver
+versioned-run-stayed-on-the-code-it-started-under: true
+new-run-under-the-latest-version-status: COMPLETED
+steps-the-new-run-ran: plan review implement deliver
+step-line: step=plan instance=exp18-patched-1794091142822506164 pid=28997 at=2026-11-07T22:39:02.947077096Z
+step-line: step=plan instance=exp18-unguarded-1794091142822506164 pid=28997 at=2026-11-07T22:39:02.951771265Z
+step-line: step=implement instance=exp18-patched-1794091142822506164 pid=28997 at=2026-11-07T22:39:02.965186335Z
+step-line: step=implement instance=exp18-unguarded-1794091142822506164 pid=28997 at=2026-11-07T22:39:02.967637885Z
+step-line: step=implement instance=exp18-unguarded-1794091142822506164 pid=28997 at=2026-11-07T22:39:03.268909726Z
+step-line: step=deliver instance=exp18-patched-1794091142822506164 pid=28997 at=2026-11-07T22:39:03.629589376Z
+step-line: step=plan instance=exp18-versioned-1794091142822506164 pid=28997 at=2026-11-07T22:39:03.909495949Z
+step-line: step=implement instance=exp18-versioned-1794091142822506164 pid=28997 at=2026-11-07T22:39:03.938186935Z
+step-line: step=deliver instance=exp18-versioned-1794091142822506164 pid=28997 at=2026-11-07T22:39:04.297178275Z
+step-line: step=plan instance=exp18-new-1794091142822506164 pid=28997 at=2026-11-07T22:39:04.507803246Z
+step-line: step=review instance=exp18-new-1794091142822506164 pid=28997 at=2026-11-07T22:39:04.520885652Z
+step-line: step=implement instance=exp18-new-1794091142822506164 pid=28997 at=2026-11-07T22:39:04.529934339Z
+step-line: step=deliver instance=exp18-new-1794091142822506164 pid=28997 at=2026-11-07T22:39:04.774868038Z
+limit: one inserted activity, one recorded run per treatment, on one PostgreSQL: it shows what an unguarded change does to a run that recorded the old shape and that both of the library's guards carry such a run to the end, not how a fleet rolls out, and not what a change that only reorders or renames would do
+schema-dropped: exp18_28997_335859
+experiment 18: PASS

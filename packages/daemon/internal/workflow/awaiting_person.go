@@ -12,8 +12,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Unresumable is the one rule for whether a root that returns its admission slot to wait on a
-// person may run again in its own architect session: it returns why it may not, or "" when it may.
+// Unresumable is the one rule for whether a root that waits on a person, holding the admission
+// slot it took when the daemon started it, may run again in its own architect session: it
+// returns why it may not, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session that claims within the tree are legitimate holders. The claim is the one
@@ -145,11 +146,11 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 	return intake.Result{}, e.store.SetCaughtUp(ctx, tx, issue.Key, fact.Through)
 }
 
-// answerWait records that by answered root's wait now, with detail, which puts the root at the
-// front of the waiting line (record.Waiting) and names the act in the task its architect resumes
-// with (resumeTask). The detail is the act's own: the ask a person acted on, the version and
-// reason of the review that answered, or who took the question away, so a later act of the same
-// kind does not rename it.
+// answerWait records that by answered root's wait now, with detail, which puts the root in the
+// waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
+// names the act in the task its architect resumes with (resumeTask). The detail is the act's
+// own: the ask a person acted on, the version and reason of the review that answered, or who
+// took the question away, so a later act of the same kind does not rename it.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, by, detail

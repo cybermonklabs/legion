@@ -1,0 +1,47 @@
+Experiment 5, Temporal: admission across workflows.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+admission-cap: 4
+issues-per-wave: 6
+waves: 2
+issues-total: 12
+hold-per-issue: 1.5s
+worker-max-concurrent-activities: 64
+worker-max-concurrent-workflow-tasks: 64
+why-not-worker-concurrency: worker-side concurrency is explicitly not the mechanism: it caps one worker process rather than the deployment, so it would measure nothing about a limit across workflows
+gatekeeper-workflow-id: exp5-gatekeeper-1794090984290124060
+gatekeeper-first-run-id: 01a1b827-e402-7a79-9f83-18478e739d57
+wave-1-gatekeeper-holders-when-the-wave-started: 0
+wave-1-issues-finished: 6
+wave-2-gatekeeper-holders-when-the-wave-started: 0
+wave-2-issues-finished: 6
+gatekeeper-admitted-total: 12
+gatekeeper-released-total: 12
+gatekeeper-generations: 2
+gatekeeper-holders-at-the-end: 0
+gatekeeper-queue-at-the-end: 0
+gatekeeper-runs-in-history: 3
+gatekeeper-continued-as-new: true
+gatekeeper-signals-received: 24
+grants-signalled-to-issues: 12
+retry-timers-started-by-issues: 12
+queries-sent-to-the-gatekeeper: 3
+capped-holds-recorded: 12
+capped-max-concurrency-counted-live: 4
+capped-max-concurrency-by-timestamps: 4
+gatekeeper-terminated: true
+control-issues: 12
+control-holds-recorded: 12
+control-max-concurrency-counted-live: 12
+control-max-concurrency-by-timestamps: 12
+gatekeeper-source-file: /legion/workspaces/cybermonklabs/legion/infra-1546/docs/research/temporal-evaluation-2026-11/prototype/internal/exp5/exp5.go
+gatekeeper-lines-of-go: 42
+actions-rule-applied: one Action per signal, per query and per timer started (Temporal Cloud's published rule); the issue workflows' own starts and activities are the work, not the admission
+actions-of-admission-total: 51
+actions-per-admission: 4.25
+actions-per-admission-without-the-driver-queries: 4.00
+limit: twelve issues, one worker process and a cap of four on one dev server: it shows a gatekeeper workflow bounds concurrency across workflows and that the uncapped control does not, not that the gatekeeper holds at Legion's issue rate or survives a busy deployment's signal volume
+experiment 5: PASS

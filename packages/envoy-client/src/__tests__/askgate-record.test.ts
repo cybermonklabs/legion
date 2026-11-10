@@ -1,7 +1,7 @@
-import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   askgateState,
   pidNamespace,
@@ -9,8 +9,6 @@ import {
   selfOwner,
   writeAskgateRecord,
 } from "../askgate-marker";
-
-afterAll(removeTemporaryDirectories);
 
 // Two Oh My Pi processes can bind one session id at the same time (the same session resumed
 // twice). Each one stays an owner of the session's AskGate record: a write by one never drops the
@@ -32,11 +30,11 @@ afterEach(() => {
   spawned.length = 0;
 });
 
+const makeDirectory = temporaryDirectories("askgate-record");
 let root = "";
 beforeEach(() => {
-  root = temporaryDirectory("askgate-record-");
+  root = makeDirectory();
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 /** Reads a child's output one line at a time while the child keeps running. */
 function lineReader(stream: ReadableStream<Uint8Array>): () => Promise<string> {
@@ -112,8 +110,10 @@ while (!(await stdin.read()).done);
     await Promise.all(children.map((child) => child.exited));
   }
   // The limit is a hang guard, not a margin for a slow machine: a child that never prints its
-  // line, or a renameSync or readdirSync that never returns.
-}, 60_000);
+  // line, or a renameSync or readdirSync that never returns. It is three and a half times the
+  // row's worst measured cost: in a 2-CPU pod the row costs 1.47 s idle and, under 16 busy loops
+  // (8 x nproc), 25.67 s at most in a whole-suite run.
+}, 90_000);
 
 // A pid and a start time name a process only in the pid namespace they were read in, and an agent
 // box is a namespace of its own over the host's state directory. The owner carries its namespace in

@@ -134,7 +134,8 @@ async function expectWordsKept(
 // SLOW(>=2s): the crossing itself - two editor mounts, a severed transport each and the
 // y-prosemirror merge - which no write path can seed, since Dispatch refuses such a block
 // (400 INVALID_ASK_BLOCK on every write path).
-test("two editors that each add an option list to an ask while their edits cross keep the question and both options", async ({
+// @pr: A two-context race: two editors add an option list to one ask while their edits cross, and the question and both options survive.
+test("two editors that each add an option list to an ask while their edits cross keep the question and both options @pr", async ({
   browser,
 }) => {
   const issue = await seedDecision();
@@ -147,7 +148,9 @@ test("two editors that each add an option list to an ask while their edits cross
     for (const page of pages) {
       await expect(askBlock(page)).toHaveAttribute("data-dispatch-ask-malformed", "true");
     }
-    expect((await getIssue(issue.key)).open_asks.map((ask) => ask.block_id)).toContain("a1");
+    expect(((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.block_id)).toContain(
+      "a1"
+    );
 
     // One list again: Backspace at the start of the second list joins it to the first, and the
     // block parses, so the ask takes both options. Which list comes first is the merge's order of
@@ -167,9 +170,9 @@ test("two editors that each add an option list to an ask while their edits cross
     }
     await expect
       .poll(async () =>
-        (await getIssue(issue.key)).open_asks
+        ((await getIssue(issue.key)).open_asks ?? [])
           .find((ask) => ask.block_id === "a1")
-          ?.options.map(({ label }) => label)
+          ?.options?.map(({ label }) => label)
           .sort()
       )
       .toEqual(["Option A", "Option B"]);
@@ -225,7 +228,9 @@ async function withTwoLists(
     for (const page of pages) {
       await expect(askBlock(page)).toBeVisible();
     }
-    expect((await getIssue(issue.key)).open_asks.map((ask) => ask.block_id)).toContain("a1");
+    expect(((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.block_id)).toContain(
+      "a1"
+    );
     expect(errors).toEqual([]);
   } finally {
     await alice.close();

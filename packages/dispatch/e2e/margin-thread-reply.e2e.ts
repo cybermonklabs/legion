@@ -62,7 +62,8 @@ async function sendReply(card: Locator, body: string): Promise<{ field: Locator;
   return { field, form };
 }
 
-test("a margin thread someone else resolves while its reply is out keeps the reply's draft and refusal", async ({
+// @pr: A write on the wire: somebody else's Resolve under an open margin reply must keep that reply's draft and refusal.
+test("a margin thread someone else resolves while its reply is out keeps the reply's draft and refusal @pr", async ({
   browser,
 }) => {
   const { comments, first, issueKey } = await seed("Resolved under a margin reply");

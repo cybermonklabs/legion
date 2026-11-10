@@ -43,6 +43,10 @@ const (
 	SessionBucket = "envoy_sessions"
 	// CIStateBucket holds the CI state of each commit of a pull request (internal/cistore).
 	CIStateBucket = "envoy_ci_state"
+	// LegionAgentBucket holds the Legion agent registry: each Legion session the daemon ran, under
+	// session.<id>, and the same entry under its issue (issue.<ISSUE>.<id>) and its role token
+	// (role.<role_token>.<id>), never deleted (internal/legionagents).
+	LegionAgentBucket = "legion_agents"
 	// DPoPProofBucket holds one record per RFC 9449 proof a listener has already spent, keyed by
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
@@ -57,14 +61,15 @@ const (
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
 // them: the interest and role-claim buckets (internal/store), the session registry
-// (internal/session), the CI state bucket, which only a listener with the GitHub webhook route
-// opens (internal/cistore), and the spent-proof bucket, which only a listener that takes broker
-// access tokens opens (cmd/listener/brokerauth.go). The listener's keeper raises each of them
-// (WithKeptBuckets), and envoy-infra grants the listener and the host each one's calls
+// (internal/session), the Legion agent registry (internal/legionagents), the CI state bucket,
+// which only a listener with the GitHub webhook route opens (internal/cistore), and the
+// spent-proof bucket, which only a listener that takes broker access tokens opens
+// (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
+// envoy-infra grants the listener and the host each one's calls
 // (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
 // Each call returns a fresh slice, so no caller changes another's list.
 func ListenerBuckets() []string {
-	return []string{InterestBucket, RoleClaimBucket, SessionBucket, CIStateBucket, DPoPProofBucket}
+	return []string{InterestBucket, RoleClaimBucket, SessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
@@ -169,8 +174,8 @@ func KeptRoleCursorSubject(role string) string {
 const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 
 // streamSubjects are the notification subjects the stream carries, and the list every consumer
-// filter over them takes (StreamSubjects). The stream carries one subject more, the listener's own
-// kept lane (streamCarriedSubjects).
+// filter over them takes (StreamSubjects). The stream carries two subjects more, the listener's
+// own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
 	"notifications.dispatch.>",
@@ -185,13 +190,57 @@ var streamSubjects = []string{
 	ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
 }
 
-// streamCarriedSubjects is every subject the stream itself carries: the notification subjects and
-// the listener's kept lane, the role messages it could not deliver and the per-role drain cursors
-// over them. That prefix is the stream's alone and no consumer filter takes it: a kept copy still
-// carries its role topic in the envelope, so a consumer handed one would deliver it as a role
-// message and re-trigger role delivery on every listener. The listener reads the lane itself
-// instead (cmd/listener/role_keep.go).
-var streamCarriedSubjects = slices.Concat(streamSubjects, []string{KeptTopicPrefix + ">"})
+// listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
+// lane, holding the role messages it could not deliver and the per-role drain cursors over them
+// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
+// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
+// consumer handed one would deliver it as a role message and re-trigger role delivery on every
+// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
+// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
+// carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+
+// ListenerOwnLanes reports the lanes the stream carries for the listener itself
+// (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
+// (`notifications.envoy.kept.`) rather than the `>` pattern the stream carries it as. That is the
+// shape a caller names a lane in and builds a topic of one with: the publish route's refusal
+// names the lane it refused, and the row that tests that refusal is the lanes themselves
+// (cmd/listener), so a lane the stream gains is named and covered with nothing written out a
+// second time. A caller judging one topic asks ListenerOwnLaneOf instead, which reads the same
+// list.
+func ListenerOwnLanes() []string {
+	lanes := make([]string, len(listenerOwnStreamLanes))
+	for i, lane := range listenerOwnStreamLanes {
+		lanes[i] = listenerOwnLanePrefix(lane)
+	}
+	return lanes
+}
+
+// ListenerOwnLaneOf is the lane of the listener's own that topic lies under, spelled as
+// ListenerOwnLanes spells it, and "" for a topic under none. It is the one test a caller makes
+// of such a topic, and the name it puts in a refusal: the publish route refuses one, since a
+// session writing a drain cursor or a resume floor would take over a role's lane or move
+// another session's delivery (cmd/listener/api.go). So a lane added to listenerOwnStreamLanes
+// is covered wherever the question is asked, and no caller lists a lane of its own.
+func ListenerOwnLaneOf(topic string) string {
+	for _, lane := range listenerOwnStreamLanes {
+		if SubjectContains(lane, topic) {
+			return listenerOwnLanePrefix(lane)
+		}
+	}
+	return ""
+}
+
+// listenerOwnLanePrefix is lane, a subject pattern of listenerOwnStreamLanes, as the prefix every
+// topic of that lane begins with: the pattern without its trailing `>`.
+func listenerOwnLanePrefix(lane string) string {
+	return strings.TrimSuffix(lane, ">")
+}
+
+// streamCarriedSubjects is every subject the stream itself carries: the notification subjects
+// and the listener's own lanes (listenerOwnStreamLanes).
+var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes)
 
 // Every subject of streamCarriedSubjects is classified for POST /v1/replay (cmd/listener/replay.go) by
 // whether a topic under it ever carries one agent session's private payload, read from the code
@@ -232,6 +281,10 @@ var (
 		// holder it was meant for, and the per-role drain cursor over them: no session may
 		// register a topic under it and no replay hands one out.
 		KeptTopicPrefix + ">",
+		// The resume floor of a session whose consumer was deleted, which names the session and
+		// the stream sequence its delivery stopped at (SessionResumeSubject): no session may
+		// register a topic under it and no replay hands one out.
+		SessionResumeSubjectPrefix + ">",
 	}
 )
 
@@ -257,15 +310,16 @@ func ReachesPrivateStreamSubject(sessionID, topic string) bool {
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
-// and the listener's kept lane: the list every consumer filter built over the notification
-// subjects uses. The stream's own list, which carries the kept lane too, is StreamCarriedSubjects.
+// and the listener's own lanes, the kept one and the resume one: the list every consumer filter
+// built over the notification subjects uses. The stream's own list, which carries both of those
+// lanes too, is StreamCarriedSubjects.
 func StreamSubjects() []string {
 	return slices.Clone(streamSubjects)
 }
 
 // StreamCarriedSubjects reports every subject the stream itself carries (streamCarriedSubjects):
-// the notification subjects and the listener's kept lane. A caller that builds or checks the
-// stream takes it, where a consumer's filter takes StreamSubjects.
+// the notification subjects and the listener's own kept and resume lanes. A caller that builds or
+// checks the stream takes it, where a consumer's filter takes StreamSubjects.
 func StreamCarriedSubjects() []string {
 	return slices.Clone(streamCarriedSubjects)
 }
@@ -317,21 +371,31 @@ func StreamCaptures(topic string) bool {
 // (infra/gcp/clusteredhub_live_test.go), and it renders no accounts block, so every client runs
 // in the global account with its JetStream limits unset.
 //
-// The population the cap must cover is not the live session count. Nothing deletes a session's
-// consumer when the session ends: the only delete is inside SessionConsumers.RestartAtFloor
-// (session_consumers.go), and the server removes a consumer SessionConsumerInactiveThreshold, 72
-// hours, after its last pull. The population is therefore every distinct session that pulled
-// inside those 72 hours. It was read twice on 2026-11-06, by sampling the listener's session list
-// every 20 seconds and counting each id that appeared in no earlier read, which needs no
-// assumption about how long a session lives: 238 reads from 01:53:37Z to 02:33:35Z gave 42 new
-// ids, 63.1 an hour, 36 of them stamped inside the window by their UUIDv7, 54.0 an hour, against
-// 663 live; 136 reads from 04:23:40Z to 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them
-// stamped inside it, 75.0 an hour, against 668 live. The population is live + 72 x rate: 4,551 to
-// 5,206 by the first reading and 6,068 to 6,447 by the second.
+// The population the cap must cover is not the live session count. The measurement below was
+// taken while nothing deleted a session's consumer when the session ended, the only delete being
+// inside SessionConsumers.RestartAtFloor (session_consumers.go), and the server removing a
+// consumer SessionConsumerInactiveThreshold after its last pull, which was then 72 hours. The
+// population was therefore every distinct session that pulled inside those 72 hours. It was read
+// twice on 2026-11-06, by sampling the listener's session list every 20 seconds and counting each
+// id that appeared in no earlier read, which needs no assumption about how long a session lives:
+// 238 reads from 01:53:37Z to 02:33:35Z gave 42 new ids, 63.1 an hour, 36 of them stamped inside
+// the window by their UUIDv7, 54.0 an hour, against 663 live; 136 reads from 04:23:40Z to
+// 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them stamped inside it, 75.0 an hour, against
+// 668 live. That population was live + 72 x rate: 4,551 to 5,206 by the first reading and 6,068
+// to 6,447 by the second.
+//
+// What bounds the population today is not that threshold but two deletes it only backs up
+// (SessionConsumerInactiveThreshold): a deregistration deletes the session's consumer
+// (cmd/listener/api.go) and the sweep deletes the consumer of every session the registry judges
+// gone, at most 256 a pass (cmd/listener/session_consumer_sweep.go), so the population is the
+// live sessions, plus the sessions that ended without deregistering, which keep their consumers
+// about the gone horizon plus one ENVOY_SESSION_REAP_INTERVAL plus one sweep interval after
+// their last registration - about 60 to 85 at the rates above - plus the consumers a hub still
+// holds from before the sweep existed.
 //
 // dispatch://INFRA-514's capacity gate asks for at least twice the larger of the stream's consumer
-// count and that population, so the gate's own number is 9,102 to 12,894 across the two readings.
-// 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times the population. The second
+// count and that measured population, so the gate's own number is 9,102 to 12,894 across the two
+// readings. 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times that population. The
 // reading sets it: at the fleet's growth between the two, a cap only 1.2 to 1.3 times the gate's
 // own number would need raising again within a release or two, and the cap costs nothing while it
 // is not reached, since the server allocates per live consumer. It costs what its consumers cost
@@ -450,13 +514,14 @@ func purgeLegacyRoleMessages(js nats.JetStreamContext) error {
 	return nil
 }
 
-// consumerFilterSubjects is subjects without the listener's kept lane, the list a consumer's
-// filter may carry: the stream's own list holds the kept prefix (streamCarriedSubjects) and no
-// consumer filter ever does, since a kept copy still carries its role topic and a consumer handed
-// one would deliver it as a role message, and a drain cursor is no envelope at all.
+// consumerFilterSubjects is subjects without the listener's own lanes
+// (listenerOwnStreamLanes), the list a consumer's filter may carry: the stream's own list holds
+// both prefixes (streamCarriedSubjects) and no consumer filter ever does.
 func consumerFilterSubjects(subjects []string) []string {
 	return slices.DeleteFunc(slices.Clone(subjects), func(subject string) bool {
-		return subjectsOverlap(subject, KeptTopicPrefix+">")
+		return slices.ContainsFunc(listenerOwnStreamLanes, func(lane string) bool {
+			return subjectsOverlap(subject, lane)
+		})
 	})
 }
 
@@ -626,9 +691,12 @@ func (r streamReconciliation) log() {
 // update lands while the server checks this one (TestTwoStartsRaisingOneStreamAtOnceBothSucceed). A
 // stream one start creates first is reconciled by the other, keeping the id it was created with
 // (AddStream answers ErrStreamNameAlreadyInUse, as its config's id differs). Two that both find no
-// id write the same one, derived from what both read.
+// id write the same one, derived from what both read. A third race is settled here: a server that
+// leaves one of two starts' stream reads or creates unanswered, which each request below is sent
+// again for (sentAgain), since a start that returns such an error ends the program.
 func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) error {
-	info, err := js.StreamInfo(Stream)
+	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
+	info, err := sentAgain("STREAM.INFO", readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = maps.Clone(cfg.Metadata)
@@ -636,10 +704,17 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 			created.Metadata = map[string]string{}
 		}
 		created.Metadata[StreamIDMetadataKey] = id.New()
-		if _, err = js.AddStream(&created); !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		// A create whose answer was lost is made again with the same configuration and the same
+		// id, drawn once above. A server that applied the lost create reads the second send as an
+		// equal create and answers it with the stream (v2.15.1 server/jetstream_cluster.go
+		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
+		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
+		// this branch reads as such and follows with the read below.
+		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return refusedSettings(err, nil, &created)
 		}
-		info, err = js.StreamInfo(Stream)
+		info, err = sentAgain("STREAM.INFO", readStream)
 	}
 	if err != nil {
 		return err
@@ -824,6 +899,84 @@ func maxConsumersRefused(err error) bool {
 // than the server's refusal.
 func unanswered(err error) bool {
 	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// unansweredSends bounds how many times a caller sends one JetStream request the server left
+// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, the handle
+// open EnsureKeyValue makes, and EnsureKeyValue's lookup of a KV bucket and its create
+// (internal/bus/kv.go). A wait that runs out is either a request the server will never answer,
+// on one of the paths sentAgain lists below, or one it is still working on, and either is safe
+// to send again: a read changes nothing, and a second identical create is deduplicated and
+// carries the same id as the one that may have landed, so no second send can contradict the
+// send before it (an update is read again rather than sent again, updateStream). A longer wait
+// buys nothing for an answer that is never coming. Three sends, because a start that lost two in
+// a row has a bus that is not serving JetStream at all, which is a start that must end. Each
+// send carries the wait of each request it makes, so this count times that wait is a caller's
+// worst case only where the server answers nothing at all and every send ends at its first
+// request; a step whose earlier requests do answer costs more, which EnsureKeyValue's doc counts.
+const unansweredSends = 3
+
+// sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
+// and at most unansweredSends times, with request naming it in the line each further send logs.
+// Any answer, the server's refusal included, is returned at once, so a refused create is sent
+// once. A refusal the server reports on the connection rather than in the request's answer
+// arrives here as an answer too, because EnsureKeyValue's lookup and create read the connection's
+// record of it before they hand this function a request's silence (refusedSend): on a connection
+// a client owns, a request of theirs the grant does not cover is sent once. The handle open and
+// ensureStreamWithConfig's read and create read no such record, so a request of theirs the grant
+// does not cover is sent unansweredSends times; for a bucket's handle open that cannot happen,
+// since the lookup before it publishes to the same subject and ends the call at its first refused
+// send.
+//
+// Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
+// that loses the answer to its own stream read is the listener that dies ten seconds after it
+// binds its port, serving nothing: cmd/listener's role-lane row
+// (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
+// the bare "context deadline exceeded" of the JetStream context's own ten-second wait.
+// Nor is it the in-process server's own fault: the production server leaves a JetStream request
+// unanswered too while its meta leader changes.
+//
+// A request that draws no answer never draws one later, because neither side sends it again:
+// nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
+// js.go:3559-3578), and nats-server v2.15.1 returns from several paths these requests take with
+// no response to the requester:
+//   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.53.1 kv.go:432-434)
+//     and a STREAM.CREATE, each at a member that is not the metadata leader
+//     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream this
+//     member holds no assignment for (a bucket not yet created, or one whose create this member
+//     has not yet applied) at such a member (:2087-2093). Each of those answers
+//     JSClusterNotAvailError instead once js.isLeaderless() is true, which it is only once the
+//     metadata group is older than lostQuorumInterval and the member holds no leader
+//     (jetstream_cluster.go:1481-1497); so the silence is a young metadata group, or a member
+//     that has not yet seen its leader go. That error is an answer and is not sent again. The
+//     STREAM.INFO handler sends its own 500 ms late (sendDelayedAPIErrResponse, errRespDelay at
+//     jetstream_api.go:1211), to let the leader answer first;
+//   - a STREAM.INFO of an existing bucket at a member that is not its stream's leader, while
+//     that member does not yet see the stream's group as leaderless (:2100-2133): only the
+//     stream's leader answers it;
+//   - a STREAM.CREATE whose metadata proposal is refused because the term moved
+//     (jetstream_cluster.go:11110-11112, with raft.go:1046-1060);
+//   - every request pending in the JetStream API queue (a STREAM.CREATE) or the info queue (a
+//     STREAM.INFO, the account $JS.API.INFO) when a push reaches that queue's limit, 10,000 by
+//     default: the server drains that queue, answers none of them, logs a rate-limited warning
+//     and publishes JSAdvisoryAPILimitReached to the system account
+//     (jetstream_api.go:1029-1045), which is no answer to the caller.
+//
+// So a start that opens a bucket through a member in one of those states waits its whole bound
+// out and ends the program over one send that was never going to be answered.
+func sentAgain[T any](request string, send func() (T, error)) (T, error) {
+	var answer T
+	var err error
+	for sends := 1; sends <= unansweredSends; sends++ {
+		if answer, err = send(); !unanswered(err) {
+			return answer, err
+		}
+		if sends < unansweredSends {
+			slog.Warn("envoy nats stream request unanswered; sending it again",
+				slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+		}
+	}
+	return answer, err
 }
 
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of

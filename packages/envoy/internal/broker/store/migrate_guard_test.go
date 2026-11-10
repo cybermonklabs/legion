@@ -83,6 +83,21 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 	}
 }
 
+func TestMigrateRefusesNonTransactionalFilesBeforeApplyingAnything(t *testing.T) {
+	s := emptySchemaStore(t)
+	set := fstest.MapFS{
+		"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
+		"migrations/0002_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\ncreate index concurrently if not exists guard_index on guard_first (id)")},
+	}
+	err := s.migrate(context.Background(), set)
+	if err == nil || !strings.Contains(err.Error(), "0002_index.up.sql is non-transactional") {
+		t.Fatalf("migrate = %v, want explicit unsupported-mode refusal", err)
+	}
+	if left := existingTables(t, s, "guard_first", "broker_schema_migrations"); len(left) != 0 {
+		t.Fatalf("refused set applied %v", left)
+	}
+}
+
 // A broker migration whose lock another transaction holds gives up once the lock timeout runs
 // out, naming itself, the lock and its holder, rather than waiting for as long as the holder lives
 // with every broker request on that table queued behind it.

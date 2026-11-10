@@ -89,11 +89,11 @@ var settingsEmitted = map[string]string{
 	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
-	"Config.MaxFixAttempts":                          "max_fix_attempts",
 	"Config.ControllerLaunch":                        "controller",
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
+	"Config.WorkerStallBackstops":                    "worker_stall_backstop_hours",
 	"Config.RepositoryRenames":                       "repository_renames",
 	"Runtime.Name":                                   "runtime.name",
 	"Runtime.Kubernetes":                             "runtime.kubernetes",
@@ -190,8 +190,12 @@ var settingsExcluded = map[string]string{
 	"SettingsRoute.OIDCIssuer":        "not for an unauthenticated reader: the cluster whose tokens open the settings route",
 	"SettingsRoute.Audience":          "not for an unauthenticated reader: the audience a token must be projected for to open the settings route",
 	"SettingsRoute.ServiceAccounts":   "not for an unauthenticated reader: the ServiceAccounts the settings route admits",
-	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, which `legion start` logs and `--check-config` prints",
+	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
+	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
 }
 
 // The three keys this release adds to the state — `daemon.commit`, a pull request's
@@ -240,8 +244,8 @@ func TestSettingProvenanceRecordsEveryAppliedChange(t *testing.T) {
 	if got, want := sources.Sources()["admission_cap"], (SettingSource{Source: config.SourceRoute, By: "ana@example.com", At: applied}); got != want {
 		t.Errorf("settingSources[admission_cap] = %+v, want %+v", got, want)
 	}
-	if got := sources.Sources()["max_fix_attempts"]; got.Source != config.SourceFile || !got.At.Equal(loaded) {
-		t.Errorf("settingSources[max_fix_attempts] = %+v, want the file, untouched by another path's change", got)
+	if got := sources.Sources()["prompt_failure_limit"]; got.Source != config.SourceFile || !got.At.Equal(loaded) {
+		t.Errorf("settingSources[prompt_failure_limit] = %+v, want the file, untouched by another path's change", got)
 	}
 
 	read := time.Date(2026, 11, 3, 7, 0, 0, 0, time.UTC)
@@ -375,7 +379,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
 		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
 		"pod_update_rounds_per_minute", "review_round_cap",
-		"max_fix_attempts", "controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
@@ -547,8 +551,8 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if settings.MaxFixAttempts != 3 || settings.WorkerBootTimeoutSeconds != 120 {
-		t.Errorf("max_fix_attempts %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.MaxFixAttempts, settings.WorkerBootTimeoutSeconds)
+	if settings.ReviewRoundCap != 3 || settings.WorkerBootTimeoutSeconds != 120 {
+		t.Errorf("review_round_cap %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds)
 	}
 	if settings.Runtime.Name != "tmux" || settings.Runtime.Kubernetes != nil {
 		t.Errorf("runtime = %+v, want tmux with no kubernetes block", settings.Runtime)
@@ -579,9 +583,9 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"max_fix_attempts: 5\n"))
-	if set.MaxFixAttempts != 5 {
-		t.Errorf("max_fix_attempts = %d, want the file's 5", set.MaxFixAttempts)
+	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	if set.ReviewRoundCap != 5 {
+		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
 	}
 }
 

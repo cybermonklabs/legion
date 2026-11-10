@@ -58,9 +58,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await expect(page.locator("[data-issue-row]").first()).toContainText("Backend unrelated");
     await titleHeader.getByRole("button", { name: /^Title/ }).click();
     await expect(titleHeader).toHaveAttribute("aria-sort", "descending");
-    await expect(page.locator("[data-issue-row]").first()).toContainText(
-      "Searchable table work 29"
-    );
+    // The epic is an ordinary row of the table, so it sorts with the rest.
+    await expect(page.locator("[data-issue-row]").first()).toContainText("Table epic");
 
     await filterPicker(page, "Labels").click();
     await page.getByRole("combobox", { name: "Search Labels" }).fill("front");
@@ -69,11 +68,11 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.getByRole("option", { name: /^frontend,/ }).click();
     await page.keyboard.press("Escape");
     await expect(page.getByText("Backend unrelated", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("30 of 31 issues", { exact: true })).toBeVisible();
+    await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
 
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("searchble work");
-    await expect(page.getByText("30 of 31 issues", { exact: true })).toBeVisible();
+    await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
     await search.fill("searchble impossible");
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await search.fill("searchble work");
@@ -199,6 +198,11 @@ test("merging an epic moves open descendants through closed intermediates and pr
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    await page
+      .getByRole("dialog", { name: "Merge this epic?" })
+      .getByRole("button", { name: "Merge", exact: true })
+      .click();
     await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
     expect((await getIssue(open.key)).parent).toBe(target.key);
     expect((await getIssue(grandchild.key)).parent).toBe(target.key);
@@ -233,6 +237,7 @@ test("selection actions move, remove and create an epic, whose name can then cha
     await page
       .getByRole("combobox", { name: "Move to epic", exact: true })
       .selectOption(target.key);
+    await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect
       .poll(async () => [(await getIssue(first.key)).parent, (await getIssue(second.key)).parent])
       .toEqual([target.key, target.key]);
@@ -243,8 +248,12 @@ test("selection actions move, remove and create an epic, whose name can then cha
     await expect(page.getByRole("toolbar")).toHaveCount(0);
     await select(first.key);
     await select(second.key);
-    page.once("dialog", (dialog) => dialog.accept("Coordinate onboarding release"));
     await page.getByRole("button", { name: "New epic from these" }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Coordinate onboarding release");
+    await page.getByRole("button", { name: "Create epic", exact: true }).click();
     await expect.poll(() => getIssue(first.key).then((issue) => issue.parent)).not.toBeNull();
     const epicKey = (await getIssue(first.key)).parent;
     if (!epicKey) throw new Error("The new epic was not assigned");
@@ -255,8 +264,12 @@ test("selection actions move, remove and create an epic, whose name can then cha
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Coordinate onboarding release/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    page.once("dialog", (dialog) => dialog.accept("Release coordination"));
     await page.getByRole("button", { name: "Rename", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Rename the epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Release coordination");
+    await page.getByRole("button", { name: "Rename epic", exact: true }).click();
     await expect
       .poll(() => getIssue(epicKey).then((issue) => issue.title))
       .toBe("Release coordination");
@@ -285,7 +298,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     const page = await context.newPage();
     await page.setViewportSize({ width: 1000, height: 800 });
     await page.goto("/projects/CORE/issues?sort=title&size=250");
-    await expect(page.getByText("80 of 80 issues", { exact: true })).toBeVisible();
+    // 80 seeded rows and the epic, which is a row of the table like any other.
+    await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
     const original = await scroller.elementHandle();
     const ancestorRequested = Promise.withResolvers<void>();
@@ -316,7 +330,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     expect(await original?.evaluate((element) => element.isConnected)).toBe(true);
     expect(await scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     ancestorReady.resolve();
-    await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
+    await expect(page.getByText("82 of 82 issues", { exact: true })).toBeVisible();
     await expect
       .poll(() =>
         page
@@ -356,6 +370,9 @@ test("a refused bulk write retries after reload while the other operations have 
     await page.goto("/projects/CORE/issues");
     for (const row of rows) {
       await page.getByRole("checkbox", { name: `Select ${row.key}`, exact: true }).check();
+      // The bar is fixed to the window, so the geometry that matters is the page at its top,
+      // where the bar sits under the header and the table begins below it.
+      await page.evaluate(() => window.scrollTo(0, 0));
       const bar = await page.getByRole("toolbar").boundingBox();
       const box = await page.getByTestId("issues-table-scroll").boundingBox();
       if (!bar || !box) throw new Error("The selection toolbar or table is missing");
@@ -481,6 +498,9 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     expect(await panel.evaluate((element) => element.contains(document.activeElement))).toBe(true);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Columns", exact: true })).toBeFocused();
+    // An epic is an ordinary row of the table, searchable and selectable like any other, and
+    // becomes a heading only in the grouping that makes it one.
+    await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(1);
     await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
     await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(0);
     await expect(
@@ -619,7 +639,58 @@ test("compact windows give the table three full rows and let the page scroll @ph
   }
 });
 
-test("phone status labels and Done load are readable and reachable @phone", async ({ browser }) => {
+test("a roomy window is filled by the box, which grows when the window does", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 6; index++)
+    await createIssue({ project: "CORE", title: `Roomy row ${index}` });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto("/projects/CORE/issues");
+    await expect(page.locator("[data-issue-row]").nth(5)).toBeAttached();
+    // The box takes the room the window leaves: the pager's last pixel lands at the window's
+    // bottom, less the padding the page keeps under it for the floating selection bar, and
+    // nothing scrolls. A box that only ever shrank would pass a page-height check and fail
+    // this one.
+    const room = async () =>
+      await page.evaluate(() => {
+        const pager = document.querySelector('[data-testid="issues-table-pager"]');
+        const box = document.querySelector('[data-testid="issues-table-scroll"]');
+        const main = box?.closest("main");
+        if (!pager || !box || !main) return null;
+        const padding = (element: Element) =>
+          Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
+        return {
+          slack:
+            window.innerHeight -
+            padding(box.parentElement as Element) -
+            padding(main) -
+            pager.getBoundingClientRect().bottom,
+          box: box.getBoundingClientRect().height,
+          page: document.documentElement.scrollHeight - window.innerHeight,
+        };
+      });
+    await expect.poll(async () => (await room())?.slack).toBeLessThanOrEqual(1);
+    expect((await room())?.slack).toBeGreaterThanOrEqual(-1);
+    expect((await room())?.page).toBeLessThanOrEqual(1);
+    await page.mouse.wheel(0, 400);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeInViewport();
+    const short = (await room())?.box ?? 0;
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    await expect.poll(async () => (await room())?.box ?? 0).toBeGreaterThan(short + 200);
+    expect((await room())?.slack).toBeLessThanOrEqual(1);
+  } finally {
+    await context.close();
+  }
+});
+
+test("phone status labels are readable and closed issues load from the Status filter @phone", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Triage member" });
   const todo = await createIssue({ project: "CORE", title: "Todo member" });
@@ -635,7 +706,8 @@ test("phone status labels and Done load are readable and reachable @phone", asyn
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("group", { name: "Issues by status" });
-    await expect(strip.getByRole("button", { name: "Done: load", exact: true })).toBeAttached();
+    // No Done cell at all while closed issues are unloaded: the bar counts what it has.
+    await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
     for (const button of await strip.getByRole("button").all()) {
       await button.scrollIntoViewIfNeeded();
       const readable = await button.evaluate((element) => {
@@ -652,7 +724,8 @@ test("phone status labels and Done load are readable and reachable @phone", asyn
       expect(readable.readable).toBe(true);
       await expect(button).toBeInViewport();
     }
-    await strip.getByRole("button", { name: "Done: load", exact: true }).click();
+    await page.getByRole("button", { name: /^Filter Status/ }).click();
+    await page.getByRole("option", { name: "Done, not loaded" }).click();
     await expect(page.locator(`[data-issue-row="${closed.key}"]`)).toBeAttached();
   } finally {
     await context.close();
@@ -675,7 +748,7 @@ test("on a desktop the status bar spans its box and stays one short line", async
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("group", { name: "Issues by status" });
-    await expect(strip.getByRole("button", { name: "Done: load", exact: true })).toBeAttached();
+    await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
     const geometry = await strip.evaluate((element) => {
       const box = element.getBoundingClientRect();
       const buttons = [...element.querySelectorAll("button")].map((button) =>
@@ -746,7 +819,7 @@ test("an unavailable ancestor uses one retry policy per attempt @phone", async (
       await route.fulfill({ status: 503, json: { error: "Ancestor unavailable" } });
     });
     await page.goto("/projects/CORE/issues");
-    await expect(page.getByRole("alert")).toContainText("Could not load some ancestors");
+    await expect(page.getByRole("alert")).toContainText("Could not load 1 ancestor");
     expect(attempts).toBe(3);
     await page.getByRole("button", { name: "Retry loading ancestors" }).click();
     await expect.poll(() => attempts).toBe(6);
@@ -778,8 +851,16 @@ test("a refused merge move leaves the source open without a close reason", async
       else await route.continue();
     });
     await page.goto("/projects/CORE/issues?group=epic");
-    await page.getByRole("button", { name: "Epic actions ▾" }).click();
+    // The childless destination epic keeps a heading of its own, so the merge starts at the
+    // source's rather than at whichever heading comes first.
+    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    await page
+      .getByRole("dialog", { name: "Merge this epic?" })
+      .getByRole("button", { name: "Merge", exact: true })
+      .click();
     await expect(page.getByRole("alert")).toContainText(bad.key);
     await expect.poll(() => getIssue(good.key).then((issue) => issue.parent)).toBe(target.key);
     expect((await getIssue(source.key)).status).not.toBe("done");
@@ -805,8 +886,12 @@ test("a stopped committed epic retries one key and reload finishes only its rema
     await page.goto("/projects/CORE/issues");
     await page.getByRole("checkbox", { name: `Select ${first.key}`, exact: true }).check();
     await page.getByRole("checkbox", { name: `Select ${closed.key}`, exact: true }).check();
-    page.once("dialog", (dialog) => void dialog.accept("Recover one created epic"));
     await page.getByRole("button", { name: "New epic from these", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Recover one created epic");
+    await page.getByRole("button", { name: "Create epic", exact: true }).click();
     expect(await committed).toBe(201);
     await page.clock.fastForward(SEND_DEADLINE_MS + 1);
     const pending = page.getByRole("region", { name: "Pending changes" });
@@ -947,8 +1032,17 @@ test("reload mid merge moves current open descendants then records one reason an
       await route.fulfill({ status: 403, json: { error: "Move refused during reload" } });
     });
     await page.goto("/projects/CORE/issues?group=epic");
-    await page.getByRole("button", { name: "Epic actions ▾" }).click();
+    // The childless destination epic keeps a heading of its own, so this names the source's.
+    const heading = page.locator("tr", {
+      has: page.getByRole("link", { name: /Source workflow/ }),
+    });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    await page
+      .getByRole("dialog", { name: "Merge this epic?" })
+      .getByRole("button", { name: "Merge", exact: true })
+      .click();
     await expect
       .poll(() => getIssue(completedChild.key).then((issue) => issue.parent))
       .toBe(target.key);
@@ -977,6 +1071,94 @@ test("reload mid merge moves current open descendants then records one reason an
     await page.reload();
     await expect(interrupted).toHaveCount(0);
     expect(await listIssueMessages(source.key)).toHaveLength(1);
+  } finally {
+    await context.close();
+  }
+});
+
+// B1: a `?status=` this bundle does not know — a bookmark, a link from an older deploy — is a
+// filter that matches nothing. The page it opens is the table, never the error boundary.
+test("a status the bundle does not know leaves the whole page standing", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Status row" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    for (const status of ["bogus", "Done", "in-progress"]) {
+      await page.goto(`/projects/CORE/issues?status=${status}`);
+      await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
+      await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
+      await expect(page.getByText("Something went wrong in this page")).toHaveCount(0);
+      await page.getByRole("button", { name: /^Filter Status/ }).click();
+      await expect(
+        page.getByRole("option", { name: new RegExp(`^${status}`) }).first()
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
+// select stages a target instead, and the confirmation is what sends anything.
+test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const source = await createIssue({ project: "CORE", title: "Arrow source" });
+  const target = await createIssue({ project: "CORE", title: "Arrow target" });
+  await patchIssue(source.key, { labels: ["epic"] });
+  await patchIssue(target.key, { labels: ["epic"] });
+  const child = await createIssue({ project: "CORE", parent: source.key, title: "Arrow child" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/projects/CORE/issues?group=epic");
+    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
+    const select = page.getByRole("combobox", { name: "Merge into another epic" });
+    await select.focus();
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(500);
+    expect((await getIssue(source.key)).status).not.toBe("done");
+    expect((await getIssue(child.key)).parent).toBe(source.key);
+    await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
+
+    // The confirmed path still merges, and says what it is about to do first.
+    await select.selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    const asked = page.getByRole("dialog", { name: "Merge this epic?" });
+    await expect(asked).toContainText(source.key);
+    await expect(asked).toContainText(target.key);
+    await expect(asked).toContainText("closes as done");
+    await asked.getByRole("button", { name: "Merge", exact: true }).click();
+    await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
+    expect((await getIssue(child.key)).parent).toBe(target.key);
+  } finally {
+    await context.close();
+  }
+});
+
+// F2 (dispatch://INFRA-2542 item 1): a press on a panel's own prose focuses nothing, and the
+// panel must still be the Escape key's owner afterwards.
+test("Escape closes a panel after a click on its own text", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Hint text epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  await createIssue({ project: "CORE", parent: epic.key, title: "Hint text child" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/projects/CORE/issues?group=epic");
+    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Hint text epic/ }) });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
+    const hint = page.getByText("To split it, tick some of its issues");
+    await expect(hint).toBeVisible();
+    await hint.click();
+    await page.keyboard.press("Escape");
+    await expect(hint).toHaveCount(0);
+    await expect(heading.getByRole("button", { name: "Epic actions ▾" })).toBeFocused();
   } finally {
     await context.close();
   }

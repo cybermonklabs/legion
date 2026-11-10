@@ -11,7 +11,8 @@
 #
 #   pi   Oh My Pi in `--mode rpc --no-extensions -e <the checkout's packed pi-envoy>`
 #   cc   Claude Code under `legion claude-bridge -- claude -p --input-format stream-json
-#        --output-format stream-json --verbose --replay-user-messages …`, Claude Code from
+#        --output-format stream-json --verbose --replay-user-messages --thinking-display
+#        summarized …`, Claude Code from
 #        `bunx --package @anthropic-ai/claude-code@<version> claude`, with claude-envoy built from
 #        the checkout (`packages/claude-envoy/scripts/build.ts --out` into the run's directory: a
 #        pull request's tree carries no fresh dist/) as
@@ -39,6 +40,9 @@
 #      events it committed before the kill are published after the restart (the stored times of
 #      the window's comments are printed beside the restart time)
 #   f  none (the control)
+#   g  the Oh My Pi session stopped as a clean shutdown stops it — its stdin closed, no signal —
+#      so its plugin deregisters and the listener deletes its session consumer, and then resumed
+#      under the same id (omp --resume <session file>); the Claude Code session stays up
 #
 # Events of every window, each carrying a unique marker in its text:
 #   agent  POST /v1/messages/send to each session; a Dispatch message to each session (an aside
@@ -47,6 +51,30 @@
 #   role   POST /v1/messages/publish to each session's role; a core NATS publish of an Envoy
 #          envelope on notifications.role.<role>, which the listeners' role lane forwards
 # The listener sends go to listener `dispatch`, and to `shared` in window d.
+#
+# Window g is the deletion INFRA-2365 added, proved live. Oh My Pi's rpc host ends its session
+# when its stdin reaches end of file, and that is the whole of a clean stop: closing the write end
+# of the fifo this script holds runs the host's session_shutdown handlers to their end, awaits and
+# all, and omp exits 0 (measured here on omp v18.16.0 with an extension that recorded the event;
+# no signal is sent, and a SIGTERM or the SIGKILL of window a would be another stop entirely).
+# pi-envoy's handler sends DELETE /v1/sessions/<id>, on which the listener removes the
+# registration and deletes the session's consumer, and the window waits for both to be true rather
+# than sleeping: the registry answers the session no longer, and the stream holds no
+# `s-<session>`. The window's events are published then, so the stream stores them while it
+# carries no consumer of that session, and the session is resumed from its session file under the
+# same id: its consumer is created again, at the position recorded before the delete, and the
+# issue comments stored while it was away reach it exactly once. The run ends the same way, both
+# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer at
+# all.
+#
+# Nothing addressed to a session reaches one the listener holds no live registration for: a direct
+# send is refused 404 (no live session), and its role's holder reads lapsed, so neither a role
+# publish nor a core publish on its role topic is forwarded to it. Those three events are expected
+# 0 times for such a session, as a Dispatch message Dispatch could not send is, and publish_rest
+# reads the registry of the listener it sends through to say which. Only window g ever reads 0
+# there: a SIGKILLed session stays registered until its entry lapses, five minutes on. A topic the
+# stream captures is the one thing stored for a session that is away — the followed issue's
+# comments — and handing those over on its return is what window g proves.
 #
 # After each window, up to SESSION_DELIVERY_SETTLE_S for every marker to reach its session, then
 # SESSION_DELIVERY_HOLD_S more for a repeat. At the end every marker is counted in each
@@ -58,10 +86,10 @@
 # reports it could not send (its listener down, window d) is expected 0 times: nothing was
 # published.
 #
-#   bash scripts/e2e/envoy-session-delivery.sh [--disruptions a,b,c,d,e,f]
+#   bash scripts/e2e/envoy-session-delivery.sh [--disruptions a,b,c,d,e,f,g]
 #       [--build-from <rev> [--expect-lost <agent,issue,role>]] [--plugins-from <rev>]
 #       [--listener-grant current|before-session-consumers] [--resume-plugins-from <rev>]
-#       [--second-followed-issue]
+#       [--second-followed-issue] [--serve [--log-model-requests]]
 #
 # --build-from <rev> builds the listener, pi-envoy, claude-envoy and the `legion` bridge from <rev>
 # instead, extracted with `git archive <rev> | tar -x` into the run's directory; natsd and Dispatch
@@ -106,6 +134,28 @@
 # entries (none recording consumer delivery) and the stream's consumers (the two listener
 # durables, no `s-<session>`), and fails when any of that is untrue.
 #
+# --serve leaves the stack running instead of driving the windows, so a browser can open it. It
+# builds Dispatch's web app (`bun run build:web` in packages/dispatch) and serves that build,
+# writes both sessions an envoy.json naming this run's own Dispatch and its agent token (a
+# person's Send from the Agents page becomes that person's own turn only after the session's
+# plugin asks Dispatch to accept the delivery attempt, which a session with Dispatch off never
+# does), and, once both sessions have registered, prints the Dispatch URL, the Agents page, the
+# header a browser must send to be that person, both session ids, the Claude Code session's
+# CLAUDE_CONFIG_DIR and transcript path, and the evidence directory. Then it holds: nothing is
+# published, no window runs, nothing is counted and no table is printed, until the run is stopped
+# (Ctrl-C, or SIGTERM to the script), when the teardown every run ends with stops every process
+# and drops the database. It names no window, so it is not given with --disruptions,
+# --expect-lost or --resume-plugins-from.
+#
+# --log-model-requests, which only --serve takes, starts a logging proxy in front of the model
+# gateway ANTHROPIC_BASE_URL names and hands both sessions that proxy as their own
+# ANTHROPIC_BASE_URL, so a turn's outgoing request is evidence: the proxy appends one JSON line
+# per request to logs/model-requests.jsonl in the evidence directory, holding the time, the
+# method, the path, the request's header names, its model, thinking, output_config, effort,
+# stream and max_tokens, how many tools and messages it carries, and the answer's status. It
+# writes no header value and no message text, so the log holds no key and no conversation. The
+# serve banner names the file. ANTHROPIC_BASE_URL is required with it: the proxy forwards there.
+#
 # Inputs (required ones refuse to start without them):
 #   LEGION_TEST_PG_DSN            required: a loopback Postgres with pgvector, as
 #                                 postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable; the run
@@ -115,30 +165,37 @@
 #                                 reads it into no variable it exports, hands it to Oh My Pi and
 #                                 Claude Code alone as their ANTHROPIC_API_KEY, and never prints it
 #   ANTHROPIC_BASE_URL            when set, passed to Oh My Pi and Claude Code only, beside the key
-#                                 (a model gateway, such as an issue pod's, whose key it is)
+#                                 (a model gateway, such as an issue pod's, whose key it is);
+#                                 required with --log-model-requests, which proxies it
 #   SESSION_DELIVERY_OMP          Oh My Pi (default: omp on PATH, else /opt/omp/bin/omp)
 #   SESSION_DELIVERY_MODEL        default claude-haiku-4-5 (Oh My Pi gets anthropic/<model>)
-#   SESSION_DELIVERY_CLAUDE_CODE  the Claude Code version bunx runs (default 2.1.311)
+#   SESSION_DELIVERY_CLAUDE_CODE  the Claude Code version bunx runs (default: the worker image's
+#                                 pin, packages/daemon/docker/claude-code/package.json)
 #   SESSION_DELIVERY_HEARTBEAT_MS the sessions' ENVOY_HEARTBEAT_MS (default 10000)
 #   SESSION_DELIVERY_SETTLE_S     per-window wait for every marker (default 60)
 #   SESSION_DELIVERY_HOLD_S       wait after that for a repeat (default 15)
 #   SESSION_DELIVERY_EVIDENCE_DIR default a fresh directory under TMPDIR; kept and printed
 #
-# No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, LEGION_* or CLAUDE_* variable of the caller reaches
-# anything the run starts. Every service and session gets PATH, what the script sets, and, for the
-# sessions alone, ANTHROPIC_API_KEY (read from SESSION_DELIVERY_MODEL_KEY_FILE), ANTHROPIC_BASE_URL
-# when the caller sets it, and BUN_INSTALL_CACHE_DIR for bunx when the caller sets it.
+# No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, LEGION_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or
+# PGSERVICEFILE variable of the caller reaches anything the run starts. Every service and session
+# gets PATH, what the script sets, and, for the sessions alone, ANTHROPIC_API_KEY (read from
+# SESSION_DELIVERY_MODEL_KEY_FILE), ANTHROPIC_BASE_URL when the caller sets it, and
+# BUN_INSTALL_CACHE_DIR for bunx when the caller sets it.
 # Everything started is stopped on exit by the pid it was started as; the database is dropped; the
 # evidence directory is kept. Manual only, never CI: it needs a model provider.
 #
 # Exit status: 0 every count as expected and the order held (or, with --expect-lost, every named
 # kind lost under a); 1 a count or the order is wrong, or a step failed (`FAIL <step>: …`); 2
 # refused (an input or tool is missing); 130, 143 on SIGINT, SIGTERM.
-# shellcheck disable=SC2317 # cleanup runs from the EXIT trap, the probes from await and wait_until
+# shellcheck disable=SC2317,SC2329 # cleanup runs from the EXIT trap, the probes from await and
+# wait_until; SC2329 is the half of SC2317 that shellcheck 0.11 split out
 set -euo pipefail
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
-  case $variable in DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | LEGION_* | CLAUDE_*)
-    [ "$variable" = LEGION_TEST_PG_DSN ] || unset "$variable" ;;
+  case $variable in
+    DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | LEGION_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE)
+      [ "$variable" = LEGION_TEST_PG_DSN ] || unset "$variable" ;;
   esac
 done
 model_key_file=${SESSION_DELIVERY_MODEL_KEY_FILE:-/var/run/model-gateway-key/key}
@@ -173,7 +230,10 @@ resume_plugins_from=""
 second_followed_issue=""
 listener_grant=current
 expect_lost=""
-disruptions="a,b,c,d,e,f"
+disruptions="a,b,c,d,e,f,g"
+disruptions_given=""
+serve=""
+log_model_requests=""
 while (($#)); do
   case $1 in
   --build-from) [ $# -ge 2 ] || refuse "--build-from needs a revision"; build_from=$2; shift 2 ;;
@@ -182,12 +242,14 @@ while (($#)); do
   --second-followed-issue) second_followed_issue=1; shift ;;
   --listener-grant) [ $# -ge 2 ] || refuse "--listener-grant needs current or before-session-consumers"; listener_grant=$2; shift 2 ;;
   --expect-lost) [ $# -ge 2 ] || refuse "--expect-lost needs a list of kinds"; expect_lost=$2; shift 2 ;;
-  --disruptions) [ $# -ge 2 ] || refuse "--disruptions needs a list"; disruptions=$2; shift 2 ;;
+  --disruptions) [ $# -ge 2 ] || refuse "--disruptions needs a list"; disruptions=$2; disruptions_given=1; shift 2 ;;
+  --serve) serve=1; shift ;;
+  --log-model-requests) log_model_requests=1; shift ;;
   -h | --help) usage; exit 0 ;;
   *) refuse "unknown argument '$1' (--help lists them)" ;;
   esac
 done
-[[ "$disruptions" =~ ^[a-f](,[a-f])*$ ]] || refuse "--disruptions takes letters a-f separated by commas, not '$disruptions'"
+[[ "$disruptions" =~ ^[a-g](,[a-g])*$ ]] || refuse "--disruptions takes letters a-g separated by commas, not '$disruptions'"
 [[ -z "$expect_lost" || "$expect_lost" =~ ^(agent|issue|role)(,(agent|issue|role))*$ ]] ||
   refuse "--expect-lost takes agent, issue and role separated by commas, not '$expect_lost'"
 [[ -z "$expect_lost" || -n "$build_from" ]] || refuse "--expect-lost applies only with --build-from"
@@ -200,13 +262,23 @@ done
   refuse "--resume-plugins-from upgrades the sessions at disruption a, which --disruptions leaves out"
 [[ "$listener_grant" == current || "$listener_grant" == before-session-consumers ]] ||
   refuse "--listener-grant takes current or before-session-consumers, not '$listener_grant'"
+[[ "$listener_grant" == current || ",$disruptions," != *",g,"* ]] ||
+  refuse "window g is the deletion of a session's consumer at its clean stop, and a listener on the grant from before session consumers creates none; run window g with --listener-grant current"
+[[ -z "$serve" || -z "$disruptions_given" ]] ||
+  refuse "--serve runs no disruption window; do not give it with --disruptions"
+[[ -z "$serve" || -z "$expect_lost" ]] ||
+  refuse "--serve runs no disruption window, and --expect-lost judges window a; give one"
+[[ -z "$serve" || -z "$resume_plugins_from" ]] ||
+  refuse "--serve runs no disruption window, and --resume-plugins-from upgrades the sessions at window a; give one"
+[[ -z "$log_model_requests" || -n "$serve" ]] ||
+  refuse "--log-model-requests logs what the served sessions ask the model; give it with --serve"
+[[ -z "$log_model_requests" || -n "${ANTHROPIC_BASE_URL:-}" ]] ||
+  refuse "--log-model-requests needs ANTHROPIC_BASE_URL: the proxy it starts forwards every request there"
 
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-[[ "$LEGION_TEST_PG_DSN" =~ ^(postgres(ql)?://[^/]+)/([^?]*)(\?.*)?$ ]] ||
-  refuse "LEGION_TEST_PG_DSN is not a postgres:// URL with a database path"
-pg_server=${BASH_REMATCH[1]}
-pg_params=${BASH_REMATCH[4]}
+# The DSN itself is read by libpq alone, further down: run_database_url reads which host it
+# names, and rebuilds it to name this run's own database.
 [ -r "$model_key_file" ] ||
   refuse "the model key file $model_key_file is not readable: both sessions run their turns on it (SESSION_DELIVERY_MODEL_KEY_FILE names another)"
 # Read into a shell variable that is never exported: isolated_exec hands it to the two sessions'
@@ -223,7 +295,14 @@ omp=${SESSION_DELIVERY_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [[ -n "$omp" && -x "$omp" ]] || refuse "no Oh My Pi: set SESSION_DELIVERY_OMP (omp is not on PATH and /opt/omp/bin/omp is absent)"
 model=${SESSION_DELIVERY_MODEL:-claude-haiku-4-5}
-claude_version=${SESSION_DELIVERY_CLAUDE_CODE:-2.1.311}
+# The worker image's pin, which is the Claude Code a Legion pane runs, so the proof runs the same
+# one; SESSION_DELIVERY_CLAUDE_CODE names another.
+claude_pin=$(jq -r '.dependencies["@anthropic-ai/claude-code"]' \
+  "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/packages/daemon/docker/claude-code/package.json" 2>/dev/null) ||
+  refuse "could not read the worker image's Claude Code pin from packages/daemon/docker/claude-code/package.json"
+[[ "$claude_pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+  refuse "the worker image's Claude Code pin is '$claude_pin', not a version: packages/daemon/docker/claude-code/package.json"
+claude_version=${SESSION_DELIVERY_CLAUDE_CODE:-$claude_pin}
 heartbeat_ms=${SESSION_DELIVERY_HEARTBEAT_MS:-10000}
 settle_s=${SESSION_DELIVERY_SETTLE_S:-60}
 hold_s=${SESSION_DELIVERY_HOLD_S:-15}
@@ -234,9 +313,25 @@ done
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
+# lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
+# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
+# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
+# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
+# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
+# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
+# two files.
+# shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
+. "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
+# The database's name is only this shell's pid and random bytes, so the run has it here, and the
+# one read of the DSN runs before the builds, the services and the `create database` further
+# down: the rewrite refuses every DSN the loopback guard refuses, and a DSN whose values the
+# connection string cannot carry as well. Its answer is the connection string the run keeps, and
+# its refusal is the line this script prints.
+database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$database_url"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
@@ -247,7 +342,10 @@ events="$work/events.jsonl"
 # ---- processes and teardown -------------------------------------------------------------------
 declare -A pid=()        # service or session label -> pid
 declare -A fd=()         # session label -> the write end of its stdin fifo
-database=""
+# The run has its database's name from the setup step, before it creates it, so the drop in
+# cleanup reads this, which the `create database` sets, and never names a database that is not
+# there.
+database_created=""
 running() {
   local state
   [[ -r "/proc/$1/stat" ]] || return 1
@@ -289,11 +387,12 @@ cleanup() {
   set +e
   for label in pi cc; do close_fd "$label"; stop_label "$label"; done
   for label in proxy-pi proxy-cc dispatch proxy-dispatch listener-shared listener-dispatch natsd \
-    keep-proxy-pi keep-proxy-cc keep-proxy-dispatch keep-dispatch keep-listener-shared keep-listener-dispatch; do
+    model-proxy keep-proxy-pi keep-proxy-cc keep-proxy-dispatch keep-dispatch keep-listener-shared \
+    keep-listener-dispatch; do
     stop_label "$label"
   done
-  if [[ -n "$database" ]]; then
-    psql "$LEGION_TEST_PG_DSN" -qtA -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+  if [[ -n "$database_created" ]]; then
+    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
   fi
   printf '%s: evidence kept in %s\n' "$me" "$work"
@@ -457,6 +556,17 @@ else
   claude_plugin="$plugins_tree/packages/claude-envoy"
 fi
 [ -r "$claude_plugin/dist/envoy-channel.js" ] || fail "$claude_plugin has no dist/envoy-channel.js"
+# Dispatch's web app, for --serve alone: a run that drives the windows needs no page, and the
+# build takes a minute. It is this checkout's, as Dispatch itself is, and `bun run build:web`
+# writes it to packages/dispatch/web/dist, which DISPATCH_WEB_DIST then names.
+web_dist="$work/web-dist"
+if [[ -n "$serve" ]]; then
+  (cd "$repo_root/packages/dispatch" && bun run build:web) >"$work/logs/build-web.log" 2>&1 ||
+    fail "Dispatch's web app did not build; see $work/logs/build-web.log"
+  web_dist="$repo_root/packages/dispatch/web/dist"
+  [ -r "$web_dist/index.html" ] || fail "$web_dist holds no index.html after bun run build:web"
+  note "Dispatch's web app built into $web_dist"
+fi
 # use_plugins PI_JS CLAUDE_DIR: what the next start_pi and start_cc load. The Claude Code plugin
 # directories and the MCP config name the directory, so both follow it.
 use_plugins() {
@@ -607,18 +717,17 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
-psql "$LEGION_TEST_PG_DSN" -qtA -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
-database_url="${pg_server}/${database}${pg_params}"
+psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-mkdir -p "$work/web-dist"
+mkdir -p "$web_dist"
 dispatch_ready() { curl -fsS --max-time 2 "${dispatch_url}/healthz" | jq -e '.ok and .nats'; }
 start_dispatch() {
   (isolated_exec "" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$agent_token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
-    DISPATCH_SERVER_URL="$dispatch_url" DISPATCH_SIGNING_KEY="$signing_key" DISPATCH_WEB_DIST="$work/web-dist" \
+    DISPATCH_SERVER_URL="$dispatch_url" DISPATCH_SIGNING_KEY="$signing_key" DISPATCH_WEB_DIST="$web_dist" \
     ENVOY_URL="$(listener_url dispatch)" NATS_URLS="nats://127.0.0.1:${proxy_port[proxy-dispatch]}" -- \
     python3 "$held_port" exec --from "$work/ports/keep-dispatch.sock" --fd-env DISPATCH_LISTEN_FD -- "$work/bin/envoy-dispatch") \
     >>"$work/logs/dispatch.log" 2>&1 &
@@ -629,9 +738,95 @@ start_dispatch() {
 start_proxy proxy-dispatch
 start_dispatch
 
-# dispatch_user METHOD PATH [BODY]: a request as the person live-delivery (the trusted header).
+# --log-model-requests: a logging reverse proxy in front of the model gateway, so what a turn asks
+# the model is evidence of its own. It appends one JSON line per request: the time, the method,
+# the path, the request's header NAMES, the model and thinking configuration the body carries, how
+# many tools and messages it holds, and the status it was answered. No header value and no message
+# text is ever written, so the log holds neither the model key nor a conversation. It binds port 0
+# and reports the port it got, as natsd does. It forwards to the model gateway ANTHROPIC_BASE_URL
+# names, which --log-model-requests requires.
+readonly model_proxy_js='
+import http from "node:http";
+import https from "node:https";
+import { appendFileSync } from "node:fs";
+const upstream = new URL(process.env.MODEL_PROXY_UPSTREAM);
+const log = process.env.MODEL_PROXY_LOG;
+const client = upstream.protocol === "https:" ? https : http;
+const prefix = upstream.pathname.replace(/\/+$/, "");
+const write = (line) => appendFileSync(log, JSON.stringify(line) + "\n");
+http
+  .createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = Buffer.concat(chunks);
+      let call = {};
+      try {
+        const sent = JSON.parse(body.toString("utf8"));
+        call = {
+          model: sent.model,
+          thinking: sent.thinking,
+          output_config: sent.output_config,
+          effort: sent.effort,
+          stream: sent.stream,
+          max_tokens: sent.max_tokens,
+          tools: Array.isArray(sent.tools) ? sent.tools.length : undefined,
+          messages: Array.isArray(sent.messages) ? sent.messages.length : undefined,
+        };
+      } catch {
+        call = { body: "not JSON" };
+      }
+      const at = new Date().toISOString();
+      const names = Object.keys(request.headers).sort();
+      const seen = { at, method: request.method, path: request.url, header_names: names, call };
+      const forwarded = client.request(
+        {
+          protocol: upstream.protocol,
+          host: upstream.hostname,
+          port: upstream.port,
+          path: prefix + request.url,
+          method: request.method,
+          headers: { ...request.headers, host: upstream.host },
+        },
+        (answer) => {
+          write({ ...seen, status: answer.statusCode });
+          response.writeHead(answer.statusCode, answer.headers);
+          answer.pipe(response);
+        }
+      );
+      forwarded.on("error", (error) => {
+        write({ ...seen, error: String(error) });
+        response.writeHead(502, { "content-type": "text/plain" });
+        response.end(String(error));
+      });
+      forwarded.end(body);
+    });
+  })
+  .listen(0, "127.0.0.1", function () {
+    console.log("model request proxy listening on 127.0.0.1:" + this.address().port);
+  });
+'
+model_proxy_url=""
+model_proxy_log="$work/logs/model-requests.jsonl"
+if [[ -n "$log_model_requests" ]]; then
+  : >"$model_proxy_log"
+  model_proxy_port=""
+  (isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" MODEL_PROXY_UPSTREAM="${ANTHROPIC_BASE_URL}" \
+    MODEL_PROXY_LOG="$model_proxy_log" -- bun -e "$model_proxy_js") >>"$work/logs/model-proxy.log" 2>&1 &
+  pid[model-proxy]=$!
+  await model-proxy "$work/logs/model-proxy.log" 30 reported_port "$work/logs/model-proxy.log" \
+    'model request proxy listening on 127.0.0.1:' model_proxy_port
+  model_proxy_url="http://127.0.0.1:${model_proxy_port}"
+  note "model request proxy (pid ${pid[model-proxy]}) at ${model_proxy_url}; every request logged to ${model_proxy_log}"
+fi
+
+# The person this run acts as. Dispatch runs with DISPATCH_IDENTITY=header:X-Dispatch-User and
+# DISPATCH_IDENTITY_HEADER_TRUSTED=1, so whoever that header names is that person, with no sign-in:
+# the run's own requests carry it, and so must a browser opening the page under --serve.
+readonly dispatch_person=live-delivery
+# dispatch_user METHOD PATH [BODY]: a request as that person (the trusted header).
 dispatch_user() {
-  curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H 'X-Dispatch-User: live-delivery' \
+  curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "X-Dispatch-User: ${dispatch_person}" \
     ${3:+-d "$3"} -w '\n%{http_code}' "${dispatch_url}$2"
 }
 # dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token).
@@ -674,6 +869,12 @@ readonly cc_note="This session is an automated delivery test. Do exactly what th
 natives=$HOME/.omp/natives
 if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
 
+# prepare_session LABEL: the session's directories and its envoy.json. A run that drives the
+# windows leaves Dispatch off: it publishes everything itself and no person is at a page. --serve
+# names this run's own Dispatch and its agent token instead, since a person's Send from the Agents
+# page reaches the session as that person's own turn only after the session's plugin asks Dispatch
+# to accept that delivery attempt (acceptMessageDelivery), which a session with Dispatch off never
+# asks. The file holds a token, so only its owner may read it.
 prepare_session() {
   local label=$1
   home[$label]="$work/sessions/$label"
@@ -681,8 +882,12 @@ prepare_session() {
     "${home[$label]}/sessions" "${home[$label]}/tmp" "${home[$label]}/config"
   local config=${home[$label]}/home/.config/legion/envoy.json
   [[ "$label" == pi ]] || config=${home[$label]}/config/envoy.json
+  local dispatch_section='{enabled: false}'
+  [[ -z "$serve" ]] || dispatch_section='{enabled: true, serverUrl: $server, token: $token}'
   jq -n --arg url "$(listener_url shared)" --arg nats "nats://127.0.0.1:${proxy_port[proxy-$label]}" \
-    '{envoy: {url: $url, natsUrls: [$nats]}, dispatch: {enabled: false}}' >"$config"
+    --arg server "$dispatch_url" --arg token "$agent_token" \
+    "{envoy: {url: \$url, natsUrls: [\$nats]}, dispatch: $dispatch_section}" >"$config"
+  chmod 600 "$config"
   launches[$label]=0
 }
 prepare_session pi
@@ -712,6 +917,12 @@ open_stdin() {
   fd[$label]=$f
 }
 
+# base_url_env: the ANTHROPIC_BASE_URL both sessions get. With no proxy it is the caller's own,
+# which isolated_exec keeps; --log-model-requests replaces it with the proxy in front of it, so
+# every request of a session is logged and none of the script's own tools is.
+base_url_env=()
+[[ -z "$model_proxy_url" ]] || base_url_env=(ANTHROPIC_BASE_URL="$model_proxy_url")
+
 # start_pi [RESUME_FILE]: omp in rpc mode with this run's pi-envoy as its only extension, in a
 # process group of its own; sets sid[pi] and transcript[pi] from its get_state answer.
 start_pi() {
@@ -722,7 +933,7 @@ start_pi() {
     --session-dir "${home[pi]}/sessions" --no-extensions --no-skills --no-rules --no-tools --no-lsp
     --no-title --append-system-prompt "$pi_note" -e "$pi_plugin")
   [[ -z "$resume" ]] || args+=(--resume "$resume")
-  (isolated_exec ANTHROPIC_BASE_URL HOME="${home[pi]}/home" TMPDIR="${home[pi]}/tmp" OMP_SESSION_STORAGE=file \
+  (isolated_exec ANTHROPIC_BASE_URL HOME="${home[pi]}/home" TMPDIR="${home[pi]}/tmp" OMP_SESSION_STORAGE=file "${base_url_env[@]}" \
     ENVOY_HEARTBEAT_MS="$heartbeat_ms" ANTHROPIC_API_KEY="$anthropic_key" -- setsid "$omp" "${args[@]}") \
     <"${home[pi]}/stdin" >"$(rpc_log pi)" 2>"$(err_log pi)" &
   pid[pi]=$!
@@ -744,11 +955,12 @@ start_cc() {
   launches[cc]=$((launches[cc] + 1))
   open_stdin cc
   local keep="ANTHROPIC_BASE_URL BUN_INSTALL_CACHE_DIR"
-  (cd "${home[cc]}/cwd" && isolated_exec "$keep" HOME="${home[cc]}/home" TMPDIR="${home[cc]}/tmp" CLAUDE_CONFIG_DIR="${home[cc]}/config" \
+  (cd "${home[cc]}/cwd" && isolated_exec "$keep" HOME="${home[cc]}/home" TMPDIR="${home[cc]}/tmp" CLAUDE_CONFIG_DIR="${home[cc]}/config" "${base_url_env[@]}" \
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLAUDE_CODE_DISABLE_CRON=1 LEGION_ROLE=implementer \
     LEGION_ISSUE="$followed_issue" ENVOY_HEARTBEAT_MS="$heartbeat_ms" ANTHROPIC_API_KEY="$anthropic_key" -- \
     setsid "$work/bin/legion" claude-bridge -- "$work/bin/claude" -p --input-format stream-json \
-    --output-format stream-json --verbose "${replay_flag[@]}" --permission-mode bypassPermissions \
+    --output-format stream-json --verbose "${replay_flag[@]}" --thinking-display summarized \
+    --permission-mode bypassPermissions \
     --strict-mcp-config --mcp-config "${home[cc]}/config/mcp.json" "${plugin_dirs[@]}" \
     "$flag" "${sid[cc]}" --model "$model" --append-system-prompt "$cc_note") \
     <"${home[cc]}/stdin" >"$(rpc_log cc)" 2>"$(err_log cc)" &
@@ -763,7 +975,10 @@ cc_transcript() {
   return 1
 }
 
-registered() { curl -fsS --max-time 5 "$(listener_url shared)/v1/registry/$1" >/dev/null; }
+# registered LISTENER SESSION: LISTENER holds a live registration for SESSION. The registry is one
+# bucket on the bus, so every listener answers for every session, and a window reads it from a
+# listener it has not stopped.
+registered() { curl -fsS --max-time 5 "$(listener_url "$1")/v1/registry/$2" >/dev/null; }
 follows_and_holds() {
   local label=$1
   curl -fsS --max-time 5 "$(listener_url shared)/v1/interests/${sid[$label]}" |
@@ -776,6 +991,19 @@ session_view() {
     "$(curl -fsS --max-time 5 "$(listener_url shared)/v1/sessions" | jq -c --arg s "${sid[$1]}" 'first(.[] | select(.session_id == $s))' 2>/dev/null)" \
     "$(curl -fsS --max-time 5 "$(listener_url shared)/v1/interests/${sid[$1]}" | jq -c '.topics' 2>/dev/null)" \
     "$(curl -fsS --max-time 5 "$(listener_url shared)/v1/roles/${role[$1]}" | jq -c . 2>/dev/null)"
+}
+
+# stream_consumers WHEN VAR: assigns VAR the names of every consumer the ENVOY_NOTIFICATIONS
+# stream carries, sorted and separated by one space, as natsd's monitor reports them, and fails
+# the run under WHEN when that monitor cannot be read. Every reading of the stream's consumers is
+# taken here: the core path's, window g's, the probes the clean stops wait on, and the one the run
+# ends with.
+stream_consumers() {
+  local _consumers
+  _consumers=$(curl -fsS --max-time 5 "${nats_monitor}/jsz?consumers=true" |
+    jq -r '[.account_details[]?.stream_detail[]? | select(.name == "ENVOY_NOTIFICATIONS") | .consumer_detail[]?.name] | sort | join(" ")') ||
+    fail "could not read the stream's consumers from natsd's monitor ($1)"
+  printf -v "$2" '%s' "$_consumers"
 }
 
 # core_path_shown WHEN: with --listener-grant before-session-consumers, the four readings that
@@ -802,9 +1030,7 @@ core_path_shown() {
     lines=$(grep -c 'sessions stay on core delivery until the grant carries them' "$work/logs/listener-$name.log" || true)
     ((lines >= 1)) || fail "listener $name never logged that its user may not manage session consumers ($when)"
   done
-  consumers=$(curl -fsS --max-time 5 "${nats_monitor}/jsz?consumers=true" |
-    jq -r '[.account_details[]?.stream_detail[]? | select(.name == "ENVOY_NOTIFICATIONS") | .consumer_detail[]?.name] | sort | join(" ")') ||
-    fail "could not read the stream's consumers from natsd's monitor ($when)"
+  stream_consumers "$when" consumers
   entries=$(curl -fsS --max-time 5 "$(listener_url shared)/v1/sessions" |
     jq -c '[.[] | {session_id, delivery: (.delivery // "core")}]') ||
     fail "could not read the session entries ($when)"
@@ -835,6 +1061,38 @@ await cc "$(err_log cc)" 300 follows_and_holds cc
 transcript[cc]=$(cc_transcript) || fail "Claude Code wrote no transcript for ${sid[cc]} under ${home[cc]}/config/projects"
 note "cc: $(session_view cc); transcript ${transcript[cc]}"
 core_path_shown "both sessions registered"
+
+# ---- serve ------------------------------------------------------------------------------------
+# --serve: the whole stack stays up, with the Agents page served, so a browser can open it and a
+# person can work the sessions from it. Nothing of what follows runs: nothing is published, no
+# window runs, nothing is counted and no table is printed. The run holds until it is stopped, and
+# the EXIT trap then stops every process and drops the database, as it does for every other run.
+if [[ -n "$serve" ]]; then
+  begin serve
+  printf 'Dispatch             %s\n' "$dispatch_url"
+  printf 'Agents page          %s/agents\n' "$dispatch_url"
+  printf 'the browser sends    X-Dispatch-User: %s\n' "$dispatch_person"
+  printf '                     on every request, and is that person; nothing else signs it in\n'
+  printf '                     (Dispatch runs DISPATCH_IDENTITY=header:X-Dispatch-User with\n'
+  printf '                     DISPATCH_IDENTITY_HEADER_TRUSTED=1)\n'
+  printf 'the page is          %s, built from this checkout\n' "$web_dist"
+  printf 'Oh My Pi session     %s\n' "${sid[pi]}"
+  printf '  transcript         %s\n' "${transcript[pi]}"
+  printf 'Claude Code session  %s\n' "${sid[cc]}"
+  printf '  CLAUDE_CONFIG_DIR  %s\n' "${home[cc]}/config"
+  printf '  transcript         %s\n' "${transcript[cc]}"
+  printf 'Dispatch issues      %s (followed) and %s (direct messages)\n' "$followed_issue" "$message_issue"
+  printf 'both sessions have   Dispatch on, at %s with this run'"'"'s agent token\n' "$dispatch_url"
+  printf 'evidence             %s\n' "$work"
+  if [[ -n "$model_proxy_url" ]]; then
+    printf 'model requests       %s, one JSON line per request (header names, model and thinking\n' "$model_proxy_log"
+    printf '                     configuration, no header value and no message text); both sessions\n'
+    printf '                     reach the gateway through %s\n' "$model_proxy_url"
+  fi
+  printf 'stop it with         Ctrl-C, or kill %s: the teardown stops every process and drops the database\n' "$$"
+  note "serving; this run publishes nothing and judges nothing until it is stopped"
+  while true; do sleep 1; done
+fi
 
 # ---- publishing -------------------------------------------------------------------------------
 seq=0
@@ -920,19 +1178,34 @@ publish_dispatch() {
 }
 publish_rest() {
   local d=$1 via=$2 label answer text envelope
+  # Every event below is addressed to one session, and nothing addressed to a session reaches one
+  # the listener holds no live registration for: its direct send is refused 404 (no live session),
+  # and its role's holder reads lapsed, so neither the role publish nor the core publish on its
+  # role topic is forwarded to it. Each is then published to nobody and expected 0 times, as a
+  # Dispatch message Dispatch could not send is. Only window g's cleanly stopped session reads 0
+  # here: a session SIGKILLed or cut off its NATS connection stays registered until its entry
+  # lapses, five minutes on (contracts.SessionLiveWindow).
+  local -A live=()
+  for label in pi cc; do
+    live[$label]=1
+    if ! registered "$via" "${sid[$label]}"; then
+      live[$label]=0
+      note "window $d: listener $via holds no live registration for $label (${sid[$label]}); its direct send and its role's forwards reach nobody, and each is expected 0 times"
+    fi
+  done
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" agent "POST /v1/messages/send to listener $via")
     answer=$(listener_post "$via" /v1/messages/send "$(jq -nc --arg s "${sid[$label]}" --arg m "$text" \
       '{target_session: $s, source: "agent", source_session: "envoy-session-delivery", message: $m}')")
-    record "$d" agent listener-send "$label" 1 "$answer"
+    record "$d" agent listener-send "$label" "${live[$label]}" "$answer"
   done
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" role "POST /v1/messages/publish to listener $via")
     answer=$(listener_post "$via" /v1/messages/publish "$(jq -nc --arg t "notifications.role.${role[$label]}" --arg m "$text" \
       '{topic: $t, source: "agent", source_session: "envoy-session-delivery", message: $m}')")
-    record "$d" role listener-publish "$label" 1 "$answer"
+    record "$d" role listener-publish "$label" "${live[$label]}" "$answer"
   done
   for label in pi cc; do
     next_marker
@@ -945,7 +1218,7 @@ publish_rest() {
         dedupe_key: ("envoy-session-delivery-" + $id), issued_at: $at, payload_summary: $summary, trace_id: $id}')
     answer=$( (cd -- "$repo_root" && isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" LIVE_NATS_URL="$nats_url" \
       LIVE_SUBJECT="notifications.role.${role[$label]}" LIVE_ENVELOPE="$envelope" -- bun -e "$core_publish_js") 2>&1) || true
-    record "$d" role core-publish "$label" 1 "$answer"
+    record "$d" role core-publish "$label" "${live[$label]}" "$answer"
   done
 }
 
@@ -1016,8 +1289,50 @@ connz_has() {
 }
 sessions_cut() { ! connz_has "${sid[pi]}" && ! connz_has "${sid[cc]}"; }
 
+# stop_session_clean LABEL: LABEL's session stopped the way a clean shutdown stops it, its stdin
+# reaching end of file and no signal sent, so its plugin's own shutdown runs and deregisters the
+# session — which is what makes the listener delete that session's consumer.
+#
+#   pi  Oh My Pi's rpc host ends the session on end of file and runs its session_shutdown
+#       handlers to their end, awaits and all, then exits 0 (measured on omp v18.16.0); pi-envoy's
+#       handler sends the DELETE.
+#   cc  the bridge closes Claude Code's stdin when its own input ends (claudebridge, SIGTERM after
+#       its grace), Claude Code closes its MCP servers' stdin as it goes, and claude-envoy's
+#       channel server deregisters on that end of file (process.stdin.once("end", stop)).
+#
+# The pid is waited for and dropped, so the teardown has nothing of it left to kill.
+stop_session_clean() {
+  local label=$1 p=${pid[$1]:-} i
+  close_fd "$label"
+  for ((i = 0; i < 150; i++)); do running "$p" || break; sleep 0.2; done
+  if running "$p"; then fail "$label (pid $p) was still running 30s after its stdin reached end of file"; fi
+  wait "$p" 2>/dev/null || true
+  unset "pid[$label]"
+}
+# The probes a clean stop is waited out with, each over the stream's consumers:
+#   stop_landed SESSION    the listener has acted on the DELETE the session's plugin sent as it
+#                          ended — the registration is gone and so is the session's consumer
+#   consumer_held SESSION  the stream carries the session's consumer again
+#   no_session_consumer    the stream carries no session consumer at all
+stop_landed() {
+  local names
+  if registered shared "$1"; then return 1; fi
+  stream_consumers "the clean stop of $1" names
+  [[ " $names " != *" s-$1 "* ]]
+}
+consumer_held() {
+  local names
+  stream_consumers "the consumer of $1" names
+  [[ " $names " == *" s-$1 "* ]]
+}
+no_session_consumer() {
+  local names
+  stream_consumers "both sessions stopped" names
+  [[ " $names " != *" s-"* ]]
+}
+
 declare -A disruption_name=([a]=session-restart [b]=nats-cut [c]=listener-shared [d]=listener-dispatch
-  [e]=dispatch-kill [f]=none)
+  [e]=dispatch-kill [f]=none [g]=pi-clean-stop)
 run_window() {
   local d=$1 via=dispatch
   begin "window $d (${disruption_name[$d]})"
@@ -1027,7 +1342,7 @@ run_window() {
     close_fd pi
     kill_label cc KILL
     close_fd cc
-    if registered "${sid[pi]}" && registered "${sid[cc]}"; then
+    if registered shared "${sid[pi]}" && registered shared "${sid[cc]}"; then
       note "both sessions SIGKILLed; their registrations stay until they lapse"
     else
       note "both sessions SIGKILLed; a registration went with its process"
@@ -1096,6 +1411,38 @@ run_window() {
   f)
     publish_dispatch f
     publish_rest f "$via"
+    ;;
+  g)
+    # The clean stop INFRA-2365 is about: Oh My Pi ends on its stdin's end of file, pi-envoy
+    # deregisters the session, and the listener removes the registration and deletes the
+    # session's consumer with it. The Claude Code session stays up throughout, so every event of
+    # this window has one session that is there to take it live and one that is not.
+    local names="" was="${sid[pi]}"
+    stream_consumers "window g, before the clean stop" names
+    note "window g: the stream's consumers before the clean stop [${names}]"
+    [[ " $names " == *" s-${was} "* ]] ||
+      fail "the stream carries no consumer s-${was} for the Oh My Pi session before its clean stop: [${names}]"
+    stop_session_clean pi
+    wait_until 60 stop_landed "$was" || true
+    stream_consumers "window g, after the clean stop" names
+    if registered shared "$was"; then
+      note "window g: omp exited on its stdin's end of file, and ${was} is registered still; the stream's consumers [${names}]"
+      fail "the clean stop left the Oh My Pi session registered: $(session_view pi)"
+    fi
+    note "window g: omp exited on its stdin's end of file with no signal, and the listener acted on its plugin's DELETE — ${was} is registered no longer; the stream's consumers [${names}]"
+    [[ " $names " != *" s-${was} "* ]] ||
+      fail "the clean stop left the consumer s-${was} on the stream: [${names}]"
+    publish_dispatch g
+    publish_rest g "$via"
+    sleep 3
+    start_pi "${transcript[pi]}"
+    [[ "${sid[pi]}" == "$was" ]] ||
+      fail "the resumed Oh My Pi session is ${sid[pi]}, not the ${was} it was stopped as"
+    wait_until 120 consumer_held "$was" || true
+    stream_consumers "window g, after the resume" names
+    note "window g: ${was} resumed from its session file; the stream's consumers [${names}]"
+    [[ " $names " == *" s-${was} "* ]] ||
+      fail "the resumed Oh My Pi session has no consumer s-${was} on the stream: [${names}]"
     ;;
   esac
   settle "$d"
@@ -1228,6 +1575,24 @@ if [[ -n "$expect_lost" ]]; then
   printf 'NEGATIVE CONTROL FAILED: an event of a kind in %s reached a session under window a (%s)\n' "$expect_lost" "$tree_label"
   exit 1
 fi
+
+# ---- the sessions stop ------------------------------------------------------------------------
+# The table is printed and judged, so nothing more is published and nothing more is counted. Both
+# sessions are stopped as a clean shutdown stops them, each plugin deregisters, and the listener
+# deletes the consumer it answered each registration with (INFRA-2365): the stream must then carry
+# no session consumer at all, so a hub's consumer cap is spent on no session that ended. The
+# negative control above returns before this: a tree from before session consumers were deleted
+# leaves them behind by construction, and that is what --expect-lost went to measure.
+begin "the sessions stop"
+stop_session_clean pi
+stop_session_clean cc
+note "both sessions stopped on their stdin's end of file, with no signal; waiting for the stream to carry no session consumer"
+wait_until 120 no_session_consumer || true
+consumers_at_end=""
+stream_consumers "both sessions have stopped" consumers_at_end
+note "the stream's consumers once both sessions had stopped cleanly: [${consumers_at_end}]"
+[[ " $consumers_at_end " != *" s-"* ]] ||
+  fail "a session consumer is on the stream after both sessions stopped cleanly: [${consumers_at_end}]"
 if ((bad == 0 && order_ok == 1)); then
   printf 'ENVOY SESSION DELIVERY: PASS (every event once, the issue in order)\n'
   exit 0

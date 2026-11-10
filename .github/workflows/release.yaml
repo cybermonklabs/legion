@@ -15,7 +15,9 @@ on:
       - "packages/pi-shared/package.json"
       - "packages/claude-envoy/**"
       - "packages/proof-editor/package.json"
+      - "packages/proof-editor/proof-sdk-*.tgz"
       - "packages/dispatch/package.json"
+      - "packages/test-fixtures/package.json"
       - "packages/envoy/internal/dispatch/pmdoc/gen/package.json"
       - "docs/site/package.json"
       - "packages/daemon/**"
@@ -115,7 +117,7 @@ env:
     skills/thermonuclear-code-quality/ skills/thermonuclear-deep-review/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Legion Oh My Pi plugin, seeded as the Envoy one is. scripts/pi-plugin-prepack.sh copies
-  # this plugin's seven skills into dist/skills, which a Legion pane's prompts load, so a commit
+  # this plugin's six skills into dist/skills, which a Legion pane's prompts load, so a commit
   # there releases whatever its type. Its notices generator, the prepack itself and patches/ (the
   # bundle inlines nats.js through envoy-client, with its patch applied) are shipped build inputs
   # too, so they get the same patch release.
@@ -123,14 +125,13 @@ env:
     --first-npm @sjawhar/pi-legion-envoy
     --patch-path skills/legion-architect/ --patch-path skills/legion-controller/
     --patch-path skills/legion-oracle/ --patch-path skills/legion-retro/
-    --patch-path skills/legion-worker/ --patch-path skills/leading-a-work-stream/
-    --patch-path skills/simplify-settled-diff/
+    --patch-path skills/legion-worker/ --patch-path skills/simplify-settled-diff/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/pi-legion/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
     packages/broker-client/
     skills/legion-architect/ skills/legion-controller/ skills/legion-oracle/ skills/legion-retro/
-    skills/legion-worker/ skills/leading-a-work-stream/ skills/simplify-settled-diff/
+    skills/legion-worker/ skills/simplify-settled-diff/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Claude Code plugin, @sjawhar/claude-envoy. Its build runs from
   # packages/claude-envoy/scripts/build-inputs.txt, the one statement of what can change this

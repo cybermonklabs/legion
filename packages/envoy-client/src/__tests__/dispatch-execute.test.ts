@@ -1,10 +1,13 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   type Artifact,
   type BlockPath,
   dispatchToolSpecs,
+  type GraphEdge,
+  type GraphEdgeKind,
+  type GraphReferences,
   type IssueComponents,
   overCapMessage,
   PROJECT_KEY_RULE,
@@ -18,8 +21,8 @@ import {
   DISPATCH_EVENT_BODY_MAX,
   DISPATCH_ITEM_BLOCKS,
 } from "@legion/contracts/dispatch-tools";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import type { ExecFn } from "../dispatch-cwd";
@@ -41,7 +44,7 @@ import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
-afterAll(removeTemporaryDirectories);
+const makeDirectory = temporaryDirectories("dispatch-execute");
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -762,7 +765,7 @@ describe("executeDispatchTool", () => {
       "anchor",
       "images",
     ] as const;
-    const pictureDirectory = temporaryDirectory("dispatch-ask-images-");
+    const pictureDirectory = makeDirectory("ask-images");
     const picture = path.join(pictureDirectory, "shot.png");
     writeFileSync(picture, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]));
     type Field = (typeof fields)[number];
@@ -882,7 +885,6 @@ describe("executeDispatchTool", () => {
       if (request === undefined) throw new Error(`dispatch_ask did not create an ask for ${field}`);
       testCase.assert(request);
     }
-    rmSync(pictureDirectory, { recursive: true, force: true });
   });
   test("prefills an omitted issue from a native LEGION_ISSUE without resolving cwd repo", async () => {
     const requests: string[] = [];
@@ -4831,7 +4833,7 @@ describe("executeDispatchTool", () => {
           fetchImpl,
         })
       ).rejects.toThrow(
-        /status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts/
+        /status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note/
       );
     }
   });
@@ -4863,11 +4865,15 @@ describe("executeDispatchTool", () => {
   });
 
   /**
-   * Records every request; the messages route and the PATCH answer with the given responses. This
+   * Records every request; the messages route and the PATCH answer with the given responses, and
+   * the issue read before the update answers `closedAt` (null: the issue is open). This
    * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
    * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
    */
-  function closingServer(answers: { message: () => Response; patch: () => Response }) {
+  function closingServer(
+    answers: { message: () => Response; patch: () => Response },
+    closedAt: string | null = null
+  ) {
     const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
@@ -4894,7 +4900,8 @@ describe("executeDispatchTool", () => {
         return response({
           key: "ACME-175",
           title: "x",
-          status: "retro",
+          status: closedAt === null ? "retro" : "done",
+          closed_at: closedAt,
           labels: [],
           route: null,
           external_links: [],
@@ -4964,16 +4971,46 @@ describe("executeDispatchTool", () => {
 
   test("dispatch_issue_update leaves the issue open when the reason cannot be posted", async () => {
     const server = closingServer({
-      message: () => refusal(409, "ISSUE_CLOSED", "issue is closed"),
+      message: () => refusal(403, "FORBIDDEN", "token may not write to ACME"),
       patch: () => {
         throw new Error("the close must not be sent");
       },
     });
 
     await expect(closeCall(server.fetchImpl)).rejects.toThrow(
-      "ISSUE_CLOSED: issue is closed; the reason was not posted, so the close was not sent"
+      "FORBIDDEN: token may not write to ACME; the reason was not posted, so the close was not sent"
     );
     expect(server.requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
+  });
+
+  // A closed issue takes messages, so posting the reason first no longer stops at an issue that
+  // is already closed: the executor refuses the second close itself, before anything is posted.
+  test("dispatch_issue_update refuses to close an issue already closed, posting nothing", async () => {
+    const server = closingServer(
+      {
+        message: () => {
+          throw new Error("the reason must not be posted");
+        },
+        patch: () => {
+          throw new Error("the close must not be sent");
+        },
+      },
+      "2026-10-20T12:00:00Z"
+    );
+
+    const refused = await closeCall(server.fetchImpl).catch((error: unknown) => error);
+
+    expect(refused).toMatchObject({
+      name: "DispatchServiceError",
+      code: "ISSUE_CLOSED",
+      status: 409,
+    });
+    expect((refused as Error).message).toBe(
+      "ISSUE_CLOSED: issue is closed; ACME-175 closed at 2026-10-20T12:00:00Z, so the reason was not posted and the close was not sent"
+    );
+    expect(server.requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([
+      "GET /api/v1/issues/ACME-175",
+    ]);
   });
 
   const gatewayPage = (status: number, statusText: string) =>
@@ -8772,6 +8809,7 @@ describe("executeDispatchTool", () => {
     id,
     issue_key: null,
     project: "GREF",
+    session_id: null,
     ref_key: `GREF/${slug}`,
     slug,
     name,
@@ -9738,7 +9776,7 @@ describe("executeDispatchTool", () => {
     ).rejects.toThrow(`project is not a project key: ${PROJECT_KEY_RULE}`);
   });
   test("uploads a relative artifact path from the Dispatch process cwd", async () => {
-    const cwd = temporaryDirectory("dispatch-execute-");
+    const cwd = makeDirectory();
     writeFileSync(path.join(cwd, "artifact.txt"), "artifact from Dispatch cwd");
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -9753,30 +9791,26 @@ describe("executeDispatchTool", () => {
       throw new Error(`unexpected request: ${new URL(request.url).pathname}`);
     };
 
-    try {
-      const result = await executeDispatchTool({
-        tool: "dispatch_artifact",
-        args: { issue: "DSP-42", name: "artifact.txt", path: "artifact.txt" },
-        cwd,
-        host: "omp",
-        config,
-        env: {},
-        exec: repoExec("owner/repo"),
-        fetchImpl: fetchImpl as typeof fetch,
-      });
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "artifact.txt", path: "artifact.txt" },
+      cwd,
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
 
-      expect(result.details).toMatchObject({ issue: "DSP-42", artifact: "artifact-42" });
-      expect(requests).toHaveLength(1);
-      const sent = requests[0]?.init ?? {};
-      const form = await new Response(sent.body, {
-        headers: sent.headers as Record<string, string>,
-      }).formData();
-      const file = form.get("file");
-      expect(file).toBeInstanceOf(Blob);
-      expect(await (file as Blob).text()).toBe("artifact from Dispatch cwd");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
+    expect(result.details).toMatchObject({ issue: "DSP-42", artifact: "artifact-42" });
+    expect(requests).toHaveLength(1);
+    const sent = requests[0]?.init ?? {};
+    const form = await new Response(sent.body, {
+      headers: sent.headers as Record<string, string>,
+    }).formData();
+    const file = form.get("file");
+    expect(file).toBeInstanceOf(Blob);
+    expect(await (file as Blob).text()).toBe("artifact from Dispatch cwd");
   });
 
   test("uploads inline artifact content as JSON", async () => {
@@ -11045,6 +11079,7 @@ describe("executeDispatchTool", () => {
     const root = "11111111-1111-4111-8111-111111111111";
     const middle = "22222222-2222-4222-8222-222222222222";
     const leaf = "33333333-3333-4333-8333-333333333333";
+    const ref = (id: string) => `dispatch://DSP-1/comment/${id}`;
     const comment = (id: string, body: string, answers: string | null) => ({
       id,
       issue_key: "DSP-1",
@@ -11057,6 +11092,35 @@ describe("executeDispatchTool", () => {
       suggestion: null,
       created_at: "2026-09-09T00:00:00Z",
     });
+    // The provenance every graph node carries: this case asserts nothing about it, so each field
+    // takes the value the server sends for an item nothing has touched since it was made.
+    const node = (id: string, ref?: string): GraphReferences["node"] => ({
+      kind: "comment",
+      id,
+      ...(ref === undefined ? {} : { ref }),
+      made_by: [],
+      made_at: null,
+      changed_by: [],
+      changed_at: null,
+      parent: null,
+      parent_version: null,
+    });
+    const edge = (
+      kind: GraphEdgeKind,
+      direction: "in" | "out",
+      id: string,
+      at: string
+    ): GraphEdge => ({
+      kind,
+      direction,
+      node: node(id, ref(id)),
+      created_at: at,
+      source_seq: null,
+    });
+    const graph = (edges: GraphEdge[]): GraphReferences => ({
+      node: node("node"),
+      edges,
+    });
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
       if (target.pathname === `/api/v1/comments/${root}`) {
@@ -11065,22 +11129,75 @@ describe("executeDispatchTool", () => {
           replies: [comment(middle, "Middle.", root), comment(leaf, "Leaf.", middle)],
         });
       }
-      if (target.pathname === "/api/v1/references") return response(emptyGraph("comment"));
+      if (target.pathname === `/api/v1/comments/${leaf}`) {
+        return response({ comment: comment(leaf, "Leaf.", middle), replies: [] });
+      }
+      // The graph the server serves for this thread. Both replies hang off the root, so the
+      // root's incoming read carries their two replies_to edges and no answers edge at all:
+      // the server folds the answers edge of every comment whose reply_to is that same root
+      // (packages/envoy/internal/dispatch/refs/graph.go:344-357). The leaf's own links keep
+      // the answers edge, which is the only place the middle comment is named as answered.
+      //
+      // Every read is newest first, and the client prints the edges in the order it is given
+      // them: `readEdgeRows` (the same file) orders `created_at desc, kind, other_kind,
+      // other_id, at_block`. So the leaf's edge leads the root's incoming read, and the leaf's
+      // own two, made in the same second, stand in the order their kinds sort in.
+      if (target.pathname === "/api/v1/references") {
+        if (target.searchParams.get("to") === ref(root)) {
+          return response(
+            graph([
+              edge("replies_to", "in", leaf, "2026-09-09T02:00:00Z"),
+              edge("replies_to", "in", middle, "2026-09-09T01:00:00Z"),
+            ])
+          );
+        }
+        if (target.searchParams.get("from") === ref(leaf)) {
+          return response(
+            graph([
+              edge("answers", "out", middle, "2026-09-09T02:00:00Z"),
+              edge("replies_to", "out", root, "2026-09-09T02:00:00Z"),
+            ])
+          );
+        }
+        return response(emptyGraph("comment"));
+      }
       throw new Error(`unexpected request: ${target.pathname}`);
     };
-    const result = await executeDispatchTool({
-      tool: "dispatch_read",
-      args: { ref: `dispatch://DSP-1/comment/${root}` },
-      cwd: "/workspace",
-      host: "omp",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as typeof fetch,
-    });
+    const read = (id: string) =>
+      executeDispatchTool({
+        tool: "dispatch_read",
+        args: { ref: ref(id) },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    const result = await read(root);
     expect(result.text).toContain(`${leaf} · user alice\nAnswers: ${middle}\nBody: Leaf.`);
     expect(result.text).toContain(`${middle} · user alice\nBody: Middle.`);
     expect(result.text).not.toContain(`Answers: ${root}`);
+    expect(result.text).toContain(
+      [
+        "Referenced by:",
+        `- replies_to comment ${ref(leaf)} (2026-09-09T02:00:00Z)`,
+        `- replies_to comment ${ref(middle)} (2026-09-09T01:00:00Z)`,
+        "Links:",
+        "- none",
+      ].join("\n")
+    );
+    expect(result.text).not.toContain(`- answers comment ${ref(middle)}`);
+    const leafRead = await read(leaf);
+    expect(leafRead.text).toContain(
+      [
+        "Referenced by:",
+        "- none",
+        "Links:",
+        `- answers comment ${ref(middle)} (2026-09-09T02:00:00Z)`,
+        `- replies_to comment ${ref(root)} (2026-09-09T02:00:00Z)`,
+      ].join("\n")
+    );
   });
 
   test("reads the targeted comment and quoted reply chain from a Dispatch comment reference", async () => {
@@ -13709,7 +13826,7 @@ describe("positionText", () => {
       positionText({
         id: "r-5",
         type: "table_row",
-        path: anchoredCell.path.slice(0, 2),
+        path: (anchoredCell.path ?? []).slice(0, 2),
         table: { ...anchoredRow, column: null, header: null },
       })
     ).toBe(
@@ -13719,7 +13836,7 @@ describe("positionText", () => {
       positionText({
         id: "t-1",
         type: "table",
-        path: anchoredCell.path.slice(0, 1),
+        path: (anchoredCell.path ?? []).slice(0, 1),
         table: { id: "t-1", row: null, column: null, header: null, cells: null },
       })
     ).toBe("table[3]");

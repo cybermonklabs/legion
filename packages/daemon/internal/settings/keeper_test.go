@@ -18,8 +18,8 @@ import (
 const testProject = "DEMO"
 
 // minimalFile is the smallest configuration that loads, as internal/config's own tests write
-// one. It names neither `admission_cap` nor `max_fix_attempts`, and settles their defaults (4
-// and 3): a test that gives the file its own value for one of them appends that key, since a
+// one. It names neither `admission_cap` nor `prompt_failure_limit`, and settles their defaults
+// (4 and 3): a test that gives the file its own value for one of them appends that key, since a
 // file carrying one key twice is a file no operator writes.
 const minimalFile = `project: DEMO
 state_dir: /var/lib/legion
@@ -256,7 +256,7 @@ func TestTheFileTakesBackOnlyTheKeysItChanged(t *testing.T) {
 	store := testStore(t)
 	path := configFile(t, minimalFile)
 	keeper := keeperOn(t, path, store)
-	if _, _, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7, "max_fix_attempts": 5}); err != nil {
+	if _, _, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7, "prompt_failure_limit": 5}); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
 
@@ -270,17 +270,17 @@ func TestTheFileTakesBackOnlyTheKeysItChanged(t *testing.T) {
 	if cfg.AdmissionCap != 9 {
 		t.Errorf("admission_cap = %d, want the file's own 9: the file changed that key", cfg.AdmissionCap)
 	}
-	if cfg.MaxFixAttempts != 5 {
-		t.Errorf("max_fix_attempts = %d, want the route's 5: the file changed no such key", cfg.MaxFixAttempts)
+	if cfg.PromptFailureLimit != 5 {
+		t.Errorf("prompt_failure_limit = %d, want the route's 5: the file changed no such key", cfg.PromptFailureLimit)
 	}
-	if len(kept) != 1 || kept[0].Path != "max_fix_attempts" {
-		t.Fatalf("Restore kept %+v, want the max_fix_attempts change alone", kept)
+	if len(kept) != 1 || kept[0].Path != "prompt_failure_limit" {
+		t.Fatalf("Restore kept %+v, want the prompt_failure_limit change alone", kept)
 	}
 	rows, err := store.Rows(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Path != "max_fix_attempts" {
+	if len(rows) != 1 || rows[0].Path != "prompt_failure_limit" {
 		t.Fatalf("the store holds %+v, want the row the file did not take back", rows)
 	}
 }
@@ -292,7 +292,7 @@ func TestTheFileArmTakesBackTheKeysTheFileChangedUnderTheRunningDaemon(t *testin
 	store := testStore(t)
 	path := configFile(t, minimalFile)
 	keeper := keeperOn(t, path, store)
-	if _, _, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7, "max_fix_attempts": 5}); err != nil {
+	if _, _, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7, "prompt_failure_limit": 5}); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
 
@@ -302,9 +302,9 @@ func TestTheFileArmTakesBackTheKeysTheFileChangedUnderTheRunningDaemon(t *testin
 		t.Fatalf("File: %v", err)
 	}
 	cfg := keeper.Live().Snapshot()
-	if cfg.AdmissionCap != 9 || cfg.MaxFixAttempts != 5 || cfg.ReviewRoundCap != 2 {
-		t.Fatalf("the file arm settled cap %d, fixes %d, rounds %d; want the file's 9, the route's 5 and the file's 2",
-			cfg.AdmissionCap, cfg.MaxFixAttempts, cfg.ReviewRoundCap)
+	if cfg.AdmissionCap != 9 || cfg.PromptFailureLimit != 5 || cfg.ReviewRoundCap != 2 {
+		t.Fatalf("the file arm settled cap %d, prompt failures %d, rounds %d; want the file's 9, the route's 5 and the file's 2",
+			cfg.AdmissionCap, cfg.PromptFailureLimit, cfg.ReviewRoundCap)
 	}
 	var paths []string
 	for _, change := range applied {
@@ -320,7 +320,7 @@ func TestTheFileArmTakesBackTheKeysTheFileChangedUnderTheRunningDaemon(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Path != "max_fix_attempts" {
+	if len(rows) != 1 || rows[0].Path != "prompt_failure_limit" {
 		t.Fatalf("the store holds %+v, want the row the file did not take back", rows)
 	}
 }

@@ -77,7 +77,8 @@ async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
   return response;
 }
 
-test("a picture pasted into an issue message shows inline in the conversation", async ({
+// @pr: Upload and download: a picture pasted into a message is uploaded and drawn inline in the conversation.
+test("a picture pasted into an issue message shows inline in the conversation @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -277,7 +278,9 @@ test("a picture written into a spec draws in the editor and in a past version, w
     );
     const newestVersion = async () =>
       Math.max(
-        ...(await getArtifact(issue.primary_artifact_id)).versions.map(({ number }) => number)
+        ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(
+          ({ number }) => number
+        )
       );
     await expect.poll(newestVersion).toBeGreaterThan(1);
     const pictured = await newestVersion();

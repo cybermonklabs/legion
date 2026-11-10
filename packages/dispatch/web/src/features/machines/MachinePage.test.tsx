@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -36,6 +37,8 @@ function session(sessionId: string, place: TmuxPlace | undefined, extra?: Partia
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title: `Agent ${sessionId.slice(0, 4)}`,
     tmux_place: place,
     ...extra,
@@ -131,6 +134,7 @@ test("a machine draws one part per tmux server, each with its windows and one dr
 });
 
 test("picking a window puts it in the address and draws it", async () => {
+  const user = userEvent.setup();
   const machine = renderMachine([
     session(id("a"), PLACE),
     session(id("c"), {
@@ -153,7 +157,7 @@ test("picking a window puts it in the address and draws it", async () => {
     ]);
     expect(picks.map((pick) => pick.getAttribute("data-picked"))).toEqual(["true", "false"]);
 
-    fireEvent.click(picks[1]);
+    await user.click(picks[1]);
 
     await waitFor(() =>
       expect(screen.getByTestId("window-drawing").getAttribute("data-window")).toBe("@2")
@@ -167,6 +171,7 @@ test("picking a window puts it in the address and draws it", async () => {
 });
 
 test("a window id two servers both hold picks one window, on the server whose strip it was picked in", async () => {
+  const user = userEvent.setup();
   // Each server holds a `@0` and a `@1`, which is what tmux gives: it numbers windows per
   // server, so the ids of a person's own server and of a Legion daemon's beside it repeat.
   const machine = renderMachine([
@@ -220,7 +225,7 @@ test("a window id two servers both hold picks one window, on the server whose st
     expect(within(person).getByTestId("window-drawing").getAttribute("data-window")).toBe("@0");
     expect(within(daemon).getByTestId("window-drawing").getAttribute("data-window")).toBe("@0");
 
-    fireEvent.click(within(person).getAllByTestId("window-pick")[1]);
+    await user.click(within(person).getAllByTestId("window-pick")[1]);
 
     // The person's server draws its own `@1`: the pane that window holds, and no other.
     await waitFor(() =>

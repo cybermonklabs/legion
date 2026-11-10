@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -283,8 +284,10 @@ func heldConsumers(consumers *intake.Consumers) *natsHolder {
 	return &natsHolder{consumers: consumers, log: quietLogger()}
 }
 
-// stillClock is time that never moves: the machines' timers are armed and never fire, so a test
-// sees only what it drove.
+// stillClock is a clock whose timers never fire: the machines arm them and nothing calls them
+// back, and a Sleep returns at once, so a test sees only what it drove. Its Now is the wall
+// clock, so what is due by the time of day — an outbox row's next_at — still comes due as the
+// run goes on.
 type stillClock struct{}
 
 func (stillClock) Now() time.Time { return time.Now() }
@@ -508,7 +511,7 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
-	cfg.MaxFixAttempts = 5
+	cfg.ReviewRoundCap = 5
 	cfg.GitHubApps = config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1001", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2001"}},
 		Review:    config.GitHubApp{AppID: "1002", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2002"}},
@@ -524,9 +527,9 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
 	settings := state.Settings
-	if settings.MaxFixAttempts != 5 || settings.WorkerBootTimeoutSeconds != 120 || settings.Runtime.Name != "tmux" {
-		t.Errorf("settings max_fix_attempts %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
-			settings.MaxFixAttempts, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
+	if settings.ReviewRoundCap != 5 || settings.WorkerBootTimeoutSeconds != 120 || settings.Runtime.Name != "tmux" {
+		t.Errorf("settings review_round_cap %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
+			settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
 	}
 	if settings.GitHubApps == nil || settings.GitHubApps.Implement.AppID != "1001" || settings.GitHubApps.Review.AppID != "1002" {
 		t.Errorf("settings.github_apps = %+v, want both configured Apps by id", settings.GitHubApps)
@@ -588,9 +591,9 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the retry = %+v, %v; want it accepted", result.Refusal, err)
 	}
-	// A phase worker's start is two outbox rows (workflow.StartOrOwe): the relaunch, which brings
-	// the held role's session back carrying no task, and the row that carries its task. Both are
-	// lifecycle rows of the issue, so the suspend under a live lease holds both of them.
+	// A phase worker's start is one outbox row, which brings the held role's session back and
+	// carries its task (workflow.StartOrOwe). It is a lifecycle row of the issue, so the suspend
+	// under a live lease holds it.
 	var starts []int64
 	rows, err := st.Pool().Query(ctx, "select id from outbox where issue = $1 and kind = $2 and payload->>'op' = 'start' order by id", issue, string(record.OutboxKindSupervise))
 	if err != nil {
@@ -607,14 +610,14 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the retry's start rows: %v", err)
 	}
-	if len(starts) != 2 {
-		t.Fatalf("the retry queued %d start rows, want its relaunch and its task", len(starts))
+	if len(starts) != 1 {
+		t.Fatalf("the retry queued %d start rows, want the one that carries its task", len(starts))
 	}
 
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	got := d.state().HeldOutboxRows
 	if len(got) != len(starts) {
-		t.Fatalf("heldOutboxRows = %+v, want the retry's two start rows alone", got)
+		t.Fatalf("heldOutboxRows = %+v, want the retry's one start row alone", got)
 	}
 	for i, id := range starts {
 		if got[i].WaitedSeconds < 0 {
@@ -889,26 +892,27 @@ func startDaemonOn(t *testing.T, live *config.Live, o overrides, log *slog.Logge
 	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
 	// daemon serves, the held listener queues the connection unanswered.
 	poll := &http.Client{Transport: transport, Timeout: time.Second}
-	deadline := time.Now().Add(within)
-	for {
-		response, err := poll.Get(d.base + "/healthz")
+	var err error
+	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
+		var response *http.Response
+		response, err = poll.Get(d.base + "/healthz")
 		if err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
-				return d
+				return true
 			}
 		}
 		select {
-		case err := <-d.done:
+		case exited := <-d.done:
 			d.stopped = true
-			t.Fatalf("the daemon exited before it answered /healthz: %v", err)
+			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
 	}
+	return d
 }
 
 // repositoriesGitHub is GitHub's REST API answering a read of any repository,
@@ -917,7 +921,7 @@ func startDaemonOn(t *testing.T, live *config.Live, o overrides, log *slog.Logge
 // unanswered reaches github.com.
 func repositoriesGitHub(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		if r.Method != http.MethodGet || !isRepository || len(parts) != 2 {
@@ -926,9 +930,7 @@ func repositoriesGitHub(t *testing.T) string {
 			return
 		}
 		_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // stop cancels the daemon and requires it to return cleanly.
@@ -994,7 +996,9 @@ func (d *daemon) state() api.State {
 }
 
 // claims is the operator's view of every claim the daemon holds, in one read: what a caller that
-// asks about more than one of them takes, rather than listing them again per claim.
+// asks about more than one of them takes, rather than listing them again per claim. One listing
+// serves the rig's release wave (idleWakeRig.awaitReleased), where nine reads a poll would take
+// the daemon's own Postgres away from the work they wait for.
 func (d *daemon) claims() []api.OperatorClaim {
 	d.t.Helper()
 	status, body := d.request(http.MethodGet, "/legion/v1/operator/claims", nil, true)
@@ -1011,17 +1015,26 @@ func (d *daemon) claims() []api.OperatorClaim {
 // claim is the operator's view of one claim.
 func (d *daemon) claim(token claim.Token) api.OperatorClaim {
 	d.t.Helper()
-	listed := d.claims()
-	for _, c := range listed {
+	return listedClaim(d.t, d.claims(), token)
+}
+
+// listedClaim is one token's claim in a listing already read. A token the daemon does not list is
+// a failure of its own, named here: answered with the zero claim instead, a caller takes its empty
+// state for a state the claim is in and a wait takes it for one the claim has not reached yet, so
+// the run ends at a deadline rather than at the missing token.
+func listedClaim(t *testing.T, claims []api.OperatorClaim, token claim.Token) api.OperatorClaim {
+	t.Helper()
+	for _, c := range claims {
 		if c.Token == token {
 			return c
 		}
 	}
-	tokens := make([]string, 0, len(listed))
-	for _, c := range listed {
+	tokens := make([]string, 0, len(claims))
+	for _, c := range claims {
 		tokens = append(tokens, string(c.Token))
 	}
-	d.t.Fatalf("the daemon lists no claim %s; it lists %d: %s", token, len(listed), strings.Join(tokens, " "))
+	slices.Sort(tokens)
+	t.Fatalf("the daemon lists no claim %s; it lists %d: %s", token, len(claims), strings.Join(tokens, " "))
 	return api.OperatorClaim{}
 }
 

@@ -976,6 +976,21 @@ deletes the SecretProviderClass `<hostname>-agent-secrets-token` and the grant
 `<hostname>-agent-secrets-token-accessor`, and the Secret Manager secret that held the old bearer
 is the consumer's to delete.
 
+`oidcAudience` (plain) turns on the other direction, Dispatch verifying a caller's own projected
+ServiceAccount token: `DISPATCH_OIDC_AUDIENCE` is the audience such a token must carry and
+`DISPATCH_OIDC_ISSUER` the issuer that signed it, which is this component's cluster
+(`https://container.googleapis.com/v1/projects/<project>/locations/<region>/clusters/<hostname>`,
+the `serviceAccountIssuer` output) unless `oidcIssuer` names another cluster's. Dispatch refuses
+to boot holding one of the pair alone, so the component renders both or neither, and an
+`oidcIssuer` with no `oidcAudience` is refused. The secrets broker's judge needs this: it reads
+Dispatch with its own pod's token. Turning it on opens Dispatch to every workload that can get a
+token for that audience under that issuer — such a caller reaches every one of Dispatch's
+`authAny` routes as a service actor, the writes among them (an issue's create and status, a
+message), and that actor holds no scope and has a subject Dispatch does not check against any
+list, so the audience is the whole of the bound. Pick one no other workload of the cluster asks the
+kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
+behaves today: neither variable renders and no token is verified.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret
@@ -1076,6 +1091,7 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
+`oidcIssuer` with no `oidcAudience`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -2902,14 +2918,19 @@ It publishes to:
   delete nothing. `HostPermissions` and `DispatchPermissions` hold it through those same base
   entries; `SessionPermissions` does not, so a session holding that set alone reads what it missed
   only through the listener;
-- for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions` and
-  `envoy_ci_state`, the calls nats.go's key-value store makes: the info, create and update of the
-  bucket's stream `KV_<bucket>`, its direct and stream message gets, `$KV.<bucket>.>`, and its
-  watchers' consumer create and delete and their flow-control replies. The update is the raise a
+- for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`, `legion_agents`
+  (the Legion agent registry) and `envoy_ci_state`, the calls nats.go's key-value store makes: the
+  info, create and update of the bucket's stream `KV_<bucket>`, its direct and stream message gets,
+  `$KV.<bucket>.>`, and its watchers' consumer create and delete and their flow-control replies.
+  The update is the raise a
   start, or the listener's keeper every 30 seconds after, sends when it finds a bucket with fewer
   copies than `ENVOY_NATS_REPLICAS`; neither writes fewer copies than it found, and a grant without
   it makes that raise time out after 10 seconds with
-  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`;
+  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`. A listener whose grant
+  lacks `legion_agents`, one whose image is newer than the release that applied its grant, serves
+  everything else and answers 503 on the registry routes (`/v1/legion/agents`) while it retries
+  the open in the background (1 s doubling to 1 min, and at once after each NATS reconnect), so
+  the routes serve once the grant reaches it, by a reload or a reconnect, without a restart;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
 

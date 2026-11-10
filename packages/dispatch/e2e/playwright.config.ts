@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project } from "@playwright/test";
 import { baseUrl } from "./api";
+import { stubProjectNames, tagged } from "./configurations";
 import { targetedListeners } from "./harness-listeners";
 import {
   harnessPorts,
@@ -14,6 +15,8 @@ import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
+import { stubOrigin } from "./stub/origin";
+import { stubSelection } from "./stub/selection";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -24,15 +27,19 @@ import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone`, `@webkit` and
 // `@firefox`, written at the end of the test's title. Which tests take `@phone` is in
-// `packages/dispatch/AGENTS.md`, "Phone acceptance"; each engine tag names a row that exercises
-// one engine behaviour the comment above those projects lists, and a comment above the row names
-// which; a row that only repeats an assertion Chromium already made carries no tag. An untagged
+// `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine tag names a row for one of two
+// reasons, and a comment above the row says which. Either the row exercises one engine behaviour
+// the comment above those projects lists - the usual reason - or every measured failure of that
+// row was in that engine, so the row is kept where its cause lives: a row green only on an engine
+// its defect was never seen on proves nothing about that defect. Two rows carry a tag for the
+// second reason today, each named in `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask
+// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
+// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
+// branches, every one in WebKit). A row that only repeats an assertion Chromium already made, and
+// whose failures are not an engine's, carries no tag. An untagged
 // test drops out with no failure. The pattern is anchored so a tag matches only as a whole
 // whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
 // `@webkit-iphone` or `@firefox-alone`.
-function tagged(tag: string): RegExp {
-  return new RegExp(`(^|\\s)@${tag}(\\s|$)`);
-}
 const phoneTagged = tagged("phone");
 const webkitTagged = tagged("webkit");
 const firefoxTagged = tagged("firefox");
@@ -41,6 +48,15 @@ const firefoxTagged = tagged("firefox");
 // the proxy's own routes; two-process mode (DISPATCH_E2E_PROCESSES=2, `bun run e2e:multiprocess`)
 // runs them alone, in Chromium, since every other spec runs against one server already.
 const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
+// Specs of the stubbed layer, each named `*.stub.e2e.ts`: a real browser against a recording of
+// the API, with no Go server, no Postgres, no fakes, no sign-in and no reset (e2e/stub/). The
+// `stub` project at the end of this file runs them and nothing else runs them: this config's own
+// `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
+// since a project's overrides this one's. A moved row lives in such a file rather than carrying an
+// annotation, because 150 spec files reset the database in a `beforeEach` and most of them sign in
+// and seed through the API: a stubbed row left among them would still run its file's hooks
+// (packages/dispatch/AGENTS.md, "The stubbed layer").
+const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
 // signs in through dev sign-in, runs only without it.
@@ -114,59 +130,158 @@ const ports = harnessPorts();
 const reuseServers = resolveReuseServers();
 const unset = targeted.filter((listener) => ports[listener.key].port === 0);
 const listing = isListMode(process.argv);
-if (!listing && unset.length > 0) {
-  throw new Error(
-    `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
-      `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
-      `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
-      `${runThroughWrapper}. To run against servers you started yourself, set ` +
-      `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
-      "DISPATCH_E2E_REUSE_SERVERS=1."
-  );
-}
-if (!reuseServers && (!listing || unset.length < targeted.length)) {
-  const targets = targeted
-    .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
-    .join(", ");
-  throw new Error(
-    `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
-      `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
-      "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose database " +
-      "this run truncates."
-  );
-}
+// What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
+// recording, whether it holds a stubbed row at all - which is what decides the static file
+// server below - and whether it is the stubbed layer alone, which is what exempts it from the
+// four refusals here and from the global setup. That module says why each question is asked and
+// why the third travels to the workers in an environment variable.
+const stub = stubSelection({
+  argv: process.argv,
+  env: process.env,
+  processes: harnessProcessCount,
+  projects: stubProjectNames,
+});
 
 // One worker per lane, and the lanes are e2e/run.ts's: a worker resolves its own harness from
 // `TEST_PARALLEL_INDEX` (e2e/harness-ports.ts), so a run with more workers than lanes would put
 // two workers on one lane's servers and database, which e2e/seed.ts truncates per row.
 const lanes = laneCount();
 const asked = workersOnCommandLine(process.argv);
-if (asked !== undefined && asked !== String(lanes)) {
-  throw new Error(
-    `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
-      `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
-      `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that many ` +
-      "workers."
-  );
-}
 
-// `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run against
-// servers a person started reads its own. That fallback is right for one worker and wrong for
-// more: nothing exported a lane, so every worker would resolve lane 0 and share one harness's
-// servers and database, which e2e/seed.ts truncates per row - rows would delete each other's
-// fixtures and fail in ways that read as product faults. Only e2e/run.ts exports that variable.
-if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
-  throw new Error(
-    `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing exported ` +
-      `${laneCountVariable}, so there is one harness and every worker would share it. Run this ` +
-      `config through e2e/run.ts, which starts a lane per worker and exports that count: ` +
-      `${runThroughWrapper}.`
-  );
+// Every refusal of this config is about the harness, so they stand together under one guard: a
+// run of the stubbed layer alone reaches no server of it and meets none of them, and every
+// other run meets all four. Each keeps its own sentence, so a person who forgets the harness
+// still gets the line that fixes it.
+if (!stub.onlyStub) {
+  if (!listing && unset.length > 0) {
+    throw new Error(
+      `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
+        `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
+        `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
+        `${runThroughWrapper}. To run against servers you started yourself, set ` +
+        `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
+        "DISPATCH_E2E_REUSE_SERVERS=1."
+    );
+  }
+  if (!reuseServers && (!listing || unset.length < targeted.length)) {
+    const targets = targeted
+      .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
+      .join(", ");
+    throw new Error(
+      `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
+        `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
+        "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose " +
+        "database this run truncates."
+    );
+  }
+  if (asked !== undefined && asked !== String(lanes)) {
+    throw new Error(
+      `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
+        `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
+        `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that ` +
+        "many workers."
+    );
+  }
+  // `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run
+  // against servers a person started reads its own. That fallback is right for one worker and
+  // wrong for more: nothing exported a lane, so every worker would resolve lane 0 and share one
+  // harness's servers and database, which e2e/seed.ts truncates per row - rows would delete
+  // each other's fixtures and fail in ways that read as product faults. Only e2e/run.ts exports
+  // that variable.
+  if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
+    throw new Error(
+      `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing ` +
+        `exported ${laneCountVariable}, so there is one harness and every worker would share ` +
+        `it. Run this config through e2e/run.ts, which starts a lane per worker and exports ` +
+        `that count: ${runThroughWrapper}.`
+    );
+  }
 }
 
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
 const expectTimeout = 15_000;
+
+// The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
+// when this suite ran one row at a time; it now runs four lanes on a four-core runner. Read from
+// the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
+// 2026-11-05T20:32:13Z (78 merge_group, 119 pull_request, 4 push), at base b7866f96d7fe.
+//
+// The population is the one this number governs, and the filter is the point of it: the results
+// that passed, in that window, on rows of the spec files this tree has that ran under the
+// inherited budget rather than one of their own. The filter is per row, not per file, because
+// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sit inside a single row: a file is
+// not out of the population, a row is, and the other rows of `keyed-writes`, `live-socket`,
+// `phone`, `refetch-budget`, `claim-refilling`, `composer-body-cap`, `machine-login` and
+// `threads-order` are governed by this budget whatever their one slow neighbour asks for. Only
+// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they hold.
+//
+// Derive it from the measurement rather than from the sources: a report carries, per row, the
+// timeout that row ran under, so a result taken at its project's own timeout is one this budget
+// governed, and the filter cannot age. A source-level filter cannot be written as one line - a
+// call inside a row's body is the row's and a call at module scope is the file's, which is an AST
+// question, and `--list` reads module scope only, so it misses all 29.
+//
+//   jq -r '(.config.projects|map({key:.name,value:.timeout})|from_entries) as $c
+//     | [..|objects|select(has("specs"))|.specs[]][] | . as $s | $s.tests[]
+//     | select(.timeout == $c[.projectName]) | .results[] | select(.status=="passed")
+//     | [($s.file|sub(".*/";"")), .projectName, .duration] | @tsv' <report.json…>
+//
+// then keep the rows of files `ls e2e/*.e2e.ts` lists, which drops the window's results of files
+// this tree does not have - 1,560 of them in 12 files, other branches' rows. Compare `passed`
+// results alone: a skipped row reports the static timeout, never the one its body would have set.
+//
+// Over that population: 320,101 results, median 2,543 ms, 95th percentile 6,773 ms, 99th
+// 9,886 ms, 99.9th about 15,097 ms (15,056 by floor, 15,101 by nearest rank), maximum 29,856 ms,
+// in deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored thread" on
+// WebKit. Over the whole of what this tree has, rows with their own timeout included, the
+// maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
+// agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
+//
+// What the window bounds, and what it does not. The population is passing results, and every
+// governed row of the window ran under Playwright's 30 s default, so a row that wanted longer was
+// killed rather than measured: 27 governed results timed out at that cap and are not in the
+// population at all - 19 in pictures.e2e.ts on chromium, 5 in deep-links.e2e.ts on firefox and
+// one on WebKit, which is the very row that set the figure below, and 2 in keyed-writes.e2e.ts on
+// WebKit, each ending between 30,000 and 30,006 ms. So 29,856 ms is the slowest result that
+// survived the cap, not the distribution's maximum, and the tail above 30 s is unknown.
+//
+// The budget does not rest on that figure being a maximum. It is sized to let a healthy row
+// finish, and the distribution of rows that did finish says what healthy costs: 60 s is 2.01
+// times the slowest survivor, 4.0 times the 99.9th percentile and 24 times the median, no
+// governed result of the window reaches it, and nothing in the window shows a row finishing its
+// work and needing more. A censored tail changes what the maximum means, not what the budget has
+// to cover; a row that hangs still fails inside a minute.
+// It lengthens no row's work; a row that needs it has already lost whatever it was waiting for.
+// Raise it only from a measurement of the same shape, over the same population.
+const testTimeout = 60_000;
+
+// The per-action deadline, and the one timeout Playwright leaves at 0 by default - no deadline at
+// all, so an action whose target has gone runs until the row's budget ends and is reported at
+// whatever line the row's `finally` holds rather than at the call that hung. A 60 ms product race
+// cost 120 s twice that way, at `await context.close()` (dispatch://INFRA-2452). It bounds one
+// action - a click, a fill, a press - and not a row: an `expect` carries `expectTimeout`, a whole
+// row `testTimeout` above, and a navigation its own `navigationTimeout`, which is set apart from
+// this one and stays 0 (node_modules/.bun/playwright@1.64.1/node_modules/playwright-core/lib/
+// coreBundle.js:64256-64257). It is the context's default timeout as well (`actionTimeout || 0`,
+// node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:360), so a
+// `waitForResponse` or `waitForFunction` that names no timeout of its own takes it too. The
+// longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answers the
+// 18 s server hold of keyed-send.e2e.ts:411, well inside this.
+//
+// Derived from the population `testTimeout` above measures, not asserted: over those 320,101
+// passing results of 201 ci.yaml runs the slowest WHOLE row is 29,856 ms, so no single action in
+// any of them reached 30 s. An action a governed row can afford at all is under that row's 60 s,
+// since the row pays for everything else it does out of the same budget. That leaves the band
+// between, and 45 s sits in it: above every passing result the window measured, and below the
+// budget that would otherwise swallow the failure.
+//
+// The same limit applies as to the budget above, rather than being papered over: the population
+// is censored at Playwright's old 30 s default, where 27 governed results were killed (19 in
+// pictures.e2e.ts, 6 in deep-links.e2e.ts, 2 in keyed-writes.e2e.ts), so the tail above 30 s is
+// unknown and a governed row's single action between 30 s and 45 s has been measured by nobody.
+// Move it only on a measurement of the same shape.
+const actionTimeout = 45_000;
 
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
@@ -191,26 +306,35 @@ const multiprocessProjects = [
   },
 ];
 
-// The specs whose rows are read from the wall clock: that a document write answers in under a
-// second (`heavy-document-writes.e2e.ts`), and that a card's draw holds the main thread for less
-// than one (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
+// The specs whose rows are read from the wall clock: that a card's draw holds the main thread
+// for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
 // `main-thread-hold.ts`). Four lanes on one machine leave such a claim unmeasurable - the wall
-// time of a write holds what the other three lanes took as surely as the work the server did -
+// time of a draw holds what the other three lanes took as surely as the work the page did -
 // so these files run in the `-alone` projects at the end of this list, after every other project
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
-const clockSpecs = /(heavy-bodies|heavy-document-writes|nested-directive)\.e2e\.ts/;
+const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
+
+// The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
+// and `visual-phone` projects at the end of this list and in no project above them: a project
+// whose configuration key equals one of theirs - the same engine, viewport, origin and
+// server-process count - would run the same row twice, which
+// e2e/__tests__/row-configurations.test.ts refuses. `iphone` is that project for `visual-phone`,
+// which spreads the same device, and the three other projects that name a `testIgnore` name
+// this one too for the reason given above `webkit`: without a `testMatch` a project sees every
+// spec in this directory, so the ignore is what keeps this file to its own two projects.
+const visualSpecs = /visual\.e2e\.ts$/;
 
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
 // project added here is one more the clock rows wait for.
 const parallelProjects = [
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: phoneTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -222,11 +346,16 @@ const parallelProjects = [
   // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
   // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
   // and all five of `keyboard-session-pickers`.
+  // A send held open across two in-app navigations, with the row's draft, its picker and its
+  // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
+  // left mid-send, which carries `@webkit` alone because each of its six measured failures was
+  // in WebKit.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
-  // margin hold's frame and scroll order: six `deep-links` rows - the held chunk's, the press
+  // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
-  // animation frames held, the per-frame scroll of a past version's landing, and the placement
-  // the margin's own scroll must not move.
+  // animation frames held, the per-frame scroll of a past version's landing, the placement the
+  // margin's own scroll must not move, and the composer opened from the document after a comment
+  // link, whose selection bar the landing's frames can carry off screen.
   // IndexedDB-backed recovery of an edit the server has not taken: three `offline-edits` rows -
   // the edit restored across a reload, the acknowledged one cleared, and two tabs holding two
   // connections to one store.
@@ -238,9 +367,10 @@ const parallelProjects = [
   // The one-socket invariant: `live-socket`'s row that a tab holds one live socket for every live
   // view, since WebKit is the engine iOS Safari opens every subscription in.
   // The keyed write path's request failure, its abort, a tab's storage across a reload and the
-  // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, one of which
+  // ask before a tab unloads: nine `keyed-writes` rows and two `keyed-send` rows, one of which
   // asks whether the engine's IndexedDB gives a kept upload its `File` back, which WebKit's does
-  // not.
+  // not. One of those nine, the ask answer whose answer is lost, carries `@webkit` alone: both of
+  // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
@@ -248,7 +378,7 @@ const parallelProjects = [
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -280,10 +410,11 @@ const parallelProjects = [
   // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
   // and all five of `keyboard-session-pickers`.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
-  // margin hold's frame and scroll order: six `deep-links` rows - the held chunk's, the press
+  // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
-  // animation frames held, the per-frame scroll of a past version's landing, and the placement
-  // the margin's own scroll must not move.
+  // animation frames held, the per-frame scroll of a past version's landing, the placement the
+  // margin's own scroll must not move, and the composer opened from the document after a comment
+  // link, whose selection bar the landing's frames can carry off screen.
   // IndexedDB-backed recovery of an edit the server has not taken: three `offline-edits` rows -
   // the edit restored across a reload, the acknowledged one cleared, and two tabs holding two
   // connections to one store.
@@ -304,7 +435,7 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -369,8 +500,7 @@ const parallelProjects = [
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
- * `heavy-document-writes.e2e.ts`, which drives no browser, and `nested-directive.e2e.ts` ran in
- * `chromium` alone and run in `chromium-alone` alone.
+ * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone.
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
@@ -415,11 +545,141 @@ const aloneProjects = [
   },
 ] satisfies Project[];
 
+/**
+ * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
+ * comparing that page against a committed baseline in light and in dark, and the pages a phone
+ * width rearranges once more in that viewport (e2e/visual.e2e.ts).
+ *
+ * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
+ * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
+ * it and `visual` inverts it, so every row runs under exactly one project and reads the
+ * baseline directory of that project alone.
+ *
+ * A baseline a person takes and a baseline CI compares must be the same rendering, so both
+ * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on
+ * the host, starts that container and runs exactly these two projects in it. A run outside the
+ * container reaches the rows, and every one of them skips itself, because the host's browser
+ * builds, fonts and GPU stack are not the image's and its shots would be a different rendering
+ * of the same page (the skip and its message are in the spec).
+ *
+ * They are declared unconditionally, never behind the variable that turns the rows on.
+ * `e2e/__tests__/row-configurations.test.ts` lists this config in a subprocess whose environment
+ * is cut to `HOME`, `PATH` and `DISPATCH_E2E_PROCESSES`, so a project declared only when a
+ * variable is set is invisible to that guard: its rows would never be checked for a duplicate
+ * configuration while the test still read green.
+ *
+ * They sit after `aloneProjects` in a group of their own, so `parallelProjects` does not grow -
+ * a project added there is one more the clock rows wait for - and the `-alone` projects gain no
+ * dependency on a project that skips its rows on every host run.
+ *
+ * `workers: 1`, which Playwright takes per project: these rows compare images, and two of them
+ * drawing at once on one machine is the contention that makes a comparison read a half-drawn
+ * frame. `retries: 0`, against the one retry the run takes on CI, for a reason of their own: a
+ * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
+ * that is not settled, and either one is the thing this layer exists to find, so it is reported
+ * as a failure rather than as a flake.
+ */
+const visualProjects = [
+  {
+    name: "visual",
+    testMatch: visualSpecs,
+    grepInvert: phoneTagged,
+    // A baseline is an input a person reads in a review, not an output of a row, so these files
+    // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
+    // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`
+    // (packages/dispatch/AGENTS.md). The template carries no `{platform}` segment, which the
+    // default template adds: every shot is taken in the one pinned Linux image, so the segment
+    // would say the same thing on every file and in the name of each the route and the scheme
+    // are what a reader is looking for.
+    snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
+    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    workers: 1,
+    retries: 0,
+  },
+  {
+    name: "visual-phone",
+    testMatch: visualSpecs,
+    grep: phoneTagged,
+    snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+] satisfies Project[];
+
+/**
+ * The stubbed layer: a real browser against a recording of the API (e2e/stub/).
+ *
+ * It is declared unconditionally, like `visualProjects` above and for the same reason: the guard
+ * that finds a row running twice in one configuration lists this config in a subprocess whose
+ * environment is cut to `HOME`, `PATH` and `DISPATCH_E2E_PROCESSES`
+ * (e2e/__tests__/row-configurations.test.ts), so a project declared only when a variable is set
+ * would be invisible to it.
+ *
+ * Its origin is its own, a static file server over `web/dist` rather than a Dispatch server
+ * (e2e/stub/origin.ts), which is also what gives it a configuration key of its own: `chromium`
+ * runs the same engine at the same viewport, and the origin is what tells the two apart.
+ *
+ * `testIgnore: []` because this config's own `testIgnore` holds `stubSpecs`, to keep a project
+ * that names neither selector from picking these rows up; a project's `testIgnore` replaces this
+ * one's, so the empty array is what lets these rows reach the project that exists for them.
+ *
+ * Recording (`DISPATCH_E2E_STUB_RECORD=1`) is the one run where these rows meet the real stack:
+ * the project takes the harness's base URL, the static server is not started, and each row writes
+ * what it fetched (e2e/stub/stub-test.ts).
+ *
+ * `retries: 0` on both, for two reasons of this layer's own. On replay a stubbed row reaches
+ * no server, no database and no fake: its answers come from a committed file, so a row that
+ * fails once and passes once is not a flake to be retried past but a defect of the recording,
+ * the page or the row, and the lane should say so. A recording run does reach the real
+ * harness, and it takes no retry either, deliberately: it is the run that writes what every
+ * later replay reads, so a row that only passed on a second attempt would commit whatever
+ * that attempt happened to fetch. And the dead-recording guard
+ * (`deadRecordingGuard`, e2e/stub/stub-test.ts) would otherwise be retried away: measured in
+ * this issue's pod, Playwright re-runs a row that called `test.skip` without running its
+ * fixtures at all, so the guard's refusal is raised on the first attempt and never on the
+ * retry, and the run reports the row flaky and exits 0.
+ */
+const stubProjects = [
+  {
+    name: "stub",
+    retries: 0,
+    testMatch: stubSpecs,
+    testIgnore: [],
+    use: {
+      ...devices["Desktop Chrome"],
+      baseURL: stub.recording ? baseUrl : stubOrigin(),
+    },
+  },
+  // The phone half, which `iphone` is to `chromium`, and exactly that: `stub` runs every stub
+  // row as `chromium` runs every row of the suite, and this one greps the `@phone` tag as
+  // `iphone` does. `stub` does **not** invert the tag, which it did until a review read the
+  // three rows that cost: a `@phone` row that `chromium` ran at the desktop width lost that
+  // case in the move, and a moved row has to assert what it asserted before. A row that is a
+  // phone row alone says so itself, with the `test.skip` its author wrote against `iphone`,
+  // read here against this project's name - which is how those rows were skipped in `chromium`
+  // on the real stack too.
+  {
+    name: "stub-phone",
+    retries: 0,
+    testMatch: stubSpecs,
+    testIgnore: [],
+    grep: phoneTagged,
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      baseURL: stub.recording ? baseUrl : stubOrigin(),
+    },
+  },
+] satisfies Project[];
+
 export default defineConfig({
   testDir: ".",
   testMatch: /.*\.e2e\.ts/,
-  // The projects below that name no `testIgnore` of their own inherit this one.
-  testIgnore: harnessProcessCount === 1 ? multiprocessSpecs : undefined,
+  // The projects below that name no `testIgnore` of their own inherit this one. `stubSpecs` is
+  // here so that a project which names neither selector never picks a stubbed row up: the `stub`
+  // project names `testIgnore: []`, which is what lets those rows reach it.
+  testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
   // Every row is independent: it empties its lane's database and fake listeners itself
   // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
@@ -430,18 +690,20 @@ export default defineConfig({
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
-  // at, and `bun run e2e` is read as pass or fail. This is the sharded projects' value: the
-  // three `-alone` projects and the multiprocess one each set `retries: 0`, each for a reason
-  // its own comment gives.
+  // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
+  // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
+  // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the
   // list reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: measuring
     ? [["list"], [fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))]]
     : "list",
+  timeout: testTimeout,
   expect: { timeout: expectTimeout },
   use: {
     ...devices["Desktop Chrome"],
+    actionTimeout,
     baseURL: baseUrl,
     headless: true,
     // One value for both runs. `retain-on-first-failure` records the first attempt and keeps it
@@ -456,8 +718,52 @@ export default defineConfig({
   },
   // Runs before any row, against the servers the checks above require: it refuses a target that
   // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not
-  // both read it or do not accept each other's cookies (e2e/preflight.ts).
-  globalSetup: fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  // both read it or do not accept each other's cookies (e2e/preflight.ts). A run of the `stub`
+  // project alone reaches no such server, so it has no global setup at all.
+  globalSetup: stub.onlyStub
+    ? undefined
+    : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  // The one server this config starts, and it serves files: the built SPA, for the stubbed
+  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
+  // it before Playwright.
+  //
+  // It is declared for a run that holds a stubbed row and for no other (e2e/stub/selection.ts
+  // says which runs those are and why the question has to be asked at all).
+  //
+  // `reuseExistingServer: false`, deliberately, and it is the one thing that makes the fixed
+  // port safe. The port has to be fixed because Playwright polls a URL before the command it
+  // starts exists; reusing whatever answers it would let a second checkout on one machine
+  // replay this one's rows against that one's `web/dist`, silently, since the probe only asks
+  // for a document every build serves. Refusing instead makes the collision a message:
+  // Playwright says the port is in use and names it, and `DISPATCH_E2E_STUB_PORT` moves this
+  // run off it.
+  webServer:
+    !stub.holdsStubRow || stub.recording
+      ? undefined
+      : {
+          command: "bun e2e/stub/static-server.ts",
+          // Playwright runs a `webServer` command in the config's own directory, and every
+          // command of this package is written from the package root, as `package.json`'s
+          // scripts are.
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          reuseExistingServer: false,
+          stdout: "pipe",
+          timeout: 60_000,
+          url: `${stubOrigin()}/index.html`,
+        },
+  // A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) gets no stub project at
+  // all: the stubbed layer replays a recording against a build this checkout made, so against
+  // a deployed server it would prove nothing about either, and `e2e:deployed` names no project
+  // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
+  // above is built on the same one, so a server can never start for a project this list leaves
+  // out, nor a project be declared with no server to answer it.
   projects:
-    harnessProcessCount === 2 ? multiprocessProjects : [...parallelProjects, ...aloneProjects],
+    harnessProcessCount === 2
+      ? multiprocessProjects
+      : [
+          ...parallelProjects,
+          ...aloneProjects,
+          ...visualProjects,
+          ...(stub.declared ? stubProjects : []),
+        ],
 });

@@ -2,10 +2,12 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,7 +115,7 @@ func sessionConsumersOnStream(t *testing.T) (*Client, *SessionConsumers) {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	consumers, err := ConnectSessionConsumers([]string{uri})
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}
@@ -213,8 +215,8 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	if config.MaxDeliver != -1 {
 		t.Errorf("max deliver = %d, want -1 (unlimited)", config.MaxDeliver)
 	}
-	if config.InactiveThreshold != 72*time.Hour {
-		t.Errorf("inactive threshold = %s, want 72h", config.InactiveThreshold)
+	if config.InactiveThreshold != time.Hour {
+		t.Errorf("inactive threshold = %s, want 1h", config.InactiveThreshold)
 	}
 	if config.Replicas != 0 {
 		t.Errorf("replicas = %d, want 0 (the stream's)", config.Replicas)
@@ -459,24 +461,37 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 	requireNoMessage(t, again, 300*time.Millisecond)
 }
 
-// waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
-// floor: an ack is a publish the server answers nothing to.
-func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string, floor uint64) {
+// waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
+// want, which is what the caller waited for, and the reading ready last took. One bound serves
+// every caller: each waits on a state that follows a publish the server answers nothing to -- an
+// ack, a nak, a delivery -- so the state arrives a moment after the call that caused it rather
+// than with it, and the server it arrives at is in this process.
+func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		done, got := ready()
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited 5s for %s; %s", want, got)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
+// floor.
+func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string, floor uint64) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("the ack floor of %s to reach %d", sessionID, floor), func() (bool, string) {
 		info, err := consumers.Info(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("info: %v", err)
 		}
-		if info.AckFloor.Stream == floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the ack floor stayed %d, want %d", info.AckFloor.Stream, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return info.AckFloor.Stream == floor, fmt.Sprintf("it stayed %d", info.AckFloor.Stream)
+	})
 }
 
 // A restart whose floor lies below the stream's first sequence, the messages after the floor gone
@@ -620,7 +635,7 @@ func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	disjoint := []string{contracts.AgentSubject("ses_filters"), "notifications.github.o.r.>"}
-	if _, err := consumers.create(ctx, "s-ses_disjoint", disjoint, 0); err != nil {
+	if _, err := consumers.create(ctx, "ses_disjoint", "s-ses_disjoint", disjoint, 0); err != nil {
 		t.Fatalf("create with filters that do not overlap: %v", err)
 	}
 	overlapping := []string{"notifications.github.o.r.>", "notifications.github.*.r.pull"}
@@ -636,7 +651,7 @@ func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
 	}
 
 	// A consumer whose two filters both match one subject is delivered that message once.
-	if _, err := consumers.create(ctx, "s-ses_collide", overlapping, 0); err != nil {
+	if _, err := consumers.create(ctx, "ses_collide", "s-ses_collide", overlapping, 0); err != nil {
 		t.Fatalf("create with the overlapping filters: %v", err)
 	}
 	pull := pullSession(t, consumers, "ses_collide")
@@ -735,6 +750,146 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	}
 }
 
+// waitForAckPending waits for sessionID's consumer to hold want messages awaiting an ack and
+// answers the info that read it.
+func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID string, want int) *jetstream.ConsumerInfo {
+	t.Helper()
+	var info *jetstream.ConsumerInfo
+	waitUntil(t, fmt.Sprintf("the consumer of %s to hold %d messages awaiting an ack", sessionID, want), func() (bool, string) {
+		read, err := consumers.Info(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		info = read
+		return info.NumAckPending == want, fmt.Sprintf("it holds %d", info.NumAckPending)
+	})
+	return info
+}
+
+// Release gives the server back, at once, every message the pull holds that its caller never
+// read: the next pull of that consumer is delivered both of them straight away, each as a second
+// delivery, rather than after SessionConsumerAckWait. Stop in its place drops them, and the next
+// pull waits out that ack wait for them. A returned message is still awaiting an ack -- a nak
+// schedules a redelivery, it does not undo the delivery it answers -- so the consumer holds
+// nothing for an ack only once the next owner has taken and acked them, which is the state this
+// row ends on. The order the two come back in is the server's, not this row's to assert: with no
+// pull request that still has interest, the server's first redelivery attempt puts that message
+// behind the other in its redelivery queue. A relay's next owner is pulling by then, and one that
+// is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
+// comes from.
+func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_released"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	var stored []uint64
+	for i := range 3 {
+		stored = append(stored, publishStored(t, owner, agent, strconv.Itoa(i)))
+	}
+	pull := pullSession(t, consumers, session)
+	first := next(t, pull)
+	if first.StreamSeq != stored[0] {
+		t.Fatalf("the first message is %d, want %d", first.StreamSeq, stored[0])
+	}
+	if err := first.Ack(); err != nil {
+		t.Fatalf("ack %d: %v", first.StreamSeq, err)
+	}
+	// One pull request asks for a whole batch, so the server delivered all three: the two this
+	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	held := waitForAckPending(t, consumers, session, 2)
+	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
+	if returned, err := pull.Release(); returned != 2 || err != nil {
+		t.Fatalf("Release returned %d messages, %v; want the two the pull held unread and no error", returned, err)
+	}
+	again := pullSession(t, consumers, session)
+	back := map[uint64]uint64{}
+	for range stored[1:] {
+		msg := next(t, again)
+		back[msg.StreamSeq] = msg.Delivered
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+		}
+	}
+	if len(back) != 2 || back[stored[1]] != 2 || back[stored[2]] != 2 {
+		t.Fatalf("after Release the next pull got %v, want %d and %d back, each as a second delivery", back, stored[1], stored[2])
+	}
+	released := waitForAckPending(t, consumers, session, 0)
+	t.Logf("once the next pull has acked both, the consumer has NumWaiting %d (that pull's own request) and NumAckPending %d", released.NumWaiting, released.NumAckPending)
+}
+
+// waitForQueued waits for pull to hold want messages its caller has not read, which is the state
+// Release gives them back from. The server reporting them delivered is a moment ahead of it: the
+// pull's inbox subscription queues each message when nats.go hands it over.
+func waitForQueued(t *testing.T, pull *SessionPull, want int) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("the pull of consumer %s to hold %d messages unread", pull.name, want), func() (bool, string) {
+		pull.mu.Lock()
+		held := len(pull.queue)
+		pull.mu.Unlock()
+		return held == want, fmt.Sprintf("it holds %d", held)
+	})
+}
+
+// A hand-over that could not reach the server at all says so, rather than reporting a whole
+// hand-over while every message it held went out with the connection. On a connection that is
+// closed the drain of the pull's inbox subscription fails, and nats.go throws away what it had
+// buffered there unread; the naks of what the pull itself holds fail with it. Both halves are
+// named: Detach reports the drain, and Release reports that drain together with the naks and
+// counts nothing returned, so the caller's hand-over line cannot claim messages reached the
+// server that never left the process.
+func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_closed"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for i := range 3 {
+		publishStored(t, owner, agent, strconv.Itoa(i))
+	}
+	// A connection of this row's own, on the test's account: closing it ends no other row's
+	// pull and no cleanup of the connection sessionConsumersOnStream hands out.
+	mine, err := ConnectSessionConsumers([]string{testnats.URL(t)}, 0)
+	if err != nil {
+		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
+	}
+	t.Cleanup(mine.Close)
+	pull, err := mine.Pull(ctx, session)
+	if err != nil {
+		t.Fatalf("pull %s: %v", session, err)
+	}
+	// The first Next sends the pull request, which asks for a whole batch, and reads the first
+	// of the three messages the server delivers for it; the other two are queued in the pull,
+	// which is what Release has to return.
+	next(t, pull)
+	waitForQueued(t, pull, 2)
+	mine.Close()
+
+	detachErr := pull.Detach()
+	if detachErr == nil {
+		t.Fatal("Detach on a closed connection reported nothing, while nats.go threw away every message the pull's inbox held unread")
+	}
+	if !strings.Contains(detachErr.Error(), "could not be drained") {
+		t.Fatalf("Detach reported %q, want it naming the drain that failed", detachErr)
+	}
+	returned, err := pull.Release()
+	if returned != 0 {
+		t.Fatalf("Release returned %d messages on a closed connection, want none: no nak of it reached the server", returned)
+	}
+	if err == nil {
+		t.Fatal("Release on a closed connection reported nothing, so its caller would log a whole hand-over")
+	}
+	if !strings.Contains(err.Error(), "could not be drained") || !strings.Contains(err.Error(), "could not return 2 of the messages it held") {
+		t.Fatalf("Release reported %q, want it naming both the drain that failed and the two naks that failed", err)
+	}
+	t.Logf("Detach reported: %v", detachErr)
+	t.Logf("Release reported: %v", err)
+}
+
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all
 // report it missing; a session id that names no consumer is refused before anything is sent.
 func TestSessionsWithoutAConsumer(t *testing.T) {
@@ -786,7 +941,7 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	consumers, err := ConnectSessionConsumers([]string{uri})
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}
@@ -865,5 +1020,421 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 	}
 	if _, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.AgentSubject(kept), "notifications.github.o.r.>"}, listed[kept]); err != nil || ok {
 		t.Fatalf("KeepListed with a new filter = %t, %v; want it left to RestartAtFloor", ok, err)
+	}
+}
+
+// Delete removes the session's consumer, so it holds a slot of the stream's consumer cap no
+// longer. A Delete of a consumer the stream no longer holds is no error, and nor is one of a
+// session id that names no consumer, which costs no call at all.
+func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
+	_, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_deleted"
+	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if err := consumers.Delete(ctx, session); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after the delete = %v, want ErrSessionConsumerNotFound", err)
+	}
+	if err := consumers.Delete(ctx, session); err != nil {
+		t.Fatalf("a second Delete of a consumer the stream no longer holds = %v, want no error", err)
+	}
+	if err := consumers.Delete(ctx, "ses.dotted"); err != nil {
+		t.Fatalf("Delete of a session id that names no consumer = %v, want no error", err)
+	}
+}
+
+// A restart whose create faulted leaves the consumer's pending start behind, and every later call
+// would create the consumer there whatever it was asked for. Delete drops it, so the next
+// registration that carries a resume point of its own creates the consumer at that point rather
+// than at the start of a restart of a session that has since ended.
+func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_delete_pending"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	held := publishStored(t, owner, agent, "held")
+	pull := pullSession(t, consumers, session)
+	if msg := next(t, pull); msg.StreamSeq != held {
+		t.Fatalf("first message = %d, want %d", msg.StreamSeq, held)
+	}
+	pull.Stop()
+	waitForAckPending(t, consumers, session, 1)
+
+	consumers.SetCreateFault(func(string) error { return errors.New("the create faulted") })
+	if _, err := consumers.RestartAtFloor(ctx, session, []string{agent}); err == nil {
+		t.Fatal("RestartAtFloor whose create faulted reported no error")
+	}
+	consumers.SetCreateFault(nil)
+	if start, ok := consumers.pendingStart("s-" + session); !ok || start != held {
+		t.Fatalf("the pending start after the faulted create = %d, %t; want %d", start, ok, held)
+	}
+
+	if err := consumers.Delete(ctx, session); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if start, ok := consumers.pendingStart("s-" + session); ok {
+		t.Fatalf("the pending start after the delete = %d, want none: the next registration would undo the delete", start)
+	}
+	later := publishStored(t, owner, agent, "later")
+	start, err := consumers.Ensure(ctx, session, []string{agent}, later+1)
+	if err != nil || start.StartSeq != later+1 || !start.Created {
+		t.Fatalf("Ensure carrying a resume point = %+v, %v; want the consumer created at %d", start, err, later+1)
+	}
+}
+
+// The server removes a consumer idle longer than the inactive threshold its configuration
+// carries, which is what frees the slot of a consumer no listener deleted. The threshold here is
+// seconds rather than the hour a deployment runs with (SessionConsumerInactiveThreshold), so the
+// row waits the server out.
+//
+// What this shows nothing about is a clustered hub: nats-server arms this timer in setLeader and
+// returns from deleteNotActive while the consumer is not the leader, so every leader election
+// restarts the clock, and a consumer on a replicated stream outlives its threshold many times
+// over. The server here is one in-process member that elects a leader once.
+func TestTheServerRemovesAConsumerIdlePastTheInactiveThreshold(t *testing.T) {
+	_, consumers := sessionConsumersOnStream(t)
+	consumers.inactiveThreshold = 2 * time.Second
+	ctx := context.Background()
+	const session = "ses_idle"
+	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	info, err := consumers.Info(ctx, session)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if info.Config.InactiveThreshold != 2*time.Second {
+		t.Fatalf("inactive threshold = %s, want the 2s this row created the consumer with", info.Config.InactiveThreshold)
+	}
+	waitUntil(t, "the server to remove the idle consumer", func() (bool, string) {
+		_, err := consumers.Info(context.Background(), session)
+		if err != nil && !errors.Is(err, ErrSessionConsumerNotFound) {
+			t.Fatalf("info: %v", err)
+		}
+		return errors.Is(err, ErrSessionConsumerNotFound), "the stream still holds it"
+	})
+}
+
+// A session that comes back loses nothing to the delete: the floor recorded before it
+// (SessionResumeSubject) is where the consumer is created again when the registration carries no
+// resume point of its own, so the pull is delivered every message stored since that floor, each
+// once, and none below it. Without the record the consumer would be created at the stream's end
+// and the messages stored while the session was away would never reach it.
+func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_resume"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	acked := publishStored(t, owner, agent, "acked")
+	held := publishStored(t, owner, agent, "held")
+	pull := pullSession(t, consumers, session)
+	if msg := next(t, pull); msg.StreamSeq != acked {
+		t.Fatalf("first message = %d, want %d", msg.StreamSeq, acked)
+	} else if err := msg.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	pull.Stop()
+	waitForAckFloor(t, consumers, session, acked)
+
+	if err := consumers.Delete(ctx, session); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	away := publishStored(t, owner, agent, "stored while the session was away")
+	start, err := consumers.Ensure(ctx, session, []string{agent}, 0)
+	if err != nil || !start.Created || start.StartSeq != acked+1 {
+		t.Fatalf("Ensure after the delete = %+v, %v; want the consumer created at %d, the sequence after the recorded floor", start, err, acked+1)
+	}
+	again := pullSession(t, consumers, session)
+	for _, want := range []uint64{held, away} {
+		msg := next(t, again)
+		if msg.StreamSeq != want {
+			t.Fatalf("after the delete got seq %d, want %d", msg.StreamSeq, want)
+		}
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+		}
+	}
+	requireNoMessage(t, again, 300*time.Millisecond)
+}
+
+// A resume record naming another stream's identity names sequences of a stream this one is not,
+// so it is ignored and the consumer is created at the stream's end, as a session with no record
+// at all is.
+func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_other_stream"
+	agent := contracts.AgentSubject(session)
+	record, err := json.Marshal(SessionResumeRecord{Floor: 1, StreamID: "a stream this is not"})
+	if err != nil {
+		t.Fatalf("marshal the resume record: %v", err)
+	}
+	publishStored(t, owner, SessionResumeSubject(session), string(record))
+	last := publishStored(t, owner, agent, "stored before the registration")
+	start, err := consumers.Ensure(ctx, session, []string{agent}, 0)
+	if err != nil || !start.Created || start.StartSeq != last+1 {
+		t.Fatalf("Ensure with a resume record of another stream = %+v, %v; want the consumer created at %d, the stream's end", start, err, last+1)
+	}
+}
+
+// The resume lane is the listener's own: no session may register a topic reaching it, by name or
+// through a wildcard, so no replay hands out another session's resume floor; the stream carries
+// the lane where the consumer list every filter takes does not, so no consumer delivers a record.
+func TestTheResumeLaneIsTheListenersOwn(t *testing.T) {
+	if subject := SessionResumeSubject("ses_abc"); subject != "notifications.envoy.resume.ses_abc" {
+		t.Fatalf("SessionResumeSubject = %q", subject)
+	}
+	for _, topic := range []string{
+		SessionResumeSubject("ses_a"),
+		SessionResumeSubject("ses_b"),
+		SessionResumeSubjectPrefix + "*",
+		SessionResumeSubjectPrefix + ">",
+	} {
+		if !ReachesPrivateStreamSubject("ses_a", topic) {
+			t.Errorf("ReachesPrivateStreamSubject(%q, %q) = false, want true", "ses_a", topic)
+		}
+	}
+	lane := SessionResumeSubjectPrefix + ">"
+	if slices.Contains(StreamSubjects(), lane) {
+		t.Errorf("StreamSubjects() = %q, want no %s among them: no consumer filter takes the lane", StreamSubjects(), lane)
+	}
+	if !slices.Contains(StreamCarriedSubjects(), lane) {
+		t.Errorf("StreamCarriedSubjects() = %q, want %s among them", StreamCarriedSubjects(), lane)
+	}
+	if got := consumerFilterSubjects(StreamCarriedSubjects()); slices.Contains(got, lane) {
+		t.Errorf("a consumer's filters over the stream's own subjects = %q, want no %s among them", got, lane)
+	}
+	if !StreamCaptures(SessionResumeSubject("ses_abc")) {
+		t.Errorf("the stream does not capture %s, so no resume floor would survive a delete", SessionResumeSubject("ses_abc"))
+	}
+}
+
+// DeleteListed deletes a session's consumer from the info its caller already holds, as the
+// sweep does: it reads every session consumer in a few paged requests (ListSessionConsumers) and
+// then deletes from what it read, where Delete reads the info itself. The floor it records is
+// the listed info's, so the session comes back where its delivery stopped either way.
+func TestDeleteListedDeletesFromTheListedInfoAndRecordsItsFloor(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_delete_listed"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	acked := publishStored(t, owner, agent, "acked")
+	pull := pullSession(t, consumers, session)
+	msg := next(t, pull)
+	if msg.StreamSeq != acked {
+		t.Fatalf("first message = %d, want %d", msg.StreamSeq, acked)
+	}
+	if err := msg.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	pull.Stop()
+	waitForAckFloor(t, consumers, session, acked)
+
+	listed, err := consumers.ListSessionConsumers(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if listed[session] == nil {
+		t.Fatalf("the list holds no consumer for %s (%d listed)", session, len(listed))
+	}
+	if err := consumers.DeleteListed(ctx, session, listed[session]); err != nil {
+		t.Fatalf("DeleteListed: %v", err)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after DeleteListed = %v, want ErrSessionConsumerNotFound", err)
+	}
+	floor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
+	if err != nil || !recorded || floor != acked {
+		t.Fatalf("the resume record after DeleteListed = %d, %t, %v; want the floor %d recorded", floor, recorded, err, acked)
+	}
+}
+
+// A delete that finds no consumer finds one a restart deleted and did not create again
+// (RestartAtFloor), and the pending start that restart left is the only position anyone holds
+// for the session. So the delete records the sequence before it on the resume lane before it
+// drops that start: dropping it with nothing recorded would leave the session's position
+// nowhere, and the next registration would create its consumer at the stream's end, past every
+// message stored since the floor. A session that never had a consumer has no position to
+// record, and that delete is still no error and writes nothing.
+func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_delete_missing"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	acked := publishStored(t, owner, agent, "acked")
+	held := publishStored(t, owner, agent, "held")
+	pull := pullSession(t, consumers, session)
+	first := next(t, pull)
+	if first.StreamSeq != acked {
+		t.Fatalf("first message = %d, want %d", first.StreamSeq, acked)
+	}
+	if err := first.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if msg := next(t, pull); msg.StreamSeq != held {
+		t.Fatalf("second message = %d, want %d left unacked", msg.StreamSeq, held)
+	}
+	pull.Stop()
+	waitForAckPending(t, consumers, session, 1)
+	waitForAckFloor(t, consumers, session, acked)
+
+	// A restart whose create faults leaves the consumer deleted and its start pending, which is
+	// the state a listener killed between the two is in when the sweep reaches that session.
+	consumers.SetCreateFault(func(string) error { return errors.New("the create faulted") })
+	if _, err := consumers.RestartAtFloor(ctx, session, []string{agent}); err == nil {
+		t.Fatal("RestartAtFloor whose create faulted reported no error")
+	}
+	consumers.SetCreateFault(nil)
+	if start, ok := consumers.pendingStart("s-" + session); !ok || start != held {
+		t.Fatalf("the pending start after the faulted create = %d, %t; want %d", start, ok, held)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after the faulted restart = %v, want it deleted", err)
+	}
+
+	if err := consumers.Delete(ctx, session); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	floor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
+	if err != nil || !recorded || floor != held-1 {
+		t.Fatalf("the resume record after a delete that found no consumer = %d, %t, %v; want the floor %d, the sequence before the pending start it dropped", floor, recorded, err, held-1)
+	}
+	if start, ok := consumers.pendingStart("s-" + session); ok {
+		t.Fatalf("the pending start after the delete = %d, want none: the next registration would undo the delete", start)
+	}
+	away := publishStored(t, owner, agent, "stored while the session was away")
+	start, err := consumers.Ensure(ctx, session, []string{agent}, 0)
+	if err != nil || !start.Created || start.StartSeq != held {
+		t.Fatalf("Ensure after the delete = %+v, %v; want the consumer created at %d, the sequence after the recorded floor", start, err, held)
+	}
+	again := pullSession(t, consumers, session)
+	for _, want := range []uint64{held, away} {
+		msg := next(t, again)
+		if msg.StreamSeq != want {
+			t.Fatalf("after the delete got seq %d, want %d", msg.StreamSeq, want)
+		}
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+		}
+	}
+	requireNoMessage(t, again, 300*time.Millisecond)
+
+	const never = "ses_never_had_a_consumer"
+	if err := consumers.Delete(ctx, never); err != nil {
+		t.Fatalf("Delete of a session that never had a consumer = %v, want no error", err)
+	}
+	if _, recorded, err := consumers.resumeFloor(ctx, never, streamIDOf(t, consumers)); err != nil || recorded {
+		t.Fatalf("the resume lane of a session that never had a consumer holds a record = %t, %v; want none written", recorded, err)
+	}
+}
+
+// The threshold a listener derives stands above the bound on when its sweep deletes a consumer,
+// for every set of windows a deployment runs: the sweep records the consumer's resume floor
+// before it deletes and the server's own removal records nothing, so a consumer the server takes
+// first costs its session every message stored while it was away. The case that the 1 hour
+// backstop alone fails is a session bucket whose MaxAge stands well above the gone horizon,
+// since the sweep waits for the record to leave the bucket.
+func TestInactiveThresholdForStandsAboveTheSweepsBound(t *testing.T) {
+	for _, tc := range []struct {
+		name                                    string
+		recordLife, reapInterval, sweepInterval time.Duration
+	}{
+		{"the default windows", time.Hour, time.Minute, 5 * time.Minute},
+		{"a session bucket aged well above the gone horizon", 24 * time.Hour, time.Minute, 5 * time.Minute},
+		{"a raised horizon and slower passes", 6 * time.Hour, 10 * time.Minute, 30 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := InactiveThresholdFor(tc.recordLife, tc.reapInterval, tc.sweepInterval)
+			bound := tc.recordLife + tc.reapInterval + tc.sweepInterval
+			if got <= bound {
+				t.Errorf("InactiveThresholdFor(%s, %s, %s) = %s, want it above the sweep's bound of %s: the server would remove the consumer before the sweep could record its floor",
+					tc.recordLife, tc.reapInterval, tc.sweepInterval, got, bound)
+			}
+			if got < SessionConsumerInactiveThreshold {
+				t.Errorf("InactiveThresholdFor(%s, %s, %s) = %s, want at least the floor %s",
+					tc.recordLife, tc.reapInterval, tc.sweepInterval, got, SessionConsumerInactiveThreshold)
+			}
+		})
+	}
+}
+
+// It is total: a window the caller passes as zero or negative counts as zero, so no
+// configuration derives a threshold below the floor the constant sets.
+func TestInactiveThresholdForIsNeverBelowItsFloor(t *testing.T) {
+	if got := InactiveThresholdFor(0, 0, 0); got != SessionConsumerInactiveThreshold {
+		t.Errorf("InactiveThresholdFor(0, 0, 0) = %s, want the floor %s", got, SessionConsumerInactiveThreshold)
+	}
+	for _, windows := range [][3]time.Duration{
+		{-time.Hour, 0, 0},
+		{0, -time.Minute, 0},
+		{0, 0, -5 * time.Minute},
+		{-time.Hour, -time.Minute, -5 * time.Minute},
+		{time.Hour, -time.Minute, -5 * time.Minute},
+	} {
+		if got := InactiveThresholdFor(windows[0], windows[1], windows[2]); got < SessionConsumerInactiveThreshold {
+			t.Errorf("InactiveThresholdFor(%s, %s, %s) = %s, want at least the floor %s",
+				windows[0], windows[1], windows[2], got, SessionConsumerInactiveThreshold)
+		}
+	}
+}
+
+// A consumer carries the inactive threshold its connection was opened with
+// (ConnectSessionConsumers's inactiveThreshold), which is how a listener gives every consumer
+// the one its own windows derive (InactiveThresholdFor), and the constant where that threshold
+// is zero or negative, so no configuration turns the server's backstop off. The threshold
+// is given at the connection and never set after it, so no consumer is created before the
+// deployment's threshold is in hand.
+func TestAConsumerCarriesTheInactiveThresholdItsHandleWasOpenedWith(t *testing.T) {
+	uri := testnats.URL(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	const given = 2 * time.Hour
+	for _, tc := range []struct {
+		name      string
+		session   string
+		threshold time.Duration
+		want      time.Duration
+	}{
+		{"opened with a threshold", "ses_threshold_given", given, given},
+		{"opened with none", "ses_threshold_none", 0, SessionConsumerInactiveThreshold},
+		{"opened with a negative threshold", "ses_threshold_negative", -time.Minute, SessionConsumerInactiveThreshold},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			consumers, err := ConnectSessionConsumers([]string{uri}, tc.threshold)
+			if err != nil {
+				t.Fatalf("connect session consumers: %v", err)
+			}
+			t.Cleanup(consumers.Close)
+			ctx := context.Background()
+			if _, err := consumers.Ensure(ctx, tc.session, []string{contracts.AgentSubject(tc.session)}, 0); err != nil {
+				t.Fatalf("ensure: %v", err)
+			}
+			info, err := consumers.Info(ctx, tc.session)
+			if err != nil {
+				t.Fatalf("info: %v", err)
+			}
+			if info.Config.InactiveThreshold != tc.want {
+				t.Fatalf("the consumer's inactive threshold = %s, want the %s its handle was opened with", info.Config.InactiveThreshold, tc.want)
+			}
+		})
 	}
 }

@@ -699,11 +699,11 @@ function DeliverySection({
               source(comparedPipeline.data),
               comparedPipeline.data === undefined
                 ? undefined
-                : timing(comparedPipeline.data.pr_checks.run.days)
+                : timing(comparedPipeline.data.pr_checks.run.days ?? [])
             )}
             label="CI"
             range={range}
-            series={timing(ci.days)}
+            series={timing(ci.days ?? [])}
           />
         )}
       </Section>
@@ -722,11 +722,11 @@ function DeliverySection({
               source(comparedMeasures.data),
               comparedMeasures.data === undefined
                 ? undefined
-                : deploys(comparedMeasures.data.measures.daily)
+                : deploys(comparedMeasures.data.measures.daily ?? [])
             )}
             label="Deploys"
             range={range}
-            series={deploys(daily.daily)}
+            series={deploys(daily.daily ?? [])}
           />
         )}
       </Section>

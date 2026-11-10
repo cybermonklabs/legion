@@ -238,8 +238,10 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // with no task leaves the resumed agent holding its old transcript with nothing asked of it.
 //
 // A child in accepting waits on the tree's architect, which the promotion starts, so no task is
-// queued for it; its branch row is, because every member past admitted gets one and every role
-// of it is relaunched (workflow.StartOrOwe's relaunch half, which these effects leave out).
+// queued for it; its branch row is, because every member past admitted gets one. No child here
+// holds a claim row, the durable record that a role has run, so no role of any of them is brought
+// back by a task-less start — and such a start, which these effects leave out, would not be
+// counted here anyway.
 func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -950,7 +952,7 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		if err := records.PutPullRequest(context.Background(), tx, record.PullRequest{
 			Issue: "LEGION-CHILD", Repo: "acme/widgets", Number: 9, Branch: "legion/LEGION-CHILD", HeadSHA: "abc",
 			HeadUpdatedAt: fixedNow, CheckedHead: "abc", Failing: []string{"ci"},
-			FixAttempts: 2, State: record.PullRequestOpen,
+			State: record.PullRequestOpen,
 		}); err != nil {
 			t.Fatalf("seed the child's open pull request: %v", err)
 		}
@@ -983,7 +985,7 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		if pr == nil {
 			t.Fatal("the child's open pull request went with the generation; an open one is kept")
 		}
-		if pr.CheckedHead != "" || len(pr.Failing) != 0 || pr.FixAttempts != 0 {
+		if pr.CheckedHead != "" || len(pr.Failing) != 0 {
 			t.Errorf("the kept pull request carried the last generation's reading: %#v", pr)
 		}
 	})

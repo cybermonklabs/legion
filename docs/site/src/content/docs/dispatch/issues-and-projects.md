@@ -52,6 +52,14 @@ Triage → Icebox → Backlog → Todo → In progress → Testing → Needs rev
 An open issue's **Status** menu offers every status except Done. **Close issue** is the way into
 Done, and a closed issue offers **Reopen**, which puts it back in Backlog.
 
+A closed issue still takes comments and messages, from people and agents: a comment, a reply, a
+reply on an ask, a comment on a quote of one of its documents, and a message to an agent all post,
+and a mentioned agent is still told and can answer. Everything else waits for **Reopen**: a new
+ask, an answer to an ask, a suggestion, a document edit or named version, an upload, a review or
+approval request, a claim, and resolving, reopening, editing, accepting or rejecting a comment
+already there. Its priority, labels and other fields wait for it too, except its place on the
+Board and its components; a linked GitHub issue or pull request can be taken off it, not added.
+
 Legion, when it works an issue, moves that issue's status itself.
 
 ## The List and the Board
@@ -63,7 +71,8 @@ The **List** is a sortable table, initially ordered by **Queue**, with Done excl
 Queue numbers are the waiting order of Todo issues labelled `legion`, using the Board's rank order.
 Click a column heading to sort; hold Shift to add another sort column.
 Use **Group by** for status, priority, epic, assignee, created by, claimed by, or an age band.
-An epic is an open root issue labelled `epic`; its descendants are the table rows, while its linked group heading represents the epic itself.
+An epic is an open root issue labelled `epic`.
+It is an ordinary row of the table — searchable, filterable, selectable, editable — except while you group by epic, where it is its group's linked heading rather than a row inside it.
 
 The table scrolls vertically and horizontally inside its own box.
 Its header stays visible. On phones Select, Key and Title stay pinned within 85% of the box, so a title reads as words; Priority and the other columns scroll sideways.
@@ -74,23 +83,28 @@ Drag a header edge to resize a column, double-click it to reset its width, or dr
 Choose 25, 50, 100, 250 or All rows per page.
 A page starting inside a group repeats that group's heading.
 
-The horizontally scrollable status strip above the table shows full lifecycle labels and counts; every segment, including **Done: load**, is a touch-sized button. Click a segment to filter to that status.
+The horizontally scrollable status strip above the table shows full lifecycle labels and counts; every segment is a touch-sized button. Click a segment to filter to that status.
+It counts what is loaded, so with closed issues unloaded it shows no Done segment at all.
 Open issues load first; Done loads when the Status filter includes it or is cleared.
 The open rows and filters stay usable while Done loads, or if that read fails; **Retry** asks again.
 Until Done has loaded, its filter option says so instead of claiming there are no closed issues.
-**Clear filters** also clears Needs you, Unread and Unclaimed.
+**Clear filters** also clears Needs you and Unread.
 Tick rows to open a floating action bar: **Start next**, **Move to epic…**, **Take out of epic**, or **New epic from these**.
+Press `x` to select or deselect the row your keys are on; the search bar then acts on what you have selected, and leaving the table clears it.
+An issue the table stops listing drops out of the selection, so a row listed again comes back unselected.
 On phones the bar stays in one horizontally scrollable row above the project content, so it cannot cover the table or pager.
 **Select all N matching** includes rows beyond the current page.
 Start next moves queued selections ahead of the rest of Legion's waiting line, keeping their queue order.
 Each rank change waits for the previous one. A refusal stops the later changes, and the notice identifies every issue that did not move up.
+Selecting every queued row says they already start next rather than doing nothing.
 An epic group's **Epic actions** can rename it, merge its open work into another epic and close it with a reason, or start all its queued issues next, including those hidden by filters.
 Merge moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after every move succeeds; otherwise the source stays open and the notice identifies the failed moves.
 Closed issues keep their original parent and history.
 Move, Take out and New epic skip selected closed issues and report how many were skipped; New epic requires at least one open selection.
+Naming and renaming an epic happen in a dialog in the page, like creating an issue.
 If a new epic may duplicate another issue, **Create anyway** is an explicit choice.
 If Dispatch created the epic but lost its answer, the table says so and leaves the selected issues in place rather than guessing the new epic's key.
-Independent bulk changes register together and finish independently. Each refused request stays in the shell's pending-writes indicator and has its own **Retry**; it does not hold the others.
+Independent bulk changes register together and finish independently, at most eight requests at a time. Each refused request stays in the shell's pending-writes indicator and has its own **Retry**; it does not hold the others.
 Reload restores requests already registered. New epic registers its parent changes only after the create answers; merge registers its reason and close only after its moves succeed.
 
 Changes made in another tab or by another person appear live without reloading.
@@ -159,8 +173,8 @@ The **Search issues** box matches every word across keys, titles, epics, assigne
 A word of five or more characters can be one edit away.
 
 The Board keeps the **Filters** strip: Labels requires every selected label, and Search matches keys and titles.
-The List and Board share **Needs you** (open asks), **Unread** (unseen activity), and **Unclaimed** (no held claim).
-Status and Labels use the same address parameters in both views, so switching views retains the picks; the Board's columns show all statuses.
+The List and Board share **Needs you** (open asks) and **Unread** (unseen activity).
+The List folds unclaimed work into its **Claimed by** column: its **Nobody or lapsed** value lists the issues nobody holds plus those whose claim the server would hand over. The Board keeps its **Unclaimed** chip, and both read the same `unclaimed=1` address parameter.
 The Board's active-filter chips remove individual picks.
 Filters, table sort, grouping, search and page live in the address, so a reload or shared link restores them.
 
@@ -171,8 +185,9 @@ unresponsive session has missed its registration window but is still working, an
 claimed. The chip then reads **unresponsive since** the moment the session was last seen, and
 names the moment the issue becomes takeable, 20 minutes after that one. Another agent's take is
 refused until then, naming the same moment; you can take it yourself at any time. From that
-moment the chip reads **takeable now** in the tone of a free issue, and the **Unclaimed** filter
-lists the issue, while the session is still drawn as unresponsive, because it has not ended and
+moment the chip reads **takeable now** in the tone of a free issue, and the List's **Nobody or
+lapsed** value (the Board's **Unclaimed** chip) lists the issue, while the session is still drawn
+as unresponsive, because it has not ended and
 may yet answer. A session that reads `gone` is unclaimed at once: its
 [running mark](/legion/dispatch/agents/#how-dispatch-shows-an-agent) is a hollow ring and the chip
 reads **not running**.
@@ -301,19 +316,37 @@ agents using it stop working at once.
   message as it was posted, and everything else that happened to the issue — status moves,
   claims, document versions, uploads, subscriptions, changes to child issues. It has **Load
   older** at the bottom, a divider for each day, and a mark where your last read ends.
+- **Decisions** is a view of the issue's `decisions.md`, in order: the open questions its spec
+  asks, the agent decisions waiting for your review, each with **Keep** and **Change**, your own
+  decisions, and the ones since replaced. Each decision links the spec blocks it shaped.
+- **Collaborators** lists everyone who has worked the issue: Legion's agents by role, each role's
+  newest session first and a superseded session naming the one that replaced it; then every other
+  agent session, the most recently active first; then the people, with why each is a collaborator
+  and when they last worked it. Every agent is one click from its conversation and shows whether
+  it is running. When Legion's record of this issue's agents cannot be read, the tab says so
+  instead of listing nothing. An issue nobody has worked reads **No one has worked this issue
+  yet.**
 
-Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, or `v` to switch to Spec, Verification, Plan,
-Conversation, Children, Artifacts, or Activity.
+Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec, Verification,
+Plan, Conversation, Children, Artifacts, Activity, Decisions, or Collaborators.
 
 An issue with no Verification document, or no plan document, shows on that tab the
 `dispatch artifact` command that makes one.
 
 ### Writing in the Conversation
 
-The box at the foot of the Conversation posts a comment on the issue. Type `@` to mention an agent
-role or a live agent session; the comment is then delivered to it. Start the comment with `/btw `
-or `/aside ` to choose how a mentioned agent receives it. [Agents](/legion/dispatch/agents/#sending-to-one-agent)
-explains the delivery modes.
+The box at the foot of the Conversation posts a comment on the issue, on a closed issue too: its
+composers, **Reply** on a message and a delivery's **Retry** all work there, and you can still
+comment on a quote of its documents: select the text and choose **Comment**, the one action the
+selection bar offers on a closed issue's document, and the comment opens in the margin. Type `@`
+to mention an agent role or a live agent session; the comment is then delivered to it. The picker
+also offers, under **Not running**, this issue's Legion roles that no running agent holds; a
+mention picked there is addressed to the role, and the comment is posted on the issue, but its
+delivery fails while nobody holds that role, since there is no session to take it. The thread
+shows that failed attempt with **Retry** beside it, which sends to whoever holds the role at the
+time; that Retry is offered for three days, after which a fresh comment is the way to reach the
+role. Start the comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
+[Agents](/legion/dispatch/agents/#sending-to-one-agent) explains the delivery modes.
 
 Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send. `Enter` alone starts a new line.
 

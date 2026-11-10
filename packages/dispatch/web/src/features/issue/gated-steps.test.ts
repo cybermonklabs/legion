@@ -32,7 +32,13 @@ const olderRoot: IssueDetails = {
 
 const root: IssueDetails = { ...olderRoot, decisions_artifact_id: "artifact-2" };
 
-const ungated: Project = { key: "CORE", name: "Core", created_at: "2026-09-09T00:00:00Z" };
+const ungated: Project = {
+  key: "CORE",
+  name: "Core",
+  created_at: "2026-09-09T00:00:00Z",
+  open_asks: 0,
+  gated_steps: [],
+};
 
 function gating(...gated_steps: GatedStep[]): Project {
   return { ...ungated, gated_steps };

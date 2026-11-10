@@ -91,7 +91,8 @@ test("a comment's callout shows the document's header with its kind and title", 
   }
 });
 
-test("a comment's ask block shows the decision card", async ({ browser }) => {
+// @pr: The typed-block family's one row on the lane: a comment's ask block has to draw as the decision card.
+test("a comment's ask block shows the decision card @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Decision in a comment" });
   const comment = await createComment(
@@ -172,10 +173,10 @@ async function replyUnderDocumentDecision(
     },
     { as: "agent" }
   );
-  let storage: IssueDetails["open_asks"][number] | undefined;
+  let storage: NonNullable<IssueDetails["open_asks"]>[number] | undefined;
   await expect
     .poll(async () => {
-      [storage] = (await getIssue(issue.key)).open_asks;
+      [storage] = (await getIssue(issue.key)).open_asks ?? [];
       return storage;
     })
     .toBeDefined();

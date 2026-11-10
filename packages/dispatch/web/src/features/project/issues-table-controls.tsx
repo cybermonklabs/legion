@@ -1,19 +1,9 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import type { Column, Row, Table } from "@tanstack/react-table";
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { createPortal } from "react-dom";
-import { Link, useSearchParams } from "react-router-dom";
-import { AGENT_LIST_REFILLING } from "../../api/client";
+import type { Column, Table } from "@tanstack/react-table";
+import { type ReactNode, type RefObject, useCallback, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { IssueSummary, LegionBoardResponse } from "../../api/types";
-import { Chip } from "../../components/Chip";
+import { AnchoredPanel } from "../../components/AnchoredPanel";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
@@ -22,21 +12,27 @@ import {
   dangerText,
   issueStatusScale,
   legionPhaseScale,
-  linkHoverText,
-  linkText,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   tableFilterActive,
   textMutedOnCanvas,
-  textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { buildIssuePath } from "../refs/routes";
-import { issueStatuses, statusLabel } from "./board-model";
+import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
-import { ALL_ROWS, countIssueStates, type Item, readUrl, writeUrl } from "./issues-table-model";
+import {
+  ALL_ROWS,
+  countIssueStates,
+  defaultView,
+  type Item,
+  NO_PHASE,
+  PAGE_SIZES,
+  readUrl,
+  runningIssueStatuses,
+  writeUrl,
+} from "./issues-table-model";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -92,14 +88,16 @@ export function ColumnFilter({
   }
   const picks = (column.getFilterValue() as string[] | undefined) ?? [];
   const order = meta?.order;
-  const options = [
-    ...new Set([...counts.keys(), ...picks, ...(column.id === "status" ? issueStatuses : [])]),
-  ].sort((a, b) =>
-    order === undefined
-      ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
-      : order.indexOf(a) - order.indexOf(b)
+  const options = [...new Set([...counts.keys(), ...picks, ...(meta?.always ?? [])])].sort(
+    (a, b) =>
+      order === undefined
+        ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
+        : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
+  // The one option whose detail is not a count: Done is offered before the closed issues it
+  // would count have been read, and says so rather than claiming zero.
+  const unloadedDone = (value: string) => column.id === "status" && value === "done" && !doneLoaded;
   return (
     <MultiSelect
       emptyMessage="No matching value."
@@ -107,13 +105,9 @@ export function ColumnFilter({
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
       onOpenChange={onOpenChange}
       open={open}
-      optionDetail={(value) =>
-        column.id === "status" && value === "done" && !doneLoaded
-          ? "load"
-          : String(counts.get(value) ?? 0)
-      }
+      optionDetail={(value) => (unloadedDone(value) ? "load" : String(counts.get(value) ?? 0))}
       optionDetailLabel={(value) =>
-        column.id === "status" && value === "done" && !doneLoaded
+        unloadedDone(value)
           ? "not loaded"
           : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? "issue" : "issues"}`
       }
@@ -131,114 +125,8 @@ export function ColumnFilter({
   );
 }
 
-/** A group's header row: its value, how many issues, its issues by status, and for an epic its
- *  actions. */
-export function GroupRow({
-  row,
-  grouping,
-  columns,
-  epics,
-  onRename,
-  onMerge,
-  onStartAll,
-  continued,
-  index,
-  measure,
-  viewportWidth,
-}: {
-  /** A repeat of the header of a group the page opens in the middle of. */
-  continued?: boolean;
-  index: number;
-  measure: (element: Element | null) => void;
-  row: Row<Item>;
-  grouping: string;
-  columns: number;
-  viewportWidth: number;
-  epics: readonly IssueSummary[];
-  onRename: (key: string) => void;
-  onMerge: (from: string, into: string) => void;
-  onStartAll: (epic: string) => void;
-}): ReactNode {
-  const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
-  const value = String(row.groupingValue ?? "");
-  const shown =
-    row
-      .getAllCells()
-      .find((cell) => cell.column.id === grouping)
-      ?.column.columnDef.meta?.show?.(value) ?? value;
-  const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
-  const byStatus = issueStatuses
-    .map(
-      (status) =>
-        [status, leaves.filter((leaf) => leaf.original.issue.status === status).length] as const
-    )
-    .filter(([, count]) => count > 0);
-  const next = Math.min(...leaves.map((leaf) => leaf.original.queue ?? Number.POSITIVE_INFINITY));
-  return (
-    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
-      <td className="px-2 py-2" colSpan={columns}>
-        <div
-          className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"
-          style={{ width: Math.max(180, viewportWidth - 20) }}
-        >
-          <button
-            aria-expanded={row.getIsExpanded()}
-            aria-label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${shown}, ${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}${continued ? ", continued" : ""}`}
-            className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
-            onClick={row.getToggleExpandedHandler()}
-            type="button"
-          >
-            <span className={`w-4 ${textMutedOnSurfaceMuted}`}>
-              {row.getIsExpanded() ? "▾" : "▸"}
-            </span>
-            {epicKey === undefined ? shown : null}
-            {continued ? (
-              <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
-            ) : null}
-            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
-              {leaves.length} {leaves.length === 1 ? "issue" : "issues"}
-              {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
-            </span>
-          </button>
-          {epicKey === undefined ? null : (
-            <Link
-              className={`font-semibold ${linkText} ${linkHoverText}`}
-              to={buildIssuePath({ key: epicKey, kind: "issue" })}
-            >
-              {shown}
-            </Link>
-          )}
-          <span className="flex items-center gap-2">
-            <span
-              aria-hidden
-              className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
-            >
-              {byStatus.map(([status, count]) => (
-                <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
-              ))}
-            </span>
-            <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
-              {byStatus
-                .map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`)
-                .join(" · ")}
-            </span>
-          </span>
-          {epicKey === undefined ? null : (
-            <EpicActions
-              epicKey={epicKey}
-              epics={epics}
-              onMerge={(into) => onMerge(epicKey, into)}
-              onRename={() => onRename(epicKey)}
-              onStartAll={() => onStartAll(epicKey)}
-            />
-          )}
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-function Popover({
+/** A button and the panel it opens: the table's own popovers, on the shared `AnchoredPanel`. */
+export function Popover({
   label,
   labelClassName,
   title,
@@ -265,64 +153,7 @@ function Popover({
     [onOpenChange]
   );
   const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ top: 0, left: 0 });
-  useLayoutEffect(() => {
-    if (!open) return;
-    const place = () => {
-      const box = trigger.current?.getBoundingClientRect();
-      if (!box) return;
-      const width = Math.min(256, window.innerWidth - 16);
-      const left = Math.max(
-        8,
-        Math.min(align === "right" ? box.right - width : box.left, window.innerWidth - width - 8)
-      );
-      const top = Math.max(
-        8,
-        Math.min(box.bottom + 4, window.innerHeight - (panel.current?.offsetHeight ?? 200) - 8)
-      );
-      setPosition((current) =>
-        current.left === left && current.top === top ? current : { left, top }
-      );
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open, align]);
-  useEffect(() => {
-    if (!open) return;
-    panel.current?.querySelector<HTMLElement>("input, button, select, [tabindex]")?.focus();
-    const outside = (event: MouseEvent) => {
-      if (
-        !panel.current?.contains(event.target as Node) &&
-        !trigger.current?.contains(event.target as Node)
-      )
-        setOpen(false);
-    };
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus();
-    };
-    const focus = () =>
-      queueMicrotask(() => {
-        if (!panel.current?.contains(document.activeElement)) setOpen(false);
-      });
-    document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", keyboard, true);
-    document.addEventListener("focusin", focus);
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", keyboard, true);
-      document.removeEventListener("focusin", focus);
-    };
-  }, [open, setOpen]);
+
   const close = () => {
     setOpen(false);
     trigger.current?.focus();
@@ -344,20 +175,18 @@ function Popover({
       >
         {label}
       </button>
-      {open
-        ? createPortal(
-            <div
-              aria-label={title ?? (typeof label === "string" ? label : "Table actions")}
-              className={`fixed z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
-              ref={panel}
-              role="dialog"
-              style={position}
-            >
-              {children(close)}
-            </div>,
-            document.body
-          )
-        : null}
+      {open ? (
+        <AnchoredPanel
+          align={align}
+          anchorRef={trigger}
+          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
+          label={title ?? (typeof label === "string" ? label : "Table actions")}
+          onDismiss={() => setOpen(false)}
+          role="dialog"
+        >
+          {children(close)}
+        </AnchoredPanel>
+      ) : null}
     </>
   );
 }
@@ -387,76 +216,6 @@ export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): 
   );
 }
 
-function EpicActions({
-  epicKey,
-  epics,
-  onRename,
-  onMerge,
-  onStartAll,
-}: {
-  epicKey: string;
-  epics: readonly IssueSummary[];
-  onRename: () => void;
-  onMerge: (into: string) => void;
-  onStartAll: () => void;
-}): ReactNode {
-  return (
-    <span className="ml-auto">
-      <Popover align="right" label="Epic actions ▾">
-        {(close) => (
-          <>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onRename();
-              }}
-              type="button"
-            >
-              Rename
-            </button>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onStartAll();
-              }}
-              type="button"
-            >
-              Start all its queued issues next
-            </button>
-            <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-              Merge into another epic
-              <select
-                className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                onChange={(event) => {
-                  if (event.target.value) {
-                    close();
-                    onMerge(event.target.value);
-                  }
-                }}
-                value=""
-              >
-                <option value="">Choose an epic…</option>
-                {epics
-                  .filter((epic) => epic.key !== epicKey)
-                  .map((epic) => (
-                    <option key={epic.key} value={epic.key}>
-                      {epic.title}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-              To split it, tick some of its issues and choose “New epic from these”.
-            </span>
-          </>
-        )}
-      </Popover>
-    </span>
-  );
-}
-
 export function Action({
   children,
   disabled,
@@ -482,24 +241,22 @@ export function IssueTableStatus({
   table,
   items,
   epics,
-  doneLoaded,
   hasLegion = false,
   board,
 }: {
   table: Table<Item>;
   items: readonly Item[];
   epics: readonly IssueSummary[];
-  doneLoaded: boolean;
   hasLegion?: boolean;
   board?: LegionBoardResponse;
 }): ReactNode {
-  const statusColumn = table.getColumn("status");
   const stateCounts = countIssueStates(items);
-  const queuedCount =
-    board?.header.queue_length ?? items.filter((item) => item.queue !== undefined).length;
-  const runningCount = items.filter((item) =>
-    ["in_progress", "testing", "needs_review", "retro"].includes(item.issue.status)
-  ).length;
+  let queuedCount = 0;
+  let runningCount = 0;
+  for (const item of items) {
+    if (item.queue !== undefined) queuedCount += 1;
+    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
+  }
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div
@@ -555,9 +312,11 @@ export function IssueTableStatus({
         {stateCounts.map(({ id, label, column, count }) => {
           const picks = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
           const on = picks.length === 0 || picks.includes(id);
+          const scale: Readonly<Record<string, string>> =
+            column === "phase" ? legionPhaseScale : issueStatusScale;
           return (
             <button
-              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${(column === "phase" ? legionPhaseScale : issueStatusScale)[id] ?? ""} ${on ? "" : "opacity-30"}`}
+              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${scale[id] ?? ""} ${on ? "" : "opacity-30"}`}
               key={`${column}:${id}`}
               onClick={() =>
                 table.setColumnFilters((filters) => {
@@ -566,8 +325,10 @@ export function IssueTableStatus({
                   return [
                     ...next,
                     { id: column, value: [id] },
+                    // A Dispatch status picked on a Legion project means the issues the board
+                    // does not hold: a Legion issue reads under its phase, never its status.
                     ...(hasLegion && column === "status"
-                      ? [{ id: "phase", value: ["No Legion phase"] }]
+                      ? [{ id: "phase", value: [NO_PHASE] }]
                       : []),
                   ];
                 })
@@ -582,22 +343,19 @@ export function IssueTableStatus({
             </button>
           );
         })}
-        {doneLoaded ? null : (
-          <button
-            className={`min-h-11 shrink-0 px-3 py-2 text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${issueStatusScale.done}`}
-            onClick={() => statusColumn?.setFilterValue(["done"])}
-            title="Closed issues load when you show them"
-            type="button"
-          >
-            Done: load
-          </button>
-        )}
       </fieldset>
     </div>
   );
 }
 
-export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode {
+export function IssueTableToolbar({
+  table,
+  unclaimedUnchecked,
+}: {
+  table: Table<Item>;
+  /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
+  unclaimedUnchecked: "refilling" | "unreachable" | undefined;
+}): ReactNode {
   const flags = useIssueFilters();
   const [, setParams] = useSearchParams();
   const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
@@ -640,20 +398,8 @@ export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode 
           </select>
         </label>
         <ColumnsMenu columns={table.getAllLeafColumns()} />
-        <Chip selected={flags.needsYou} onClick={() => flags.setNeedsYou(!flags.needsYou)}>
-          Needs you
-        </Chip>
-        <Chip selected={flags.unread} onClick={() => flags.setUnread(!flags.unread)}>
-          Unread
-        </Chip>
-        <Chip selected={flags.unclaimed} onClick={() => flags.setUnclaimed(!flags.unclaimed)}>
-          Unclaimed
-        </Chip>
-        {filters.length > 0 ||
-        search !== "" ||
-        flags.needsYou ||
-        flags.unread ||
-        flags.unclaimed ? (
+        <IssueFlagChips />
+        {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
           <button
             className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
             onClick={() =>
@@ -661,11 +407,13 @@ export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode 
                 (current) => {
                   const next = writeUrl(current, {
                     ...readUrl(current),
-                    filters: [],
+                    // Back to the view the table opens with, not to no filter at all: an empty
+                    // status pick asks the server for every closed issue in the project.
+                    filters: defaultView.filters,
                     search: "",
                     page: 0,
                   });
-                  for (const flag of ["needs-you", "unread", "unclaimed"]) next.delete(flag);
+                  for (const flag of ["needs-you", "unread"]) next.delete(flag);
                   return next;
                 },
                 { replace: true }
@@ -677,18 +425,7 @@ export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode 
           </button>
         ) : null}
       </div>
-      {flags.unclaimedUnchecked ? (
-        <p
-          role="status"
-          data-testid="unclaimed-unchecked"
-          className={`text-sm ${textSecondaryOnCanvas}`}
-        >
-          Couldn't check which claims have lapsed, so every claim counts as held:{" "}
-          {flags.unclaimedUnchecked === "refilling"
-            ? AGENT_LIST_REFILLING
-            : "Envoy listener unreachable."}
-        </p>
-      ) : null}
+      <UnclaimedUnchecked reason={unclaimedUnchecked} />
     </>
   );
 }
@@ -737,7 +474,7 @@ export function IssueTablePager({
         onChange={(event) => table.setPageSize(Number(event.target.value))}
         value={pageSize}
       >
-        {[25, 50, 100, 250, ALL_ROWS].map((size) => (
+        {PAGE_SIZES.map((size) => (
           <option key={size} value={size}>
             {size >= ALL_ROWS ? "All rows" : `${size} per page`}
           </option>
@@ -760,13 +497,15 @@ export function IssueTableSelection({
   epics: readonly IssueSummary[];
   busy: boolean;
   unansweredEpic: string | undefined;
-  startNext: (keys: readonly string[]) => void;
+  startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
   newEpic: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
   const setSelection = table.setRowSelection;
+  /** The epic the reader has picked to move the selection into; no write has been sent yet. */
+  const [epic, setEpic] = useState("");
   return (
     <>
       {/* Over the page, not in it: selecting a row moves nothing else. */}
@@ -781,25 +520,43 @@ export function IssueTableSelection({
               Select all {leafCount} matching
             </Action>
           ) : null}
-          <Action disabled={busy} onClick={() => startNext(selectedKeys)}>
+          {/* A selection the reader cannot see all of — "Select all N matching" — is asked
+              about first: Start next writes once per issue. */}
+          <Action
+            disabled={busy}
+            onClick={() =>
+              startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
+            }
+          >
             Start next
           </Action>
+          {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
+              commits on an arrow key in Chrome on Linux and Windows, and this one reparents
+              every selected issue. */}
           <select
             aria-label="Move to epic"
             className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
             disabled={busy}
-            onChange={(event) => {
-              if (event.target.value) void moveTo(selectedKeys, event.target.value);
-            }}
-            value=""
+            onChange={(event) => setEpic(event.target.value)}
+            value={epic}
           >
             <option value="">Move to epic…</option>
-            {epics.map((epic) => (
-              <option key={epic.key} value={epic.key}>
-                {epic.title}
+            {epics.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.title}
               </option>
             ))}
           </select>
+          <Action
+            disabled={busy || epic === ""}
+            onClick={() => {
+              const into = epic;
+              setEpic("");
+              void moveTo(selectedKeys, into);
+            }}
+          >
+            Move
+          </Action>
           <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
             Take out of epic
           </Action>

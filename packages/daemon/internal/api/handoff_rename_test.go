@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -157,21 +157,18 @@ type transferGitHub struct {
 func newTransferGitHub(t *testing.T, serving string) *transferGitHub {
 	t.Helper()
 	g := &transferGitHub{serving: serving}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		head := r.URL.Query().Get("head")
 		g.mu.Lock()
 		g.made = append(g.made, r.Method+" "+r.URL.Path+" head="+head+" "+r.Header.Get("Authorization"))
 		g.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		if head != g.serving+":legion/LEGION-208" {
 			_, _ = io.WriteString(w, "[]")
 			return
 		}
 		_, _ = fmt.Fprintf(w, `[{"number":42,"state":"open","html_url":"https://github.com/%s/legion/pull/42","body":"Dispatch: LEGION-208",`+
 			`"head":{"ref":"legion/LEGION-208","sha":%q},"base":{"ref":"main"}}]`, g.serving, headSHA)
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
 }
 

@@ -22,7 +22,9 @@ import (
 // claimsCommands is the operator's hand on the daemon's claims, one subcommand per operator route
 // and the one list of them `legion claims --help` names (internal/api/operator.go). retry relaunches
 // a failed claim: an architect on its session with fresh budgets, a phase worker through its issue's
-// held phase; with --failed, every failed claim. close is the tree's close, through its root claim,
+// held phase; with --failed, every failed claim. compact shortens a running claim's session and
+// sends it whatever task it owes again, which is what a claim whose provider keeps refusing its
+// session reaches for before a fresh one. close is the tree's close, through its root claim,
 // for a tree no workflow issue backs: the root, then every other claim of the tree.
 var claimsCommands = map[string]command{
 	"spawn":          runClaimsSpawn,
@@ -31,6 +33,7 @@ var claimsCommands = map[string]command{
 	"resume":         claimRequest("resume"),
 	"stop":           claimRequest("stop"),
 	"retry":          runClaimsRetry,
+	"compact":        runClaimsCompact,
 	"forget-session": runClaimsForgetSession,
 	"close":          claimRequest("close"),
 	"list":           runClaimsList,
@@ -88,18 +91,28 @@ func decodeAnswer(answer []byte, into any) error {
 }
 
 // printClaim is the one line a claim prints as: token, role, issue, state, generation, the plugin
-// contract its registration declared (0 when none is recorded), and the update round the claim is
+// contract its registration declared (0 when none is recorded), the update round the claim is
 // in with the head its worker reported when it answered (`-` for a claim in no round, and `-` for
-// a head no worker has reported yet). A claim whose idle pod the daemon released prints
+// a head no worker has reported yet), and the tool call its agent is in (openCallWord). A claim
+// whose idle pod the daemon released prints
 // `suspended:released` for its state (claimStateWord): it is not a suspension anyone is waiting
 // to lift — its next delivery resumes it in a pod of its own — so an operator reading the list
 // must not read it as one.
+//
+// A second line follows it when the answer says nothing restarted the claim's phase, which only
+// `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a new
+// session owing no task, and the workflow refused the restart that would have handed it one. The
+// claim started either way, so the line above reports it as the success it is, and without this
+// one an operator would read that success as work handed back.
 func printClaim(w io.Writer, answer []byte) error {
 	var c api.OperatorClaim
 	if err := decodeAnswer(answer, &c); err != nil {
 		return err
 	}
 	writeClaimLine(w, c)
+	if c.PhaseNotRestarted != "" {
+		fmt.Fprintln(w, c.PhaseNotRestarted)
+	}
 	return nil
 }
 
@@ -177,8 +190,33 @@ func issuesOrNone(name string, issues []string) string {
 }
 
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %d %d %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), c.Generation, c.PluginContract,
-		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead))
+	fmt.Fprintf(w, "%s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), c.Generation, c.PluginContract,
+		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
+}
+
+// openCallWord is the tool call a claim's agent is in, as the line prints it: the tool, the call
+// id the stream's start and end frames pair by, and when the daemon received the start. It is
+// empty for a claim in no open call — one whose last call ended, and one whose agent has not
+// stepped at all — which the line prints as `-`.
+//
+// A call the host backgrounded is an ended call here, and its command may still be running: Oh
+// My Pi backgrounds a plain foreground shell command that has not returned in about a minute, or
+// at once when a steering message reaches the turn, ending the call with no error and handing
+// the job to the agent, which is a `tool_execution_end` on
+// the stream like any other (measured 2026-11-08 in the plugin's own live proof,
+// legion-stall-watchdog-omp.test.ts). So this column says what the agent is parked in, which is
+// what a stalled turn is read from, and never what is running on the worker's machine.
+//
+// A call still open is the one shape a stalled turn leaves behind (api.StepView), and this is
+// where an operator reads a controller's: internal/projection puts the controller's claim on no
+// issue, so `legion state` never shows one. The call's arguments are not here and are in no
+// column of any surface: the daemon keeps their length and a fingerprint alone, because a shell
+// command routinely holds a credential (supervise.StepRecord).
+func openCallWord(step *api.StepView) string {
+	if step == nil || step.StartedAt == nil || step.EndedAt != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s %s since %s", step.Tool, step.CallID, step.StartedAt.UTC().Format(time.RFC3339))
 }
 
 // claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim the
@@ -202,7 +240,8 @@ func orNone(value string) string {
 // quotedOrNone is a field a worker supplies, as the line prints it: Go-quoted, so a newline or any
 // other control character in it is an escape rather than another row of this listing. The head a
 // worker reports when it answers an update round is its own word, which nothing verifies
-// (api.OperatorClaim.UpdateHead).
+// (api.OperatorClaim.UpdateHead), and the tool and call id of the call its agent is in are the
+// agent's own, as its stream's frames named them (openCallWord).
 func quotedOrNone(value string) string {
 	if value == "" {
 		return "-"
@@ -289,16 +328,60 @@ func runClaimsForgetSession(ctx context.Context, args []string, stdout, stderr i
 		api.ForgetSessionRequest{Session: *session}, printClaim)
 }
 
+// runClaimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim
+// whatever task it owes again: what a claim whose provider keeps refusing its session reaches
+// for before a fresh session, since the session, its workspace and everything the worker knows
+// of its issue stay where they are (api's compact).
+//
+// The request carries no deadline of its own, as no `legion claims` request does: a compaction
+// is a model call over the whole transcript, and the daemon bounds it at ten minutes
+// (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
+// compacted — a session too small to compact, or one already compacted, is reported with Oh My
+// Pi's own words for it, and whatever task the claim owed has gone again in either case.
+func runClaimsCompact(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	c := newClaimsCall("compact", stdout, stderr)
+	token := c.flags.String("claim", "", "the claim's token (required)")
+	if code, ok := c.parse(args, "claim"); !ok {
+		return code
+	}
+	op, ok := c.connect()
+	if !ok {
+		return 1
+	}
+	return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/compact", nil, printCompaction)
+}
+
+// printCompaction is the one line a compaction prints: whether the session was compacted, and
+// why it was not when it was not.
+func printCompaction(w io.Writer, answer []byte) error {
+	var compaction api.CompactResponse
+	if err := decodeAnswer(answer, &compaction); err != nil {
+		return err
+	}
+	if compaction.Compacted {
+		_, err := fmt.Fprintln(w, "compacted; whatever task the claim owed has gone again")
+		return err
+	}
+	_, err := fmt.Fprintf(w, "not compacted: %s; whatever task the claim owed has gone again\n", orNone(compaction.Reason))
+	return err
+}
+
 // runClaimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
 // order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
-// phase worker whose issue holds its phase is relaunched through that phase's retry, and the daemon
-// refuses the rest, naming why (api's retryClaim). Under --failed each retried claim prints its
-// line as --claim prints it, each refusal is reported naming its claim, and the command fails once
-// any was refused, having asked for every one.
+// phase worker whose issue holds its phase is relaunched through that phase's retry, a phase
+// worker an operator stopped is relaunched on the task of the phase it was stopped in, and the
+// daemon refuses the rest, naming why (api's retryClaim). Under --failed each retried claim prints
+// its line as --claim prints it, each refusal is reported naming its claim, and the command fails
+// once any was refused, having asked for every one. A claim an operator stopped is retired rather
+// than failed, so --failed passes over it: name it with --claim.
+//
+// --fresh-session starts the claim in a new session rather than resuming the recorded one, which
+// is what a claim whose provider refused its session needs: resuming it would be refused again.
 func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	c := newClaimsCall("retry", stdout, stderr)
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")
+	fresh := c.flags.Bool("fresh-session", false, "start the claim in a new session rather than resuming the recorded one")
 	if code, ok := c.parse(args); !ok {
 		return code
 	}
@@ -315,8 +398,14 @@ func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer
 	if !ok {
 		return 1
 	}
+	// A retry that asks for nothing sends no body at all, as every retry before the flag did: the
+	// daemon reads the body only when one is there.
+	var retry any
+	if *fresh {
+		retry = api.RetryRequest{FreshSession: true}
+	}
 	if !*failed {
-		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/retry", nil, printClaim)
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/retry", retry, printClaim)
 	}
 	_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
 	if !ok {
@@ -332,7 +421,7 @@ func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer
 		if supervise.ClaimState(held.State) != supervise.StateFailed {
 			continue
 		}
-		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", nil, printClaim) != 0 {
+		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
 			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name, held.Token)
 			code = 1
 		}
