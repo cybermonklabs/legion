@@ -95,64 +95,106 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
 });
 
 // R2, k11's one timed claim: a sleeping view at the stream's worst case comes back inside 1.2
-// seconds. It is the worst case on purpose - eight agents pinned, each seeded with a
-// conversation at the stream's limit (`e2e/live-view-cost.ts`, the rig the untimed half of k11
-// reads in `chromium`) - so the view this row brings back subscribes again, is answered with
-// two hundred turns of the session's own replay, and draws them. The bound is the sum that wake
-// pays: the re-subscribe at about 0.2 s, the replay read off the socket at 0.1 to 0.4 s and the
-// render of a limit-sized transcript at 0.25 to 0.36 s, which is the largest part; measured 0.66
-// to 0.82 s on an idle `chromium-alone` machine, with 1.2 s the bound over that measured worst
-// with margin for run-to-run variance. An ordinary conversation, far below the limit, comes
-// back well under half a second.
+// seconds, read as the median of three fresh wakes. It is the worst case on purpose - eight
+// agents pinned, each seeded with a conversation at the stream's limit
+// (`e2e/live-view-cost.ts`, the rig the untimed half of k11 reads in `chromium`) - so the view
+// each wake brings back subscribes again, is answered with two hundred turns of the session's
+// own replay, and draws them. The bound is the sum that wake pays: the re-subscribe at about
+// 0.2 s, the replay read off the socket at 0.1 to 0.4 s and the render of a limit-sized
+// transcript at 0.25 to 0.36 s, which is the largest part; measured 0.66 to 0.82 s on an idle
+// `chromium-alone` machine, with 1.2 s the bound over that measured worst with margin for
+// run-to-run variance. An ordinary conversation, far below the limit, comes back well under
+// half a second.
+//
+// A median rather than one reading, because one reading judges this pod's scheduling tail
+// rather than the page. At a628d56c, whose `packages/dispatch` is byte for byte the package
+// that read 0.66 to 0.82 s at 2b4b2ddf, one wake read 1525 ms and failed the bound, and six
+// repeats taken straight after on the idle machine read 591, 701, 564, 1029, 597 and 855 ms.
+// The 1029 ms reading spent 420 ms re-subscribing where every other run of that batch spent
+// 167 to 185, so what moved is the machine's scheduling of the page's first task, not the
+// work the page does: one crossing in seven readings, and the worst of a clean batch 1029 ms.
+// The median of three is the second of three, so no one slow wake can carry it: two of the
+// three have to cross before the row fails. Three rather than the paint row's five because a
+// wake is dear: one walks eight limit-sized views before the one it times, so three of them
+// take the row 45 to 49 s of the 180 s below and five would take about 80 s, where the paint
+// row's five loads cost it 13 s all told.
+//
+// Each wake is a page of its own, fresh from its own load and closed once its reading is
+// taken, so no wake is read on a page an earlier wake has already warmed. The rig is seeded
+// once: the replay each session answers with is the same for every wake, and the rail's pins
+// are the same eight in the same order.
 //
 // The clock is the page's own (`watchViewRestore`, installed before the press): the first
 // `pointerdown`, taken in the capture phase before any handler of the press runs, to the first
 // mutation in which that session's view is in front with a turn drawn in it. Nothing of the
 // driver is in the window - a Playwright click's trace snapshots either side of itself are the
-// harness's work, not the page's - and the figure is kept on the result whether or not the row
-// passes, with the three parts it divides into: the re-subscribe, the session's replay
+// harness's work, not the page's - and every reading is kept on the result whether or not the
+// row passes, with the three parts it divides into: the re-subscribe, the session's replay
 // arriving, and the view drawing it.
-// SLOW(>=2s): eight live views opened in turn, each rebuilding a two-hundred-turn transcript at
-// the stream's limit, before the sleeping one is brought back.
-test("a sleeping view at the stream's worst case comes back inside 1.2 seconds", async ({
+// SLOW(>=2s): three fresh pages, each opening eight live views in turn, each rebuilding a
+// two-hundred-turn transcript at the stream's limit, before the sleeping one is brought back.
+test("a sleeping view at the stream's worst case comes back with a median wake inside 1.2 seconds", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await seedPinnedRigsAtLimit();
   const context = await asUser(browser, "alice");
-  const page = await context.newPage();
+  const part = (ms: number | null) => (ms === null ? "not measured" : `${Math.round(ms)} ms`);
   try {
-    await page.goto("/");
-    for (const sessionID of COST_RIG_IDS) {
-      await openAgentFromRail(page, sessionID);
-      await expectConversationInFront(page, sessionID);
-    }
-    // The first of the eight has been asleep since the third was opened: nothing of it is
-    // mounted, it holds no subscription, and coming back to it is the session's replay again.
-    await expect(page.locator(`[data-session-id="${COST_RIG_IDS[0]}"]`)).toHaveCount(0);
+    // One wake: a page of its own, which opens all eight pinned views in turn and then comes
+    // back to the first. The page is closed when its reading is taken, so nothing this row
+    // measures is a second wake on a page that has woken a view already.
+    const wakeOnce = async (wake: number) => {
+      const page = await context.newPage();
+      try {
+        await page.goto("/");
+        for (const sessionID of COST_RIG_IDS) {
+          await openAgentFromRail(page, sessionID);
+          await expectConversationInFront(page, sessionID);
+        }
+        // The first of the eight has been asleep since the third was opened: nothing of it is
+        // mounted, it holds no subscription, and coming back to it is the session's replay
+        // again.
+        await expect(page.locator(`[data-session-id="${COST_RIG_IDS[0]}"]`)).toHaveCount(0);
 
-    const restored = await watchViewRestore(page, COST_RIG_IDS[0]);
-    await openAgentFromRail(page, COST_RIG_IDS[0]);
-    await expectConversationInFront(page, COST_RIG_IDS[0]);
-    const restore = await restored();
-    const part = (ms: number | null) => (ms === null ? "not measured" : `${Math.round(ms)} ms`);
-    // Where the wait went, kept on the result whether or not the row passes: the three parts
-    // are what calibrating this bound is argued from, and reading them after the fact costs a
-    // run of eight heavy views.
-    test.info().annotations.push(
-      { description: `${Math.round(restore.totalMs)} ms`, type: "a sleeping view came back" },
-      {
-        description:
-          `${part(restore.resubscribeMs)} to re-subscribe, ` +
-          `${part(restore.replayMs)} to the session's replay, ` +
-          `${part(restore.renderMs)} to draw it`,
-        type: "where that time went",
+        const restored = await watchViewRestore(page, COST_RIG_IDS[0]);
+        await openAgentFromRail(page, COST_RIG_IDS[0]);
+        await expectConversationInFront(page, COST_RIG_IDS[0]);
+        const restore = await restored();
+        // Where this wake's wait went, kept on the result whether or not the row passes: the
+        // three parts are what calibrating this bound is argued from, and reading them after
+        // the fact costs a run of three walks of eight heavy views.
+        test.info().annotations.push(
+          {
+            description: `${Math.round(restore.totalMs)} ms`,
+            type: `a sleeping view came back, wake ${wake} of 3`,
+          },
+          {
+            description:
+              `${part(restore.resubscribeMs)} to re-subscribe, ` +
+              `${part(restore.replayMs)} to the session's replay, ` +
+              `${part(restore.renderMs)} to draw it`,
+            type: `where that time went, wake ${wake} of 3`,
+          }
+        );
+        return restore;
+      } finally {
+        await page.close();
       }
-    );
+    };
+
+    const wakes = [await wakeOnce(1), await wakeOnce(2), await wakeOnce(3)];
+    const readings = wakes.map((wake) => `${Math.round(wake.totalMs)} ms`).join(", ");
+    const median = [...wakes].sort((first, second) => first.totalMs - second.totalMs)[1];
+    test.info().annotations.push({
+      description: `${Math.round(median.totalMs)} ms of ${readings}`,
+      type: "median of three fresh wakes",
+    });
 
     expect(
-      restore.totalMs,
-      `the sleeping view came back in ${Math.round(restore.totalMs)} ms`
+      median.totalMs,
+      `the sleeping view came back in ${readings} over three fresh wakes, a median of ` +
+        `${Math.round(median.totalMs)} ms`
     ).toBeLessThan(1_200);
   } finally {
     await context.close();
