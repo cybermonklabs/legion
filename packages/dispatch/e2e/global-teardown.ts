@@ -9,12 +9,22 @@
  *  Whether this run's stack logs are kept is the one decision this hook cannot read from
  *  Playwright, which hands a teardown the configuration alone and runs it before it asks a
  *  reporter for the run's status. `e2e/run-outcome.ts` is where the answer comes from, and says
- *  why. What is kept is each stack's log directory, the only record of what its servers said,
- *  which a run of more than one stack writes and a run of one does not have at all; the data
- *  directories, which are the bulk of what the run wrote, go either way (`e2e/harness-pool.ts`). */
+ *  why it answers "did this run pass" rather than "did a row fail": the logs are kept unless the
+ *  run SHOWED that it passed, so a run no reporter of ours loaded for keeps them. What is kept
+ *  is each stack's log directory, the only record of what its servers said, which a run of more
+ *  than one stack writes and a run of one does not have at all; the data directories, which are
+ *  the bulk of what the run wrote, go either way (`e2e/harness-pool.ts`).
+ *
+ *  It also removes the manifest `e2e/global-setup.ts` wrote, because a second setup in this same
+ *  process must read the environment the first one found. Playwright's UI mode is that process:
+ *  a re-run tears the stacks down and starts them again without leaving the runner
+ *  (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:6896-6915),
+ *  and a manifest left behind would name the stopped stacks' ports and databases. */
 import { stopStacks } from "./harness-pool";
-import { anyRowFailed } from "./run-outcome";
+import { stacksVariable } from "./harness-ports";
+import { runPassed } from "./run-outcome";
 
 export default async function globalTeardown(): Promise<void> {
-  await stopStacks(anyRowFailed());
+  await stopStacks(!runPassed());
+  delete process.env[stacksVariable];
 }

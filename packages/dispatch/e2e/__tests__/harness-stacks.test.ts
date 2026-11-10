@@ -7,6 +7,8 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { startStacks } from "../harness-pool";
 import {
   harnessPorts,
+  refuseStackConflicts,
+  stackConflicts,
   stackIndex,
   stacksVariable,
   stackValue,
@@ -135,6 +137,39 @@ test("harnessPorts resolves the stack's ports and keeps both of its refusals", (
   expect(() => harnessPorts({ ...worker, [stacksVariable]: duplicated })).toThrow(
     "DISPATCH_E2E_PORT and FAKE_ENVOY_PORT name port 9101"
   );
+});
+
+// What a run of more than one stack refuses before it starts anything, and why the list is
+// exactly these. Each variable names a thing ONE stack owns, so a run that honoured it would
+// hand every stack the one database, the one set of servers or the one port - and the rows
+// would then delete each other's fixtures, because e2e/test.ts truncates that database before
+// every row, and fail as though the product were broken. `DISPATCH_E2E_REUSE_SERVERS` is the
+// one this suite lost and had to get back: `globalSetup` returns on it, so without the refusal
+// `--workers 4 DISPATCH_E2E_REUSE_SERVERS=1` put four workers on one server in silence.
+test("a run of more than one stack refuses every variable one stack owns, by name", () => {
+  const refused: Record<string, string> = {
+    DATABASE_URL: "postgres://localhost/dispatch",
+    DISPATCH_E2E_PROCESSES: "2",
+    DISPATCH_E2E_REUSE_SERVERS: "1",
+    PLAYWRIGHT_BASE_URL: "https://dispatch.example",
+    // One harness port, which is refused for its own reason: a port is one listener's.
+    FAKE_ENVOY_PORT: "9100",
+  };
+  for (const [variable, value] of Object.entries(refused)) {
+    expect(stackConflicts({ [variable]: value })).toEqual([variable]);
+    expect(() => refuseStackConflicts(2, { [variable]: value })).toThrow(
+      new RegExp(`2 Playwright workers run 2 stacks.*${variable} must not be set`, "s")
+    );
+    // One worker is one stack, and one stack is what every one of these belongs to.
+    expect(() => refuseStackConflicts(1, { [variable]: value })).not.toThrow();
+  }
+  // `DISPATCH_E2E_PROCESSES=1` is what one stack runs, so it is no conflict.
+  expect(stackConflicts({ DISPATCH_E2E_PROCESSES: "1" })).toEqual([]);
+});
+
+test("a run of more than one stack that sets none of them is not refused", () => {
+  expect(stackConflicts({ HOME: home, TMPDIR: tmpdir() })).toEqual([]);
+  expect(() => refuseStackConflicts(2, { HOME: home, TMPDIR: tmpdir() })).not.toThrow();
 });
 
 test("a run of more than one stack refuses to start without a Postgres provider", async () => {

@@ -554,6 +554,14 @@ jobs:
           # job reports against the merged report's own count. $projects is left unquoted on
           # purpose, to split into words.
           #
+          # `./e2e/failure-reporter.ts` beside them, and it has to be named HERE: a `--reporter`
+          # on the command line REPLACES the config's reporter list rather than adding to it
+          # (e2e/run-outcome.ts cites the line), so without it this leg would load none of the
+          # config's own reporters, nothing would record how its rows ended, and the teardown
+          # would keep the run directory of every leg, green ones included. A path is read as a
+          # reporter module relative to the working directory below, which is this package's
+          # root (lib/cli/testActions.js:204-211).
+          #
           # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
           # the run is piped into `tee`, so `$?` after the pipeline is `tee`'s and a failing
           # suite would leave this step green, and PIPESTATUS is bash's where this step's shell
@@ -561,7 +569,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob 2>&1 ||
+          { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -872,10 +880,15 @@ jobs:
           # job reports against the merged report's own count. No `--shard`: these projects are
           # not sharded, which is the whole reason they have a job.
           #
+          # `./e2e/failure-reporter.ts` beside them, named here for the reason the shard job's
+          # own browser step gives: a `--reporter` on the command line replaces the config's
+          # list, so a leg that did not name it would record no row and keep its run directory
+          # whether it passed or failed.
+          #
           # The suite's own status is carried in a file rather than in `$?` or in PIPESTATUS,
           # for the reason the shard job's own browser step gives at length.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bunx playwright test --config e2e/playwright.config.ts --no-deps --project="${{ matrix.project }}" --reporter=list,blob 2>&1 ||
+          { bunx playwright test --config e2e/playwright.config.ts --no-deps --project="${{ matrix.project }}" --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")

@@ -7,6 +7,11 @@
  *  the stubbed layer alone (`e2e/stub/selection.ts`) each return here before a directory is made
  *  or a server starts.
  *
+ *  The one thing it does BEFORE the reuse return is refuse a run of more than one worker whose
+ *  caller set a variable one stack owns (`refuseStackConflicts`, `e2e/harness-ports.ts`), since
+ *  returning on such a run is exactly what would put four workers on one server and one
+ *  database. A run of the stubbed layer alone is out of that: it addresses none of them.
+ *
  *  A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) does start a stack, and a small
  *  one: `targetedListeners()` keeps the rows marked `deployed` alone (`e2e/harness-listeners.ts`,
  *  read by `e2e/harness-start.ts`), which are the fakes a deployed server is tested with, and
@@ -44,7 +49,7 @@ import { resetFakeEnvoy, setLiveSessions } from "./agents";
 import { baseUrlOf, devSignInPath, listAgents, sessionCookieFrom } from "./api";
 import { stubProjectNames } from "./configurations";
 import { type Stack, startStacks } from "./harness-pool";
-import { harnessPorts, stacksVariable } from "./harness-ports";
+import { harnessPorts, refuseStackConflicts, stacksVariable } from "./harness-ports";
 import {
   type DispatchProcess,
   dispatchProcesses,
@@ -220,7 +225,17 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     processes: harnessProcessCount,
     projects: stubProjectNames,
   });
-  if (process.env.DISPATCH_E2E_REUSE_SERVERS === "1" || stub.onlyStub) return;
+  // The stubbed layer alone returns first, before the refusal below: it reaches no server, no
+  // database and no listener of this harness, so no number of workers can make two of its rows
+  // share anything, and a `DATABASE_URL` in the caller's environment is nothing to do with it.
+  if (stub.onlyStub) return;
+  // Every other run of more than one worker is refused here if the caller set a variable one
+  // stack owns, BEFORE the return below and before anything starts. `DISPATCH_E2E_REUSE_SERVERS`
+  // is why the order matters: it would otherwise return from this hook and leave every worker
+  // on the one server and the one database, which `e2e/test.ts` truncates before every row, so
+  // the rows would delete each other's fixtures and fail as though the product were broken.
+  if (config.workers > 1) refuseStackConflicts(config.workers);
+  if (process.env.DISPATCH_E2E_REUSE_SERVERS === "1") return;
 
   // Before a directory is made or a server starts, so a run whose browsers are missing says so
   // whatever else is wrong with it.
@@ -231,10 +246,12 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   const stacks = await startStacks(count);
   // Every worker inherits what this writes (Playwright carries the environment `globalSetup`
   // leaves behind into each worker process), and resolves its own stack out of the manifest
-  // through `TEST_PARALLEL_INDEX`. Stack 0's values go under the plain names too, so every
-  // process that is no worker - this one, and the harness's own children - reads a whole stack.
+  // through `TEST_PARALLEL_INDEX`; a process with no index of its own, this one included, reads
+  // the first record. The manifest is the ONLY thing written: the plain names are left as the
+  // caller had them, so a second setup in this process - Playwright's UI mode re-runs that way -
+  // cannot read a stopped stack's `DATABASE_URL` as though the caller had named it and skip
+  // starting a Postgres. `e2e/global-teardown.ts` takes the manifest back out again.
   process.env[stacksVariable] = JSON.stringify(stacks.map((stack) => stack.env));
-  Object.assign(process.env, stacks[0].env);
 
   for (const stack of stacks) await checkStack(stack, count);
   if (harnessProcessCount === 2 && harnessSignIn === "dev") {

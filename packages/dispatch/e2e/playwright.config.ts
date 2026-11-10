@@ -49,9 +49,11 @@ const phoneRowTagged = [phoneTagged, phoneOnlyTagged];
 // `delivery-live.e2e.ts`'s one phone row, which `webkit-iphone` owns by itself: it carries no
 // `@phone`, since the Chromium phone project never ran it, and no `@phone-only` would say that
 // either - that tag would hand it to `iphone`. `chromium` is the only other project the file
-// reaches, so `chromium` inverts the row by the same title fragment `webkit-iphone`'s own `grep`
-// selects it by, below. A title edit that misses one of the two leaves the row in `chromium`,
-// where its phone assertions fail at the desktop width rather than passing unseen.
+// reaches. Both projects name this constant: `webkit-iphone`'s `grep` selects the row by it,
+// and `chromium`'s `grepInvert` drops the row by it. The fragment is written here once, so a
+// title edit changes both projects together. A second copy of it could miss such an edit and
+// leave the row in `chromium`, where its phone assertions fail at the desktop width rather
+// than passing unseen.
 const webkitPhoneDeliveryRow = /on a phone the delivery page/;
 const webkitTagged = tagged("webkit");
 const firefoxTagged = tagged("firefox");
@@ -94,11 +96,11 @@ function resolveReuseServers(): boolean {
   );
 }
 
-// Read for the refusal alone, and read here rather than in the hook because this evaluates for
-// every run, a listing included, where `globalSetup` does not. What the answer MEANS - that this
-// run starts no stack - is the hook's, and it reads the variable itself, by then knowing it
-// holds "1" or nothing.
-resolveReuseServers();
+// Read here rather than in the hook because this evaluates for every run, a listing included,
+// where `globalSetup` does not: the value's own refusal is one reason, and the UI refusal below
+// is the other reader. What the answer MEANS - that this run starts no stack - is the hook's,
+// and it reads the variable itself, by then knowing it holds "1" or nothing.
+const reusingServers = resolveReuseServers();
 
 // THE PORTS ARE UNSET WHEN THIS EVALUATES, AND THAT IS THE DESIGN. Playwright loads this config
 // before it runs `globalSetup`, which is what starts the stacks (e2e/global-setup.ts), so in this
@@ -123,6 +125,46 @@ const stub = stubSelection({
   processes: harnessProcessCount,
   projects: stubProjectNames,
 });
+
+// A UI SESSION WITH NO STACK IS REFUSED, because the alternative measured here is silence.
+// Playwright's UI mode runs no `globalSetup` that starts servers, so a session of this config
+// started with nothing up has no stack to run against: its tree held the `global-setup.ts` node
+// alone, Run all ran no row, and no error reached the UI, its page or its process
+// (dispatch://INFRA-1410). Before the stacks moved into `globalSetup` a UI session could not
+// load this config at all - the unset-ports refusal fired - so the sentence below is what that
+// refusal used to give a person.
+//
+// The three conditions are the whole of it. `DISPATCH_E2E_REUSE_SERVERS=1` means a stack is up
+// beside this run, which is the cure rather than the disease; the stubbed layer alone addresses
+// no stack at all and replays a recording in the UI as happily as anywhere. A deployed run
+// (`PLAYWRIGHT_BASE_URL`) is NOT exempt, deliberately: its fakes come out of the same hook and
+// would not start either, and `e2e/harness-up.ts` with that variable set starts exactly the
+// subset such a run needs.
+//
+// All three UI flags are matched, and matched as whole arguments. The runner declares `--ui`,
+// `--ui-host <host>` and `--ui-port <port>` (node_modules/.bun/playwright@1.64.1/node_modules/
+// playwright/lib/program.js:223-225) and enters UI mode on any of them (`opts.ui ||
+// opts.uiHost || opts.uiPort`, lib/cli/testActions.js:60). A bare substring would be a trap of
+// its own, the one the deleted `--list` reading carried: Playwright reads the `--list` of
+// `--grep --list` as that option's VALUE, and `--grep --ui` would read the same way, so only an
+// argument that is exactly `--ui` or begins `--ui-` counts.
+const uiSession = process.argv.some(
+  (argument) => argument === "--ui" || argument.startsWith("--ui-")
+);
+if (uiSession && !reusingServers && !stub.onlyStub) {
+  throw new Error(
+    "Playwright's UI mode starts no stack of its own: it runs no `globalSetup` that would, so " +
+      "a UI session of this config with nothing up runs no row and says nothing about why. " +
+      "Start one stack beside it and point the session at it. From packages/dispatch:\n" +
+      "  bun e2e/harness-up.ts > exports.sh &\n" +
+      "  # wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then\n" +
+      "  . ./exports.sh\n" +
+      "  bunx playwright test --config e2e/playwright.config.ts --ui\n" +
+      "and `kill` that harness when the session ends. `e2e/visual-run.sh` does exactly this for " +
+      "the container. The stubbed layer needs no stack and is never refused: " +
+      "`--project=stub` opens in the UI as it is."
+  );
+}
 
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
@@ -326,15 +368,19 @@ const parallelProjects = [
   // This project keeps its file `testMatch` and its title `grep` rather than an engine tag: 13
   // rows is already as narrow as a tag would make it, and Playwright reads an array of regexes
   // as OR (`createTitleMatcher` answers on the first that matches), so a tag beside the titles
-  // below would widen the project rather than narrow it.
-  // One of those titles, `delivery-live.e2e.ts`'s phone row, is this project's alone, and
-  // `chromium` inverts it by the same fragment: `webkitPhoneDeliveryRow` at the top of this
-  // file says why the one row is written in both places.
+  // below would widen the project rather than narrow it. That OR is what lets the `grep` below
+  // be an array: the titles this project owns, then the one constant below.
+  // One of those rows, `delivery-live.e2e.ts`'s phone row, is this project's alone, and
+  // `chromium` inverts it. Both name `webkitPhoneDeliveryRow`, the one place that title
+  // fragment is written, and the comment above it says why the row is this project's.
   {
     name: "webkit-iphone",
     testMatch:
       /(agent-view|agent-view-settings|phone-conversation|delivery-live|live-socket)\.e2e\.ts/,
-    grep: /on a phone the live view|a document-scrolling route|covers none of|a capped model name|on a phone the delivery page|the header shows the session's reported model|a tab holds one live socket for every live view/,
+    grep: [
+      /on a phone the live view|a document-scrolling route|covers none of|a capped model name|the header shows the session's reported model|a tab holds one live socket for every live view/,
+      webkitPhoneDeliveryRow,
+    ],
     use: { ...devices["iPhone 13"] },
   },
   // Firefox runs the rows a Firefox decision can change, and nothing else: it selects by the
@@ -644,9 +690,12 @@ export default defineConfig({
   // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
-  // `failure-reporter.ts` is in every run: it writes nothing and prints nothing, and is the one
-  // way `globalTeardown` learns that a row failed, which is what decides whether this run's
-  // stack logs are kept (e2e/run-outcome.ts says why no other way reaches it). With
+  // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`
+  // learns how this run's rows ended, which is what decides whether its stack logs are kept
+  // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
+  // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
+  // which is why a run given one keeps its logs whatever it did, and why
+  // .github/workflows/dispatch-browser.yaml names this file in both of its own. With
   // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
   // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: [

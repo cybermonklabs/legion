@@ -70,18 +70,62 @@ let runDir = "";
 /** Set by `stopStacks`, so a harness stopping on purpose is not reported as one that died. */
 let stopped = false;
 
-/** Stops what has started when the run is interrupted. A Ctrl-C reaches Playwright, which runs
- *  its `globalTeardown` and so `stopStacks`; this is for the minutes before that, while the
- *  stacks are still starting and there is no run to tear down yet. */
+/** Cancels a start that is still in flight. Each starter takes this signal, so a stack half-way
+ *  through an initdb or a server build stops rather than finishing into a run nobody is waiting
+ *  for. */
 const stopping = new AbortController();
-let watchingSignals = false;
+
+/** The pool's own signal listeners, held so they can be taken off again: `stopStacks` leaves
+ *  this process's signal handling as the pool found it, so a second `startStacks` in one
+ *  process - Playwright's UI mode, and this package's own unit tests - adds no second copy.
+ *
+ *  THE TWO SIGNALS GET DIFFERENT ANSWERS, which is the whole of why there are two of them here.
+ *
+ *  SIGINT is Playwright's. Its runner catches the Ctrl-C and runs `globalTeardown`, which is
+ *  `stopStacks`, so an interrupted run stops every server and every database and keeps its logs
+ *  by the ordinary route. The pool's own listener is therefore needed only for the minutes
+ *  BEFORE there is a run to tear down, while the stacks are still starting; `startStacks` takes
+ *  it off again once they are up, leaving the runner the one handler of that signal.
+ *
+ *  SIGTERM is nobody's. Playwright's runner does not handle it, so `kill <pid>`, a `timeout` and
+ *  a pod's grace period reach this process alone - and a listener that only set a flag would be
+ *  worse than none, since registering one removes Node's own default exit and the run would
+ *  carry on to its end with every server up. So this listener does the work: it stops the stacks
+ *  and then ends the process with the signal's OWN disposition rather than an exit status this
+ *  file invented, which it can do because `stopStacks` has by then removed the listener and the
+ *  second SIGTERM meets Node's default. */
+let onInterrupt: (() => void) | undefined;
+let onTerminate: (() => void) | undefined;
 
 function watchSignals(): void {
-  if (watchingSignals) return;
-  watchingSignals = true;
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, () => stopping.abort());
+  if (onInterrupt === undefined) {
+    onInterrupt = (): void => stopping.abort();
+    process.on("SIGINT", onInterrupt);
   }
+  if (onTerminate === undefined) {
+    onTerminate = (): void => {
+      // A start still in flight is cancelled, and whatever is up is stopped. The logs are kept:
+      // a run this signal ended reported no verdict on anything, and what its servers were doing
+      // when it stopped is the only account there is (`e2e/run-outcome.ts` keeps the same rule).
+      stopping.abort();
+      void stopStacks(true).finally(() => process.kill(process.pid, "SIGTERM"));
+    };
+    process.on("SIGTERM", onTerminate);
+  }
+}
+
+/** Hands SIGINT back to whoever else handles it, which from here on is Playwright's runner. */
+function unwatchInterrupt(): void {
+  if (onInterrupt === undefined) return;
+  process.off("SIGINT", onInterrupt);
+  onInterrupt = undefined;
+}
+
+function unwatchSignals(): void {
+  unwatchInterrupt();
+  if (onTerminate === undefined) return;
+  process.off("SIGTERM", onTerminate);
+  onTerminate = undefined;
 }
 
 /** The stack's bucket in the file store the caller started, made here with one request. A bucket
@@ -210,6 +254,10 @@ export async function startStacks(
         if (!stopped) console.error(`${named}: stack ${stack.index}: ${error.message}`);
       });
     }
+    // The stacks are up, so there is a run for Playwright's runner to tear down, and its own
+    // Ctrl-C handling is the whole answer from here (the listeners above say why). SIGTERM
+    // stays on, because nothing else handles it.
+    unwatchInterrupt();
     return stacks;
   } catch (error) {
     await stopStacks(true);
@@ -217,9 +265,10 @@ export async function startStacks(
   }
 }
 
-/** Stops every harness and every database and clears the run's directory. `keepLogs` is the one
- *  decision this cannot make for itself: the logs are what a failed run is read from, and this
- *  module never learns whether the run passed. */
+/** Stops every harness and every database, clears the run's directory and takes the pool's
+ *  signal listeners off again. `keepLogs` is the one decision this cannot make for itself: the
+ *  logs are what a failed run is read from, and this module never learns whether the run passed
+ *  (`e2e/run-outcome.ts`). */
 export async function stopStacks(keepLogs: boolean): Promise<void> {
   stopped = true;
   await Promise.allSettled(stacks.map((stack) => stack.harness.stop()));
@@ -227,4 +276,5 @@ export async function stopStacks(keepLogs: boolean): Promise<void> {
   clearRunDir(keepLogs);
   stacks.length = 0;
   stopped = false;
+  unwatchSignals();
 }

@@ -39,13 +39,20 @@
  * A run of more than one Playwright worker runs one stack per worker (`e2e/harness-pool.ts`): a
  * whole harness, with a Postgres, ports and a file-store bucket of its own. `globalSetup`
  * (`e2e/global-setup.ts`) starts the pool and writes the whole of it into `DISPATCH_E2E_STACKS`,
- * one JSON record per stack holding that stack's own variables, and stack 0's values under the
- * plain names as well, so a one-stack run reads exactly what it read before stacks existed.
+ * one JSON record per stack holding that stack's own variables, and it writes nothing else: the
+ * plain names are left exactly as the caller had them, so a SECOND `globalSetup` in one process
+ * - which is how Playwright's UI mode re-runs - reads the environment the first one found
+ * rather than the stopped stacks' ports and databases, and the teardown takes the manifest back
+ * out again (`e2e/global-teardown.ts`).
  * `stackValue` below is the one place a reader picks its own: the record `TEST_PARALLEL_INDEX`
  * selects, then the plain name. Playwright sets that variable in each worker process and a
- * restarted worker keeps it, and a process that is no worker has none and so reads stack 0: the
- * config's own evaluation, `globalSetup` itself, and each harness listener the pool starts,
- * which is handed its stack's values under the plain names.
+ * restarted worker keeps it, and a process that is no worker has none and so reads the
+ * manifest's first record: the config's own evaluation and `globalSetup` itself. The plain
+ * names answer where no manifest does - each harness listener the pool starts, which was handed
+ * its own stack's values under them, a harness a person left listening, and a deployed run.
+ *
+ * A run of more than one stack refuses, before anything starts, every variable that names a
+ * thing one stack owns (`refuseStackConflicts` at the end of this file).
  */
 
 import { usesFakeEmbedder } from "./harness-embedder";
@@ -119,8 +126,8 @@ export function stackIndex(env: NodeJS.ProcessEnv = process.env): number {
 /** `variable` as this process's stack carries it: the manifest's record for `stackIndex(env)`,
  *  then the plain name, which a run of one stack, every process the pool starts itself and every
  *  run against servers a person started read. An index the manifest holds no record for falls
- *  through to the plain name rather than refusing: the plain names are stack 0's, which is what
- *  a process outside the pool is given. */
+ *  through to the plain name rather than refusing, since a process outside the pool has nothing
+ *  but those names to read. */
 export function stackValue(env: NodeJS.ProcessEnv, variable: string): string | undefined {
   return stacks(env)?.[stackIndex(env)]?.[variable] ?? env[variable];
 }
@@ -245,4 +252,57 @@ export function harnessPorts(
     );
   }
   return ports;
+}
+
+/** Why a run of more than one stack refuses a variable the caller set. Each of them names a
+ *  thing ONE stack owns, so a run that honoured it would hand every stack the one database, the
+ *  one set of servers or the one port - and the failure would read as the product's rather than
+ *  the run's, because `e2e/test.ts` empties that database before every row, so the rows would
+ *  delete each other's fixtures and fail on what was no longer there. The port variables are
+ *  refused for the last of those reasons, so they share it in the refusal below. */
+const stackConflictReasons: Record<string, string> = {
+  DATABASE_URL:
+    "each stack runs its own Postgres, whose URL the harness hands its servers and its psql",
+  DISPATCH_E2E_PROCESSES:
+    "two-process mode is two servers on one stack's database, which one stack runs",
+  DISPATCH_E2E_REUSE_SERVERS:
+    "the servers a person started are one set of servers, which every stack would share",
+  PLAYWRIGHT_BASE_URL: "a deployed run has one server, which every stack would share",
+};
+
+/** The variables `env` sets that a run of more than one stack cannot honour, in the order a
+ *  message names them. `DISPATCH_E2E_PROCESSES` counts only at `2`: `1` is what one stack runs. */
+export function stackConflicts(env: NodeJS.ProcessEnv): readonly string[] {
+  const named = Object.keys(stackConflictReasons).filter((variable) =>
+    variable === "DISPATCH_E2E_PROCESSES"
+      ? env[variable] === "2"
+      : (env[variable] ?? "").trim() !== ""
+  );
+  const ports = Object.values(harnessVariables).filter(
+    (variable) => (env[variable] ?? "").trim() !== ""
+  );
+  return [...named, ...ports].sort();
+}
+
+/** Refuses a run of `stacks` stacks whose caller set a variable one stack owns, naming the first
+ *  of them: `stackConflicts` is the whole list, and a caller that unsets this one is refused the
+ *  next. `e2e/global-setup.ts` calls it before anything starts AND before its own early return
+ *  on `DISPATCH_E2E_REUSE_SERVERS=1`, because that variable is the worst of these: the hook
+ *  would otherwise return and leave every worker on the one server and the one database.
+ *
+ *  One stack is refused nothing, whoever asks: every variable here names something ONE stack
+ *  owns, and a run of one owns it. The rule is held here rather than at the call alone, so no
+ *  caller can refuse an ordinary one-worker run by passing it along. */
+export function refuseStackConflicts(stacks: number, env: NodeJS.ProcessEnv = process.env): void {
+  if (stacks < 2) return;
+  const [variable] = stackConflicts(env);
+  if (variable === undefined) return;
+  const reason =
+    stackConflictReasons[variable] ??
+    "a port is one listener's, and each stack needs listeners of its own";
+  throw new Error(
+    `${stacks} Playwright workers run ${stacks} stacks, each a harness of its own, so ` +
+      `${variable} must not be set: ${reason}. Unset ${variable}, or run one worker, which is ` +
+      "one stack: `--workers` is how a run asks for more, and this config's own default is 1."
+  );
 }

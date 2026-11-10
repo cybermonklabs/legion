@@ -1,20 +1,31 @@
 /** `bun e2e/harness-up.ts`: one stack, left running, with its variables on stdout as shell
  *  exports. It does not exit when it has printed them - the stack lives as long as it does - so a
  *  caller starts it in the background, reads its output down to the
- *  `DISPATCH_E2E_REUSE_SERVERS` line, runs whatever addresses the stack, and sends it a SIGTERM
- *  when that is done:
+ *  `DISPATCH_E2E_REUSE_SERVERS` line, applies those lines to its own environment, runs whatever
+ *  addresses the stack, and sends it a SIGTERM when that is done.
  *
- *    bun e2e/harness-up.ts > "$exports" &
- *    …read "$exports" until the last line arrives, then `. "$exports"`…
- *    …run the tests…
+ *  `e2e/visual-run.sh` reads the output through a fifo rather than a file: it makes the fifo,
+ *  redirects this process into it, holds the read end open for the whole run, and runs each
+ *  `export` line it reads with `eval` until the `DISPATCH_E2E_REUSE_SERVERS` line arrives. A
+ *  file would have to be polled for that line, and a reader that closed the pipe would kill
+ *  this process with SIGPIPE if it ever wrote again.
+ *
+ *  A person types the same three steps against a file, from `packages/dispatch`:
+ *
+ *    bun e2e/harness-up.ts > exports.sh &
+ *    …wait for the last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then `. ./exports.sh`…
+ *    bunx playwright test --config e2e/playwright.config.ts --ui
  *    kill "$!"
  *
- *  It exists for `e2e/visual-run.sh`, whose Playwright runs inside the pinned container. That
- *  image carries the three browser engines and node, and no bun, no psql and no Go toolchain, so
- *  the run inside it cannot start a stack of its own: `globalSetup` would have nothing to build
- *  the server with and nothing to seed the database through. The script therefore starts the
- *  stack on the host through this, hands the container the variables below, and the run inside
- *  reads `DISPATCH_E2E_REUSE_SERVERS=1` and starts nothing (`e2e/global-setup.ts`).
+ *  It has two callers. `e2e/visual-run.sh` runs its Playwright inside the pinned container, and
+ *  that image carries the three browser engines and node, and no bun, no psql and no Go
+ *  toolchain, so the run inside it cannot start a stack of its own: `globalSetup` would have
+ *  nothing to build the server with and nothing to seed the database through. The script
+ *  therefore starts the stack on the host through this, hands the container the variables
+ *  below, and the run inside reads `DISPATCH_E2E_REUSE_SERVERS=1` and starts nothing
+ *  (`e2e/global-setup.ts`). The other caller is a person who wants Playwright's UI mode: that
+ *  mode runs no `globalSetup` that starts servers, so `e2e/playwright.config.ts` refuses a UI
+ *  session unless a stack is up beside it, and the lines above are how one is.
  *
  *  `e2e/local-instance.ts` (`bun run dispatch:local`) keeps its own job and is not merged into
  *  this one: it is a Dispatch for a person to open, on the repository's dev Postgres, seeded with
