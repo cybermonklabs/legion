@@ -36,7 +36,8 @@ async function openCard(page: Page, link: Locator): Promise<Locator> {
   return card;
 }
 
-test("a reference to an ask's option in a comment is a link that opens the ask at that part", async ({
+// @pr: The ask-part reference's only reading row: a link to an option opens the ask at that part.
+test("a reference to an ask's option in a comment is a link that opens the ask at that part @pr", async ({
   page,
 }) => {
   const issue = await createIssue({ project: "CORE", title: "Ask part references" });

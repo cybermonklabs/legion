@@ -301,7 +301,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it", async ({
+// @pr: Sign-in and tokens: `dispatch inbox` under a person's own token lists what the page lists, and every act it makes is theirs.
+test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");

@@ -62,7 +62,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("live: bob's ask updates alice's Inbox and project badges without reload", async ({
+// @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
+test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -223,7 +224,7 @@ test("live: an agent message makes a read issue appear in the project's Unread f
   try {
     await page.goto("/projects/CORE?unread=1");
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
-    await expect(page.getByRole("region", { exact: true, name: "Project issues" })).toBeVisible();
+    await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
     await expect(page.getByText("Unread after agent message")).toHaveCount(0);
 
     await createMessage(issue.key, { body: "This should make the issue unread" }, bob);
@@ -358,7 +359,8 @@ test("live: new events on the open issue appear in Conversation and mark it read
   await alice.close();
 });
 
-test("live: the stream recovers after the connection drops", async ({ browser }, testInfo) => {
+// @pr: The live socket: the stream has to recover after the connection drops.
+test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reconnect target" });
 
@@ -409,7 +411,8 @@ test("live: the stream recovers after the connection drops", async ({ browser },
 
 // SLOW(>=2s): two live sockets, each with its own subscribe and replay, and the two messages
 // written across the forced disconnect between them.
-test("live: a forced server disconnect resumes from the last event id", async ({ browser }) => {
+// @pr: The live socket: after a forced server disconnect the page resumes from the last event id, so nothing written across it is lost.
+test("live: a forced server disconnect resumes from the last event id @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Disconnect target" });
   await createMessage(issue.key, { body: "Before disconnect" }, bob);
@@ -851,8 +854,12 @@ test("live: an event during a project list's first load fetches it again once th
     release();
 
     // The held body predates the rename; the list is fetched again once it lands.
-    await expect(page.getByLabel(`${issue.key} ${newTitle}`)).toBeVisible();
-    await expect(page.getByLabel(`${issue.key} OLDTITLE`)).toHaveCount(0);
+    await expect(
+      page.getByRole("row", { name: `${issue.key} ${newTitle}`, exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("row", { name: `${issue.key} OLDTITLE`, exact: true })).toHaveCount(
+      0
+    );
     // The 100 ms event batch and the refresh the scheduler holds back for
     // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
     // counted; the margin is for the request reaching Playwright's counter.

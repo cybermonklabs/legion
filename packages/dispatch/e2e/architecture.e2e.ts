@@ -85,7 +85,8 @@ test.beforeEach(async () => {
 // SLOW(>=2s): one row for the whole Architecture page - the seeded model and its six issues, the
 // bars over them, a drill-down, a row's details, a status change that has to move a bar, and the
 // Unassigned picker. Each clause of the title is a press the row has to make.
-test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker", async ({
+// @pr: The Architecture page whole: bars over the seeded model, a drill-down, details, a bar that a status change moves, and the Unassigned picker.
+test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker @pr", async ({
   browser,
 }) => {
   const issues = await seedArchitecture();
@@ -341,14 +342,14 @@ test("Refresh with a broken model keeps the last model up behind an error banner
       "aria-selected",
       "true"
     );
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
 
     // A project without a source has no Architecture tab and opens on Issues, the filter
     // parameters forwarded.
     await page.goto("/projects/OPS?label=frontend");
     await expect(page).toHaveURL(/\/projects\/OPS\/issues\?label=frontend$/);
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
   } finally {
     await context.close();
   }

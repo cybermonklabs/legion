@@ -280,7 +280,8 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
 
 // SLOW(>=2s): an event barrier - a real write the page has to show before the count starts - the
 // pin written from another tab, and two windows drained to half a second of quiet traffic.
-test("pin: a pin from another tab shows in this tab's sidebar within 2 s with one pinned-list read", async ({
+// @pr: A two-context race with a budget: a pin from another tab shows here within 2 s, on one pinned-list read.
+test("pin: a pin from another tab shows in this tab's sidebar within 2 s with one pinned-list read @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -404,10 +405,15 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
     });
     await page.clock.install();
     await page.goto("/projects/CORE");
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    const board = page.getByRole("region", { name: "Project board", exact: true });
     const first = issues[0];
     const last = issues[issues.length - 1];
     if (first === undefined || last === undefined) throw new Error("no issues seeded");
-    await expect(page.getByLabel(`${last.key} ${last.title}`, { exact: true })).toBeVisible();
+    await expect(
+      board.getByRole("article", { name: `${last.key} ${last.title}`, exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("table", { name: "Project issues table" })).toHaveCount(0);
     // The board's barrier: a card shows a title only an event can have brought.
     let barrier = 0;
     await expect
@@ -417,9 +423,9 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
           const title = `${first.title} (barrier ${barrier})`;
           await patchIssue(first.key, { title }, bob);
           try {
-            await expect(page.getByLabel(`${first.key} ${title}`, { exact: true })).toBeVisible({
-              timeout: 2_000,
-            });
+            await expect(
+              board.getByRole("article", { name: `${first.key} ${title}`, exact: true })
+            ).toBeVisible({ timeout: 2_000 });
             return true;
           } catch {
             return false;
@@ -436,12 +442,99 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
       await until(startedAt + index * 250);
       await patchIssue(issue.key, { title: `${issue.title} renamed` }, bob);
     }
-    await expect(page.getByLabel(`${last.key} ${last.title} renamed`, { exact: true })).toBeVisible(
-      { timeout: 2_000 }
-    );
+    await expect(
+      board.getByRole("article", { name: `${last.key} ${last.title} renamed`, exact: true })
+    ).toBeVisible({ timeout: 2_000 });
     await drainRefreshWindow(page, traffic);
     console.log(`REFETCH-BOARD [${testInfo.project.name}] project list reads: ${listReads}`);
     expect(listReads).toBeLessThanOrEqual(7);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): the 20 writes 250 ms apart the title names: their span is the measurement. The
+// default project view is the issues table, which reads two kinds of thing - the project
+// listing, and the detail of each parent neither listing carries, because it is closed - so
+// this budget counts both. The parents are read once, with no staleness of their own, so a
+// project event refreshes one listing and nothing else.
+test("project issues table: 20 title writes 250 ms apart send at most 7 project reads and the last title shows within 2 s", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const parents = await createIssues(3, (index) => ({
+    project: "CORE",
+    title: `Closed parent ${index + 1}`,
+  }));
+  for (const parent of parents) {
+    await createMessage(parent.key, { body: "Finished this parent." });
+    await patchIssue(parent.key, { status: "done" });
+  }
+  const issues = await createIssues(20, (index) => ({
+    project: "CORE",
+    title: `Table row ${String(index + 1).padStart(2, "0")}`,
+  }));
+  for (const [index, issue] of issues.entries())
+    await patchIssue(issue.key, { parent: parents[index % parents.length]?.key });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    let projectReads = 0;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (request.method() !== "GET") return;
+      if (url.pathname === "/api/v1/issues" && url.searchParams.get("project") === "CORE")
+        projectReads += 1;
+      if (/^\/api\/v1\/issues\/CORE-\d+$/.test(url.pathname)) projectReads += 1;
+    });
+    await page.clock.install();
+    await page.goto("/projects/CORE");
+    const table = page.getByRole("table", { name: "Project issues table" });
+    await expect(table).toBeVisible();
+    const first = issues[0];
+    if (first === undefined) throw new Error("no issues seeded");
+    await expect(page.getByText(`${issues.length} of ${issues.length} issues`)).toBeVisible();
+    // Every row knows its epic, so the closed parents have been read by now.
+    await expect(page.getByText("No epic").first()).toBeVisible();
+    // The table's barrier: a row shows a title only an event can have brought.
+    let barrier = 0;
+    await expect
+      .poll(
+        async () => {
+          barrier += 1;
+          const title = `${first.title} (barrier ${barrier})`;
+          await patchIssue(first.key, { title }, bob);
+          try {
+            await expect(table.getByRole("row", { name: `${first.key} ${title}` })).toBeVisible({
+              timeout: 2_000,
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { intervals: [0], timeout: 30_000 }
+      )
+      .toBe(true);
+    await settled(traffic);
+    projectReads = 0;
+
+    // Rows are virtualized, so the window's own first row is the one a title change is read
+    // from; the writes run from the last row back to it, so its new title is the last to land.
+    const startedAt = Date.now();
+    for (const [index, issue] of [...issues].reverse().entries()) {
+      await until(startedAt + index * 250);
+      await patchIssue(issue.key, { title: `${issue.title} renamed` }, bob);
+    }
+    await expect(
+      table.getByRole("row", { name: `${first.key} ${first.title} renamed` })
+    ).toBeVisible({ timeout: 2_000 });
+    await drainRefreshWindow(page, traffic);
+    console.log(`REFETCH-TABLE [${testInfo.project.name}] project reads: ${projectReads}`);
+    expect(projectReads).toBeLessThanOrEqual(7);
   } finally {
     await alice.close();
   }

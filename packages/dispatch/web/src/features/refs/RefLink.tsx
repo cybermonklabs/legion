@@ -96,10 +96,10 @@ export function RefLink({
         </>
       )}
       {/* A block the batched read already named reads as its own words and needs no title.
-          Otherwise an issue reads as its key then its title, as the project's issue list writes
-          a key beside one (`IssueList.tsx`), so the link's accessible name is `CORE-12 Fix the
-          thing`. Until the title resolves, and for a target the reader cannot read, the words
-          the author wrote stand. */}
+          Otherwise an issue reads as its key then its title, as the project's issues table
+          writes a key beside one (`project/IssuesTable.tsx`), so the link's accessible name is
+          `CORE-12 Fix the thing`. Until the title resolves, and for a target the reader cannot
+          read, the words the author wrote stand. */}
       {headline !== undefined ? (
         headline.text
       ) : title === undefined ? (

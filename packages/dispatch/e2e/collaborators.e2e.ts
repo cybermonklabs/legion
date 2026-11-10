@@ -109,7 +109,8 @@ function agentRowName(legion: Locator, sessionId: string): Locator {
 // No `@phone` tag: this row starts at the project's own desktop width and narrows the window
 // itself, so under `iphone` it would start from the wrong layout (packages/dispatch/AGENTS.md,
 // "Phone acceptance").
-test("the panel lists an issue's people and its Legion agents, running or not", async ({
+// @pr: The collaborators list's only row: the issue's people and its Legion agents, running or not.
+test("the panel lists an issue's people and its Legion agents, running or not @pr", async ({
   browser,
 }) => {
   const { issueKey } = await seed();

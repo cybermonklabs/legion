@@ -78,8 +78,8 @@ export function IssueLabels({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([]);
   const [inputError, setInputError] = useState<string | null>(null);
-  // The same list IssueList and IssueBoard load for this project, so opening the popover on a
-  // page that already has it fetches nothing.
+  // The same list the project's issues table and IssueBoard load for this project, so opening
+  // the popover on a page that already has it fetches nothing.
   const issues = useQuery({ ...projectIssuesQuery(project, []), enabled: open });
   const options = useMemo(
     () =>
@@ -158,7 +158,12 @@ export function IssueLabels({
           </span>
         ))}
         <MultiSelect
-          disabled={disabled || saving}
+          // Not disabled while it saves what the close committed: a disabled button cannot hold
+          // focus, so Escape's return to the trigger would be undone by the save's own render.
+          // `setOpenState` is what refuses to reopen until the save has landed, and `aria-disabled`
+          // is how the reader is told it is busy without focus being taken away.
+          ariaDisabled={saving}
+          disabled={disabled}
           emptyMessage="No labels yet."
           error={inputError}
           label="Labels"
