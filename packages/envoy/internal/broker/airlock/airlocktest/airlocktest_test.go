@@ -412,6 +412,54 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	}
 }
 
+// TestTheGitHubStandsAnswerIsSetWhileItRuns: the three answers one after another against one
+// running stand, which is what a check of the narrowing drives on one stack - the ordinary mint,
+// the 422 that releases nothing, the token wider than asked that the minter revokes, and the
+// ordinary mint again as that check's negative control. A stand built with no option starts on
+// the ordinary answer.
+func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	stand := NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
+	service.AnswerWith(stand.Answer)
+	app := secrets.GitHubApp{Base: service.URL()}
+	value := gitHubAppValue(t)
+	narrowing := &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}
+	mint := func() (secrets.Minted, error) {
+		return app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: narrowing})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		answer GitHubTokenAnswer
+		class  string
+	}{
+		{name: "the answer it starts on"},
+		{name: "the refusal", answer: GitHubTokensRefused, class: "narrowing"},
+		{name: "the token wider than asked", answer: GitHubTokensWider, class: "upstream"},
+		{name: "the ordinary answer again", answer: GitHubTokensOrdinary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.answer != "" {
+				stand.Answers(tc.answer)
+			}
+			minted, err := mint()
+			if tc.class == "" {
+				if err != nil {
+					t.Fatalf("mint against the %s: %v", tc.name, err)
+				}
+				if token := mintedGitHubToken(t, minted.Value, "acme-org"); token == "" {
+					t.Error("the release holds no token for acme-org")
+				}
+				return
+			}
+			if minted.Value != "" || secrets.MintErrorClass(err) != tc.class {
+				t.Fatalf("mint against the %s = %q, %v (class %s); want nothing released and class %s",
+					tc.name, minted.Value, err, secrets.MintErrorClass(err), tc.class)
+			}
+		})
+	}
+}
+
 // TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt: a check spends a narrowed token
 // at GitHub, so the stand-in has to answer the repository that token reaches and refuse every
 // other one - another repository of the same account, and a repository of another account - and

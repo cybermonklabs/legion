@@ -135,7 +135,7 @@ ports. A full run takes about ten minutes, so it is a manual proof, not a CI job
 
 Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
-`dev-broker.sh` for Postgres, `dev-oidc-issuer`, the five built binaries and that
+`dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
 second time; on top it starts `cmd/dev-airlock-stands` (the stand-in services S and
 T, the GitHub, Google and Microsoft endpoints and the AWS service, and the
@@ -251,6 +251,41 @@ release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bu
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
 time.
+
+## github-narrowing-check.sh
+
+Runs the three checks of `agent-secrets`' `--github-token` that need a broker, a
+GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
+document — end to end on a local stack of its own, and prints one `PASS` or `FAIL`
+line for each property they name, then `all <n> assertions passed` when every one
+passed, so a reader tells a complete run from a cut-off one.
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
+```
+
+It starts `dev-broker.sh`, which holds the two `github-app` secrets and the stand-in
+GitHub they are minted against, and enrols one pod session of the service that owns
+them, as the Legion daemon enrols a worker pod, so each request for one is granted
+without asking. `k1` spends a narrowed token at the stand-in and reads back what the
+narrowed mint asked GitHub for; `k2` sets the stand-in to refuse the mint (HTTP 422)
+and then to answer wider than the narrowing asked, at the answer route the stack's
+banner names (`POST {"mode": "ordinary"|"refuse"|"widen"}`), since one stack drives
+all three answers; `k4` drives the secret whose release holds two installations,
+which no one token can be handed over for. Each check runs its own negative control,
+and every line names the exit status it read, because a property that failed and a
+command that never ran look alike in a transcript that holds neither.
+
+No line it prints is a credential: the child reads its token out of its own
+environment and prints the repository it asked for and the status it got, and a
+refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
+child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
+served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+an HTTP client that trusts the host's own roots and nothing else.
+
+`--keep-stack` leaves the stack and the run's work directory up to look at a failure
+with, `--help` prints the usage, and a usage error exits 2. It needs bash, curl, jq,
+go and psql, and takes a few minutes.
 
 ## airlock-lean-axioms.sh
 

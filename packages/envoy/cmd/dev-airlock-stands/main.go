@@ -11,8 +11,7 @@
 // why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
-//	                   [--github-owner <owner>=<installation id> ...]
-//	                   [--github-refuse-tokens] [--github-widen-tokens] [--google-lifetime <duration>]
+//	                   [--github-owner <owner>=<installation id> ...] [--google-lifetime <duration>]
 //	                   [--aws-key <key id>=<secret key>] [--aws-session-token <token>]
 //	                   [--records-address <host:port>]
 //	dev-airlock-stands front --listen <host:port> [--backend <host:port> ...] [--backends-file <path>]
@@ -44,11 +43,13 @@
 //
 // The GitHub stand answers what each token request's body asked for - the repositories it names
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
-// scope holds that repository, so a check spends a narrowed token as a caller does. Two flags
-// answer in its place, one each: --github-refuse-tokens answers every token request HTTP 422 and
-// mints nothing, as GitHub answers a body naming a permission the installation does not hold,
-// and --github-widen-tokens answers a token wider than the body asked for, which the broker must
-// refuse to release. The two are one answer each to one request, so naming both is refused.
+// scope holds that repository, so a check spends a narrowed token as a caller does. What it
+// answers a token request is set while it runs by the same device as the model's: POST
+// <records URL>/answers/github, whose body is {"mode": "ordinary"|"refuse"|"widen"}. The three
+// are the answer each body asked for; the HTTP 422 that mints nothing, as GitHub answers a body
+// naming a permission the installation does not hold; and a token wider than the body asked for,
+// which the broker must refuse to release. The report names that address (github_answer_url),
+// and until a check calls it the stand answers each token request what its body asked for.
 //
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
@@ -205,8 +206,6 @@ type options struct {
 	addresses       standFlags
 	hosts           hostFlags
 	installations   map[string]int64
-	refuseTokens    bool
-	widenTokens     bool
 	googleLifetime  time.Duration
 	awsKeyID        string
 	awsSecretKey    string
@@ -239,8 +238,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Var(&o.addresses, "address", "bind `<stand>=<host:port>` at that address rather than 127.0.0.1 on a port the system picks (repeatable)")
 	fs.Var(&o.hosts, "host", "add `<stand>=<name>`'s name or address to that stand's certificate (repeatable)")
 	fs.Var(ownerFlags{installations: o.installations}, "github-owner", "the GitHub stand answers `<owner>=<installation id>` as an installation of the App (repeatable)")
-	fs.BoolVar(&o.refuseTokens, "github-refuse-tokens", false, "the GitHub stand answers every installation token request HTTP 422 and mints nothing, as GitHub answers a body naming a permission the installation does not hold")
-	fs.BoolVar(&o.widenTokens, "github-widen-tokens", false, "the GitHub stand answers each installation token wider than its body asked for - every repository of the account, and a grant past the read set - which the broker must refuse to release")
 	fs.DurationVar(&o.googleLifetime, "google-lifetime", time.Hour, "the Google stand's answer says the access token lasts `<duration>`")
 	fs.StringVar(&o.recordsAddress, "records-address", "127.0.0.1:0", "serve the recording routes at `<host:port>`")
 	awsKey := fs.String("aws-key", "", "the AWS stand verifies each call against `<key id>=<secret key>`, and with none a pair of its own")
@@ -266,10 +263,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if o.googleLifetime <= 0 {
 		fmt.Fprintf(stderr, "dev-airlock-stands: --google-lifetime %s is no lifetime\n", o.googleLifetime)
-		return exitUsageError
-	}
-	if o.refuseTokens && o.widenTokens {
-		fmt.Fprintln(stderr, "dev-airlock-stands: --github-refuse-tokens and --github-widen-tokens are two answers to one token request; give one")
 		return exitUsageError
 	}
 	if len(o.installations) == 0 {
@@ -374,6 +367,10 @@ type report struct {
 	// ModelAnswerURL is where a check sets what the model stand answers next, POST
 	// <records URL>/answers/model, whose body the command's own comment spells out.
 	ModelAnswerURL string `json:"model_answer_url"`
+	// GitHubAnswerURL is where a check sets what the GitHub stand answers each token request
+	// from then on, POST <records URL>/answers/github, whose body the command's own comment
+	// spells out.
+	GitHubAnswerURL string `json:"github_answer_url"`
 	// DispatchOpenIssue and DispatchDoneIssue are the two issues the dispatch stand holds,
 	// which is what a check names in a request's reason: the open one for a reason a judge
 	// may act on, the done one for a reason it must not, and any other key for no issue at
@@ -467,9 +464,10 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	// own body and nothing more; the other seven answer as the service they stand in for. Every
 	// one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
-	services[standGitHub].AnswerWith(airlocktest.NewGitHubStand(airlocktest.GitHubOptions{
-		Installations: o.installations, RefuseTokens: o.refuseTokens, WidenTokens: o.widenTokens,
-	}).Answer)
+	// The GitHub stand answers each token request what its body asked for until a check sets
+	// another answer, so a stack driven with no call to its answer route mints as GitHub does.
+	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations})
+	services[standGitHub].AnswerWith(github.Answer)
 	services[standGoogle].AnswerWith(airlocktest.NewGoogleStand(airlocktest.GoogleOptions{Lifetime: o.googleLifetime}).Answer)
 	// The Microsoft stand plays both hosts of its one certificate: the authority a federated
 	// token is exchanged at, and the Resource Manager that access token is then spent at.
@@ -492,14 +490,15 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standDispatch].AnswerWith(airlocktest.NewDispatchStand(airlocktest.DispatchOptions{Issues: standInIssues()}).Answer)
 	services[standMetadata].AnswerWith(airlocktest.NewMetadataStand(airlocktest.MetadataOptions{}).Answer)
 
-	records := &http.Server{Handler: recordsHandler(services, model), ReadHeaderTimeout: 30 * time.Second}
+	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
 		return 1
 	}
 	defer stopRecords()
-	out.RecordsURL, out.ModelAnswerURL = recordsURL, recordsURL+modelAnswerPath
+	out.RecordsURL = recordsURL
+	out.ModelAnswerURL, out.GitHubAnswerURL = recordsURL+modelAnswerPath, recordsURL+githubAnswerPath
 	for name, entry := range out.Stands {
 		entry.Records = recordsURL + "/records/" + name
 		out.Stands[name] = entry
@@ -529,12 +528,13 @@ func serveRecords(server *http.Server, addr string) (string, func(), error) {
 	return "http://" + listener.Addr().String(), func() { _ = server.Close() }, nil
 }
 
-// recordsHandler is the two things the recording server answers: GET /records/<stand>, the
+// recordsHandler is the three things the recording server answers: GET /records/<stand>, the
 // JSON array of every request that stand was sent, each record's method, path, query, host,
-// header and body, which is what a check script reads a result back from; and the model stand's
-// answer route, which is served here because a check that drives one case after another needs
-// one address to set them at and the recording server is the address it already has.
-func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest.ModelStand) http.Handler {
+// header and body, which is what a check script reads a result back from; and the model and
+// GitHub stands' answer routes, which are served here because a check that drives one case after
+// another needs one address to set them at and the recording server is the address it already
+// has.
+func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest.ModelStand, github *airlocktest.GitHubStand) http.Handler {
 	mux := http.NewServeMux()
 	for _, name := range slices.Sorted(maps.Keys(services)) {
 		service := services[name]
@@ -560,16 +560,53 @@ func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"text": answer.Text, "delay": answer.Delay.String()})
 	})
+	mux.HandleFunc("POST "+githubAnswerPath, func(w http.ResponseWriter, r *http.Request) {
+		var body githubAnswerRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxModelAnswerBody)).Decode(&body); err != nil {
+			http.Error(w, "the answer is no JSON object: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		answer, err := githubAnswerOf(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		github.Answers(answer)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"mode": string(answer)})
+	})
 	return mux
 }
 
-// modelAnswerPath is where a check sets what the model stand answers from there on, and
-// maxModelAnswerBody what one such request is read of: a reply is a sentence or two, and a body
-// past this is a mistake rather than an answer.
+// modelAnswerPath and githubAnswerPath are where a check sets what the model stand and the
+// GitHub stand answer from there on, and maxModelAnswerBody what one such request is read of: a
+// reply is a sentence or two and a mode is one word, so a body past this is a mistake rather
+// than an answer.
 const (
 	modelAnswerPath    = "/answers/model"
+	githubAnswerPath   = "/answers/github"
 	maxModelAnswerBody = 1 << 20
 )
+
+// githubAnswerRequest is the body POST <records URL>/answers/github takes.
+type githubAnswerRequest struct {
+	// Mode is which of the GitHub stand's three answers every token request from then on gets:
+	// ordinary, refuse or widen (airlocktest.GitHubTokenAnswer).
+	Mode string `json:"mode"`
+}
+
+// githubAnswerOf is one such request as the answer it sets, and what is wrong with a request
+// that sets none: a mode outside the three is named back with the three, since a check that
+// misspelled one must read that rather than leave the last answer quietly in place.
+func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubTokenAnswer, error) {
+	switch answer := airlocktest.GitHubTokenAnswer(body.Mode); answer {
+	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider:
+		return answer, nil
+	default:
+		return "", fmt.Errorf("the mode %q is none of the GitHub stand's three answers: %s, %s and %s",
+			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider)
+	}
+}
 
 // modelAnswerRequest is the body POST <records URL>/answers/model takes.
 type modelAnswerRequest struct {

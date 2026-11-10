@@ -43,21 +43,43 @@ type GitHubOptions struct {
 	// Lifetime is how long from now each token's expires_at is, and zero is an hour, the life
 	// GitHub gives one.
 	Lifetime time.Duration
-	// RefuseTokens answers every token request HTTP 422 and mints nothing, which is what GitHub
-	// answers a body naming a permission the installation does not hold. The answer says nothing
-	// of a rate limit, so the minter reads it as the caller's narrowing and refuses the release
-	// (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble. A read-only
-	// narrowing asks once more without actions, which this answers 422 as well, so that refusal
-	// reaches the caller too and no token is ever released.
+	// RefuseTokens starts the stand on GitHubTokensRefused: every token request is answered HTTP
+	// 422 and mints nothing, which is what GitHub answers a body naming a permission the
+	// installation does not hold. The answer says nothing of a rate limit, so the minter reads it
+	// as the caller's narrowing and refuses the release (secrets.GitHubNarrowing.refusal) rather
+	// than as the upstream's trouble. A read-only narrowing asks once more without actions, which
+	// this answers 422 as well, so that refusal reaches the caller too and no token is ever
+	// released.
 	RefuseTokens bool
-	// WidenTokens answers every token request a token wider than its body asked for: every
-	// repository of the account rather than the ones the body named, and a grant past the read
-	// set a read-only body asks for. GitHub applies the body it is sent, so a token like this is
-	// one something between the broker and GitHub widened: the minter revokes it and releases
-	// nothing (secrets.GitHubNarrowing.heldBy). It is how a check drives that path, which
-	// nothing else reaches.
+	// WidenTokens starts the stand on GitHubTokensWider: every token request is answered a token
+	// wider than its body asked for, every repository of the account rather than the ones the
+	// body named, and a grant past the read set a read-only body asks for. GitHub applies the
+	// body it is sent, so a token like this is one something between the broker and GitHub
+	// widened: the minter revokes it and releases nothing (secrets.GitHubNarrowing.heldBy). It is
+	// how a check drives that path, which nothing else reaches.
+	//
+	// The two are the answer the stand starts on, for a Go test that sets it at construction;
+	// GitHubStand.Answers replaces it while the stand runs, which is how one stack drives all
+	// three answers one after another. A stand given both starts on the refusal, which is the
+	// answer it gave before there was a third.
 	WidenTokens bool
 }
+
+// GitHubTokenAnswer is one of the three answers a GitHubStand gives a token request, which
+// GitHubStand.Answers sets while the stand runs. The values are the words the answer route of
+// cmd/dev-airlock-stands takes in its body, so a check script names the same three answers a Go
+// test does.
+type GitHubTokenAnswer string
+
+const (
+	// GitHubTokensOrdinary answers each token request what its own body asked for, as GitHub does.
+	GitHubTokensOrdinary GitHubTokenAnswer = "ordinary"
+	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing (RefuseTokens).
+	GitHubTokensRefused GitHubTokenAnswer = "refuse"
+	// GitHubTokensWider answers each token request a token wider than its body asked for
+	// (WidenTokens).
+	GitHubTokensWider GitHubTokenAnswer = "widen"
+)
 
 // standInGitHubPermissions is what a token holds when its request named none: the permissions
 // this stand-in says every installation of the App was granted. GitHub answers such a request a
@@ -82,11 +104,13 @@ const widerPermission, widerPermissionLevel = "administration", "write"
 //
 // It remembers what each token it minted reaches, since that is the whole of what the repository
 // route decides on, and one stand-in answers several callers of a stack at once, so that record
-// is held under a lock, as the Microsoft stand-in holds its exchanges.
+// is held under a lock, as the Microsoft stand-in holds its exchanges. The answer its token route
+// gives is held under that same lock, since a check sets it while the stand serves (Answers).
 type GitHubStand struct {
 	options GitHubOptions
 
 	mu     sync.Mutex
+	answer GitHubTokenAnswer
 	scopes map[string]githubScope
 }
 
@@ -97,9 +121,34 @@ type githubScope struct {
 	repositories []string
 }
 
-// NewGitHubStand builds one. Install it with Service.AnswerWith(stand.Answer).
+// NewGitHubStand builds one, answering as its options say to begin with. Install it with
+// Service.AnswerWith(stand.Answer).
 func NewGitHubStand(o GitHubOptions) *GitHubStand {
-	return &GitHubStand{options: o, scopes: map[string]githubScope{}}
+	answer := GitHubTokensOrdinary
+	switch {
+	case o.RefuseTokens:
+		answer = GitHubTokensRefused
+	case o.WidenTokens:
+		answer = GitHubTokensWider
+	}
+	return &GitHubStand{options: o, answer: answer, scopes: map[string]githubScope{}}
+}
+
+// Answers replaces what every token request from here on is answered with, which is how one run
+// of a stack drives the ordinary mint, the refusal and the token wider than asked one after
+// another. It says nothing about the tokens this stand has already minted: each of those still
+// reaches what it reached.
+func (g *GitHubStand) Answers(answer GitHubTokenAnswer) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.answer = answer
+}
+
+// answering is what the token route answers now.
+func (g *GitHubStand) answering() GitHubTokenAnswer {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.answer
 }
 
 // owners names every owner the App is installed on, in order, so two runs answer one list.
@@ -184,10 +233,12 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 // answerToken is GitHub's answer to one access_tokens request: the token, its expiry and what
 // GitHub says the token holds, which is what the minter checks a narrowing against
 // (secrets.GitHubNarrowing.heldBy). The answer echoes the body: a selection of the repositories
-// it named, or all of the account's when it named none, and the permissions it asked for. The two
-// options answer in its place, one refusing the mint and one minting wider than asked.
+// it named, or all of the account's when it named none, and the permissions it asked for. The
+// other two answers (Answers) answer in its place, one refusing the mint and one minting wider
+// than asked.
 func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner string) {
-	if g.options.RefuseTokens {
+	answering := g.answering()
+	if answering == GitHubTokensRefused {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"message":           "The permissions requested are not granted to this installation.",
@@ -206,7 +257,7 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 	if len(permissions) == 0 {
 		permissions = standInGitHubPermissions
 	}
-	if g.options.WidenTokens {
+	if answering == GitHubTokensWider {
 		// Wider on both of the rules a narrowed token is checked by: every repository of the
 		// account, and a grant the body did not ask for.
 		selection, repositories = "all", nil

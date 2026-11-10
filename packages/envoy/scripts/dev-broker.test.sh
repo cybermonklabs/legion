@@ -180,6 +180,45 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
+  */dev-airlock-stands)
+    cat >"$out" <<'STANDS'
+#!/usr/bin/env bash
+dir=""
+owners=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir) dir="$2" ;;
+    --github-owner) owners="${owners}${owners:+ }$2" ;;
+    *)
+      echo "fake dev-airlock-stands: unexpected argument $1" >&2
+      exit 2
+      ;;
+  esac
+  shift 2 || exit 2
+done
+mkdir -p "$dir"
+# The real command writes this run's GitHub App key and names it in its report, and
+# dev-broker.sh reads that file into its fake secret store, so a stub that wrote none would
+# fail that read rather than the behaviour under test.
+printf '%s\n' "-----BEGIN PRIVATE KEY-----" "the-stand-in-app-key" "-----END PRIVATE KEY-----" >"$dir/github-app.pem"
+# The report, with the fields dev-broker.sh reads; its own PID stands in for the ports the real
+# command binds, as the broker and issuer stubs' do.
+cat <<JSON
+{"dir": "$dir",
+ "ca_cert_file": "$dir/ca.crt",
+ "records_url": "http://127.0.0.1:$$",
+ "model_answer_url": "http://127.0.0.1:$$/answers/model",
+ "github_answer_url": "http://127.0.0.1:$$/answers/github",
+ "github_app_id": "123456",
+ "github_app_key_file": "$dir/github-app.pem",
+ "stands": {"github": {"address": "127.0.0.1:$$", "url": "http://127.0.0.1:$$",
+                       "records_url": "http://127.0.0.1:$$/records/github"}}}
+JSON
+echo "fake stands: dir=$dir owners=$owners" >&2
+echo "dev-airlock-stands: stands listening records=http://127.0.0.1:$$" >&2
+exec sleep 999999
+STANDS
+    ;;
   */broker)
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
@@ -187,7 +226,7 @@ if [[ $# -ne 0 ]]; then
   echo "fake broker: unexpected arguments: $*" >&2
   exit 2
 fi
-echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-}" >&2
+echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "broker listening addr=127.0.0.1:$$" >&2
 exec sleep 999999
@@ -420,6 +459,35 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s registers %s under both halves and tells a reader how to take the secret it owns\n' "$label" "$service"
+  # The stand-in GitHub and the two github-app secrets it mints: the stands are started for the
+  # three installations the case pair needs, the broker is pointed at that stand's own address,
+  # and the fake store holds both secrets with the kind, the tier, the owner and the
+  # github-owners tag each one's release rests on. The App key is the file the stands reported,
+  # so a report that named another file would leave the store holding something else.
+  local stands_url stands_owners
+  stands_url="$(grep -o 'github stand: *http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | grep -o 'http://.*' || true)"
+  stands_owners="$(grep -o 'fake stands: dir=[^ ]* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
+  if [[ "$stands_owners" != "acme-org=7 ada=8 Ada=9" ]] || [[ -z "$stands_url" ]] \
+    || ! grep -qF "github=${stands_url}" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker does not mint github-app secrets at its own stand-in (owners '${stands_owners:-none}', stand ${stands_url:-none})" >&2
+    exit 1
+  fi
+  local tags
+  tags="$(jq -r --arg prefix "example/agent-secrets/" '
+    [.secrets[] | select(.name == ($prefix + "demo-github-app") or .name == ($prefix + "demo-github-app-case-pair"))
+     | "\(.name) \(.tags.kind) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
+    ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
+  if [[ "$tags" != "example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456" ]]; then
+    echo "FAIL: $label's fake store holds no pair of github-app secrets the service owns: ${tags:-none}" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "-----BEGIN PRIVATE KEY-----" <(jq -r --arg prefix "example/agent-secrets/" '.secrets[] | select(.name == ($prefix + "demo-github-app")) | .value | fromjson | .private_key' "${workdir}/fake-secrets.json"); then
+    echo "FAIL: $label's github-app secret holds no App key from the stands' report" >&2
+    exit 1
+  fi
+  printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, and holds both github-app secrets its service owns\n' "$label"
+
   port="$bound"
 
   local pid="${instance_pid[$n]}"
