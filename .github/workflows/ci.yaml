@@ -2381,20 +2381,22 @@ jobs:
     # whose two requests are bounded at 15 s each (1), the one case that keeps the pinned ladder,
     # the head's own `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds
     # at a minute in which a new attempt may start plus one last attempt of the row's `max_time`
-    # of 60 s (2), the twenty other steps whose primary the fault or a dead port holds, each now
-    # about a second because the stand-in shortens them and each able to drive two of those
-    # shortened ladders (1), the bytes the installs and the sixteen cases move, over npm, PyPI,
-    # get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the readings,
-    # the `ladder-report` step, the stop-fault step and the report (1).
+    # of 60 s (2), the other steps whose primary the fault or a dead port holds, each now about
+    # a second because the stand-in shortens them: job 129826623707 made 66 fetches through the
+    # stand-in, and 30 of them were shortened — 20 of github.com, 9 of the dead address and 1 of
+    # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
+    # ladder: the kept case's own fetch at 63 s, the probe's reserved control name, and the
+    # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
+    # which took more than a second (1), the bytes the installs and the sixteen cases move, over
+    # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
+    # readings, the `ladder-report` step, the stop-fault step and the report (1).
     # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
     # limit carries ten minutes over the sum.
     # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
-    # steps whose primary the fault holds, allowed at 126 s each. That 126 s was wrong as a
-    # per-step figure. One pinned ladder against a source that refuses at once costs 63 s, its
-    # back-off being 1+2+4+8+16+32. The 126 s steps were the eight negative controls, which pay
-    # two ladders each: a faulted primary and a second source on a dead port. In the baseline,
-    # job 129743677408, those eight measured 126, 126, 127, 104, 126, 126, 127 and 126 s, while
-    # the head's eight, which pay one ladder each, measured 64, 64, 73, 23, 64, 64, 64 and 65 s.
+    # steps whose primary the fault holds, allowed at 126 s each. That 126 s was two ladders and
+    # not one, which is why the old allowance was about twice what those steps could cost. What
+    # one ladder costs, and how it is derived, is in the comment above ci_tools_curl of
+    # .github/scripts/ci-tools.sh.
     # What the change did: job 129743677408 ran 1,994 s and job 129826623707 ran 264 s, and the
     # one case that still drives the real ladder measured 64 s inside it.
     timeout-minutes: 22
@@ -3226,7 +3228,7 @@ jobs:
     # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
     # The reason is the shape of this job's faulted install. It reads ci_tools_fetch_fallback
     # (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and
-    # tries no primary (.github/scripts/ci-tools.sh lines 1252 to 1261), and the primary it does
+    # tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does
     # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
     # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
     # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.

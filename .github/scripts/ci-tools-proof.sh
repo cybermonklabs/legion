@@ -242,6 +242,8 @@ fault_log="$work/fault.log"
 fault_state="$work/fault.state"
 mark="$work/mark"
 curl_log="$work/curl.log"
+stand_in_bin="$work/bin"
+stand_in="$stand_in_bin/curl"
 
 # The rows a case installs, which are the rows `stage` fetches the correct bytes of.
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
@@ -763,7 +765,7 @@ stage() {
 # stand-in reads the hosts and the address from this one file and holds no second copy of them.
 write_stand_in() {
   local real_curl=$1
-  cat > "$work/bin/curl" <<SH
+  cat > "$stand_in" <<SH
 #!/usr/bin/env bash
 # Written by the shorten-ladder verb of .github/scripts/ci-tools-proof.sh, which states what
 # this claims and what it leaves untouched.
@@ -855,14 +857,10 @@ printf 'start=%s end=%s seconds=%s decision=%s host=%s exit=%s full-ladder=%s\n'
   "\${CI_TOOLS_PROOF_FULL_LADDER:-none}" >> "\$curl_log"
 exit "\$status"
 SH
-  chmod 0755 "$work/bin/curl"
+  chmod 0755 "$stand_in"
 }
 
 # shorten_ladder: the stand-in curl of the paragraph above, on this job's PATH.
-# Every case of this job is a refusal this rig arranged, and the fetches of those refusals are
-# where the job spent 1952 s of its 1994 s: each of them rides a retry ladder nobody reads.
-# The stand-in bounds those and leaves every other fetch alone, and `ladder-report` below reads
-# what it measured.
 shorten_ladder() {
   [ "$#" -eq 0 ] || die "shorten-ladder takes no argument, and this call gave $#"
   local real_curl version search
@@ -871,22 +869,22 @@ shorten_ladder() {
   # a shell that already has that directory on PATH — would otherwise find the stand-in the
   # first run left there and write a script that runs itself until the shell gives up.
   search=":$PATH:"
-  search=${search//":$work/bin:"/:}
+  search=${search//":$stand_in_bin:"/:}
   search=${search#:}
   search=${search%:}
   real_curl=$(PATH="$search" command -v curl) ||
     die "shorten-ladder: no curl is on this job's PATH, so there is none for the stand-in to run"
-  mkdir -p "$work/bin"
+  mkdir -p "$stand_in_bin"
   : > "$curl_log"
   write_stand_in "$real_curl"
   # Off a runner there is no $GITHUB_PATH, and the line is printed and written nowhere, which
   # is what fault_env does with the proxy variables.
-  [ -z "${GITHUB_PATH:-}" ] || printf '%s\n' "$work/bin" >> "$GITHUB_PATH"
+  [ -z "${GITHUB_PATH:-}" ] || printf '%s\n' "$stand_in_bin" >> "$GITHUB_PATH"
   version=$("$real_curl" --version)
   note "the stand-in curl every step after this one runs, which shortens only a fetch this job arranged to fail"
-  printf '  %s\n' "$work/bin/curl"
+  printf '  %s\n' "$stand_in"
   note "the line it adds to this job's PATH:"
-  printf '  %s\n' "$work/bin"
+  printf '  %s\n' "$stand_in_bin"
   echo "  the curl it runs is $real_curl: ${version%%$'\n'*}"
   echo "  what it measures goes to $curl_log, which the ladder-report verb reads"
 }
