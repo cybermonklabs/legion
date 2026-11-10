@@ -21,7 +21,7 @@ import {
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
 import { LegionPhaseCell } from "./issues-table-columns";
-import { formatPhaseTime, legionPhases, legionRolesText } from "./issues-table-model";
+import { formatPhaseTime, legionPhases } from "./issues-table-model";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
 import { LegionSections } from "./LegionSections";
 
@@ -134,30 +134,32 @@ function Slots({
   const holders = cards
     .filter((card) => card.slot !== null)
     .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+  // A worker in a turn, an architect's included, makes the slot working whatever the phase.
   const state = (card: LegionBoardCard): string => {
-    if (!HELD_FOR_CHILDREN[card.phase]) return "working";
+    if (card.roles.length > 0 || !HELD_FOR_CHILDREN[card.phase]) return "working";
     const busy = cards.some(
       (other) =>
         other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
     );
-    return busy ? "held for children only" : "idle";
+    return busy ? "held for children only" : "held, children idle";
   };
   const shown = all ? holders : holders.slice(0, FIRST_ROWS);
   const held = holders.filter((card) => state(card) !== "working");
-  const idle = holders.filter((card) => state(card) === "idle");
+  const idle = holders.filter((card) => state(card) === "held, children idle");
   const { header } = board;
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
       <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>Slots, now</h2>
       <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-slot-summary>
-        {header.slots_in_use} of {header.slot_cap ?? "?"} slots in use · {held.length} held for
-        children only · {idle.length} of those idle, with nothing under their root implementing,
-        testing or reviewing
+        {header.slots_in_use} of {header.slot_cap ?? "?"} slots in use · {held.length} held with no
+        worker of its own in a turn · {idle.length} of those with children idle, nothing under their
+        root implementing, testing or reviewing
       </p>
       <p className={`text-xs ${textMutedOnSurface}`}>
-        A slot is held for children only while its root is accepting, awaiting merge or awaiting a
-        person; it is idle when, besides, nothing under the root is implementing, testing or
-        reviewing. Roles in a turn tells a working role from one between turns. CI: ✓ green, ✗
+        A slot is working while a worker of its issue is in a turn, the architect's included, or
+        while its root is in a phase of its own work. It is held for children only while its root is
+        accepting, awaiting merge or awaiting a person with no worker in a turn; held, children idle
+        when, besides, nothing under the root is implementing, testing or reviewing. CI: ✓ green, ✗
         failing, … pending, — no verdict.
       </p>
       <div className="hidden md:block">
@@ -167,7 +169,6 @@ function Slots({
               <th className="px-1 py-1 font-normal">Slot</th>
               <th className="px-1 py-1 font-normal">Issue</th>
               <th className="px-1 py-1 font-normal">Phase</th>
-              <th className="px-1 py-1 font-normal">Roles in a turn</th>
               <th className="px-1 py-1 font-normal">Children not started</th>
               <th className="px-1 py-1 font-normal">CI</th>
               <th className="px-1 py-1 font-normal whitespace-nowrap">Slot use</th>
@@ -199,9 +200,8 @@ function Slots({
                     </div>
                   </td>
                   <td className="px-1 py-1">
-                    {phase === undefined ? null : <LegionPhaseCell phase={phase} />}
+                    {phase === undefined ? null : <SlotPhase card={card} phase={phase} />}
                   </td>
-                  <td className="px-1 py-1">{legionRolesText(card)}</td>
                   <td className="px-1 py-1">{card.children}</td>
                   <td
                     className="px-1 py-1 whitespace-nowrap"
@@ -224,8 +224,10 @@ function Slots({
         {shown.map((card) => {
           const phase = phases.get(card.key);
           const facts: [string, ReactNode][] = [
-            ["Phase", phase === undefined ? "—" : <LegionPhaseCell key="phase" phase={phase} />],
-            ["Roles in a turn", legionRolesText(card)],
+            [
+              "Phase",
+              phase === undefined ? "—" : <SlotPhase card={card} key="phase" phase={phase} />,
+            ],
             ["Children not started", card.children],
             [
               "CI",
@@ -263,6 +265,27 @@ function Slots({
       </ol>
       <ShowAll all={all} count={holders.length} noun="slots" onToggle={() => setAll(!all)} />
     </section>
+  );
+}
+
+/** A slot's phase: the issues table's own cell, and "· between turns" under it when no worker of
+ *  the issue is in a turn (the roles themselves are on the board cards and in the table). */
+function SlotPhase({
+  card,
+  phase,
+}: {
+  card: LegionBoardCard;
+  phase: Parameters<typeof LegionPhaseCell>[0]["phase"];
+}): ReactNode {
+  return (
+    <span className="flex flex-col gap-1">
+      <LegionPhaseCell phase={phase} />
+      {card.roles.length === 0 ? (
+        <span className={`text-xs ${textMutedOnSurface}`} data-legion-slot-between-turns>
+          · between turns
+        </span>
+      ) : null}
+    </span>
   );
 }
 

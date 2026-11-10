@@ -12,6 +12,7 @@ import type { LegionTimelineSpan, LegionIssueTimeline as Timeline } from "../../
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
+  borderStrong,
   chartParts,
   legionPhaseScale,
   surfaceBg,
@@ -37,8 +38,11 @@ const SEGMENT_FILL: Record<string, string> = {
   ci_wait: chartParts[1],
   waiting_on_children: legionPhaseScale.waiting_on_children ?? "",
   idle: chartParts[6],
-  unknown: surfaceMutedBg,
+  // Unknown hours draw as an outlined stretch, visible on the lane's own muted track.
+  unknown: `${surfaceBg} border border-dashed ${borderStrong}`,
 };
+/** An ask's own stretch: a darker rose than the waiting-on-a-person hours it causes. */
+const ASK_FILL = chartParts[4];
 const SOURCE_LABEL: Record<LegionTimelineSpan["source"], string> = {
   observed: "observed events",
   status_history: "status-history fallback",
@@ -206,7 +210,7 @@ function TimelineBody({
       { name: "CI wait", spans: timeline.ci_waits.map(plain(chartParts[1])) },
       {
         name: "Asks to a person",
-        spans: timeline.asks.map(plain(legionPhaseScale.awaiting_person ?? "")),
+        spans: timeline.asks.map(plain(ASK_FILL)),
       },
       { name: "Parked", spans: timeline.parked.map(plain(chartParts[6])) },
       ...timeline.children.map((child) => ({
@@ -232,7 +236,8 @@ function TimelineBody({
       ...shown
         .filter((lane) => lane.name === "Phase" || lane.name.startsWith("Child "))
         .flatMap((lane) => lane.spans.filter((one) => !one.hatched))
-        .map((one) => [one.label, one.fill] as const),
+        // The key names the phase; "(retro)" stays on the retro blocks themselves.
+        .map((one) => [one.label.replace(/ \(retro\)$/, ""), one.fill] as const),
       ...Object.entries(SEGMENT_LABEL)
         .filter(([name]) => segmentNames.has(name))
         .map(([name, label]) => [label, SEGMENT_FILL[name] ?? surfaceMutedBg] as const),
@@ -240,9 +245,7 @@ function TimelineBody({
         ? [["A role in a turn", chartParts[2]] as const]
         : []),
       ...(has("CI wait") ? [["CI wait", chartParts[1]] as const] : []),
-      ...(has("Asks to a person")
-        ? [["An ask to a person", legionPhaseScale.awaiting_person ?? ""] as const]
-        : []),
+      ...(has("Asks to a person") ? [["An ask to a person", ASK_FILL] as const] : []),
       ...(has("Parked") ? [["Parked", chartParts[6]] as const] : []),
     ]),
   ];
