@@ -666,7 +666,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && chmod g-s /usr/bin/ssh-agent \
     && groupadd --gid 1000 legion \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash legion \
-    && install -d -m 0755 -o root -g root /opt/legion /opt/legion/bin \
+    && install -d -m 0755 -o root -g root /opt/legion /opt/legion/bin /opt/legion/githooks \
     && install -d -m 0755 -o root -g root /var/run/legion /var/run/legion/gh /var/run/legion/private \
       /var/run/legion/state /var/run/legion/agent-secrets
 
@@ -1067,8 +1067,28 @@ COPY --from=go /out/agent-secrets /opt/legion/bin/agent-secrets
 # packages/daemon/docker/gh, the same script a tmux pane's launcher directory holds
 # (packages/daemon/internal/runtime/workerbin).
 COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
-# The final step: /opt/legion and /opt/legion/bin are root's with mode 0755, so the runtime user can
-# neither rename nor replace what they hold; everything under /opt/legion/pi-envoy,
+# git in a pod is Legion's wrapper, first on the image PATH, which runs the real git at
+# /usr/bin/git with the arguments it was given — except for a push, which it runs with
+# `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken out, so
+# git's own pre-push hook runs the leak guard over the update lines git computed and a role can
+# neither edit that hook nor skip it. The `-c` outranks the runtime's core.hooksPath=/dev/null
+# pin, which still holds for every other command (mainEnvironment,
+# packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
+COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
+# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
+# arguments it was given and checks one thing before a `jj git push`: that the git jj will shell
+# out to is the wrapper above, on PATH and in jj's own git.executable-path. jj's push is a
+# `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard in front of
+# it, and a jj that would run another git is refused rather than pushing unchecked:
+# packages/daemon/docker/jj.
+COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
+# The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
+# it hands git's remote, URL and update lines to `legion leak-check pre-push` and holds no rule of
+# its own (packages/daemon/docker/githooks/pre-push, packages/daemon/internal/leakguard).
+COPY --chmod=0755 packages/daemon/docker/githooks/pre-push /opt/legion/githooks/pre-push
+# The final step: /opt/legion, /opt/legion/bin and /opt/legion/githooks are root's with mode 0755,
+# so the runtime user can neither rename nor replace what they hold; everything under
+# /opt/legion/pi-envoy,
 # /opt/legion/pi-legion and /opt/legion/claude-envoy is root's and writable by no one else, so no
 # role changes the image's copy
 # of the plugin code (a launch that installs the plugins loads them instead from the role's state
@@ -1078,10 +1098,14 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
-# commit the workflow built. git resolves to /usr/bin/git on the image PATH and the step refuses any
-# other path, so git's absolute path is as fixed as jj's and the real gh's (/usr/local/bin, copied
-# above) and a pod environment can name all three; gh resolves to the /opt/legion/bin/gh script and
-# the real gh behind it runs. flock is pinned the same way, and for a reason the other gates do not
+# commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
+# /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
+# and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. So the three
+# absolute paths stay as fixed as they were when git and jj were reached by their own names, and
+# a pod environment can name all three; what has moved is that a push now passes through the git
+# wrapper's hook. The pre-push hook itself is root's, executable, and in the root-owned
+# directory checked above, so no role can edit it or put another in its place. flock is pinned
+# the same way, and for a reason the other gates do not
 # cover: the installs Legion renders call it as /usr/bin/flock — the plugin pair's for an
 # installing launch (installBlock) and Claude Code's for every Claude launch (claudeCodeBlock), both
 # packages/daemon/internal/runtime/sandbox/plugins.go — while the apt line, the toolchain check
@@ -1157,7 +1181,7 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
       have="$(jq -er '.version | strings' "/opt/legion/$plugin/package.json")"; \
       echo "$plugin: /opt/legion/$plugin $have, $source $want"; test "$have" = "$want"; \
     done; \
-    for dir in /opt/legion /opt/legion/bin /var/run/legion /var/run/legion/gh /var/run/legion/private \
+    for dir in /opt/legion /opt/legion/bin /opt/legion/githooks /var/run/legion /var/run/legion/gh /var/run/legion/private \
       /var/run/legion/state /var/run/legion/agent-secrets; do \
       owner="$(stat -c '%u:%g %a' "$dir")"; echo "$dir: $owner"; test "$owner" = "0:0 755"; \
     done; \
@@ -1168,7 +1192,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     echo "plugin files not root's alone: ${plugins:-none}"; test -z "$plugins"; \
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
-    git="$(command -v git)"; echo "git: $git"; test "$git" = /usr/bin/git; \
+    git="$(command -v git)"; echo "git: $git"; test "$git" = /opt/legion/bin/git; /usr/bin/git --version; \
+    jj="$(command -v jj)"; echo "jj: $jj"; test "$jj" = /opt/legion/bin/jj; /usr/local/bin/jj --version; \
+    hook="$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push)"; echo "pre-push hook: $hook"; \
+    test "$hook" = "0:0 755"; test -x /opt/legion/githooks/pre-push; \
     flock="$(command -v flock)"; echo "flock: $flock"; test "$flock" = /usr/bin/flock; \
     nc="$(command -v nc)"; echo "nc: $nc"; test "$nc" = /usr/bin/nc; \
     legion="$(command -v legion)"; echo "legion: $legion"; test "$legion" = /opt/legion/bin/legion; \

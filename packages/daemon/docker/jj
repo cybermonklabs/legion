@@ -1,0 +1,81 @@
+#!/bin/sh
+# The jj first on a pod's PATH, /opt/legion/bin/jj (worker.Dockerfile). Every command runs the
+# real jj, /usr/local/bin/jj, with the arguments it was given; what this wrapper adds is one
+# check, and only before a `jj git push`.
+#
+# jj makes a push by shelling out to the `git` its PATH names (`git -c core.fsmonitor=false …
+# --git-dir <dir> push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so Legion's git
+# wrapper is what puts the leak guard's pre-push hook in front of jj's push as well as a role's
+# own. This checks that the git jj would run is that wrapper: the `git` on PATH, and jj's own
+# `git.executable-path`, which jj runs in place of a bare `git` when a configuration file sets it.
+# A jj that would run any other git is refused here, in the shared check's own setup-error words
+# and with its status, rather than pushing text nobody checked.
+#
+# The check is the whole of this wrapper. It reads no ref, no commit and no other text: jj hands
+# git exact refspecs, and the git wrapper does the whole job from there.
+set -u
+
+real=/usr/local/bin/jj
+wrapper=/opt/legion/bin/git
+
+# jj's subcommand pair, past jj's global options, which clap takes before a subcommand as well as
+# after one. The options whose value is the next argument are `jj --help`'s Global Options; the
+# attached spellings (`-R<path>`, `--repository=<path>`) are one word and need no skip. The
+# repository is kept because the configuration read below must be the one this command would
+# make: a repository's own configuration file can name a `git.executable-path` of its own.
+repository=
+takes=
+first=
+second=
+for arg; do
+  if [ -n "$takes" ]; then
+    if [ "$takes" = repository ]; then
+      repository=$arg
+    fi
+    takes=
+    continue
+  fi
+  case "$arg" in
+    -R | --repository) takes=repository ;;
+    --at-operation | --at-op | --color | --config | --config-file | --config-toml) takes=other ;;
+    -R?*) repository=${arg#-R} ;;
+    --repository=*) repository=${arg#--repository=} ;;
+    -*) ;;
+    *)
+      if [ -z "$first" ]; then
+        first=$arg
+      else
+        second=$arg
+        break
+      fi
+      ;;
+  esac
+done
+
+if [ "$first" != git ] || [ "$second" != push ]; then
+  exec "$real" "$@"
+fi
+
+found=$(command -v git) || found=
+if [ "$found" != "$wrapper" ]; then
+  echo "LEAK CHECK SETUP ERROR: the push: the git on PATH is ${found:-no git at all}, not Legion's git wrapper $wrapper, so jj's push would reach the remote with no leak check" >&2
+  exit 2
+fi
+
+# --ignore-working-copy because this is a read: a configuration read must not snapshot the
+# working copy of the repository the push is about. jj exits non-zero when nothing sets the
+# value, which is the usual case and means the bare `git` above.
+if [ -n "$repository" ]; then
+  configured=$("$real" -R "$repository" --ignore-working-copy config get git.executable-path 2>/dev/null) || configured=
+else
+  configured=$("$real" --ignore-working-copy config get git.executable-path 2>/dev/null) || configured=
+fi
+case "$configured" in
+  "" | git | "$wrapper") ;;
+  *)
+    echo "LEAK CHECK SETUP ERROR: the push: jj's git.executable-path is $configured, not git or Legion's git wrapper $wrapper, so jj's push would reach the remote with no leak check" >&2
+    exit 2
+    ;;
+esac
+
+exec "$real" "$@"
