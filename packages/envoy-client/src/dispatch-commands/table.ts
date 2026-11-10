@@ -11,6 +11,7 @@ import {
   commentCommand,
   messageCommand,
   resolveCommentCommand,
+  sendToAgentCommand,
   suggestCommand,
 } from "./conversation";
 import {
@@ -84,6 +85,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_suggest: acting(suggestCommand),
   dispatch_resolve_comment: acting(resolveCommentCommand),
   dispatch_message: acting(messageCommand),
+  dispatch_send_to_agent: acting(sendToAgentCommand),
   dispatch_doc_edit: acting(docEditCommand),
   dispatch_doc_read: acting(docReadCommand),
   dispatch_request_approval: acting(requestApprovalCommand),

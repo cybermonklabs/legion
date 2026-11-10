@@ -228,12 +228,26 @@ stops authenticating at its next call, and its next login is refused.
 An account on that list also registers which pod may write under which session name
 (`POST /v1/oauth/exchange/pod-sessions`), which is how a deployment's daemon tells the broker that
 a pod it has just started owns an issue's session. That is a second authority the list carries, so
-weigh it before listing an account: a listed account can register any pod of any account the token
-exchange serves, except the pod the caller itself runs in, which is refused
-`403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row would pick the session name it writes
-under, including a name a sibling pod holds. So listing a session account, which the paragraph
-above describes, gives every pod of it that second authority over every other pod the exchange
-serves, and a deployment that does not want it lists no such account.
+weigh it before listing an account. The request carries the pod's own projected ServiceAccount
+token, which the broker verifies against the cluster's issuer as it verifies an enrolling pod's,
+bar the one check it does not make here, that the token names a pod: such a token verifies and
+the exchange then refuses the registration `400 POD_NOT_BOUND`. So a listed account registers a
+pod whose token it holds and no other. A caller whose own token names a pod may not register
+that pod, `403 POD_CALLER_IS_THE_POD` — a pod that wrote its own row would pick the session
+name it writes under, including a name a sibling pod holds. The refusal reads the caller's own
+token, so it never holds a caller whose token names no pod, such as one
+`kubectl create token` mints: whoever mints one for a listed account registers every pod of it
+whose token they hold, the pod they run in included. So listing a session account, which the
+paragraph above describes, does not in itself give its pods that authority over one another:
+the authority follows the token, so a pod reaches another only while it holds that pod's own
+token, and a pod holding its own alone reaches nothing here, since its own is the one the
+refusal takes away. A pod that does hold a sibling's registers it, which is how one generation
+of a rollout registers the next. The authority goes no wider than the cluster's own rights to
+mint or read a pod's token — the same kind of access over that pod's account as the paragraph
+below names over a listed one — and it stops short of them: the caller needs a
+`BROKER_SERVICE_LOGINS` token of its own, and the pod's
+account must be one `BROKER_EXCHANGE_ACCOUNTS` lists, `403 POD_ACCOUNT_NOT_LISTED`. A
+deployment that does not want that lists no such account.
 A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.

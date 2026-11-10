@@ -1,5 +1,5 @@
 {
-  "commands": 32,
+  "commands": 33,
   "refusals": 29,
   "runs": [
     {
@@ -1663,6 +1663,23 @@
       "outcome": "result",
       "text": [
         "No results for \"astrolabe\"."
+      ]
+    },
+    {
+      "tool": "dispatch_send_to_agent",
+      "call": "valid",
+      "args": {
+        "body": "DSP-1: the rota is nowhere written down. Please write it up.",
+        "delivery": "aside",
+        "session": "<id>"
+      },
+      "requests": [],
+      "outcome": "error",
+      "text": [
+        "dispatch send-to-agent was not called: 1 problem",
+        "- issue is required; supply issue or set LEGION_ISSUE",
+        "- Allowed flags: --session, --session-file, --body, --body-file, --delivery, --delivery-file, --in-reply-to, --in-reply-to-file, --help, --dry-run",
+        "- Example: dispatch send-to-agent --session 01234567-0000-4000-8000-000000000001 --body 'DSP-1: the rota is nowhere written down. Please write it up.' --delivery aside"
       ]
     },
     {

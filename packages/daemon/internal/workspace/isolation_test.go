@@ -23,9 +23,10 @@ import (
 // Every agent of a tree writes the shared clone, so everything below is what a tree agent can plant
 // there for the next provisioning of the tree, and what provisioning's credentialed clone and fetch
 // — the tmux runtime's, which name the token file in their environment — must never obey. On tmux
-// that is defence, not a boundary (config.go); a pod's boundary, two init containers of which only
-// the one that touches no tree volume holds the token, is proven by
-// internal/runtime/sandbox/boundary_test.go.
+// that is defence, not a boundary (config.go); a pod's boundary, two init containers — three with
+// a skills_repository — of which only the ones that touch no tree volume hold the token, is
+// proven by internal/runtime/sandbox/boundary_test.go, and with a skills_repository by
+// TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite (manifest_test.go).
 
 // gitHooks is every hook githooks(5) names; a planted script under each name records whether git
 // ran it.

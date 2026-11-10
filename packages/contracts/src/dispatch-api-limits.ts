@@ -293,6 +293,20 @@ export const RECEIPT_TIMEOUT_CAUSE =
  * `search-answer.ts` compares against cannot drift apart. */
 export const SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE = "embedder_unavailable";
 
+/** The operator forms `GET /api/v1/search` reads in the words a person wrote: a `"phrase"` in
+ *  quotes, the `OR` between two words, and a `-word` the search leaves out. Each is generated
+ *  into Go as `contracts.SearchOperatorPhrase`, `SearchOperatorOr` and `SearchOperatorExclude`,
+ *  so the string Dispatch answers and the string a client reads it by cannot drift apart. */
+export const SEARCH_OPERATOR_PHRASE = "phrase";
+export const SEARCH_OPERATOR_OR = "or";
+export const SEARCH_OPERATOR_EXCLUDE = "exclude";
+export const SEARCH_OPERATORS = [
+  SEARCH_OPERATOR_PHRASE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_EXCLUDE,
+] as const;
+export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
+
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
  *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
  *  replied in its ask's thread, replied in a comment thread it wrote in, commented on a document it

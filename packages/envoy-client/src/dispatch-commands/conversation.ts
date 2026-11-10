@@ -1,4 +1,4 @@
-import type { Artifact, CreateCommentInput } from "@legion/contracts";
+import type { Artifact, CreateCommentInput, MessageDeliveryMode } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
 import {
   dispatchChildRef,
@@ -173,6 +173,13 @@ export async function suggestCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** How a posted message points the agent at the conversation it was written into. The two
+ *  writes that post one - a reply on an issue, a message to a session - say the same sentence,
+ *  and say it of their own message. */
+function conversationReadBack(messageId: string): string {
+  return `${commandLine("dispatch_read", { message: messageId })} reads the conversation back.`;
+}
+
 /** `dispatch message`: post on the issue's conversation, or answer a direct message. */
 export async function messageCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, owner, pictures, postWithPictures, issue } = context;
@@ -233,7 +240,7 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
         details: { message: reply.id, in_reply_to: inReplyTo, posted: false },
       };
     }
-    const readBack = `${commandLine("dispatch_read", { message: inReplyTo })} reads the conversation back.`;
+    const readBack = conversationReadBack(inReplyTo);
     const parent = reply.in_reply_to ?? undefined;
     const follows = parent === inReplyTo ? undefined : parent;
     return {
@@ -271,6 +278,42 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
       issue: issueKey,
       message: message.id,
       ...(message.advice === undefined ? {} : { advice: message.advice }),
+    },
+  };
+}
+
+/** `dispatch send-to-agent`: one message into a session's own conversation, which stands on no
+ *  issue, so the call names the session rather than an owner. */
+export async function sendToAgentCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client } = context;
+  const session = stringArg(args, "session");
+  const inReplyTo = optionalString(args, "in_reply_to");
+  // The route answers once the first attempt has settled, so its state is what says whether
+  // the session has the words or whether Dispatch is still trying.
+  const message = await client.agentMessage(session, {
+    body: stringArg(args, "body"),
+    delivery: stringArg(args, "delivery") as MessageDeliveryMode,
+    ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
+  });
+  // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
+  // either way there is no attempt to read, which the `undefined` branch below already says.
+  const attempt = message.deliveries?.at(-1);
+  const readBack = conversationReadBack(message.id);
+  const arrival =
+    attempt === undefined
+      ? "Dispatch recorded no delivery attempt for it"
+      : attempt.state === "failed"
+        ? `its delivery failed: ${attempt.error ?? "the listener gave no reason"}`
+        : attempt.state === "pending"
+          ? "its delivery is still on its way"
+          : `it reached that session as ${attempt.delivery}`;
+  return {
+    text: `Sent message ${message.id} to session ${session}; ${arrival}. ${readBack}`,
+    details: {
+      session,
+      message: message.id,
+      ...(attempt === undefined ? {} : { delivery: attempt.state }),
+      ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
     },
   };
 }
