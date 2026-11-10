@@ -296,10 +296,13 @@ function FinishedIssues({
   const max = Math.max(1, ...rows.map((row) => row.hours));
   return (
     <section aria-label="Finished issues" className={SECTION} data-legion-section="finished">
-      <SectionTitle
-        info="The issues that finished in the window. Time per phase does not include a root's time while it waits on its children."
-        title="Finished issues"
-      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <SectionTitle
+          info="The issues that finished in the window. Time per phase does not include a root's time while it waits on its children."
+          title="Finished issues"
+        />
+        <SegmentedToggle label="Bar scale" onChange={setMode} options={BAR_MODES} value={mode} />
+      </div>
       <IssueGrid<FinishedRow>
         columns={[
           "key",
@@ -315,17 +318,7 @@ function FinishedIssues({
           },
           {
             id: "phase_hours",
-            header: (
-              <span className="flex items-center gap-2">
-                Time per phase
-                <SegmentedToggle
-                  label="Bar scale"
-                  onChange={setMode}
-                  options={BAR_MODES}
-                  value={mode}
-                />
-              </span>
-            ),
+            header: "Time per phase",
             value: (row) => row.hours,
             cell: (row) => <PhaseHoursBar hours={row.phases} max={max} mode={mode} />,
             filter: false,
