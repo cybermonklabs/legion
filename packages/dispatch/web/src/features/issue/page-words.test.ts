@@ -29,6 +29,7 @@ import {
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   NODE_TYPES,
+  type NodeState,
   nodeFactLabel,
   nodeStateWord,
   nodeStateWords,
@@ -158,7 +159,6 @@ test("a type the model gives no state has no state words, and the ask, the check
       continue;
     }
     expect(nodeStateWords(type)).toBeUndefined();
-    expect(nodeStateWord(type, "open")).toBeUndefined();
   }
   expect(Object.keys(NODE_STATE_WORDS.ask).sort()).toEqual([...choicesOf("ask", "state")].sort());
   expect(Object.keys(NODE_STATE_WORDS.check).sort()).toEqual([
@@ -174,10 +174,22 @@ test("a type the model gives no state has no state words, and the ask, the check
     "waiting_review",
     "yours",
   ]);
-  expect(nodeStateWord("check", "no-result")).toBe("No result");
-  expect(nodeStateWord("ask", "answered")).toBe("Answered");
-  expect(nodeStateWord("decision", "waiting_review")).toBe("Waiting for your review");
-  expect(nodeStateWord("check", "retired")).toBeUndefined();
+  expect(nodeStateWord("no-result")).toBe("No result");
+  expect(nodeStateWord("answered")).toBe("Answered");
+  expect(nodeStateWord("waiting_review")).toBe("Waiting for your review");
+});
+
+// A row draws its node's state through `nodeStateWord`, which takes the state alone, so no
+// state token may belong to two types under two words. Every state of every type is held to
+// the one answer here: the day a type declares a token another already has, this fails rather
+// than a row drawing the other type's word.
+test("every state of every type is drawn by the one word the page declares for it", () => {
+  const byType: Readonly<Record<string, Readonly<Record<string, string>>>> = NODE_STATE_WORDS;
+  for (const [type, words] of Object.entries(byType)) {
+    for (const [state, word] of Object.entries(words)) {
+      expect(nodeStateWord(state as NodeState), `${type}'s ${state}`).toBe(word);
+    }
+  }
 });
 
 test("no two types share a glyph token, and no two states of one surface share one", () => {

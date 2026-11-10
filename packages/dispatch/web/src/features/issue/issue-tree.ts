@@ -11,7 +11,7 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
-import type { GapKind, NodeType } from "./page-words";
+import type { GapKind, NodeState, NodeType } from "./page-words";
 import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
 
 /**
@@ -136,8 +136,9 @@ export interface TreeNode {
   /** Whether the decision this node holds was replaced, which folds its branch to one line
    *  (R1). */
   readonly replaced: boolean;
-  /** How it stands, as the model's own token, for a type the model gives a state. */
-  readonly state?: string;
+  /** How it stands, for a type the model gives a state: one of the states the page has a word
+   *  for, so a row draws that word and never the token (`NodeState`, R21). */
+  readonly state?: NodeState;
   /** The node's own whole text; `""` where the model holds none. */
   readonly text: string;
   /** Whether this placement is a transclusion rather than the node's edited place. */

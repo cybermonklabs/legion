@@ -91,11 +91,17 @@ export function IssueHeader({
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const workRow = { isClosed, issue, onOpenField: setEditingField, writes };
 
+  // Each action is named by the words it shows, which is the name the control carries: a voice
+  // user who says what they read presses it (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+  // Reopen reads "Reopen into Backlog", so that whole sentence is its name - under the old
+  // name "Reopen issue" the words and the name said two different things, and the axe lane
+  // never saw it because the actions are closed while it scans. The rail's old parent button
+  // said "None" under the name "Set parent issue" and had to spell the mismatch away as
+  // "None, set parent issue"; here the control says "Set parent issue" itself.
   const actions: IssueAction[] = [
     isClosed
       ? {
           disabled: updateIssue.isPending,
-          name: CONTROL_LABELS.reopen_issue,
           run: () => drafts.requestStatusSubmit("backlog"),
           text:
             pendingStatus === "backlog"
@@ -104,17 +110,11 @@ export function IssueHeader({
         }
       : {
           disabled: updateIssue.isPending,
-          name: CONTROL_LABELS.close_issue,
           run: () => drafts.requestStatusSubmit("done"),
           text: pendingStatus === "done" ? CONTROL_LABELS.saving_close : CONTROL_LABELS.close_issue,
         },
-    // The name is the words on the control, so a voice user who says what the control reads can
-    // press it (WCAG 2.5.3, axe's `label-content-name-mismatch`). The rail's old button said
-    // "None" under the name "Set parent issue" and had to spell the mismatch away as
-    // "None, set parent issue"; here the control says "Set parent issue" itself.
     {
       disabled: isClosed,
-      name: issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent,
       run: () => setEditingField("parent"),
       text: issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent,
     },

@@ -70,10 +70,9 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         >
           {actions.map((action) => (
             <button
-              aria-label={action.name}
               className={`min-h-11 rounded-lg px-2 py-2 text-left text-sm font-medium ${textSecondaryOnSurface} ${secondaryButtonDisabledText}`}
               disabled={action.disabled}
-              key={action.name}
+              key={action.text}
               onClick={() => {
                 setOpen(false);
                 action.run();
@@ -90,13 +89,12 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
   );
 }
 
-/** One action of the issue: the name the control carries, the words it shows a reader, and what
- *  it does. The name is the old header's, so nothing a reader knew to look for is renamed. */
+/** One action of the issue: the words the control shows a reader, and what it does. The words
+ *  are its name too - the control carries no `aria-label` - so a voice user who says what it
+ *  reads presses it (WCAG 2.5.3, axe's `label-content-name-mismatch`). Reopening says which
+ *  status it reopens into, where a tooltip used to (R11), and that whole sentence is the name. */
 export interface IssueAction {
   readonly disabled?: boolean;
-  readonly name: string;
   readonly run: () => void;
-  /** What the control says, which may say more than its name: reopening says which status it
-   *  reopens into, where a tooltip used to (R11). */
   readonly text: string;
 }

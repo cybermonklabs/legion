@@ -6,10 +6,14 @@ import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { checkFacts, resultFacts } from "./check-facts";
 import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact } from "./issue-tree";
 import {
+  type AskState,
+  type CheckState,
   coverageGapKind,
   type DecisionState,
   type GapKind,
+  NODE_STATE_WORDS,
   NODE_TYPES,
+  type NodeState,
   type NodeType,
 } from "./page-words";
 
@@ -54,7 +58,7 @@ export interface Draft {
   question: boolean;
   reference?: string;
   replaced: boolean;
-  state?: string;
+  state?: NodeState;
   text: string;
   type: NodeType;
   /** Whether this decision waits for the reader's review (`Decision.waiting_review`). */
@@ -409,11 +413,20 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
     const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.ask));
     draft.author = ask.author;
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
-    draft.state = ask.state;
+    draft.state = askState(ask.state);
     draft.text = ask.question;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
   }
+}
+
+/** The ask state `token` names, or `undefined` for a token the page declares no word for: a
+ *  state nobody named is drawn as no state rather than as the server's own token (R21). The
+ *  server types the field as a plain string (`Ask.state`), and the three the page draws are
+ *  the `state` choices of the `ask` block (`NODE_STATE_WORDS.ask`). */
+function askState(token: string): AskState | undefined {
+  const words: Readonly<Record<string, string | undefined>> = NODE_STATE_WORDS.ask;
+  return words[token] === undefined ? undefined : (token as AskState);
 }
 
 /** One turn of the conversation as the tree holds it: a comment and a message are the same row
@@ -634,7 +647,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * judged it. It is the one reading of a check's state the page has: the Checks preset draws
  * the node, and the five states are told apart by a word and a shape (R15, R21).
  */
-function checkState(results: readonly { currency?: string; verdict: string }[]): string {
+function checkState(results: readonly { currency?: string; verdict: string }[]): CheckState {
   const latest = results[0];
   if (latest === undefined) return "no-result";
   if (latest.currency === undefined || latest.currency === "unknown") return "unmarked";

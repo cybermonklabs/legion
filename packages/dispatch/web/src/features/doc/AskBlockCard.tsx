@@ -16,7 +16,7 @@ import { AskCard } from "../inbox/AskCard";
 import { AskCompletionCard } from "../inbox/AskCompletionCard";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
-import { nodeStateWord } from "../issue/page-words";
+import { nodeStateWords } from "../issue/page-words";
 import { AgentName } from "../refs/AgentName";
 import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -220,7 +220,7 @@ function CopiedFromLink({
   state: string;
 }): ReactNode {
   const route = parseNodeReference(copied.document);
-  const there = `${nodeStateWord("ask", state)?.toLowerCase() ?? "closed"} there`;
+  const there = `${nodeStateWords("ask")?.[state]?.toLowerCase() ?? "closed"} there`;
   return (
     <span className="inline-flex items-center gap-x-2" data-dispatch-ask-copied-from={copied.ask}>
       <span aria-hidden="true">·</span>

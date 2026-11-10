@@ -556,15 +556,49 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue, its collaborators and its project list only": {
+  // A claim's holder is drawn on the issue itself and on every ancestor's children section
+  // (`IssueChildren.tsx`), and the payload names no ancestors, so every loaded issue detail
+  // refreshes - `parent` and `grandparent` among them, and `unrelatedDetail` with them, which
+  // is the breadth the fallback already costs an issue write whose event names none. The
+  // rollups, the lists and the Inbox are untouched, which is what the spares hold it to.
+  "a claim refreshes every loaded issue detail, because a parent draws its children's holders": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["collaborators", "detail", "log", "projectList"],
+    refreshes: [
+      "collaborators",
+      "detail",
+      "grandparent",
+      "log",
+      "parent",
+      "projectList",
+      "referencesTab",
+      "unrelatedDetail",
+    ],
     spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+  },
+  // A release moves the same holder, and makes nobody a collaborator: the collaborators read
+  // is the claim's alone (`changesCollaborators`).
+  "a release refreshes every loaded issue detail, as a claim does": {
+    event: event("issue.released", { key: "CORE-1", reason: "released" }),
+    refreshes: [
+      "detail",
+      "grandparent",
+      "log",
+      "parent",
+      "projectList",
+      "referencesTab",
+      "unrelatedDetail",
+    ],
+    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+  },
+  "a deploy refreshes the issue's own reads alone": {
+    event: event("issue.deployed", { number: 7, repo: "acme/widgets" }),
+    refreshes: ["detail", "log", "projectList"],
+    spares: ["parent", "grandparent", "unrelatedDetail", "summary", "pinned", "inbox"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {

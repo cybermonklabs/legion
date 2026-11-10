@@ -78,13 +78,19 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW) ?? [])],
     rows: tree.rows.filter((row): row is NodeRow => row.kind === "node"),
   });
-  /** Which row the reader is on, or -1 when the focus is not on one. */
+  /** Which row the reader is on, or -1 when the focus is not on one. A control inside a row
+   *  answers with that row: the keys that move the reader are hers wherever she stands in it. */
   const at = (elements: readonly HTMLElement[]): number => {
     const active = document.activeElement;
     return active === null
       ? -1
       : elements.findIndex((row) => row === active || row.contains(active));
   };
+  /** Which row holds the focus itself, or -1 when a control inside one holds it instead: the
+   *  row is the reader's place in the tree, and a control in it - a chip, Keep, Change, the
+   *  form that sends a change - is a thing of its own, which takes its own keys (R9). */
+  const onRowItself = (elements: readonly HTMLElement[]): number =>
+    elements.indexOf(document.activeElement as HTMLElement);
   const inTheTree = (): boolean => {
     const active = document.activeElement;
     return active !== null && tree.container.current?.contains(active) === true;
@@ -320,20 +326,25 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // The caret goes into the node's own text where it lives, which is its document's block
       // drawn in this row (`IssueTree`'s `onEdit`); Escape below brings the reader back to
       // this row and gives the document back to whatever was drawing it.
+      //
+      // Only from the row itself. Enter on a control inside the row is that control's own -
+      // the form that sends a change is pressed by it (`DecisionActions.tsx`), a chip is
+      // followed by it - and a key that took Enter from them would leave a reader who reached
+      // them with no way to press them at all (WCAG 2.1.1).
       id: "tree-edit",
       keys: "Enter",
       label: "Put the caret in the focused node",
       palette: false,
       run: () => {
         const { elements, rows } = drawn();
-        const on = at(elements);
+        const on = onRowItself(elements);
         const row = rows[on];
         if (row === undefined) return;
         tree.onReport("");
         caretFrom.current = elements[on] ?? null;
         tree.onEdit(rowKeyOf(row), row.node);
       },
-      when: () => at(drawn().elements) !== -1,
+      when: () => onRowItself(drawn().elements) !== -1,
     },
     {
       // Escape leaves the caret for the row it came from, and leaves the tree from the row

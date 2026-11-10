@@ -4,6 +4,14 @@ import type { Artifact } from "../../api/types";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { DocumentStage } from "./document-stage";
+import { NODE_TYPE_NAMES, PRESET_NAMES, type Preset } from "./page-words";
+
+/** The preset each of the two documents belongs to, which is what names its panel: the Checks
+ *  preset keeps the verification document open, and the Plan preset the plan. */
+const PRESET_OF: Readonly<Record<"plan" | "verification", Preset>> = {
+  plan: "plan",
+  verification: "checks",
+};
 
 /** One of the two role-document panels, Checks and Plan. They differ only in the address they
  *  answer and the component that frames the document; the panel itself, the lazy-mount guard
@@ -15,7 +23,12 @@ import { DocumentStage } from "./document-stage";
  *
  *  The document is drawn on its own stage (`document-stage.tsx`), and this panel is where the
  *  stage rests while no row of the tree is being edited in it, so the preset's toolbar and a
- *  row's caret both reach the one editor the page has for it. */
+ *  row's caret both reach the one editor the page has for it.
+ *
+ *  It is a named panel and no `tabpanel`: the page has no tablist for one to belong to, and
+ *  the name it carried was the id of a tab control nothing renders any more, which left the
+ *  panel announced with no name at all (R21). The name is the preset's own, with what the
+ *  panel holds. */
 export function RoleDocumentPanel({
   Tab,
   activated,
@@ -69,12 +82,11 @@ export function RoleDocumentPanel({
       </>
     );
   return (
-    <div
+    <section
       aria-hidden={!active}
-      aria-labelledby={`issue-${tab}-tab`}
+      aria-label={`${PRESET_NAMES[PRESET_OF[tab]]} ${NODE_TYPE_NAMES.document}`}
       hidden={!active}
       id={`issue-${tab}-panel`}
-      role="tabpanel"
     >
       {!activated ? null : Tab === undefined ? (
         document
@@ -83,6 +95,6 @@ export function RoleDocumentPanel({
           {document}
         </Tab>
       )}
-    </div>
+    </section>
   );
 }

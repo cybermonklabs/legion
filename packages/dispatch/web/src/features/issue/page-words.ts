@@ -134,11 +134,25 @@ export function nodeStateWords(type: NodeType): Readonly<Record<string, string>>
 }
 
 /**
- * The word for `state` of a node of `type`, or `undefined` when the type has no state or the
- * state is not one the module declares.
+ * How a node of a type the model gives a state stands: one of the tokens `NODE_STATE_WORDS`
+ * declares a word for. A node's own `state` is this and never a plain string
+ * (`issue-tree.ts`'s `TreeNode`), so a state the page has no word for cannot reach a row and
+ * no row draws a schema token where a word belongs (R21): a state the model adds is a compile
+ * error here until it is named.
  */
-export function nodeStateWord(type: NodeType, state: string): string | undefined {
-  return nodeStateWords(type)?.[state];
+export type NodeState = AskState | CheckState | DecisionState;
+
+/** The word for every state, in one table. No token is a state of two types, which
+ *  `page-words.test.ts` holds this to, so one table answers for all three. */
+const STATE_WORDS: Readonly<Record<NodeState, string>> = freeze({
+  ...NODE_STATE_WORDS.ask,
+  ...NODE_STATE_WORDS.check,
+  ...NODE_STATE_WORDS.decision,
+});
+
+/** The page's word for `state`. Total: every state a node can be in has one. */
+export function nodeStateWord(state: NodeState): string {
+  return STATE_WORDS[state];
 }
 
 /**

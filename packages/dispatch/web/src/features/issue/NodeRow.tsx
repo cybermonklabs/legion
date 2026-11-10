@@ -43,9 +43,15 @@ import {
  * the focus that opens it, never the pointer, and no element of the row carries a `title`, since
  * a reader on a phone or on the keyboard never sees one (R2).
  *
- * The row is a `treeitem` of the tree's one tab stop: the focused row is the only one that takes
- * the focus, and the twisty and the pin inside it take none, so Tab leaves the tree rather than
- * walking its rows. The key bindings are `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s.
+ * The row is a `treeitem` of the tree's one tab stop: the focused row is the only row that takes
+ * the focus, so Tab from outside enters the tree once and Tab past the row the reader is on
+ * leaves it. The controls inside a row are in the tab order only while that row holds the
+ * focus: Keep, Change and a chip's link are things a reader presses rather than moves to, and
+ * no key presses them, so Tab reaches them from the row they are on (WCAG 2.1.1) and the tree
+ * at rest is still the one stop (R9). A row pinned open while the reader stands elsewhere
+ * lends nothing to the tab order; its controls come back the moment the row takes the focus.
+ * The twisty and the pin keep no tab stop at all, because the arrow keys and `o` are what
+ * work them. The key bindings are `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s.
  */
 export function NodeRow({
   artifact,
@@ -65,6 +71,7 @@ export function NodeRow({
   onPin,
   onToggle,
   pinned,
+  rowKey,
   tabStop,
 }: {
   /** The artifact this row's node is, for a document or an image: its body opens that
@@ -101,13 +108,19 @@ export function NodeRow({
   onPin: () => void;
   onToggle: () => void;
   pinned: boolean;
+  /** What tells this row from every other, including another placement of the same node
+   *  (`rowKeyOf`): the row the caret was taken from is found by it (`useNodeEditing.ts`). */
+  rowKey: string;
   /** Whether this row is the tree's one tab stop: the focused row, or the tree's first row
    *  before the reader has touched it. */
   tabStop: boolean;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const first = firstLineOf(node.text);
-  const state = node.state === undefined ? undefined : nodeStateWord(node.type, node.state);
+  const state = node.state === undefined ? undefined : nodeStateWord(node.state);
+  // Whether the controls of this row are in the tab order, which they are while the row holds
+  // the focus and at no other time (R9, the comment above).
+  const inside = focused ? 0 : -1;
   const stateGlyphs: Readonly<Record<string, Readonly<Record<string, string>>>> =
     GLYPH_TOKENS.states;
   const stateGlyph = node.state === undefined ? undefined : stateGlyphs[node.type]?.[node.state];
@@ -149,6 +162,7 @@ export function NodeRow({
       data-node-row=""
       data-node-state={node.state}
       data-node-type={node.type}
+      data-row-key={rowKey}
       onFocus={onFocus}
       ref={row}
       role="treeitem"
@@ -190,7 +204,7 @@ export function NodeRow({
         {/* The chips and the gaps are the body's on a one-line row: each is a reference or a
             sentence, neither of which fits beside the node's own words on a phone's 258 px
             line, and a row cut to hold them would say less than it does now (R17). */}
-        {oneLine ? null : <NodeEdges node={node} />}
+        {oneLine ? null : <NodeEdges node={node} tabIndex={inside} />}
         {/* A row whose own twisty is closed says how many nodes it holds. A branch below the
             drawn levels says it on the one line it folds to, under this row, so the count is
             drawn once however the nodes came to be out of sight. */}
@@ -218,6 +232,7 @@ export function NodeRow({
           node={node}
           onPin={onPin}
           pinned={pinned}
+          tabIndex={inside}
         />
       ) : null}
     </div>
@@ -256,14 +271,19 @@ function Twisty({ expanded, onToggle }: { expanded?: boolean; onToggle: () => vo
 /** Every edge of the node that is not the spine, and every gap on it: the chips naming what it
  *  also sits under and what it points at, and the one word each gap is known by. Drawn on the
  *  row where the row wraps, and in the body where the row is one line (R17). */
-function NodeEdges({ node }: { node: TreeNode }): ReactNode {
+function NodeEdges({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): ReactNode {
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip chip={chip} key={`also:${chip.ref}`} label={CONTROL_LABELS.also_under} />
+        <Chip
+          chip={chip}
+          key={`also:${chip.ref}`}
+          label={CONTROL_LABELS.also_under}
+          tabIndex={tabIndex}
+        />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} key={chip.ref} />
+        <Chip chip={chip} key={chip.ref} tabIndex={tabIndex} />
       ))}
       {node.gaps.map((gap) => (
         <span
@@ -295,7 +315,17 @@ function NodeEdges({ node }: { node: TreeNode }): ReactNode {
  * ("the names come last and all at once"): until the read answers there is nothing else to say,
  * and the reference is still the reference.
  */
-function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
+function Chip({
+  chip,
+  label,
+  tabIndex,
+}: {
+  chip: NodeChip;
+  label?: string;
+  /** Whether the link is in the tab order, which it is while the row it sits on holds the
+   *  focus: no key follows a chip, so Tab from the row is how a reader reaches one. */
+  tabIndex: 0 | -1;
+}): ReactNode {
   const target = parseNodeReference(chip.ref);
   const route = chip.gone ? undefined : target;
   // The target's own words, as the link a reader follows to it: a chip names a node the page
@@ -307,11 +337,12 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
       <span {...authorText}>{`${chip.name} `}</span>
     ) : (
       <>
-        {/* Out of the tab order, as every other control inside a row is: the tree is one tab
-            stop and its own keys move inside it (R9, `useTreeKeymap.ts`). */}
+        {/* In the tab order while this row holds the focus, and out of it otherwise: the tree
+            is one tab stop at rest and a reader standing on the row Tabs to its chips (R9,
+            WCAG 2.1.1, `useTreeKeymap.ts`). */}
         <Link
           className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
-          tabIndex={-1}
+          tabIndex={tabIndex}
           to={buildReferencePath(route)}
           {...authorText}
         >
@@ -365,6 +396,7 @@ function NodeBody({
   node,
   onPin,
   pinned,
+  tabIndex,
 }: {
   artifact?: Artifact;
   document?: Artifact;
@@ -376,6 +408,9 @@ function NodeBody({
   node: TreeNode;
   onPin: () => void;
   pinned: boolean;
+  /** Whether the controls in the body are in the tab order, which they are while the row
+   *  holds the focus (R9, WCAG 2.1.1; see `NodeRow` above). */
+  tabIndex: 0 | -1;
 }): ReactNode {
   const stage = useDocumentStage(editing, STAGE_IN_ROW);
   return (
@@ -399,7 +434,7 @@ function NodeBody({
       <NodeFacts facts={node.facts} />
       {edges && (node.alsoUnder.length > 0 || node.chips.length > 0 || node.gaps.length > 0) ? (
         <p className="flex flex-wrap items-baseline gap-1">
-          <NodeEdges node={node} />
+          <NodeEdges node={node} tabIndex={tabIndex} />
         </p>
       ) : null}
       {node.gaps.map((gap) => (
@@ -416,13 +451,18 @@ function NodeBody({
         </p>
       )}
       {node.type === "decision" ? (
-        <DecisionActions document={document} isClosed={isClosed} nodeReference={node.reference} />
+        <DecisionActions
+          document={document}
+          isClosed={isClosed}
+          nodeReference={node.reference}
+          tabIndex={tabIndex}
+        />
       ) : null}
       <p>
         <button
           className={`text-xs underline ${textMutedOnCanvas}`}
           onClick={onPin}
-          tabIndex={-1}
+          tabIndex={tabIndex}
           type="button"
           {...pageChrome}
         >

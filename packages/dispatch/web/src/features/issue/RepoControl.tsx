@@ -23,7 +23,9 @@ import { useIssueRepo } from "./useIssueRepo";
  * item. A failed read beside a resolved repository shows the same failure next to the picker. The
  * badge is hidden from assistive technology; the select's description names what it shows: the
  * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * `No repository`. Those same words are drawn beside the badge, because an inherited repository
+ * and one the issue sets of its own differ in the badge's colour alone otherwise, and a state is
+ * told by a word and a shape and never by colour (dispatch://INFRA-1196 R15).
  */
 export function RepoControl({
   disabled = false,
@@ -82,8 +84,8 @@ export function RepoControl({
   // Nothing resolved and no list to pick from: the failure is all there is to show.
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
-      // No `title`: `description` below says "inherited or the project's default" in words
-      // (dispatch://INFRA-1196 R21).
+      // No `title`: the words below say "inherited or the project's default" where a reader
+      // sees them (dispatch://INFRA-1196 R21).
       <span className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span
           aria-hidden="true"
@@ -129,6 +131,15 @@ export function RepoControl({
         {PROPERTY_LABELS.repository}:
       </span>
       {picker}
+      {/* Why the repository shown may not be the issue's own, in words: an inherited
+          repository and one the issue sets are told apart by the badge's colour alone
+          otherwise, which R15 forbids. Hidden from assistive technology because the select's
+          own description says the same thing, and nothing is said twice. */}
+      {resolvedRepo === null || repo !== null ? null : (
+        <span aria-hidden="true" className="text-xs" {...pageChrome}>
+          {CONTROL_LABELS.repository_inherited}
+        </span>
+      )}
       {loadFailure}
       {write.failed ? (
         <QueryError

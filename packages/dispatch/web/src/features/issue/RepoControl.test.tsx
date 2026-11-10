@@ -254,6 +254,26 @@ test("RepoControl describes the repository the issue resolves to", async () => {
   }
 });
 
+// A badge in another colour is no state: an inherited repository and one the issue sets of its
+// own are told apart by a word as well (dispatch://INFRA-1196 R15).
+test("RepoControl draws the words saying the repository is not the issue's own", async () => {
+  for (const [own, drawn] of [
+    [{ repo: null, resolvedRepo: "acme/widgets" }, 1],
+    [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, 0],
+    [{ repo: null, resolvedRepo: null }, 0],
+  ] as const) {
+    const { unmount } = renderControl({ ...own });
+    try {
+      await screen.findByRole("combobox", { name: "Repository of CORE-1" });
+      expect(
+        screen.queryAllByText("inherited or the project's default", { selector: "span" })
+      ).toHaveLength(drawn);
+    } finally {
+      unmount();
+    }
+  }
+});
+
 // With nothing resolved the control cannot tell from the issue whether its project maps any
 // repository, so it reads the mappings at once: one is there to pick, so the badge says so.
 test("RepoControl says No repository when nothing resolves in a project that maps one", async () => {

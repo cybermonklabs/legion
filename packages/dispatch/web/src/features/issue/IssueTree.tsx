@@ -149,9 +149,7 @@ export function IssueTree({
       setFocusedNode({
         ...(node.author === undefined ? {} : { author: node.author.id }),
         id: node.id,
-        ...(node.state === undefined
-          ? {}
-          : { state: nodeStateWord(node.type, node.state) ?? node.state }),
+        ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
         title: node.text === "" ? node.id : firstLineOf(node.text).line,
         type: node.type,
       });
@@ -215,12 +213,21 @@ export function IssueTree({
         closed: new Set([...held.closed].filter((one) => !above.includes(one))),
         deeper: new Set([...held.deeper, ...above]),
       }));
+      // Where the tree is read one node at a time, the only rows are the zoomed node and what
+      // it holds (`zoomedRows`), so a key that takes the reader to a node zooms to that node's
+      // parent: the node itself is then one of the rows, whatever the zoom was and however
+      // deep it sits. Leaving the zoom where it stood drew the second open question nowhere,
+      // and the key reported nothing because the row it asked for was never on the page.
       setZoom((held) =>
-        held === undefined || held === id || above.includes(held) ? held : root.id
+        zoomed
+          ? (above.at(-1) ?? root.id)
+          : held === undefined || held === id || above.includes(held)
+            ? held
+            : root.id
       );
       setWanted(id);
     },
-    [root]
+    [root, zoomed]
   );
   // Zooming to the issue is zooming out of everything, and it is held as the issue's own id
   // rather than as nothing chosen (`setZoom` below), so the zoomed tree stays on the whole

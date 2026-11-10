@@ -880,15 +880,21 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push(...issueWriteTargets(event, key, project));
     return targets;
   }
-  if (
-    event.type === "issue.claimed" ||
-    event.type === "issue.released" ||
-    event.type === "issue.deployed"
-  ) {
+  if (event.type === "issue.claimed" || event.type === "issue.released") {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
     // detail, the log, the project lists that render the claim, and the collaborators the
-    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
-    // is a line in the issue's log and nothing the lists or rollups read.
+    // branch above named. No rollup, ask count or component attachment moves with it.
+    //
+    // Every loaded detail, not this issue's alone: an ancestor's children section draws each
+    // child's holder (`IssueChildren.tsx`), and the claim payload names no ancestors
+    // (`IssueClaimEventPayload`), so there is no narrower target than the one an issue write
+    // with no ancestors already falls back to (`issueWriteTargets`). A parent left open beside
+    // the claimed child kept the old holder until a refocus otherwise.
+    targets.push({ queryKey: ["issue"] });
+    return targets;
+  }
+  if (event.type === "issue.deployed") {
+    // A deploy is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {

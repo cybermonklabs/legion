@@ -6,14 +6,14 @@ import { buildIssuePath, type IssueTab } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { bringOnScreen } from "./identity-block";
 import { presetPath } from "./issue-address";
-import { CONTROL_LABELS } from "./page-words";
+import { CONTROL_LABELS, PRESET_NAMES } from "./page-words";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
- * What the `issue` scope acts on. Every target is a control the header or the tablist already
- * renders, so a key does exactly what a click on it does. Scoping the lookup to
- * `[data-issue-header]` keeps a child issue's row in the Children tab - it carries the same
- * accessible names - out of reach.
+ * What the `issue` scope acts on. Every target is a control the identity block already renders,
+ * so a key does exactly what a click on it does. Scoping the lookup to `[data-issue-header]`
+ * keeps a child issue's row in the children section at the top of the body - it carries the
+ * same accessible names - out of reach.
  */
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
@@ -150,8 +150,13 @@ function keepPartOnScreen(found: HTMLElement, takes: HTMLElement, left: number):
  * Every chord the page binds, which is the `t` table of the spec's Design section. Each one
  * opens an address and puts the focus in what that address draws: the eight the page bound
  * before the redesign keep the addresses their tabs had, every one of which still resolves
- * (R19), and `t t` and `t f` are the two the table adds. The labels are the tabs' own, because
- * `?` names a key by where it goes and those addresses have not moved.
+ * (R19), and `t t` and `t f` are the two the table adds.
+ *
+ * A label names what the chord opens on this page, not the tab the address once was: there is
+ * no tablist and no Verification, Children, Artifacts or Collaborators tab to go to, so `?`
+ * would otherwise send a reader looking for five things the page does not have (R21). The
+ * preset names are the row's own (`PRESET_NAMES`), and the panel, the children section and the
+ * node menu are named as the page names them.
  */
 const CHORDS: readonly {
   keys: string;
@@ -164,66 +169,66 @@ const CHORDS: readonly {
 }[] = [
   {
     keys: "t t",
-    label: "Tree preset",
+    label: `Open the ${PRESET_NAMES.tree} preset`,
     part: "tree",
     path: (key) => presetPath(key, "tree"),
     tab: "tree",
   },
   {
     keys: "t s",
-    label: "Spec tab",
+    label: `Open the ${PRESET_NAMES.spec} preset`,
     part: "tree",
     path: (key) => presetPath(key, "spec"),
     tab: "spec",
   },
-  // `t v` is Activity and `t c` the Conversation, so Verification takes its checks' `k`; `t p`
+  // `t v` is the activity and `t c` the conversation, so the checks take their own `k`; `t p`
   // is free (`p` alone focuses the priority, which is a different scope of key).
   {
     keys: "t k",
-    label: "Verification tab",
+    label: `Open the ${PRESET_NAMES.checks} preset`,
     part: "tree",
     path: (key) => presetPath(key, "checks"),
     tab: "verification",
   },
   {
     keys: "t p",
-    label: "Plan tab",
+    label: `Open the ${PRESET_NAMES.plan} preset`,
     part: "tree",
     path: (key) => presetPath(key, "plan"),
     tab: "plan",
   },
   {
     keys: "t d",
-    label: "Decisions tab",
+    label: `Open the ${PRESET_NAMES.decisions} preset`,
     part: "tree",
     path: (key) => presetPath(key, "decisions"),
     tab: "decisions",
   },
   {
     keys: "t c",
-    label: "Conversation tab",
+    label: "Open the conversation in the panel",
     part: "margin",
     path: (key) => buildIssuePath({ key, kind: "conversation" }),
     tab: "conversation",
   },
-  // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
+  // `t a` opens the node menu and `l` is the issue's label editor, so the activity takes `t v`.
   {
     keys: "t v",
-    label: "Activity tab",
+    label: "Open the activity in the panel",
     part: "margin",
     path: (key) => buildIssuePath({ key, kind: "activity" }),
     tab: "activity",
   },
   {
     keys: "t h",
-    label: "Children tab",
+    label: "Open the issue's children",
     part: "children",
     path: (key) => buildIssuePath({ key, kind: "children" }),
     tab: "children",
   },
   {
     keys: "t a",
-    label: "Artifacts tab",
+    label: `Open the ${CONTROL_LABELS.other_nodes} menu`,
     part: "menu",
     path: (key) => buildIssuePath({ key, kind: "artifacts" }),
     tab: "artifacts",
@@ -233,7 +238,7 @@ const CHORDS: readonly {
   // the reader there.
   {
     keys: "t o",
-    label: "Collaborators tab",
+    label: "Open the collaborators in the panel",
     part: "margin",
     path: (key) => buildIssuePath({ key, kind: "collaborators" }),
     tab: "collaborators",

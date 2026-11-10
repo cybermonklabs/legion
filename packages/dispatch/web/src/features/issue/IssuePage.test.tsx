@@ -37,6 +37,7 @@ import type {
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
 import { HELP_LINES } from "./page-structure";
 
@@ -645,7 +646,9 @@ test("IssuePage shows subscribed agents with their title and their running state
     expect(within(subscribed).getAllByRole("listitem")).toHaveLength(2);
     const planner = within(subscribed).getByRole("link", { name: "Planner (live)" });
     expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
-    expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    // The panel raises no tooltip, so the session's own id is nowhere but in the link it
+    // follows and the mark the registry reads (R21, `IssueMargin.tsx`'s `NoTooltips`).
+    expect(planner.closest("[title]")).toBeNull();
     expect(within(subscribed).getByRole("link", { name: "Historical (offline)" })).toBeDefined();
     const states = () =>
       [...subscribed.querySelectorAll("[data-agent-name]")].map((agent) => [
@@ -684,9 +687,16 @@ test("IssuePage disables Unsubscribe and explains why for a subscriber reachable
 
   try {
     const subscribed = await openSubscribedAgents(1);
-    expect(within(subscribed).getByText("via notifications.dispatch.>")).toBeDefined();
+    // Why Unsubscribe is refused, in words: a disabled control takes no focus and raises no
+    // tooltip, so the `title` it carried reached nobody (R21).
+    expect(
+      within(subscribed).getByText(
+        "via notifications.dispatch.>, which covers other issues and documents too"
+      )
+    ).toBeDefined();
     const unsubscribeButton = within(subscribed).getByRole("button", { name: "Unsubscribe" });
     expect(unsubscribeButton).toHaveProperty("disabled", true);
+    expect(unsubscribeButton.getAttribute("title")).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -700,7 +710,7 @@ test("IssuePage shortens a subscriber id when its title is blank", async () => {
   try {
     const subscribed = await openSubscribedAgents(1);
     const label = within(subscribed).getByText("session:01234567…");
-    expect(label.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    expect(label.closest("[title]")).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -1237,6 +1247,36 @@ test("IssuePage opens the activity address with the t v chord", async () => {
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
     );
     await expectPreset("Tree");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// What `?` lists for each chord: the page has no tablist, no Verification, Children, Artifacts
+// or Collaborators tab, so a label naming one would send a reader looking for something the
+// page does not have (dispatch://INFRA-1196 R21, `useIssueKeymap.ts`).
+test("IssuePage names each chord by what it opens on this page", async () => {
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    await screen.findByTestId("issue-header");
+    const labels = new Map(
+      appKeymap
+        .describe()
+        .filter((binding) => binding.scope === "issue")
+        .map((binding) => [binding.id, binding.label])
+    );
+    expect(labels.get("tab-tree")).toBe("Open the Tree preset");
+    expect(labels.get("tab-verification")).toBe("Open the Checks preset");
+    expect(labels.get("tab-plan")).toBe("Open the Plan preset");
+    expect(labels.get("tab-conversation")).toBe("Open the conversation in the panel");
+    expect(labels.get("tab-activity")).toBe("Open the activity in the panel");
+    expect(labels.get("tab-children")).toBe("Open the issue's children");
+    expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
+    expect(labels.get("tab-collaborators")).toBe("Open the collaborators in the panel");
+    expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
   } finally {
     view.unmount();
     restore();
@@ -2325,11 +2365,12 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
     );
-    // While the write is in flight the control is disabled: no second close can be queued.
+    // While the write is in flight the control is disabled and says so: no second close can be
+    // queued, and the words it shows are its name.
     await openIssueActions();
-    expect(
-      (screen.getByRole("button", { name: "Close issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    expect((screen.getByRole("button", { name: "Closing…" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     await act(async () => {
       closeSave.resolve({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
       await closeSave.promise;
@@ -2341,14 +2382,16 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     expect(closedStatus.value).toBe("done");
 
     await openIssueActions();
-    await user.click(screen.getByRole("button", { name: "Reopen issue" }));
+    // The control is named by the words it shows, so a voice user who says what it reads
+    // presses it (WCAG 2.5.3): while the write is out that is "Reopening…".
+    await user.click(screen.getByRole("button", { name: "Reopen into Backlog" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
     await openIssueActions();
-    expect(
-      (screen.getByRole("button", { name: "Reopen issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    expect((screen.getByRole("button", { name: "Reopening…" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     await act(async () => {
       reopenSave.resolve({ ...issue, status: "backlog" });
       await reopenSave.promise;

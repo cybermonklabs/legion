@@ -8,11 +8,11 @@ import { caretInBlock } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
- *  document the node is, and which row of which node is holding the editor. */
+ *  document the node is, and the key of the row holding the editor (`rowKeyOf`), which is what
+ *  tells one placement of a node from another. */
 export interface EditedRow {
   readonly artifactId: string;
   readonly blockId?: string;
-  readonly node: string;
   readonly row: string;
 }
 
@@ -61,7 +61,7 @@ export function useNodeEditing({
   onReport: (report: string) => void;
 }): NodeEditing {
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
-  // The node the reader has just left the caret in, so the row takes the focus back.
+  // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
   const { documentBridge } = useMargin();
 
@@ -75,7 +75,6 @@ export function useNodeEditing({
       setEditing({
         artifactId: place.artifact.id,
         ...(place.blockId === undefined ? {} : { blockId: place.blockId }),
-        node: node.id,
         row,
       });
     },
@@ -83,24 +82,28 @@ export function useNodeEditing({
   );
   const stopEditing = useCallback(() => {
     setEditing((held) => {
-      if (held !== undefined) leaving.current = held.node;
+      if (held !== undefined) leaving.current = held.row;
       return undefined;
     });
   }, []);
 
   const editingArtifact = editing?.artifactId;
   const editingBlock = editing?.blockId;
-  const editingNode = editing?.node;
+  // The row the caret went into, not the node it holds: one node is drawn under two parents
+  // (R23), so its id answers with whichever copy the fold drew first, which is the wrong row
+  // whenever the reader is editing the second. The row's key is the one thing that tells two
+  // placements apart (`tree-keys.ts`'s `rowKeyOf`, `[data-row-key]`).
+  const editingRow = editing?.row;
 
   useEffect(() => {
     onEditing(editingArtifact);
   }, [editingArtifact, onEditing]);
 
   useEffect(() => {
-    if (editingNode === undefined) return;
+    if (editingRow === undefined) return;
     const frame = requestAnimationFrame(() => {
       const host = container.current?.querySelector<HTMLElement>(
-        `[data-node-row][data-node-id="${CSS.escape(editingNode)}"] [data-node-body]`
+        `[data-node-row][data-row-key="${CSS.escape(editingRow)}"] [data-node-body]`
       );
       if (host === null || host === undefined) return;
       caretInBlock(host, editingBlock);
@@ -116,35 +119,35 @@ export function useNodeEditing({
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [container, documentBridge, editingArtifact, editingBlock, editingNode]);
+  }, [container, documentBridge, editingArtifact, editingBlock, editingRow]);
 
   useEffect(() => {
     const box = container.current;
-    if (editingNode === undefined || box === null) return;
+    if (editingRow === undefined || box === null) return;
     const leave = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
       box
-        .querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(editingNode)}"]`)
+        .querySelector<HTMLElement>(`[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`)
         ?.focus();
       stopEditing();
     };
     box.addEventListener("keydown", leave, true);
     return () => box.removeEventListener("keydown", leave, true);
-  }, [container, editingNode, stopEditing]);
+  }, [container, editingRow, stopEditing]);
 
   useEffect(() => {
     const left = leaving.current;
-    if (editingNode !== undefined || left === undefined) return;
+    if (editingRow !== undefined || left === undefined) return;
     leaving.current = undefined;
     const frame = requestAnimationFrame(() => {
       container.current
-        ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(left)}"]`)
+        ?.querySelector<HTMLElement>(`[data-node-row][data-row-key="${CSS.escape(left)}"]`)
         ?.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [container, editingNode]);
+  }, [container, editingRow]);
 
   return { edit, editing, stopEditing };
 }

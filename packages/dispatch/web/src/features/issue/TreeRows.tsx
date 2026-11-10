@@ -105,6 +105,7 @@ export function TreeRows({
             onToggle={() => onToggle(row.node, row.expanded)}
             oneLine={zoomed}
             pinned={pinned.has(key)}
+            rowKey={key}
             tabStop={tabStop === key}
           />
         );
