@@ -1,0 +1,295 @@
+name: INFRA-1075 four-package CPU
+
+# TEMPORARY, the INFRA-1075 reading of where the envoy-go unit step's four heaviest packages spend
+# their time: internal/dispatch/pmdoc (488.8 s in run 42762554573), cmd/dispatch-seed (474.8 s),
+# internal/pgmigrate (375.5 s) and internal/dispatch/outbox (323.3 s). The lane's own -json streams
+# already say how long each takes; what nothing says is how much of that is CPU and how much is a
+# wait, and which test and which function hold it. pmdoc's twelve measured tests have been read
+# already (run 42652756229), so the arm for that package skips them and reads the other ~360.
+#
+# Two readings, because they answer different questions:
+#
+#   * `contended` runs the four in one `go test -p 8 -parallel 12` call, the shape the lane's unit
+#     step runs them in, under the `-exec` wrapper that records each test binary's own user and
+#     system time and its peak resident set. CPU against wall, per package, with the three
+#     siblings competing for the same four cores.
+#   * `alone` runs each package on a runner of its own, under the same wrapper and under
+#     -cpuprofile, so the profile carries one package's work alone and the wall time is free of a
+#     sibling. The profile is what attributes CPU to a function and, through the test function's
+#     own frame on every sampled stack, to a test.
+#
+# Both write `go test -json`, which carries each test's Elapsed, and upload it with the profile and
+# the rusage files, so the reading can be taken off the artifacts rather than off the log.
+#
+# One Postgres service, the envoy-go job's, with its settings: dispatch-seed, outbox and
+# pgmigrate's differential leg all want DISPATCH_TEST_DATABASE_URL, and storetest clones a
+# template database per test, which is what those settings make cheap. pmdoc opens no database and
+# the service costs its arm nothing. bun is installed on every arm because pmdoc's update tests
+# refuse to pass without it in CI (update_test.go:310); no other arm runs it.
+#
+# Delete this file once the reading is taken (dispatch://INFRA-1075).
+on:
+  push:
+    branches: [legion/INFRA-1075]
+  workflow_dispatch:
+
+# Every reading is wanted; a later push does not cancel a measurement already running.
+concurrency:
+  group: infra-1075-four-package-cpu-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+# Reading the tree and the caches is all this workflow does; it reports no check.
+permissions:
+  contents: read
+
+env:
+  # ci.yaml's proxy fall-through, for the reason its env block gives.
+  GOPROXY: https://proxy.golang.org|direct
+  # The twelve of .github/scripts/ci_job_reads.py's PMDOC_MEASURED, as one anchored alternation, so
+  # no test whose name merely begins with one of these is drawn in. The pmdoc arm skips them: their
+  # CPU is already measured (run 42652756229), and this reading is of the rest of the package.
+  PMDOC_MEASURED: ^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestBareURLShapesParseAndRenderLinearly|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$
+
+jobs:
+  # The four packages together, in the unit step's own shape, read for CPU against wall.
+  contended:
+    runs-on: ubuntu-24.04
+    # The four take 489 s at their longest in the lane beside a hundred other packages; alone
+    # together they are shorter, and the build and the table are a few minutes more.
+    timeout-minutes: 40
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml),
+        # with ci.yaml's envoy-go settings and health check, for the reasons that job gives.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    defaults:
+      run:
+        working-directory: packages/envoy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # The go-envoy-test family envoy-go restores, at the same key and the same paths, so the
+      # build here starts from the cache the real job starts from.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      # The runner, and the binary the wrapper below needs. /usr/bin/time is in the ubuntu-24.04
+      # image (run 42506378238's envoy-go job 128809853976 printed its output), and the check is
+      # here rather than in the wrapper so an image that drops it fails this run in a minute
+      # rather than after half an hour of tests that recorded nothing.
+      - name: The runner these figures are measured on
+        run: |
+          nproc
+          grep -m1 'model name' /proc/cpuinfo
+          go env GOVERSION GOMAXPROCS GOARCH
+          test -x /usr/bin/time || { echo "::error::/usr/bin/time is missing: the CPU wrapper records nothing"; exit 1; }
+      # The wrapper `go test -exec` runs each test binary under: it records that binary's own user
+      # and system time and its peak resident set, which is the only per-package CPU figure a `go
+      # test` call over several packages can give.
+      - name: The CPU wrapper go test -exec runs
+        run: |
+          mkdir -p "$RUNNER_TEMP/cpu"
+          cat > "$RUNNER_TEMP/cpu-wrap.sh" <<'WRAP'
+          #!/usr/bin/env bash
+          bin=$(basename "$1")
+          exec /usr/bin/time -v -o "$RUNNER_TEMP/cpu/$bin.$$.time" "$@"
+          WRAP
+          chmod +x "$RUNNER_TEMP/cpu-wrap.sh"
+      # The four test binaries, built before the measured call so that call's wall time is the
+      # tests' rather than the compiler's. `-run '^$'` runs no test of them, and neither -exec nor
+      # -cpuprofile changes a build, so the call below links what this step compiled; -count=1
+      # keeps it from replaying a cached test result.
+      - name: Build the four test binaries
+        run: go test -count=1 -run '^$' ./internal/dispatch/pmdoc/ ./cmd/dispatch-seed/ ./internal/pgmigrate/ ./internal/dispatch/outbox/
+      # -p 8 and -parallel 12 are the unit step's own flags, so each package's internal parallelism
+      # is the lane's. The step's wall is the longest of the four, not their sum.
+      - name: The four packages together
+        id: contended
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          start=$(date +%s)
+          status=0
+          go test -json -count=1 -exec "$RUNNER_TEMP/cpu-wrap.sh" -p 8 -parallel 12 -timeout 25m \
+            ./internal/dispatch/pmdoc/ ./cmd/dispatch-seed/ ./internal/pgmigrate/ ./internal/dispatch/outbox/ \
+            > "$RUNNER_TEMP/go-test-json/contended.json" || status=$?
+          echo "the contended call exited $status after $(( $(date +%s) - start )) s of wall"
+          jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/contended.json" | tail -n 40
+      # The table the wrapper's files make, one row per test binary: CPU, user and system apart,
+      # and peak resident set.
+      - name: CPU per package
+        if: always()
+        run: |
+          for f in "$RUNNER_TEMP"/cpu/*.time; do
+            [ -e "$f" ] || continue
+            user=$(grep -a "User time" "$f" | tr -dc '0-9.')
+            sys=$(grep -a "System time" "$f" | tr -dc '0-9.')
+            wall=$(grep -a "Elapsed (wall clock)" "$f" | sed 's/.*: //')
+            rss=$(grep -a "Maximum resident set size" "$f" | tr -dc '0-9')
+            awk -v u="$user" -v s="$sys" -v w="$wall" -v r="$rss" -v b="$(basename "${f%%.*}")" \
+              'BEGIN{printf "%8.1f s CPU (%8.2f user %6.2f sys) %10s wall %10s kB %s\n", u+s, u, s, w, r, b}'
+          done | sort -rn
+      - name: Keep the streams and the rusage files
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: infra-1075-contended
+          path: |
+            ${{ runner.temp }}/go-test-json/
+            ${{ runner.temp }}/cpu/
+          if-no-files-found: error
+
+  # One package per runner, under a CPU profile: the profile attributes the package's CPU to a
+  # function and, through the test function's frame on every sampled stack, to a test.
+  alone:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # pmdoc less its twelve measured tests, which run 42652756229 profiled already.
+          - arm: pmdoc-rest
+            package: ./internal/dispatch/pmdoc/
+            skip: measured
+          - arm: dispatch-seed
+            package: ./cmd/dispatch-seed/
+            skip: none
+          - arm: pgmigrate
+            package: ./internal/pgmigrate/
+            skip: none
+          - arm: outbox
+            package: ./internal/dispatch/outbox/
+            skip: none
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, as the contended job above runs it.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    defaults:
+      run:
+        working-directory: packages/envoy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      - name: The runner these figures are measured on
+        run: |
+          nproc
+          grep -m1 'model name' /proc/cpuinfo
+          go env GOVERSION GOMAXPROCS GOARCH
+          test -x /usr/bin/time || { echo "::error::/usr/bin/time is missing: the CPU wrapper records nothing"; exit 1; }
+      - name: The CPU wrapper go test -exec runs
+        run: |
+          mkdir -p "$RUNNER_TEMP/cpu"
+          cat > "$RUNNER_TEMP/cpu-wrap.sh" <<'WRAP'
+          #!/usr/bin/env bash
+          bin=$(basename "$1")
+          exec /usr/bin/time -v -o "$RUNNER_TEMP/cpu/$bin.$$.time" "$@"
+          WRAP
+          chmod +x "$RUNNER_TEMP/cpu-wrap.sh"
+      - name: Build this arm's test binary
+        run: go test -count=1 -run '^$' ${{ matrix.package }}
+      # -parallel 12 is the unit step's flag, so the package's internal parallelism is the lane's;
+      # the package runs alone on the runner's four cores, so its wall is free of a sibling's load.
+      # The profile costs the run a few per cent, which the wrapper's CPU figure carries too.
+      - name: The package alone, under a CPU profile
+        id: alone
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          skip='^$'
+          [ "${{ matrix.skip }}" != "measured" ] || skip="$PMDOC_MEASURED"
+          echo "skipping: $skip"
+          start=$(date +%s)
+          status=0
+          go test -json -count=1 -exec "$RUNNER_TEMP/cpu-wrap.sh" -parallel 12 -timeout 25m \
+            -skip "$skip" -cpuprofile "$RUNNER_TEMP/cpu.out" ${{ matrix.package }} \
+            > "$RUNNER_TEMP/go-test-json/${{ matrix.arm }}.json" || status=$?
+          echo "${{ matrix.arm }} exited $status after $(( $(date +%s) - start )) s of wall"
+          jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/${{ matrix.arm }}.json" | tail -n 40
+      - name: CPU and peak resident set
+        if: always()
+        run: |
+          for f in "$RUNNER_TEMP"/cpu/*.time; do
+            [ -e "$f" ] || continue
+            grep -aE 'Elapsed \(wall|User time|System time|Maximum resident' "$f"
+          done
+      # The profile read on the runner, so the split is in this job's own log whatever happens to
+      # the artifact. A Go runtime profile carries its own symbols, so no binary is needed here.
+      - name: Read the profile
+        if: always()
+        run: |
+          cpu="$RUNNER_TEMP/cpu.out"
+          [ -s "$cpu" ] || { echo "no profile"; exit 0; }
+          echo '=== -top -nodecount=40'
+          go tool pprof -top -nodecount=40 "$cpu"
+          echo '=== -top -cum -nodecount=60'
+          go tool pprof -top -cum -nodecount=60 "$cpu"
+          echo '=== -top -cum, the test functions alone'
+          go tool pprof -top -cum -nodecount=100000 "$cpu" | grep -E '\.Test[A-Z]' | head -n 60
+      - name: Keep the profile and the stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: infra-1075-alone-${{ matrix.arm }}
+          path: |
+            ${{ runner.temp }}/cpu.out
+            ${{ runner.temp }}/go-test-json/
+            ${{ runner.temp }}/cpu/
+          if-no-files-found: error
