@@ -46,10 +46,12 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 //
 // Before the wrapped process is started, and before any frame the daemon sends is read, the shim
 // installs the pod's shared public leak check, once per pod, where its own environment carries
-// the pin the worker image sets (leakguard.Install, leakCheckInstaller): every role of the pod is
-// told that installed check as PUBLIC_LEAK_CHECK, and a pod whose check could not be installed
-// fails its launch rather than running an agent whose every write path would refuse. On a tmux
-// pane there is no pin and nothing is installed.
+// the pin the worker image sets (leakguard.Install, leakCheckInstaller): the runtime tells every
+// role of the pod that installed check as PUBLIC_LEAK_CHECK, and where the environment names
+// none — a pod whose image carries the install under a daemon that predates it — the shim names
+// what it installed itself (shim's spawnOnce). A pod whose check could not be installed fails
+// its launch rather than running an agent whose every write path would refuse. On a tmux pane
+// there is no pin and nothing is installed.
 func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := newFlags("worker-shim", "usage: legion worker-shim [flags] -- <omp argv…>", stderr)
 	var given workerShimFlags
@@ -87,12 +89,14 @@ func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer)
 }
 
 // leakCheckInstaller is shim.Config.InstallLeakCheck: the pod's one install of the pinned shared
-// public leak check (leakguard.Install), whose lines go to the pane as the shim's own do. It is
-// set in every runtime and installs nothing where the shim's environment names no pin
+// public leak check (leakguard.Install), whose lines go to the pane as the shim's own do, and
+// whose answer is the installed check's path — what the shim then names in PUBLIC_LEAK_CHECK for
+// everything it starts, where its environment names none. It is set in every runtime and
+// installs nothing, answering "", where the shim's environment names no pin
 // (leakguard.TagVariable, which the worker image sets and a tmux pane does not), so the pin, not
 // a flag, decides whether a shim installs.
-func leakCheckInstaller(stdout io.Writer) func(context.Context, []string) error {
-	return func(ctx context.Context, env []string) error {
+func leakCheckInstaller(stdout io.Writer) func(context.Context, []string) (string, error) {
+	return func(ctx context.Context, env []string) (string, error) {
 		return leakguard.Install(ctx, leakguard.InstallOptions{
 			Env: env,
 			Log: func(format string, args ...any) {

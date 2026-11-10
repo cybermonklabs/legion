@@ -214,6 +214,11 @@ type PaneInputs struct {
 	PiConfigFiles     []string
 	RoleConfigFiles   []string
 	MemoryConfigFiles []string
+	// LeakCheck is the shared public leak check the daemon resolved on its own machine
+	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
+	// the pane is then told no such variable and refuses every public write with the setup error
+	// naming the check.
+	LeakCheck string
 }
 
 // panePairs are a pane's -e pairs, in one order: the variables every Legion pane is told (the
@@ -230,10 +235,17 @@ type PaneInputs struct {
 // agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
 // project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
-// four XDG base directories under `<state_dir>/home`, the operator's pane variables sorted, the
+// four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
+// resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
+// resolved none, the operator's pane variables sorted, the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
 // is told: a pane's git and jj are whatever its PATH, the daemon's, gives.
+//
+// PUBLIC_LEAK_CHECK is no runtime-owned name (runtimeOwned), which is why it sits where it does:
+// an operator's pane variable and a spec's own Env are told after it and so outrank it, since an
+// operator may point a pane at another copy of the check, and a name the runtime owned could be
+// set by neither.
 func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile) []string {
 	var pairs []string
 	add := func(name, value string) { pairs = append(pairs, "-e", name+"="+value) }
@@ -278,6 +290,9 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
+	}
+	if in.LeakCheck != "" {
+		add("PUBLIC_LEAK_CHECK", in.LeakCheck)
 	}
 	for _, name := range sortedKeys(in.OperatorEnv) {
 		add(name, in.OperatorEnv[name])
@@ -526,11 +541,21 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if spec.Memory {
 		memoryOverlays = r.memoryConfigFiles
 	}
+	// The check is resolved here, once per launch, in the daemon's own environment, because a
+	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
+	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
+	// from it is refused, naming the missing check, which is the honest answer on a machine that
+	// writes to public repositories with no check.
+	leakCheck, err := resolveLeakCheck(r.ownEnviron)
+	if err != nil {
+		r.log.Warn("tmux runtime: no shared public leak check on this machine, so every write this pane makes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
+			"claim", spec.Claim, "why", err)
+	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		MemoryConfigFiles: memoryOverlays,
+		MemoryConfigFiles: memoryOverlays, LeakCheck: leakCheck,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }

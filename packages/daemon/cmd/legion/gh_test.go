@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
@@ -1073,35 +1075,37 @@ func ghStandInPrefix(help string) string {
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-		"if [ -n \"$PUBLIC_LEAK_CHECK_VISIBILITY_READ\" ]; then\n" +
+		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" +
 		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		"  echo public\n" +
 		"  exit 0\n" +
 		"fi\n"
 }
 
-// The stand-in shared public leak checks `legion gh`'s guard is driven against. Each records the
-// call it was given in LEAK_CHECK_RECORD, so a test can read whether the guard ran at all, and
-// each reads its standard input, as the real check does, so nothing is left in a pipe when it
-// exits. ghCheckRefuses answers as the check answers a write it refuses: its report, and exit 3.
-const (
-	ghCheckPasses  = "printf 'checked %s\\n' \"$*\" >>\"${LEAK_CHECK_RECORD:-/dev/null}\"\ncat >/dev/null 2>&1\nexit 0\n"
-	ghCheckRefuses = "printf 'checked %s\\n' \"$*\" >>\"${LEAK_CHECK_RECORD:-/dev/null}\"\ncat >/dev/null 2>&1\n" +
-		"echo 'LEAK CHECK: refusing the gh call: one of ours'\nexit 3\n"
+// ghRefusal is what the stand-in checks of this package print when they refuse a `legion gh`
+// call: the check's own report, which is the whole of what a refusal says about it.
+const ghRefusal = "LEAK CHECK: refusing the gh call: one of ours"
+
+// The stand-in shared public leak checks `legion gh`'s guard is driven against, which are
+// leakguardtest's. Each records the call it was given in LEAK_CHECK_RECORD, so a test can read
+// whether the guard ran at all, and each reads its standard input, as the real check does, so
+// nothing is left in a pipe when it exits. ghCheckRefuses answers as the check answers a write
+// it refuses: its report, and exit 3.
+var (
+	ghCheckPasses  = leakguardtest.Recording(leakguardtest.Passes)
+	ghCheckRefuses = leakguardtest.Recording(leakguardtest.Refusing(ghRefusal))
 )
 
-// ghCheckReading is the check's two-go shape for a call whose body is on standard input: the
-// first run exits 4 to say the call reads standard input, and the second, handed the buffer as a
-// file, records what it read and ends with status — 0 for a call it clears, 3 for one it
-// refuses.
+// ghCheckReading is leakguardtest.Reading under this package's own report: the check's two-go
+// shape for a call whose body is on standard input, where the first run exits 4 to say the call
+// reads standard input and the second, handed the buffer as a file, records what it read and
+// ends with status — 0 for a call it clears, 3 for one it refuses.
 func ghCheckReading(status int) string {
-	refusal := ""
+	report := ""
 	if status != 0 {
-		refusal = "echo 'LEAK CHECK: refusing the gh call: one of ours'\n"
+		report = ghRefusal
 	}
-	return "if [ -z \"$PUBLIC_LEAK_CHECK_STDIN\" ]; then exit 4; fi\n" +
-		"printf 'checked stdin %s\\n' \"$(cat \"$PUBLIC_LEAK_CHECK_STDIN\")\" >>\"${LEAK_CHECK_RECORD:-/dev/null}\"\n" +
-		refusal + fmt.Sprintf("exit %d\n", status)
+	return leakguardtest.Reading(status, report)
 }
 
 // ghLeakCheck writes a stand-in shared public leak check whose body is script into a directory of
@@ -1109,11 +1113,7 @@ func ghCheckReading(status int) string {
 // it in PUBLIC_LEAK_CHECK resolves it as a pod does.
 func ghLeakCheck(t *testing.T, script string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "public-leak-check.sh")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return leakguardtest.Write(t, t.TempDir(), script)
 }
 
 // readRecord is what a stand-in wrote into its record file, and "" where it never wrote one.
@@ -1240,7 +1240,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 
 	t.Run("unchecked: the shared check's own visibility read", func(t *testing.T) {
 		visibility := []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".visibility"}
-		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{"PUBLIC_LEAK_CHECK_VISIBILITY_READ": "sjawhar/legion"}, visibility...)
+		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion"}, visibility...)
 		if code != 0 || stdout != "public\n" {
 			t.Errorf("the check's own visibility read = exit %d, stdout %q, stderr %q; want exit 0 and the visibility", code, stdout, stderr)
 		}
@@ -1261,12 +1261,88 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		{"a variable naming no repository", "sjawhar/legion/pulls", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion/pulls", "--jq", ".visibility"}},
 	} {
 		t.Run("checked: "+tc.name, func(t *testing.T) {
-			code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{"PUBLIC_LEAK_CHECK_VISIBILITY_READ": tc.slug}, tc.args...)
+			code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: tc.slug}, tc.args...)
 			if code != 2 || !strings.Contains(stderr, "LEAK CHECK: refusing") {
 				t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and the guard's refusal", tc.args, code, stdout, stderr)
 			}
 			if checked == "" || ranGh(ghRan) {
 				t.Errorf("the check recorded %q and gh %q; want the call checked and gh not run", checked, ghRan)
+			}
+		})
+	}
+}
+
+// The files a call would send to GitHub as content are read out of the same parse that reads the
+// owner, so the leak guard reads each file's text (leakguard.GhRequest.Files) and needs no second
+// reader of the argv. The parse knows each option's arity from the leaf's own help, which is what
+// a table of option names cannot: `-F` is --body-file in `gh pr create` and --field in `gh api`,
+// a short cluster gives its last letter the next argument (`-dF <path>` is `--draft --body-file
+// <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A value of `-`, an
+// `@-`, a field given a literal and a raw field name no file to open.
+func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want []leakguard.GhFile
+	}{
+		{
+			name: "a short cluster whose last letter is the option",
+			argv: []string{"pr", "create", "-R", "acme/widgets", "-dF", "body.md"},
+			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		},
+		{
+			name: "a short option with its value attached by an equals sign",
+			argv: []string{"pr", "create", "-R", "acme/widgets", "-F=body.md"},
+			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		},
+		{
+			name: "a separate --body-file",
+			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "body.md"},
+			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		},
+		{
+			name: "gh api's field read from a file",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "--method", "PATCH", "-F", "body=@body.md"},
+			want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+		},
+		{
+			name: "gh api's request body",
+			argv: []string{"api", "repos/acme/widgets/pulls", "--input", "request.json"},
+			want: []leakguard.GhFile{{Option: "--input", Path: "request.json"}},
+		},
+		{
+			name: "a raw field, which sends its value literally",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-f", "body=@body.md"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "a field given a literal value",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=text"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "a body option whose value is standard input",
+			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "a field read from standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "the same file named twice",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
+			want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := ghTargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
+			if err != nil {
+				t.Fatalf("ghTargetOf(%q) = %v", tc.argv, err)
+			}
+			if !slices.Equal(target.files, tc.want) {
+				t.Fatalf("ghTargetOf(%q) read the files %v, want %v", tc.argv, target.files, tc.want)
 			}
 		})
 	}

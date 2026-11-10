@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // theHost is the one refusable literal these tests need: a Tailscale MagicDNS host built out of
@@ -28,24 +29,22 @@ const theClass = "names a Tailscale MagicDNS host"
 // creates and for one it deletes.
 const noSHA = "0000000000000000000000000000000000000000"
 
-// The three stand-in shared checks these tests drive the guard against. Each reads its standard
-// input, as the real check does, so that nothing is left in a pipe when it exits.
+// The three stand-in shared checks these tests drive the guard against, which are the shared
+// ones: each reads its standard input, as the real check does, so that nothing is left in a pipe
+// when it exits.
 const (
-	passes       = "cat >/dev/null 2>&1\nexit 0\n"
-	refuses      = "cat >/dev/null 2>&1\necho 'LEAK CHECK: refusing: one of ours'\nexit 3\n"
-	cannotFinish = "cat >/dev/null 2>&1\necho 'LEAK CHECK SETUP ERROR: python3 did not start'\nexit 2\n"
+	passes       = leakguardtest.Passes
+	refuses      = leakguardtest.Refuses
+	cannotFinish = leakguardtest.CannotFinish
 )
 
 // standIn writes a stand-in shared check whose body is script into a directory of the test's own
 // and answers its path. The name is the real check's, so a test that puts the directory on PATH
-// is testing the same resolution a pod makes.
+// is testing the same resolution a pod makes: leakguardtest.CheckName is that name, and a day it
+// parted from this package's own checkName is a day the resolution tests fail (check_test.go).
 func standIn(t *testing.T, script string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), checkName)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return leakguardtest.Write(t, t.TempDir(), script)
 }
 
 // answers is a visibility reader that answers visibility for every slug it is asked about, and

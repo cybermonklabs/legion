@@ -36,6 +36,12 @@ const InstallDir = "/legion/scratch/leak-check"
 // so the first place Resolve looks.
 const InstalledCheck = InstallDir + "/" + checkName
 
+// tagFile is where an install records the tag it landed, inside the installed directory and
+// beside the launcher: the file is renamed into place with the check itself, so the record and
+// the files it describes land together. A dot file, because the check's own directory is
+// unpacked from the repository and this is the one entry of the install that is not of it.
+const tagFile = ".installed-tag"
+
 // TagVariable is the name of the pin the worker image carries (`ENV LEGION_LEAK_CHECK_TAG`,
 // packages/daemon/docker/worker.Dockerfile, from its `ARG LEAK_CHECK_TAG`): the tag of the check's
 // repository this pod installs. It is read from the shim's own environment, so the version lives in
@@ -48,7 +54,8 @@ const TagVariable = "LEGION_LEAK_CHECK_TAG"
 // without its neighbours is a check that cannot start.
 const (
 	checkOwner     = "theorem-labs"
-	checkSlug      = checkOwner + "/agent-infra"
+	checkRepo      = "agent-infra"
+	checkSlug      = checkOwner + "/" + checkRepo
 	checkDirectory = "leak-check"
 )
 
@@ -89,31 +96,37 @@ func (o InstallOptions) logf(format string, args ...any) {
 }
 
 // Install puts the pinned shared public leak check in place for a pod, once, under a lease every
-// role of the pod takes, and answers a *SetupFailure when it could not. A caller runs it before it
-// starts anything that writes (shim.spawnOnce, before the harness and before any daemon frame is
-// read).
+// role of the pod takes, and answers the installed check's path and a *SetupFailure when it could
+// not. A caller runs it before it starts anything that writes (shim.spawnOnce, before the harness
+// and before any daemon frame is read), and the path it answers is what that caller tells the
+// processes it starts (shim's leakCheckOfInstall), so the check installed and the check named are
+// one answer rather than two constants a release can part.
 //
-// With no pin in env it installs nothing and succeeds. That is the tmux runtime: a pane's shim is
-// started by the same command but from a machine's own environment, which carries no
-// LEGION_LEAK_CHECK_TAG, and an operator's machine carries the check through the check's own
-// installer rather than through a copy Legion unpacks into a developer's home. Where such a machine
-// carries none, every entry point of this package refuses with a setup failure naming the missing
-// check, which is the right answer on a machine that writes to public repositories with no check.
+// With no pin in env it installs nothing, answers "" and succeeds. That is the tmux runtime: a
+// pane's shim is started by the same command but from a machine's own environment, which carries
+// no LEGION_LEAK_CHECK_TAG, and an operator's machine carries the check through the check's own
+// installer rather than through a copy Legion unpacks into a developer's home. Where such a
+// machine carries none, every entry point of this package refuses with a setup failure naming the
+// missing check, which is the right answer on a machine that writes to public repositories with
+// no check.
 //
 // The steps are in this order, and the order is the point:
 //
 //  1. the lease, taken before anything is read or decided, so the six role shims of one pod — which
 //     start together — fetch once between them;
-//  2. the installed check, which a role that waited for the lease finds already there and leaves
-//     alone: the directory is renamed into place whole, so its being there means a verified install
-//     and not a fetch that stopped half way;
+//  2. the installed check and the tag beside it (tagFile), which a role that waited for the lease
+//     finds already there and leaves alone when that tag is this pin: the directory is renamed
+//     into place whole, so its being there means a verified install and not a fetch that stopped
+//     half way. An install of another tag, which only a directory outliving a pin change has —
+//     the controller's persistent volume — is installed over rather than kept;
 //  3. the fetch and unpack into a staging directory beside the final one, never into it;
 //  4. the verification, run on the staging copy, so a check that does not answer never becomes the
 //     check this pod would have written with;
 //  5. the rename, which is atomic within the directory's own filesystem, and the release.
 //
-// Every failure before the rename leaves the install path absent and the staging directory removed.
-func Install(ctx context.Context, opts InstallOptions) error {
+// Every failure before the rename leaves the install path as it was and the staging directory
+// removed.
+func Install(ctx context.Context, opts InstallOptions) (string, error) {
 	env := opts.Env
 	if len(env) == 0 {
 		env = os.Environ()
@@ -124,13 +137,13 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		// machine carries the check through the check's own installer, and where it carries none
 		// every entry point of this package refuses the write and names what is missing (see the
 		// paragraph above).
-		return nil
+		return "", nil
 	}
 	// The pin becomes a path of a GitHub API endpoint below. The worker image is its only setter —
 	// an operator's pod env may not name it (sandbox's imageEnv) — so this refuses a build's
 	// mistake rather than an attack, and refuses it before the fetch rather than sending it.
 	if strings.ContainsAny(tag, "/?#& \t\n") {
-		return &SetupFailure{What: installWhat, Why: fmt.Sprintf("%s=%q is no tag of the check's repository", TagVariable, tag)}
+		return "", &SetupFailure{What: installWhat, Why: fmt.Sprintf("%s=%q is no tag of the check's repository", TagVariable, tag)}
 	}
 	dir := opts.Dir
 	if dir == "" {
@@ -140,43 +153,84 @@ func Install(ctx context.Context, opts InstallOptions) error {
 	defer cancel()
 	parent := filepath.Dir(dir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return &SetupFailure{What: installWhat, Why: "the install directory's parent could not be made", Err: err}
+		return "", &SetupFailure{What: installWhat, Why: "the install directory's parent could not be made", Err: err}
 	}
 	release, err := takeInstallLease(ctx, dir+".lock")
 	if err != nil {
-		return &SetupFailure{What: installWhat, Why: "the install lease could not be taken", Err: err}
+		return "", &SetupFailure{What: installWhat, Why: "the install lease could not be taken", Err: err}
 	}
 	defer release()
 
 	check := filepath.Join(dir, checkName)
-	if _, err := os.Stat(check); err == nil {
-		opts.logf("the shared public leak check is already installed at %s", check)
-		return nil
+	installed, there := installedTag(dir)
+	if there && installed == tag {
+		opts.logf("the shared public leak check %s is already installed at %s", tag, check)
+		return check, nil
 	}
 	// Beside the final directory, so the rename below is a rename within one filesystem, and
 	// hidden, so a half-unpacked directory is never mistaken for the install by a reader looking
 	// at the scratch.
 	staging, err := os.MkdirTemp(parent, ".leak-check-install-")
 	if err != nil {
-		return &SetupFailure{What: installWhat, Why: "the staging directory could not be made", Err: err}
+		return "", &SetupFailure{What: installWhat, Why: "the staging directory could not be made", Err: err}
 	}
 	defer os.RemoveAll(staging)
 	if err := fetchCheck(ctx, env, tag, staging); err != nil {
-		return err
+		return "", err
 	}
 	if err := verifyInstalled(ctx, env, filepath.Join(staging, checkName)); err != nil {
-		return err
+		return "", err
+	}
+	// The tag is written into the staging copy, so the rename lands the check and the record of
+	// which pin it is in one step: a directory that is there is a verified install of the tag its
+	// own file names, and never an install whose record is still to be written.
+	if err := os.WriteFile(filepath.Join(staging, tagFile), []byte(tag+"\n"), 0o644); err != nil {
+		return "", &SetupFailure{What: installWhat, Why: "the installed tag could not be recorded", Err: err}
 	}
 	// 0700 is what MkdirTemp makes. The roles of a pod run as one user, so the mode decides
 	// nothing between them, but the install is read by every role and read-only to all of them.
 	if err := os.Chmod(staging, 0o755); err != nil {
-		return &SetupFailure{What: installWhat, Why: "the staged install could not be made readable", Err: err}
+		return "", &SetupFailure{What: installWhat, Why: "the staged install could not be made readable", Err: err}
+	}
+	if there {
+		// Another tag's install is in the way, and a rename onto a directory is refused — by
+		// every filesystem for one that is not empty, and by gVisor, which a pod runs under, for
+		// an empty one too. So it is moved aside, to a name beside the staging directory's and
+		// so on its filesystem, and removed once the new one is in place rather than before it:
+		// the path names a whole check at every moment but the one between the two renames, and
+		// a second rename that fails puts the old check back.
+		aside := staging + ".replaced"
+		defer os.RemoveAll(aside)
+		if err := os.Rename(dir, aside); err != nil {
+			return "", &SetupFailure{What: installWhat, Why: "the install of " + installed + " at " + dir + " could not be moved aside", Err: err}
+		}
+		if err := os.Rename(staging, dir); err != nil {
+			_ = os.Rename(aside, dir)
+			return "", &SetupFailure{What: installWhat, Why: "the staged install could not be moved to " + dir, Err: err}
+		}
+		opts.logf("installed the shared public leak check %s at %s, over the install of %s that was there", tag, check, installed)
+		return check, nil
 	}
 	if err := os.Rename(staging, dir); err != nil {
-		return &SetupFailure{What: installWhat, Why: "the staged install could not be moved to " + dir, Err: err}
+		return "", &SetupFailure{What: installWhat, Why: "the staged install could not be moved to " + dir, Err: err}
 	}
 	opts.logf("installed the shared public leak check %s at %s", tag, check)
-	return nil
+	return check, nil
+}
+
+// installedTag is the tag of the install at dir and whether there is an install there at all: the
+// check itself with the tag file beside it, which is what Install lands. A directory holding the
+// check and no tag — an install an earlier release made, which recorded none — is an install of
+// no tag this pin can match, so it is installed over once and carries its tag from then on.
+func installedTag(dir string) (tag string, there bool) {
+	if _, err := os.Stat(filepath.Join(dir, checkName)); err != nil {
+		return "", false
+	}
+	recorded, err := os.ReadFile(filepath.Join(dir, tagFile))
+	if err != nil {
+		return "", true
+	}
+	return strings.TrimSpace(string(recorded)), true
 }
 
 // takeInstallLease holds path's flock(2) until release is called. flock is the lease a pod wants
@@ -270,11 +324,13 @@ func fetchCheck(ctx context.Context, env []string, tag, dir string) error {
 // repository, which is what the directory below is, and the guard's work is reading a write, while
 // this is a read of a private repository that publishes nothing of this one.
 //
-// The directory is picked as `legion gh` picks one (cmd/legion's repositoryGHConfigDir): the
-// repository's own, whose token reaches that one repository, where the role's bundle holds it, and
-// the owner's own otherwise. A bundle with neither, and a machine with no bundle at all, leaves
-// GH_CONFIG_DIR as the environment has it — which on a machine with the pin and a plain gh is that
-// gh's own configuration.
+// The directory is picked as `legion gh` picks one, through the one helper both go to
+// (ghconfig.RepositoryDir, which cmd/legion's repositoryGHConfigDir is the other caller of): the
+// repository's own, whose token reaches that one repository, where the role's bundle holds it,
+// and the owner's own otherwise. A bundle with neither, and a machine with no bundle at all,
+// leaves GH_CONFIG_DIR as the environment has it — which on a machine with the pin and a plain
+// gh is that gh's own configuration. That is this caller's own answer to a miss, and the one way
+// it differs from `legion gh`, which refuses an owner its bundle holds no directory for.
 func fetchGh(env []string) (gh, configDir string) {
 	gh = value(env, "LEGION_GH_PATH")
 	if gh == "" {
@@ -287,17 +343,7 @@ func fetchGh(env []string) (gh, configDir string) {
 	if owners == "" {
 		return gh, ""
 	}
-	for _, name := range []string{checkSlug, checkOwner} {
-		if candidate := ghconfig.Dir(owners, name); isDirectory(candidate) {
-			return gh, candidate
-		}
-	}
-	return gh, ""
-}
-
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	return gh, ghconfig.RepositoryDir(owners, checkOwner, checkRepo)
 }
 
 // unpackCheck writes the leak-check directory of the gzipped tarball r carries into dir, and

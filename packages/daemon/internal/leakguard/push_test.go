@@ -174,6 +174,88 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	}
 }
 
+// A root commit's own added lines are read. A root commit has no parent to diff against, so a
+// diff-tree asked for one answers nothing at all, and the first push of a repository — the one
+// push that is all root commit — would carry every line of every file past the rules. The
+// repository here is the whole of what the push publishes, as a `legion workspace-init` clone
+// pushed to a new remote is.
+func TestARootCommitsAddedLinesAreRead(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the runner answers at "+theHost+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the first commit")
+	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	guard := guardWith(t, standIn(t, passes), Public)
+	// The destination holds nothing: a ref the push creates, in a repository with no remote
+	// whose tracking refs could say otherwise.
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	})
+	want := []string{"README.md: " + theClass}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
+// What a merge's own resolution writes is read. A merge's diff-tree against its first parent is
+// empty unless the shape is asked for, so a line that stands in neither parent — the text a
+// person wrote while resolving, which is text no other commit of the push carries — would reach
+// the destination unread. The merge here is clean and its resolution adds a file of its own,
+// which is the "evil merge" every rebase-free branch can hold.
+func TestAMergesOwnResolutionIsRead(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(message string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	write("README.md", "one\n")
+	base := commit("the commit the destination holds")
+	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "side")
+	write("side.md", "a line of the side branch\n")
+	commit("the side commit")
+	fixture.Run(repo, "git", "checkout", "--quiet", "main")
+	write("main.md", "a line of the main branch\n")
+	commit("the main commit")
+	// The merge itself is clean; what the resolution adds is this file, which stands in neither
+	// parent and is the whole of what the merge commit publishes of its own.
+	fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
+	write("resolution.md", "the runner answers at "+theHost+"\n")
+	head := commit("the merge")
+	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
+		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
+	}
+	guard := guardWith(t, standIn(t, passes), Public)
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
+	})
+	want := []string{"resolution.md: " + theClass}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for
 // a pre-push hook reads what the push would move, and refuses a line of another shape rather than
 // guessing at it.

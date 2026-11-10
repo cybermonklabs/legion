@@ -9,7 +9,6 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the repository the command names, or of its owner where the bundle holds the repository none, under LEGION_GH_OWNERS_DIR)"
@@ -96,13 +94,22 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// gh runs, which is what an unreadable command and an unset variable already exit with, and
 	// both print the guard's own message, which names the record and the class and never the
 	// text it refused.
+	//
+	// The files the call would send go with it, read out of the parse above, which knew each
+	// option's arity from the leaf's own help (ghSentFiles): the guard reads the text of each,
+	// and needs no second reader of the argv for a call this command checked.
 	var buffered []byte
 	if !ghVisibilityRead(args, env) {
 		repo := ""
 		if target.owner != "" && target.repo != "" {
 			repo = target.owner + "/" + target.repo
 		}
-		buffered, err = leakguard.New(leakguard.Options{}).GhCall(ctx, leakguard.GhRequest{Args: args, Stdin: os.Stdin, Repo: repo})
+		buffered, err = leakguard.New(leakguard.Options{}).GhCall(ctx, leakguard.GhRequest{
+			Args:  args,
+			Stdin: os.Stdin,
+			Repo:  repo,
+			Files: target.files,
+		})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
@@ -158,13 +165,6 @@ func ghVisibilityRead(argv []string, env map[string]string) bool {
 	return slices.Equal(argv, leakguard.VisibilityReadArgs(slug))
 }
 
-// ghForwardedSignals are the signals runGhChild passes on to the gh it started: what a terminal
-// sends a foreground job (an interrupt, a quit, a hangup, a window that changed size) and what a
-// supervisor stops one with. gh runs in a process group of its own, so none of them reaches it
-// otherwise. SIGKILL and SIGSTOP are not here because no process can catch them, and every other
-// signal keeps this process's own default handling, which is what an exec'd gh had.
-var ghForwardedSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGWINCH}
-
 // runGhChild runs the real gh as a child of this process and is the status to exit with: gh's
 // own exit status, and 128+<signal> for a gh a signal killed, which is the status a shell reads
 // such an end as.
@@ -176,15 +176,19 @@ var ghForwardedSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIG
 // own descriptors, so gh's reading of its terminal — its colour, its spinner, its prompts — is
 // what an exec'd gh would have read.
 //
-// The child runs in a process group of its own (procgroup.Configure, called before any other
-// SysProcAttr field, as its doc requires), and this process forwards it the signals above, to
-// the whole group, since that is what a terminal would have signalled had gh been exec'd here.
+// This child is configured unlike every other child of this module: it is given no process
+// group of its own (no procgroup.Configure) and no signal of this process is forwarded to it.
+// gh is an interactive program — its pager and its editor read the terminal and change its
+// mode — and a process group that is not the terminal's foreground group is stopped by SIGTTIN
+// or SIGTTOU the moment it does either, which is a `gh pr view` that hangs in a pane with no
+// way out. Sharing this process's group is what an exec'd gh had: the terminal signals gh with
+// the rest of the group, so there is nothing to forward, and a `legion gh` run outside a
+// terminal is in its parent's group exactly as the exec was.
+//
 // Its context is this process's with the cancellation taken off (context.WithoutCancel): the
-// Cancel procgroup gives the command is one exec refuses on a command built with no context at
-// all, and the cancellation itself is not wanted — a signal that ends this process's context
-// reaches gh as the signal it was, through the forwarding below, and gh ends on it and answers
-// with its own status, where exec's cancellation would kill gh's group outright, mid-clone, and
-// answer with a status nobody sent.
+// cancellation is not wanted — a signal that ends this process's context reaches gh as the
+// signal it was, from the terminal, and gh ends on it and answers with its own status, where
+// the cancellation would kill gh outright, mid-clone, and answer with a status nobody sent.
 func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer) int {
 	child := exec.CommandContext(context.WithoutCancel(ctx), gh, args...)
 	child.Env = env
@@ -193,30 +197,10 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 		child.Stdin = bytes.NewReader(buffered)
 	}
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
-	procgroup.Configure(child)
-	// Notified before the child starts, so a signal sent while gh is starting is held in the
-	// channel rather than lost, and stopped once it has ended.
-	signals := make(chan os.Signal, len(ghForwardedSignals))
-	signal.Notify(signals, ghForwardedSignals...)
-	defer signal.Stop(signals)
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
 		return 1
 	}
-	ended := make(chan struct{})
-	defer close(ended)
-	go func() {
-		for {
-			select {
-			case received := <-signals:
-				if sig, ok := received.(syscall.Signal); ok {
-					_ = syscall.Kill(-child.Process.Pid, sig)
-				}
-			case <-ended:
-				return
-			}
-		}
-	}()
 	err := child.Wait()
 	if err == nil {
 		return 0
@@ -313,8 +297,65 @@ func withGitHubUseHTTPPath(env []string) ([]string, error) {
 // and repo, that repository's lowercased name where every selector of the command named that one
 // repository of that owner and "" where they named more than one, where one named the owner
 // alone, and where none named a repository at all. A target with no owner is a command naming
-// none, whose token stays the one GH_CONFIG_DIR already names.
-type ghTarget struct{ owner, repo string }
+// none, whose token stays the one GH_CONFIG_DIR already names. files are the files the command
+// would send to GitHub as content (ghSentFiles), which the leak guard reads the text of.
+type ghTarget struct {
+	owner, repo string
+	files       []leakguard.GhFile
+}
+
+// ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
+// sends to GitHub as content: true where the whole value is the path, and false for `gh api`'s
+// --field, whose file is the `@<path>` half of a `<name>=@<path>` value. They are the same four
+// plus the field that leakguard's own table holds (its ghFileArgs), read here by their long
+// names because the leaf's own help has already said which option each argument is: a `-F` is
+// --body-file in `gh pr create`, --notes-file in `gh release create` and --field in `gh api`,
+// and a short cluster (`-dF <path>`) and an attached value (`-F=<path>`) are read as pflag
+// reads them.
+var ghSentFileOptions = map[string]bool{
+	"body-file":  true,
+	"notes-file": true,
+	"input":      true,
+	"from-file":  true,
+	"field":      false,
+}
+
+// ghSentFiles are the files the parsed command would send to GitHub as content, each named once
+// and each named by the option it came from, for the leak guard to read the text of
+// (leakguard.GhRequest.Files). The answer is never nil, so a command that sends no file is a
+// command the guard reads no file of, rather than one it reads the argv of again with a table
+// of its own.
+//
+// A value of `-`, and an `@-`, is standard input, which the guard reads through the shared
+// check's own handshake and never opens as a file. The options are read in the order their
+// names sort, since a parse holds each option's values together and not the argv's order
+// across options, and a report that named two files must name them the same way twice.
+func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
+	files := []leakguard.GhFile{}
+	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {
+		whole := ghSentFileOptions[name]
+		for _, value := range parsed.values[name] {
+			path := value
+			if !whole {
+				_, after, found := strings.Cut(value, "=")
+				if !found || !strings.HasPrefix(after, "@") {
+					// A field given a literal value, and `gh project field-list --field <name>`,
+					// name no file.
+					continue
+				}
+				path = strings.TrimPrefix(after, "@")
+			}
+			if path == "" || path == "-" {
+				continue
+			}
+			if slices.ContainsFunc(files, func(file leakguard.GhFile) bool { return file.Path == path }) {
+				continue
+			}
+			files = append(files, leakguard.GhFile{Option: "--" + name, Path: path})
+		}
+	}
+	return files
+}
 
 // ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`), the zero
 // target when the command names no owner. It fails closed: whenever it cannot be certain which
@@ -422,12 +463,13 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err := sel.fromOwnRepository(cmd, parsed, env, remotes); err != nil {
 		return ghTarget{}, err
 	}
+	files := ghSentFiles(parsed)
 	switch len(sel.owners) {
 	case 0:
-		return ghTarget{}, nil
+		return ghTarget{files: files}, nil
 	case 1:
 		for owner := range sel.owners {
-			return ghTarget{owner: owner, repo: sel.onlyRepository()}, nil
+			return ghTarget{owner: owner, repo: sel.onlyRepository(), files: files}, nil
 		}
 	}
 	var listed []string

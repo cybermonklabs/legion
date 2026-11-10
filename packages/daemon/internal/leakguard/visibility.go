@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// Visibility is what GitHub reports the repository slug ("owner/name") as, cached for the life of
-// this guard: a write makes several calls, and a repository does not change what it is between
-// them.
+// Visibility is what GitHub reports the repository slug ("owner/name") as. Nothing is kept: each
+// entry point reads one destination at most once, and a guard lives for one write.
 //
 // The read is the one the shared check itself makes:
 //
@@ -19,26 +20,13 @@ import (
 // looked like any other gh call would call the guard again, and the guard again: the exemption
 // `legion gh` makes for the check's own visibility read — that exact argv for that exact slug —
 // covers this read too, because it is built from the same VisibilityReadVar and
-// VisibilityReadArgs this read is.
+// VisibilityReadArgs this read is. The caller reaches this through Guard.scanThrough, which lets
+// no slug the exemption would refuse get this far.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
-	g.mu.Lock()
-	cached, ok := g.seen[slug]
-	g.mu.Unlock()
-	if ok {
-		return cached, nil
+	if read := g.opts.Visibility; read != nil {
+		return read(ctx, slug)
 	}
-	read := g.opts.Visibility
-	if read == nil {
-		read = g.ghVisibility
-	}
-	visibility, err := read(ctx, slug)
-	if err != nil {
-		return "", err
-	}
-	g.mu.Lock()
-	g.seen[slug] = visibility
-	g.mu.Unlock()
-	return visibility, nil
+	return g.ghVisibility(ctx, slug)
 }
 
 // VisibilityReadVar is the environment variable the shared public leak check's own visibility
@@ -80,6 +68,11 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 // names no repository there: another host, a local path, a remote an alias stands for. A caller
 // that cannot name the destination gets a scan it may not have needed, never a scan it needed and
 // did not get (Guard.scanThrough).
+//
+// A URL whose two names are no repository GitHub serves names none here either: the guard reads
+// no visibility for a slug ghrepo.Parse refuses (Guard.scanThrough), so a URL that answered one
+// would refuse the push over its remote's spelling rather than scan it. Answering "" scans the
+// push instead, which is this function's own fail-closed direction.
 func RepoFromURL(url string) string {
 	rest, ok := afterHost(url)
 	if !ok {
@@ -88,11 +81,11 @@ func RepoFromURL(url string) string {
 	rest = strings.TrimPrefix(rest, "/")
 	rest = strings.TrimSuffix(rest, "/")
 	rest = strings.TrimSuffix(rest, ".git")
-	owner, name, ok := strings.Cut(rest, "/")
-	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+	repo, err := ghrepo.Parse("", rest)
+	if err != nil {
 		return ""
 	}
-	return owner + "/" + name
+	return repo.String()
 }
 
 // afterHost is what a remote URL holds after github.com, in the three shapes a remote is written

@@ -2,11 +2,16 @@ package leakguard
 
 import "strings"
 
+// RefusedBy is the check a refusal names. Its two values are the two constants below and no
+// other: a named type rather than a string, so a caller cannot write a refusal by a third check
+// this package does not run.
+type RefusedBy string
+
 // The two sentences a refusal names the refusing check by. byRules is this package's own rule
 // pass; bySharedCheck is the shared public leak check, whose own report the refusal carries.
 const (
-	byRules       = "this repository's own private-name rules match it"
-	bySharedCheck = "the shared public leak check refused it"
+	byRules       RefusedBy = "this repository's own private-name rules match it"
+	bySharedCheck RefusedBy = "the shared public leak check refused it"
 )
 
 // Refusal is a write refused because of the text it carries. It is one half of this package's
@@ -16,7 +21,7 @@ type Refusal struct {
 	// What is the write, in the entry point's words: "the push to origin", "the gh call".
 	What string
 	// By names the check that refused: byRules or bySharedCheck.
-	By string
+	By RefusedBy
 	// Lines is the report. The rule pass writes one line per refusal, each naming the record and
 	// the class and nothing else, with a path masked as check-private-names.sh masks one. A
 	// refusal by the shared check carries that check's own report instead, which is the only
@@ -29,7 +34,7 @@ func (r *Refusal) Error() string {
 	b.WriteString("LEAK CHECK: refusing ")
 	b.WriteString(r.What)
 	b.WriteString(": ")
-	b.WriteString(r.By)
+	b.WriteString(string(r.By))
 	for _, line := range r.Lines {
 		b.WriteString("\n  ")
 		b.WriteString(line)

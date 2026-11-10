@@ -102,7 +102,9 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 
 // A remote URL names the repository the push would reach, in the shapes a remote is written in;
 // one that names no repository on github.com names none, and the guard scans such a write as if
-// it were public rather than skipping it.
+// it were public rather than skipping it. A URL whose two names are no repository GitHub serves
+// names none either: the guard refuses a slug its exemption could not cover (Guard.scanThrough),
+// so a URL that answered one would refuse the push over the spelling of its remote.
 func TestRepoFromURL(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
 		{"https://github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
@@ -114,9 +116,29 @@ func TestRepoFromURL(t *testing.T) {
 		{"https://example.invalid/invented-org/invented-repo.git", ""},
 		{"/a/local/path.git", ""},
 		{"https://github.com/invented-org", ""},
+		{"https://github.com/-invented-org/invented-repo", ""},
+		{"https://github.com/invented-org/../invented-repo", ""},
 	} {
 		if got := RepoFromURL(tc.url); got != tc.want {
 			t.Errorf("RepoFromURL(%q) = %q, want %q", tc.url, got, tc.want)
 		}
+	}
+}
+
+// The engine's own inline escape is inert. gitleaks drops every finding of a line that holds a
+// `gitleaks:allow` comment, and .github/scripts/check-private-names.sh, the script these rules
+// are ported from, honours no such comment: a write that carries one is refused exactly as a
+// write that does not. The comment is spelled in two pieces, as the hosts here are, so that no
+// line of this file carries an escape of its own.
+func TestTheInlineAllowCommentIsInert(t *testing.T) {
+	const escape = "gitleaks" + ":allow"
+	guard := guardWith(t, standIn(t, passes), Public)
+	err := guard.Rules(bound(t), Record{
+		Label: "commit 1a2b3c4 message",
+		Text:  "moved the run to " + theHost + " # " + escape,
+	})
+	want := []string{"commit 1a2b3c4 message: " + theClass}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Fatalf("the report is %q, want %q", refused.Lines, want)
 	}
 }

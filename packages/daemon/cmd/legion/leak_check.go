@@ -11,17 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
-// The statuses `legion leak-check` exits with are the shared public leak check's own vocabulary,
-// which is what the pre-push hook needs: 0 for a write the guard cleared, 3 for one it refused,
-// and 2 for a check that could not be made to run. A usage error is 2 as well — a call nobody
-// could read is a call nobody has checked — and so is an error of neither of the guard's two
-// kinds, which is the fail-closed half of the pair.
-const (
-	leakCheckClean   = 0
-	leakCheckSetup   = 2
-	leakCheckRefused = 3
-)
-
 const (
 	leakCheckPrePushUsage = "usage: legion leak-check pre-push <remote> <url>  (git's pre-push hook runs it, never a person: git's update lines on standard input, the repository as the working directory)"
 	leakCheckTextUsage    = "usage: legion leak-check text <kind>  (the text on standard input, <kind> what a refusal calls the write)"
@@ -55,10 +44,10 @@ func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer
 	}
 	if flags.NArg() != 2 {
 		flags.Usage()
-		return leakCheckSetup
+		return leakguard.StatusSetupFailure
 	}
 	remote, url := flags.Arg(0), flags.Arg(1)
-	what := "the push to " + remote
+	what := leakguard.PushName(remote)
 	updates, err := leakguard.ParseUpdates(leakCheckStdin)
 	if err != nil {
 		return leakCheckReport(stderr, "", &leakguard.SetupFailure{What: what, Why: "git's update lines could not be read", Err: err})
@@ -87,7 +76,7 @@ func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) i
 	}
 	if flags.NArg() != 1 {
 		flags.Usage()
-		return leakCheckSetup
+		return leakguard.StatusSetupFailure
 	}
 	kind := flags.Arg(0)
 	text, err := io.ReadAll(leakCheckStdin)
@@ -103,29 +92,36 @@ func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) i
 // and never the text that matched; a setup failure prints the guard's own line, which says it is
 // one, so a person reading a log tells a broken pod from a write that names something private.
 //
+// The statuses are the shared public leak check's own vocabulary, which is what a pre-push hook
+// needs, and they are the guard's exported constants rather than a second copy of the three
+// numbers: 0 for a write it cleared, 3 for one it refused, and 2 for a check that could not be
+// made to run. A usage error above is 2 as well — a call nobody could read is a call nobody has
+// checked — and so is an error of neither of the guard's two kinds, which is the fail-closed
+// half of the pair.
+//
 // what renames the write where the caller has a better word for it than the guard's own — the
 // text shape's kind — and leaves the guard's wording alone when it is empty, which is what the
 // push shape wants: the guard already calls it "the push to origin".
 func leakCheckReport(stderr io.Writer, what string, err error) int {
 	if err == nil {
-		return leakCheckClean
+		return leakguard.StatusClean
 	}
 	var refusal *leakguard.Refusal
 	if errors.As(err, &refusal) {
 		refusal.What = cmp.Or(what, refusal.What)
 		fmt.Fprintln(stderr, refusal.Error())
-		return leakCheckRefused
+		return leakguard.StatusRefused
 	}
 	var setup *leakguard.SetupFailure
 	if errors.As(err, &setup) {
 		setup.What = cmp.Or(what, setup.What)
 		fmt.Fprintln(stderr, setup.Error())
-		return leakCheckSetup
+		return leakguard.StatusSetupFailure
 	}
 	fmt.Fprintln(stderr, (&leakguard.SetupFailure{
 		What: cmp.Or(what, "the write"),
 		Why:  "the guard answered with neither a refusal nor a setup failure",
 		Err:  err,
 	}).Error())
-	return leakCheckSetup
+	return leakguard.StatusSetupFailure
 }

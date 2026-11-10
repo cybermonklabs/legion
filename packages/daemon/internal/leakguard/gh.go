@@ -2,10 +2,12 @@ package leakguard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -22,6 +24,17 @@ type GhRequest struct {
 	// Repo is the destination repository, as "owner/name". Empty where the caller knows no
 	// destination, which the guard reads as public (Guard.scanThrough).
 	Repo string
+	// Files are the files this call would send to GitHub as content, read by a caller that
+	// parses the argv as gh does. `legion gh` is that caller: it reads the command's own help
+	// for every option's arity before it reaches the guard (cmd/legion's ghTargetOf), so it
+	// knows a `-dF <file>` and a `-F=<file>` for what they are, which a reader of the argv
+	// alone cannot.
+	//
+	// Nil is a caller that parsed none, and the guard then reads the argv with a table of its
+	// own (ghFileArgs), which is what internal/rescue and any other caller handing the guard
+	// bare arguments gets. An empty, non-nil slice is a caller that parsed and found no file,
+	// and the table is not consulted for it.
+	Files []GhFile
 }
 
 // whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
@@ -67,35 +80,108 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) ([]byte, error) {
 	}
 	records := []Record{{Label: "the gh call's arguments", Text: strings.Join(req.Args, " ")}}
 	if len(buffered) > 0 {
-		records = append(records, Record{Label: "the gh call's standard input", Text: string(buffered)})
+		records = append(records, jsonAlso(Record{Label: "the gh call's standard input", Text: string(buffered)})...)
 	}
 	// The text of each file the call would send, read here and not before the visibility answer:
 	// a private or internal destination runs no rule pass, and reading its files would cost the
 	// opens for nothing.
-	for _, named := range ghFileArgs(req.Args) {
+	files := req.Files
+	if files == nil {
+		files = ghFileArgs(req.Args)
+	}
+	for _, named := range files {
 		text, err := readGhFile(named)
 		if err != nil {
 			return buffered, err
 		}
-		records = append(records, Record{Label: named.path, Text: text})
+		record := Record{Label: named.Path, Text: text}
+		if named.Option == inputOption {
+			records = append(records, jsonAlso(record)...)
+			continue
+		}
+		records = append(records, record)
 	}
 	return buffered, g.rules(ctx, whatGhCall, records)
 }
 
-// maxGhFile is the most this package reads from one file a gh call would send. GitHub itself
-// refuses a pull request or issue body longer than 65,536 characters, and a body is the largest
-// thing these options carry: `gh api --input` wraps one in a JSON request, which that escaping
-// and the rest of the request leave well inside a mebibyte. A mebibyte is sixteen times that
-// body, so no call GitHub would take meets the bound, and a file past it is one an argument
-// names by mistake. Such a file is a setup failure rather than a pass — the call is refused
-// either way — and the rule pass never reads a gigabyte into memory to run ten regexes over.
+// jsonAlso is record and, where its text is a JSON document, a second record of the strings
+// that document decodes to.
+//
+// A JSON string's escapes hide its text from the rules: `\u0074` is a letter no pattern reads,
+// and an escape inside a name parts the two halves of a word two of these rules need whole. What
+// GitHub stores is the decoded string, so the decoded string is what a rule must read; the raw
+// bytes are read as well, since a name can stand unescaped in a part of the document no string
+// of it decodes to. The shared check reads a JSON text both ways for this same reason (its
+// README's decode_all).
+//
+// Two of a gh call's records are JSON and get this, and two are not:
+//
+//   - `gh api --input <file>`, whose whole file is the request body GitHub parses as JSON, and
+//     the buffered standard input, which is that same body for `gh api --input -` and the shared
+//     check's exit-4 handshake has already read. Both are decoded where they parse, and a text
+//     that is no JSON document — a Markdown body on standard input — is left as the one record
+//     it was.
+//   - The argv. `gh api -f name=value` and `-F name=value` send the value as the literal string
+//     it is, gh doing the escaping, so a `\u0074` written in an argument reaches GitHub as those
+//     six characters and the rules read what GitHub would show.
+//   - A `-F name=@<path>` field's file, whose bytes gh makes one JSON string of, escaping them
+//     itself: the file holds the text GitHub shows, which is the record already read.
+func jsonAlso(record Record) []Record {
+	var held any
+	if err := json.Unmarshal([]byte(record.Text), &held); err != nil {
+		return []Record{record}
+	}
+	var decoded strings.Builder
+	jsonStrings(held, &decoded)
+	if decoded.Len() == 0 {
+		return []Record{record}
+	}
+	// The label says which record this is of, so a report names the one the writer can find, and
+	// it is not the path of a file: the one path-scoped allowlist of the rule file is anchored
+	// on a whole path, and this record is of a document's strings rather than of that file.
+	return []Record{record, {Label: record.Label + ", decoded as JSON", Text: decoded.String()}}
+}
+
+// jsonStrings writes every string a decoded JSON document holds, an object's names as well as
+// its values, one to a line. An object's names are written in order, so that two runs over one
+// document read the same text: Go hands a map's keys out in no order of its own.
+func jsonStrings(value any, out *strings.Builder) {
+	switch held := value.(type) {
+	case string:
+		out.WriteString(held)
+		out.WriteString("\n")
+	case []any:
+		for _, item := range held {
+			jsonStrings(item, out)
+		}
+	case map[string]any:
+		for _, name := range slices.Sorted(maps.Keys(held)) {
+			out.WriteString(name)
+			out.WriteString("\n")
+			jsonStrings(held[name], out)
+		}
+	}
+}
+
+// maxGhFile is the most this package reads from one file a gh call would send, and from the
+// standard input it buffers. GitHub itself refuses a pull request or issue body longer than
+// 65,536 characters, and a body is the largest thing these options carry: `gh api --input`
+// wraps one in a JSON request, which that escaping and the rest of the request leave well
+// inside a mebibyte. A mebibyte is sixteen times that body, so no call GitHub would take meets
+// the bound, and a file past it is one an argument names by mistake. Such a file is a setup
+// failure rather than a pass — the call is refused either way — and the rule pass never reads a
+// gigabyte into memory to run ten regexes over.
 const maxGhFile = 1 << 20
 
-// ghFile is one file a gh call would send as content: the option that named it, which a setup
+// GhFile is one file a gh call would send as content: the option that named it, which a setup
 // failure names, and the path the argv wrote, which is the record's label.
-type ghFile struct {
-	option, path string
+type GhFile struct {
+	Option, Path string
 }
+
+// inputOption is `gh api`'s request body, the one file option whose file is itself a JSON
+// document (jsonAlso).
+const inputOption = "--input"
 
 // ghFileOptions are the options whose whole value is the path of a file gh sends to GitHub as
 // content, in gh 2.98.0's spelling — the version the worker image pins, whose help is
@@ -119,8 +205,13 @@ var ghFileOptions = map[string]bool{
 // Legion role writes a pull request's body — so each file's text is a record of its own beside
 // the record of the argv, which holds the file's name and never its text.
 //
-// What is read is ghFileOptions, each in its separate and its attached spelling
-// (`--body-file=<path>`), and two more shapes of one short option:
+// This is the fallback, for a caller that hands the guard a bare argv (GhRequest.Files nil). The
+// caller that can do better does: `legion gh` parses the command with gh's own help of the leaf,
+// so it knows every option's arity and reads shapes no table can — a short cluster whose last
+// letter is the option (`-dF <path>`, which is `--draft --body-file <path>` in `gh pr create`
+// and `--desc F` in `gh gist create`), and an attached `-F=<path>` — and hands the files it
+// found. What is read here instead is ghFileOptions, each in its separate and its attached
+// spelling (`--body-file=<path>`), and two more shapes of one short option:
 //
 //   - `-F <value>`: gh gives -F to --body-file, --notes-file, --from-file and --field, and to
 //     nothing else (`grep -ho -- '-F, --[a-z-]*' testdata/gh-help/*.txt | sort -u`), so a -F is
@@ -173,8 +264,8 @@ var ghFileOptions = map[string]bool{
 //
 // Arguments past a bare `--` are read as nothing: gh's parser takes no option after one, so a
 // `--body-file` there is a word of some other program's and names no file gh would send.
-func ghFileArgs(args []string) []ghFile {
-	var files []ghFile
+func ghFileArgs(args []string) []GhFile {
+	var files []GhFile
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -214,10 +305,10 @@ func ghFileArgs(args []string) []ghFile {
 		if path == "" || path == "-" {
 			continue
 		}
-		if slices.ContainsFunc(files, func(file ghFile) bool { return file.path == path }) {
+		if slices.ContainsFunc(files, func(file GhFile) bool { return file.Path == path }) {
 			continue
 		}
-		files = append(files, ghFile{option: option, path: path})
+		files = append(files, GhFile{Option: option, Path: path})
 	}
 	return files
 }
@@ -230,7 +321,7 @@ func ghFileArgs(args []string) []ghFile {
 // The path is masked in the message as a report masks one, and the error under it is reduced to
 // what went wrong: os reports an open failure as a *fs.PathError whose own message repeats the
 // path unmasked, which would carry out of this process the very name the mask is for.
-func readGhFile(named ghFile) (string, error) {
+func readGhFile(named GhFile) (string, error) {
 	failed := func(why string, err error) error {
 		var path *fs.PathError
 		if errors.As(err, &path) {
@@ -238,11 +329,11 @@ func readGhFile(named ghFile) (string, error) {
 		}
 		return &SetupFailure{
 			What: whatGhCall,
-			Why:  "the file " + named.option + " names, " + maskPath(named.path) + ", " + why,
+			Why:  "the file " + named.Option + " names, " + maskPath(named.Path) + ", " + why,
 			Err:  err,
 		}
 	}
-	file, err := os.Open(named.path)
+	file, err := os.Open(named.Path)
 	if err != nil {
 		return "", failed("could not be opened", err)
 	}
@@ -264,12 +355,25 @@ func readGhFile(named ghFile) (string, error) {
 // that file as a descriptor of the child's and PUBLIC_LEAK_CHECK_STDIN naming it. The file is the
 // test's and the pod's own temporary directory's, and it is gone before this returns: the bytes
 // go back to the caller in memory, which is where they came from.
+//
+// The read is bounded as a named file's is, by maxGhFile and for the same reasons: the bytes are
+// held in memory and scanned there, and no body GitHub would take comes near a mebibyte. Input
+// past the bound is a setup failure, which refuses the call — the guard has not read what it
+// would publish — and never a truncated buffer handed on as if it were the whole.
 func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]byte, int, string, error) {
 	buffered := []byte{}
 	if req.Stdin != nil {
-		read, err := io.ReadAll(req.Stdin)
+		// One byte past the bound, so input at the bound is read whole and longer input is known
+		// to be longer without reading it.
+		read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
 		if err != nil {
 			return nil, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
+		}
+		if len(read) > maxGhFile {
+			return nil, 0, "", &SetupFailure{
+				What: whatGhCall,
+				Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
+			}
 		}
 		buffered = read
 	}

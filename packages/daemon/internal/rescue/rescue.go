@@ -115,10 +115,20 @@ func (r runner) madeInThePod(clone string, made []string) ([]string, error) {
 	return r.unpushed(clone, made, held)
 }
 
-// gitPins is configuration every git this package starts reads last: no hook and no file-system
-// monitor runs, whatever the clone's configuration names, and no replacement object (`git replace`,
-// a graft among them) stands in for a commit, so a commit grafted to have a role's work as its
-// parent never makes that work look held, and the push sends the commits as they are.
+// gitPins is configuration every git this package starts reads last: no file-system monitor runs
+// and no replacement object (`git replace`, a graft among them) stands in for a commit, so a
+// commit grafted to have a role's work as its parent never makes that work look held, and the
+// push sends the commits as they are.
+//
+// `core.hooksPath=/dev/null` turns hooks off for every command here but one: the push, in a pod.
+// There the git this package runs is the image's wrapper, which for a push alone puts
+// `-c core.hooksPath=/opt/legion/githooks` after the caller's own global options and before the
+// subcommand, and git takes the last `-c` of a name, so the wrapper's path outranks this one
+// (packages/daemon/docker/git, which measured it on the image's git 2.47.3). That push therefore
+// runs the root-owned pre-push hook, which runs the leak guard a second time, over the same
+// updates guardPush has already cleared. It is not turned off and cannot be: no process in a pod
+// may name a hooks path that outranks the wrapper's, which is what makes the hook a guard. What
+// the second run costs is time, and the budget holds both runs (guardReserve).
 var gitPins = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
 
 // Request is one check of every workspace on a pod's disk.
@@ -442,11 +452,15 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 const noSHA = "0000000000000000000000000000000000000000"
 
 // guardReserve is what the guard's own call leaves of a workspace's remaining time for the push
-// it clears. The shared public leak check's push mode can spend a minute asking the remote what
-// it holds and another in its credential path, so a guard given the whole of what is left would
-// leave the push nothing to run in, and work this check could have rescued would be lost to a
-// bound rather than refused by anyone.
-const guardReserve = 30 * time.Second
+// it clears, and it holds two things rather than one. The push itself is thirty seconds, which
+// is all this reserve was while hooks were believed off for it. In a pod that push also runs the
+// shared public leak check a second time, in the pre-push hook the image's git wrapper points it
+// at (gitPins), and one run of that check's push mode can spend sixty seconds asking the remote
+// what it holds and another sixty in its credential path: 120 s. So the reserve is 150 s. A
+// smaller one has the workspace's bound end inside the hook's run, and work this check could
+// have rescued is then lost to a bound rather than refused by anyone — which is the one failure
+// this reserve exists to prevent, and which 30 s did not prevent in a pod.
+const guardReserve = 150 * time.Second
 
 // guardPush runs the leak guard over the push this check is about to make, and is the error that
 // fails the workspace where the guard refuses that push or could not be made to run: either way
@@ -467,7 +481,7 @@ const guardReserve = 30 * time.Second
 // Env is the role's own environment, the one the push itself runs in, which is what names the
 // credential the check reads the remote with.
 func guardPush(ctx context.Context, req Request, run runner, clone string, pushed []shimwire.RescueBranch) error {
-	const what = "the push to origin"
+	what := leakguard.PushName("origin")
 	url, err := run.git(clone, nil, "remote", "get-url", "origin")
 	if err == nil && url == "" {
 		err = errors.New("git named no URL for origin")

@@ -61,7 +61,9 @@ func fakeOMP() int {
 		defer mu.Unlock()
 		_, _ = os.Stdout.WriteString(line + "\n")
 	}
-	if err := os.WriteFile(os.Getenv("FAKE_OMP_MARKER"), nil, 0o600); err != nil {
+	// The marker holds the child's whole environment, so a test can read what the shim started
+	// it with (omp.environment) as well as that it started at all (omp.started).
+	if err := os.WriteFile(os.Getenv("FAKE_OMP_MARKER"), []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "fake omp: write the marker: %v\n", err)
 		return 3
 	}
@@ -149,6 +151,27 @@ func newOMP(t *testing.T, env ...string) *omp {
 func (o *omp) started() bool {
 	_, err := os.Stat(o.marker)
 	return err == nil
+}
+
+// environment is the environment the shim started the child with, as the child read it: the
+// marker the child writes at its start holds it, one NAME=value a line. It waits for the child,
+// since a test that reads it is asking what the spawn did.
+func (o *omp) environment(t *testing.T) map[string]string {
+	t.Helper()
+	if !testwait.Holds(waitLimit, 5*time.Millisecond, o.started) {
+		t.Fatal("the fake OMP never started, so it recorded no environment")
+	}
+	body, err := os.ReadFile(o.marker)
+	if err != nil {
+		t.Fatalf("read the fake OMP's environment: %v", err)
+	}
+	env := map[string]string{}
+	for _, entry := range strings.Split(string(body), "\n") {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
+		}
+	}
+	return env
 }
 
 // received is every line the child read on its stdin, decoded.
@@ -566,11 +589,11 @@ func TestTheLeakCheckIsInstalledBeforeTheHarnessStarts(t *testing.T) {
 		cfg := config(t, path, child)
 		var installed atomic.Int32
 		var tooLate, wrongEnv atomic.Bool
-		cfg.InstallLeakCheck = func(_ context.Context, env []string) error {
+		cfg.InstallLeakCheck = func(_ context.Context, env []string) (string, error) {
 			installed.Add(1)
 			tooLate.Store(child.started())
 			wrongEnv.Store(!slices.Equal(env, cfg.Env))
-			return nil
+			return "", nil
 		}
 		sh := run(t, cfg, newClock())
 
@@ -592,7 +615,7 @@ func TestTheLeakCheckIsInstalledBeforeTheHarnessStarts(t *testing.T) {
 		child := newOMP(t)
 		cfg := config(t, path, child)
 		const why = "LEAK CHECK SETUP ERROR: the pod's install of the shared public leak check: `gh api` exited 1"
-		cfg.InstallLeakCheck = func(context.Context, []string) error { return errors.New(why) }
+		cfg.InstallLeakCheck = func(context.Context, []string) (string, error) { return "", errors.New(why) }
 		sh := run(t, cfg, newClock())
 
 		p := daemon.accept(t)
@@ -608,6 +631,38 @@ func TestTheLeakCheckIsInstalledBeforeTheHarnessStarts(t *testing.T) {
 			t.Error("the harness was started after an install that failed")
 		}
 	})
+
+	// A pod whose image carries the install but whose daemon predates it names no
+	// PUBLIC_LEAK_CHECK, and every write of that role's agent would be refused for a check the
+	// image did install. The shim names what it installed for the child it starts, and leaves a
+	// runtime's own value alone where there is one: the daemon decides wherever it says anything.
+	for _, tc := range []struct {
+		name    string
+		already string // what the shim's own environment names, "" for none
+		want    string
+	}{
+		{"the environment names none, so the installed check is what the child is told", "", "/legion/scratch/leak-check/public-leak-check.sh"},
+		{"the environment names one, so the daemon's value is what the child is told", "/opt/another/public-leak-check.sh", "/opt/another/public-leak-check.sh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t)
+			cfg := config(t, path, child)
+			if tc.already != "" {
+				cfg.Env = append(slices.Clone(cfg.Env), "PUBLIC_LEAK_CHECK="+tc.already)
+			}
+			cfg.InstallLeakCheck = func(context.Context, []string) (string, error) {
+				return "/legion/scratch/leak-check/public-leak-check.sh", nil
+			}
+			sh := run(t, cfg, newClock())
+
+			daemon.accept(t).open(t)
+			if got := child.environment(t)["PUBLIC_LEAK_CHECK"]; got != tc.want {
+				t.Errorf("the child was told PUBLIC_LEAK_CHECK=%q, want %q; log:\n%s", got, tc.want, sh.log)
+			}
+		})
+	}
 }
 
 // The workspace's CodeGraph warm-up (Config.WarmCodegraph) starts on the first line the child
@@ -1112,7 +1167,12 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 			p := daemon.accept(t)
 			p.open(t)
 
-			request := shimwire.RescueUnpushed{ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", WorkspaceTimeoutMs: 60_000, TimeoutMs: 120_000}
+			// The bounds are the daemon's own (internal/daemon's rescueWorkspaceTimeout and
+			// rescueTimeout): the guard keeps a reserve of the workspace's bound for the push it
+			// clears, wide enough for the second run of the check a pod's pre-push hook makes
+			// (rescue.guardReserve), and a smaller bound here would be refused for want of time
+			// rather than checked.
+			request := shimwire.RescueUnpushed{ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", WorkspaceTimeoutMs: 360_000, TimeoutMs: 540_000}
 			p.send(t, request)
 			got, ok := p.next(t).(shimwire.RescueUnpushedResult)
 			if !ok || got.ID != request.ID {

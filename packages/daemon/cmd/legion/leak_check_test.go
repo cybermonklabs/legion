@@ -3,14 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // theLeakCheckHost is the one refusable literal these tests need: a Tailscale MagicDNS host built
@@ -29,23 +28,13 @@ const theLeakCheckClass = "names a Tailscale MagicDNS host"
 // ref the push creates.
 const noSHA = "0000000000000000000000000000000000000000"
 
-// The stand-in shared public leak checks these tests drive the command against. Each reads its
-// standard input, as the real check does, so that nothing is left in a pipe when it exits.
-const (
-	leakCheckPasses  = "cat >/dev/null 2>&1\nexit 0\n"
-	leakCheckRefuses = "cat >/dev/null 2>&1\necho 'LEAK CHECK: refusing: one of ours'\nexit 3\n"
-)
-
-// standInSharedCheck writes a stand-in shared check whose body is script and names it in
+// standInSharedCheck writes a stand-in shared check whose body is script — one of
+// leakguardtest's, which read their standard input as the real check does — and names it in
 // PUBLIC_LEAK_CHECK, which is where a pod names the real one: the command resolves its check the
 // way every other caller of the guard does, so nothing here reaches past the command's own seams.
 func standInSharedCheck(t *testing.T, script string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "public-leak-check.sh")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PUBLIC_LEAK_CHECK", path)
+	t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), script))
 }
 
 // noSharedCheck leaves the command no check to resolve at all: nothing in PUBLIC_LEAK_CHECK, no
@@ -123,21 +112,21 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 		{
 			name:    "the shared check refuses the push",
 			message: "a commit of nothing in particular",
-			standIn: leakCheckRefuses,
+			standIn: leakguardtest.Refuses,
 			code:    3,
 			says:    []string{"LEAK CHECK: refusing the push to origin: the shared public leak check refused it", "one of ours"},
 		},
 		{
 			name:    "this repository's own rules refuse the push",
 			message: "a commit that names " + theLeakCheckHost,
-			standIn: leakCheckPasses,
+			standIn: leakguardtest.Passes,
 			code:    3,
 			says:    []string{"LEAK CHECK: refusing the push to origin: this repository's own private-name rules match it", theLeakCheckClass},
 		},
 		{
 			name:    "a clean push",
 			message: "a commit of nothing in particular",
-			standIn: leakCheckPasses,
+			standIn: leakguardtest.Passes,
 			code:    0,
 		},
 		{
@@ -184,21 +173,21 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 		{
 			name:    "the shared check refuses the text",
 			text:    "a title\na body of nothing in particular\n",
-			standIn: leakCheckRefuses,
+			standIn: leakguardtest.Refuses,
 			code:    3,
 			says:    []string{"LEAK CHECK: refusing " + kind + ": the shared public leak check refused it", "one of ours"},
 		},
 		{
 			name:    "this repository's own rules refuse the text",
 			text:    "a title\na body that names " + theLeakCheckHost + "\n",
-			standIn: leakCheckPasses,
+			standIn: leakguardtest.Passes,
 			code:    3,
 			says:    []string{"LEAK CHECK: refusing " + kind + ": this repository's own private-name rules match it", theLeakCheckClass},
 		},
 		{
 			name:    "a clean text",
 			text:    "a title\na body of nothing in particular\n",
-			standIn: leakCheckPasses,
+			standIn: leakguardtest.Passes,
 			code:    0,
 		},
 		{

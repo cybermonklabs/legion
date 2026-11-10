@@ -198,12 +198,15 @@ func TestInstallLandsTheWholeCheckOrFailsWithNothingInPlace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, record := standInGh(t, tc.gh(t))
 			dir := filepath.Join(t.TempDir(), "leak-check")
-			err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir})
+			landed, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir})
 			check := filepath.Join(dir, checkName)
 
 			if tc.want != "" {
 				if got := setupFailure(t, err); !strings.Contains(got.Error(), tc.want) {
 					t.Errorf("install = %q, want it to name %q", got, tc.want)
+				}
+				if landed != "" {
+					t.Errorf("a failed install answered %q, want no check at all", landed)
 				}
 				if _, err := os.Stat(dir); !os.IsNotExist(err) {
 					t.Errorf("stat %s = %v, want the install path absent after a failed install", dir, err)
@@ -214,6 +217,9 @@ func TestInstallLandsTheWholeCheckOrFailsWithNothingInPlace(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Fatalf("install: %v", err)
+				}
+				if landed != check {
+					t.Errorf("the install answered %q, want the check it landed, %q", landed, check)
 				}
 				// The whole directory, because the launcher resolves its python file beside
 				// itself and its self-test reads the fixture from there.
@@ -252,8 +258,12 @@ func TestInstallLandsTheWholeCheckOrFailsWithNothingInPlace(t *testing.T) {
 func TestWithNoPinTheInstallDoesNothing(t *testing.T) {
 	bin, record := standInGh(t, servesTheTarball(wholeCheck(t, answersItsHelp)))
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	if err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, ""), Dir: dir}); err != nil {
+	landed, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, ""), Dir: dir})
+	if err != nil {
 		t.Fatalf("install: %v", err)
+	}
+	if landed != "" {
+		t.Errorf("the install answered %q, want no check: a machine with no pin installs none", landed)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("stat %s = %v, want nothing installed", dir, err)
@@ -272,17 +282,22 @@ func TestTwoShimsOfOnePodInstallOnce(t *testing.T) {
 	env := installEnv(t, bin, theTag)
 	var wait sync.WaitGroup
 	failures := make([]error, 2)
+	landed := make([]string, 2)
 	for shim := range failures {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			failures[shim] = Install(bound(t), InstallOptions{Env: env, Dir: dir})
+			landed[shim], failures[shim] = Install(bound(t), InstallOptions{Env: env, Dir: dir})
 		}()
 	}
 	wait.Wait()
+	check := filepath.Join(dir, checkName)
 	for shim, err := range failures {
 		if err != nil {
 			t.Errorf("shim %d's install: %v", shim, err)
+		}
+		if landed[shim] != check {
+			t.Errorf("shim %d's install answered %q, want the installed check %q: the role that waited answers it too", shim, landed[shim], check)
 		}
 	}
 	if made := calls(t, record); len(made) != 1 {
@@ -293,5 +308,101 @@ func TestTwoShimsOfOnePodInstallOnce(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("the install is missing %s: %v", name, err)
 		}
+	}
+}
+
+// A directory that outlives a pin change — the controller's persistent volume, which is not the
+// pod-lived scratch every other role installs into — is installed over, and one that already
+// holds this pin's check is left alone. The install records the tag it landed beside the check
+// (tagFile) and reads it back, so the second install's one question is which tag is there, and
+// an install an earlier release made, which recorded no tag at all, is installed over once.
+func TestAnInstallOfAnotherTagIsInstalledAgainAndOneOfTheSameTagIsNot(t *testing.T) {
+	// The two tags' launchers differ in what they print, so the test reads which of the two is
+	// installed from the install itself rather than from the record of the fetch alone.
+	const newTag = "leak-check-v16"
+	marked := func(tag string) string {
+		return strings.Replace(answersItsHelp, "# Usage:", "# "+tag+" Usage:", 1)
+	}
+	// One stand-in gh serves whichever tarball the tag it is asked for names, so a second
+	// install's fetch is the second tag's and the first install's is the first's.
+	bin := t.TempDir()
+	record := filepath.Join(bin, "calls")
+	body := "#!/bin/sh\necho \"$*\" >> " + record + "\n" +
+		"case \"$*\" in\n" +
+		"  *" + theTag + ") exec cat " + wholeCheck(t, marked(theTag)) + " ;;\n" +
+		"  *" + newTag + ") exec cat " + wholeCheck(t, marked(newTag)) + " ;;\n" +
+		"esac\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "leak-check")
+	check := filepath.Join(dir, checkName)
+	// installs is the tags gh was asked for, and answers what the installed check now prints.
+	installed := func(t *testing.T) string {
+		t.Helper()
+		printed, err := exec.Command(check, "--help").Output()
+		if err == nil {
+			t.Fatalf("the installed check exited 0 printing %q, want the usage header and exit 1", printed)
+		}
+		return string(printed)
+	}
+
+	if _, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir}); err != nil {
+		t.Fatalf("the first install: %v", err)
+	}
+	if got := installed(t); !strings.Contains(got, theTag) {
+		t.Fatalf("the installed check printed %q, want the first tag's", got)
+	}
+	if recorded, there := installedTag(dir); !there || recorded != theTag {
+		t.Errorf("the install recorded (%q, %v) beside itself, want the tag it landed, %q", recorded, there, theTag)
+	}
+
+	// The same pin again: nothing is fetched and the check stays the one that is there.
+	if _, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir}); err != nil {
+		t.Fatalf("the install of the tag already there: %v", err)
+	}
+	if made := calls(t, record); len(made) != 1 {
+		t.Errorf("gh was called %v, want the one fetch of the first install: a check of this tag is already there", made)
+	}
+
+	// A bumped pin: fetched again, and the directory now holds the new tag's check and its tag.
+	landed, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, newTag), Dir: dir})
+	if err != nil {
+		t.Fatalf("the install of the bumped pin: %v", err)
+	}
+	if landed != check {
+		t.Errorf("the install answered %q, want the check it landed, %q", landed, check)
+	}
+	if want := []string{"api repos/" + checkSlug + "/tarball/" + theTag, "api repos/" + checkSlug + "/tarball/" + newTag}; !slices.Equal(calls(t, record), want) {
+		t.Errorf("gh was called %v, want %v: the bumped pin is fetched and the repeated one is not", calls(t, record), want)
+	}
+	if got := installed(t); !strings.Contains(got, newTag) {
+		t.Errorf("the installed check printed %q, want the bumped tag's", got)
+	}
+	if recorded, there := installedTag(dir); !there || recorded != newTag {
+		t.Errorf("the install recorded (%q, %v) beside itself, want the bumped tag %q", recorded, there, newTag)
+	}
+	for _, name := range []string{theNeighbour, theFixture, theNested} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("the install that replaced another is missing %s: %v", name, err)
+		}
+	}
+	// The replaced install is gone, not left beside the directory for the pod's disk to carry.
+	if left := leftovers(t, dir); !slices.Equal(left, []string{filepath.Base(dir)}) {
+		t.Errorf("the replacing install left %v beside the install path, want the install alone", left)
+	}
+
+	// An install an earlier release made records no tag, so it is installed over once.
+	if err := os.Remove(filepath.Join(dir, tagFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, newTag), Dir: dir}); err != nil {
+		t.Fatalf("the install over one that recorded no tag: %v", err)
+	}
+	if made := calls(t, record); len(made) != 3 {
+		t.Errorf("gh was called %v, want a third fetch: an install that records no tag is one of no known tag", made)
+	}
+	if recorded, there := installedTag(dir); !there || recorded != newTag {
+		t.Errorf("the install recorded (%q, %v) beside itself, want %q", recorded, there, newTag)
 	}
 }

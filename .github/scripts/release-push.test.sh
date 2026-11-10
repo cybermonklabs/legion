@@ -1426,6 +1426,60 @@ check "the refusal says nothing was written" "$(contains "$out" 'so nothing was 
 leak_refuse=''
 
 echo
+echo "Case: an inline gitleaks:allow comment excuses nothing"
+# gitleaks drops every finding of a line holding a `gitleaks:allow` comment, and
+# .github/scripts/check-private-names.sh, which this lane's rule file is ported
+# from, honours no such comment: left on, that comment would be an opt-out from
+# the four classes the rules it ports never had. The lane turns it off with
+# --ignore-gitleaks-allow, and this case drives a second stand-in that honours
+# the escape exactly as gitleaks does and obeys that flag, so a release note
+# carrying both the host and the comment is refused all the same.
+cat > "$work/bin/leak-engine-allow" <<'ENGINE'
+#!/usr/bin/env bash
+config='' code=1 ignore=no status=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --config) config=$2; shift 2 ;;
+    --exit-code) code=$2; shift 2 ;;
+    --ignore-gitleaks-allow) ignore=yes; shift ;;
+    *) shift ;;
+  esac
+done
+grep -q '^title = ' "$config" 2> /dev/null || exit 1
+while IFS= read -r line; do
+  [ -n "${LEAK_REFUSE:-}" ] || continue
+  [[ $line == *"$LEAK_REFUSE"* ]] || continue
+  if [ "$ignore" = no ] && [[ $line == *"gitleaks:allow"* ]]; then continue; fi
+  status=$code
+done
+exit "$status"
+ENGINE
+chmod +x "$work/bin/leak-engine-allow"
+# The stand-in honours the escape when nothing turns it off, which is what makes
+# the two cases below a test of the flag and not of the stand-in.
+set +e
+printf 'a line naming %s # gitleaks:allow\n' "$leak_host" |
+  LEAK_REFUSE="$leak_host" "$work/bin/leak-engine-allow" stdin --config "$leak_rules_file" \
+    --no-banner --exit-code 7 > /dev/null 2>&1
+rc=$?
+printf 'a line naming %s # gitleaks:allow\n' "$leak_host" |
+  LEAK_REFUSE="$leak_host" "$work/bin/leak-engine-allow" stdin --config "$leak_rules_file" \
+    --no-banner --ignore-gitleaks-allow --exit-code 7 > /dev/null 2>&1
+rc_ignored=$?
+set -e
+check "the stand-in honours the escape, and --ignore-gitleaks-allow turns it off" \
+  "$(is "$rc|$rc_ignored" '0|7')"
+RELEASE_PUSH_LEAK_ENGINE="$work/bin/leak-engine-allow"
+leak_refuse=$leak_host
+release_run none "" --notes "Fixed notes naming $leak_host. # gitleaks:allow" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "the create, refused over notes whose line carries the escape: exits 1, the stub logged the view alone and no create" \
+  "$(is "$rc|$calls" "1|$view")"
+leak_refuse=''
+release_run none "" --notes "Fixed notes." pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "the same stand-in clears a write that names nothing" "$(is "$rc" 0)"
+RELEASE_PUSH_LEAK_ENGINE="$work/bin/leak-engine"
+
+echo
 echo "Case: a rule file that is absent, and one that does not parse, each refuse the write"
 # The rule file is read from the checkout, which is what makes these two reachable here: a copy
 # of the script under test in a tree holding no rule file at all, and one in a tree whose rule

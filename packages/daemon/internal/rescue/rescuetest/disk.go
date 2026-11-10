@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -26,22 +27,22 @@ const (
 	Repo  = "widgets"
 )
 
-// The stand-in shared public leak checks a disk's pushes are checked against. The real check is
-// a script no clone of this repository holds, and the push check refuses a push it can run no
-// check for, so every disk carries one: Passes to begin with, and Refuses for a test that wants
-// the push refused (Disk.LeakCheck). Each reads its standard input, as the real check does, so
-// that nothing is left in a pipe when it exits.
+// The stand-in shared public leak checks a disk's pushes are checked against, which are
+// leakguardtest's. The real check is a script no clone of this repository holds, and the push
+// check refuses a push it can run no check for, so every disk carries one: Passes to begin with,
+// and Refuses for a test that wants the push refused (Disk.LeakCheck). They are named here so
+// that a test of the push check writes a disk's stand-in in the disk's own words.
 const (
-	Passes  = "cat >/dev/null 2>&1\nexit 0\n"
-	Refuses = "cat >/dev/null 2>&1\necho 'LEAK CHECK: refusing: one of ours'\nexit 3\n"
+	Passes  = leakguardtest.Passes
+	Refuses = leakguardtest.Refuses
 )
 
 // Disk is one pod's disk and the remote its clone pushes to.
 type Disk struct {
 	t testing.TB
-	// leakCheck is the stand-in shared public leak check PUBLIC_LEAK_CHECK names in Env, whose
-	// body LeakCheck writes.
-	leakCheck string
+	// leakCheckDir holds the stand-in shared public leak check PUBLIC_LEAK_CHECK names in Env,
+	// whose body LeakCheck writes.
+	leakCheckDir string
 	// Remote is the bare repository standing in for GitHub.
 	Remote string
 	// StateDir is the disk's root, a pod's /legion.
@@ -68,9 +69,7 @@ type Disk struct {
 // replaces it, since the guard resolves the check again at every call.
 func (d *Disk) LeakCheck(script string) {
 	d.t.Helper()
-	if err := os.WriteFile(d.leakCheck, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
-		d.t.Fatal(err)
-	}
+	leakguardtest.Write(d.t, d.leakCheckDir, script)
 }
 
 // New is a disk whose clone is jj's own colocated clone (`jj git clone --colocate`, which checks
@@ -141,18 +140,17 @@ func newDisk(t testing.TB, issue string, before []func(d *Disk), clone func(d *D
 		t.Fatal(err)
 	}
 	d := &Disk{
-		t:         t,
-		Remote:    filepath.Join(root, "remote.git"),
-		StateDir:  filepath.Join(root, "legion"),
-		Issue:     issue,
-		Branch:    "legion/" + issue,
-		Env:       fixtureenv.Isolated(home),
-		Clone:     filepath.Join(root, "legion", "repos", "github.com", Owner, Repo),
-		Workspace: filepath.Join(root, "legion", "workspaces", Owner, Repo, strings.ToLower(issue)),
+		t:            t,
+		leakCheckDir: root,
+		Remote:       filepath.Join(root, "remote.git"),
+		StateDir:     filepath.Join(root, "legion"),
+		Issue:        issue,
+		Branch:       "legion/" + issue,
+		Env:          fixtureenv.Isolated(home),
+		Clone:        filepath.Join(root, "legion", "repos", "github.com", Owner, Repo),
+		Workspace:    filepath.Join(root, "legion", "workspaces", Owner, Repo, strings.ToLower(issue)),
 	}
-	d.leakCheck = filepath.Join(root, "public-leak-check.sh")
-	d.Env = append(d.Env, "PUBLIC_LEAK_CHECK="+d.leakCheck)
-	d.LeakCheck(Passes)
+	d.Env = append(d.Env, "PUBLIC_LEAK_CHECK="+leakguardtest.Write(t, d.leakCheckDir, Passes))
 	d.Provisioned = time.Now()
 	seed := filepath.Join(root, "seed")
 	d.Run(root, fixturegit.InitBare(d.Remote, "main")...)
@@ -273,11 +271,18 @@ func (d *Disk) RefuseWrites() {
 
 // Check runs the push check over the disk as a role's shim runs it (shim.rescue), under the
 // disk's environment, with rescue branches named from prefix.
+//
+// The bounds are the daemon's own (internal/daemon's rescueWorkspaceTimeout and rescueTimeout):
+// the guard's call keeps a reserve of the workspace's bound for the push it clears
+// (rescue.guardReserve, wide enough for the second run of the check a pod's pre-push hook
+// makes), so a fixture bounded under that reserve would have every push here refused for want
+// of time rather than checked. Nothing waits these out — they are what a check may spend, and
+// these tests spend milliseconds.
 func (d *Disk) Check(ctx context.Context, prefix string) []shimwire.RescueWorkspace {
 	d.t.Helper()
 	return rescue.Run(ctx, rescue.Request{
 		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
-		WorkspaceTimeout: time.Minute, Deadline: time.Now().Add(2 * time.Minute),
+		WorkspaceTimeout: 6 * time.Minute, Deadline: time.Now().Add(9 * time.Minute),
 	})
 }
 

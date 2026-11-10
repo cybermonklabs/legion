@@ -18,11 +18,17 @@ import (
 // The exit statuses the shared public leak check documents. Anything else is a setup failure: a
 // status this package does not know is a check it does not understand, and a write it has not
 // cleared.
+//
+// The first three are exported because they are the vocabulary a command that stands in for the
+// check exits with as well — `legion leak-check`, which a pre-push hook runs — and a second copy
+// of the three numbers is one an edit here would silently part from. StatusWantsStdin stays
+// unexported: it is a step of the gh shape's own handshake (Guard.askAgain), never a status this
+// package answers a caller with.
 const (
-	checkClean      = 0 // the write is clean
-	checkRefused    = 3 // the write names something private
-	checkUnfinished = 2 // the check could not finish
-	checkWantsStdin = 4 // the gh call reads standard input; buffer it and ask again
+	StatusClean        = 0 // the write is clean
+	StatusSetupFailure = 2 // the check could not be made to run, or could not finish
+	StatusRefused      = 3 // the write names something private
+	checkWantsStdin    = 4 // the gh call reads standard input; buffer it and ask again
 )
 
 // whyNoCheck is the setup failure of a call that found no shared check at all.
@@ -186,11 +192,11 @@ func (g *Guard) shared(ctx context.Context, what string, c child) error {
 // of its own: nil for a clean one, a refusal for 3, and a setup failure for everything else.
 func readStatus(what string, status int, printed string) error {
 	switch status {
-	case checkClean:
+	case StatusClean:
 		return nil
-	case checkRefused:
+	case StatusRefused:
 		return &Refusal{What: what, By: bySharedCheck, Lines: reportLines(printed)}
-	case checkUnfinished:
+	case StatusSetupFailure:
 		return &SetupFailure{What: what, Why: "the shared public leak check could not finish (exit 2)", Err: printedError(printed)}
 	default:
 		return &SetupFailure{

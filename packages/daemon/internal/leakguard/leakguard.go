@@ -32,7 +32,8 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // Visibility is what GitHub reports a repository as. The rule-file pass runs for a public
@@ -63,23 +64,22 @@ type Options struct {
 	Env []string
 }
 
-// Guard runs the two checks. Build one with New and share it: the visibility answers it caches are
-// cached for as long as the guard lives, which in a daemon or a one-shot command is the process.
+// Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
+// guard of its own for the one write it is about to make (cmd/legion's gh and leak-check,
+// internal/rescue, internal/ghbranch), and each entry point reads a destination's visibility at
+// most once, so there is nothing a shared answer would spare.
 type Guard struct {
 	opts Options
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
-
-	mu   sync.Mutex
-	seen map[string]Visibility
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, seen: map[string]Visibility{}}
+	g := &Guard{opts: opts}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }
@@ -187,9 +187,24 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 // reports public, and for one the caller could not name, which is the fail-closed answer — a
 // destination nobody can name is scanned as if it were public. A visibility that cannot be read is
 // a setup failure and refuses the write, as it does in the shared check.
+//
+// A slug that is no repository GitHub could serve is a setup failure before any read is made, and
+// that is where the one recursion this package can make is broken. A pod's gh is `legion gh`,
+// which runs this guard; the exemption that command makes for the check's own visibility read
+// requires the slug to be one ghrepo.Parse takes (its ghVisibilityRead), so a read for any other
+// slug would go back through `legion gh`, into the guard, into a read of the same slug, without
+// end. The guard therefore reads no visibility it could not have exempted. The refusal carries no
+// error of Parse's: that refusal repeats the slug as it was written, and a report carries a
+// masked name alone.
 func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error) {
 	if slug == "" {
 		return true, nil
+	}
+	if _, err := ghrepo.Parse("", slug); err != nil {
+		return false, &SetupFailure{
+			What: what,
+			Why:  "the destination " + maskPath(slug) + " is no repository GitHub serves, so no visibility can be read for it",
+		}
 	}
 	visibility, err := g.Visibility(ctx, slug)
 	if err != nil {

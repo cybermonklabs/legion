@@ -68,6 +68,12 @@ const (
 	// `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load
 	// (internal/config).
 	MinStopGrace = DefaultGrace + DrainTimeout + MinWarmUpDrain
+	// leakCheckVariable is the name every write path of a role resolves the shared public leak
+	// check from first (internal/leakguard's Resolve), and the one the shim sets from its own
+	// install where its environment names none (spawnOnce). The name is a string here rather
+	// than a constant of that package because this package runs no check: it carries the
+	// installer's answer to the processes it starts, and nothing else of the guard reaches it.
+	leakCheckVariable = "PUBLIC_LEAK_CHECK"
 )
 
 // warmUpDrain is how long Run waits for an in-flight CodeGraph warm-up once the shim's loop has
@@ -123,13 +129,19 @@ type Config struct {
 	// and on the controller, which has no workspace: nothing runs.
 	WarmCodegraph func(ctx context.Context, dir string, launched time.Time)
 	// InstallLeakCheck, when set, is run once before the wrapped process is started (spawnOnce)
-	// and must answer an error the launch should fail on: the pod's one install of the pinned
-	// shared public leak check (leakguard.Install), which the role's environment then names as
-	// PUBLIC_LEAK_CHECK. It installs nothing where the environment carries no pin, which is every
-	// tmux pane, so `legion worker-shim` sets it in every runtime and the pin decides
+	// and must answer the installed check's path and an error the launch should fail on: the
+	// pod's one install of the pinned shared public leak check (leakguard.Install). It installs
+	// nothing and answers "" where the environment carries no pin, which is every tmux pane, so
+	// `legion worker-shim` sets it in every runtime and the pin decides
 	// (cmd/legion/worker_shim.go). ctx is the shim's own termination, so a stop that arrives
 	// mid-install ends it rather than holding the launch.
-	InstallLeakCheck func(ctx context.Context, env []string) error
+	//
+	// The path it answers is what the shim then names in PUBLIC_LEAK_CHECK for everything it
+	// starts, where the environment names none of its own (spawnOnce): the runtime's own value
+	// wins where there is one, and this fills the gap where there is not — a pod whose image
+	// carries the install but whose daemon predates it, which would otherwise run an agent whose
+	// every write to a public repository is refused for a check that is in fact installed.
+	InstallLeakCheck func(ctx context.Context, env []string) (string, error)
 	// Log receives the shim's own lines and its one-line frame summaries: what the pane shows.
 	Log io.Writer
 	// Grace is how long a SIGTERMed child has before it is killed; zero is DefaultGrace.
@@ -384,9 +396,10 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 	s.out.send(line)
 }
 
-// spawnOnce installs the pod's shared public leak check, then starts the wrapped process, unless
-// that process already runs or the shim is ending. An install that fails and a process that
-// cannot be started each end the shim with that failure.
+// spawnOnce installs the pod's shared public leak check, names it where its environment names
+// none, then starts the wrapped process, unless that process already runs or the shim is ending.
+// An install that fails and a process that cannot be started each end the shim with that
+// failure.
 //
 // The install is here, and before the start, for two orderings this placement guarantees. The
 // harness is started after it, so no turn of the agent reaches a write path before the check its
@@ -396,6 +409,13 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 // the install either. A pod whose check could not be installed runs no agent at all: every write
 // path would refuse anyway, and a rescue refused at the end of a dying pod would lose that pod's
 // work for a reason nobody would see.
+//
+// PUBLIC_LEAK_CHECK is set from what the install answered only where the environment names none
+// of its own, and the name is added to the shim's own environment, which is what the wrapped
+// process, the rescue helper and everything else this shim runs start from. A runtime that names
+// the check (sandbox's mainEnvironment) therefore decides, as it always has; a pod whose image
+// carries this install under a daemon that predates it names none, and this is where that pod's
+// writes find the check the image installed rather than refusing every one of them.
 func (s *shim) spawnOnce() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -406,10 +426,15 @@ func (s *shim) spawnOnce() bool {
 		return false
 	}
 	if s.cfg.InstallLeakCheck != nil {
-		if err := s.cfg.InstallLeakCheck(s.ending, s.cfg.Env); err != nil {
+		check, err := s.cfg.InstallLeakCheck(s.ending, s.cfg.Env)
+		if err != nil {
 			s.exiting = true
 			s.finish(1, err)
 			return false
+		}
+		if check != "" && envValue(s.cfg.Env, leakCheckVariable) == "" {
+			s.log.Printf("[worker-shim] %s is unset, so the installed check %s is what this role's writes are checked against", leakCheckVariable, check)
+			s.cfg.Env = append(slices.Clone(s.cfg.Env), leakCheckVariable+"="+check)
 		}
 	}
 	cmd := exec.Command(s.cfg.Argv[0], s.cfg.Argv[1:]...)

@@ -398,7 +398,8 @@ leak_guard() {
     # the engine cannot read is met here, once, instead of passing as a clean
     # scan at every write.
     printf 'release-push.sh leak guard probe\n' |
-      "$leak_engine" stdin --config "$leak_rules" --no-banner --exit-code "$leak_found" > /dev/null 2>&1 ||
+      "$leak_engine" stdin --config "$leak_rules" --no-banner \
+        --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
       status=$?
     [ "$status" = 0 ] ||
       fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file packages/daemon/internal/leakguard/private-names.toml does not parse, or this gitleaks refused it"
@@ -421,8 +422,18 @@ leak_guard() {
     material+=$listed$'\n'
   done
   status=0
+  # --ignore-gitleaks-allow turns off the engine's own inline escape. gitleaks
+  # drops every finding of a line holding `gitleaks:allow`, and
+  # .github/scripts/check-private-names.sh, the script these rules are ported
+  # from, honours no such thing: left on, a release note or an archive member
+  # name carrying that comment would publish a private name this lane is here
+  # to refuse. The daemon's own engine is turned off the same way
+  # (packages/daemon/internal/leakguard/rules.go). The cost is that a
+  # legitimate text holding those two words beside a name of one of the four
+  # classes is refused like any other, and its writer rewrites the name.
   printf '%s' "$material" |
-    "$leak_engine" stdin --config "$leak_rules" --no-banner --exit-code "$leak_found" > /dev/null 2>&1 ||
+    "$leak_engine" stdin --config "$leak_rules" --no-banner \
+      --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
     status=$?
   case $status in
     0) ;;

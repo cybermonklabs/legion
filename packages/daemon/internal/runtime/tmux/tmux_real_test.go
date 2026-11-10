@@ -1850,16 +1850,24 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// Every `legion gh` call passes the leak guard, and a guard that can resolve no shared public
 	// leak check refuses the call. This pane stands for an operator's own machine, which under the
 	// tmux runtime carries that check itself — Legion installs none there, the check arrives
-	// through its own installer, and a machine without it refuses every public write — so the pane
-	// is given a stand-in check that clears every call, named in PUBLIC_LEAK_CHECK as the check
-	// itself says to name it, the way the guard's own tests and cmd/legion/gh_test.go hand it one.
+	// through its own installer, and a machine without it refuses every public write. So the
+	// check is put where that installer puts it on a real machine: a `public-leak-check.sh` on
+	// the machine's own PATH, which is the route an installed command takes, and the one the
+	// daemon's own PATH carries it by from the shell that started the daemon. The pane is told
+	// nothing of it here: the daemon resolves it on its own machine and names it for the pane
+	// (resolveLeakCheck, panePairs), which is the whole of what this half of the test reads —
+	// the pane's own PATH below is a decoy directory and the test process's, and holds no check,
+	// so a pane that resolved for itself would find none and every call would be refused.
 	// What this test reads is which `legion` and which gh the pane resolves, not what the guard
 	// refuses, which cmd/legion's own tests read.
 	check := filepath.Join(t.TempDir(), "public-leak-check.sh")
 	if err := os.WriteFile(check, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t, func(o *Options) { o.GH = realGH })
+	r := newRig(t, func(o *Options) {
+		o.GH = realGH
+		o.Environ = append(slices.Clone(o.Environ), "PATH="+filepath.Dir(check)+":"+os.Getenv("PATH"))
+	})
 	if err := workerbin.Install(r.stateDir, r.legion); err != nil {
 		t.Fatalf("workerbin.Install: %v", err)
 	}
@@ -1871,7 +1879,6 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 	spec := r.spec("LEGION-10", "LEGION-10", claim.RoleArchitect)
 	spec.Env["PATH"] = decoy + ":" + os.Getenv("PATH")
-	spec.Env["PUBLIC_LEAK_CHECK"] = check
 
 	loc, err := r.rt.Spawn(ctx, spec)
 	if err != nil {
@@ -1884,6 +1891,11 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	want := bin + ":" + spec.Env["PATH"]
 	if env["PATH"] != want {
 		t.Fatalf("OMP's PATH = %q, want %q", env["PATH"], want)
+	}
+	// The pane's own PUBLIC_LEAK_CHECK is the check the daemon resolved on its machine: the
+	// runtime told it, nothing of the spec did, and the pane's PATH holds no check of its own.
+	if env["PUBLIC_LEAK_CHECK"] != check {
+		t.Fatalf("the pane's PUBLIC_LEAK_CHECK = %q, want the check the daemon resolved on its own machine, %q", env["PUBLIC_LEAK_CHECK"], check)
 	}
 	// The agent's bash tool inherits OMP's environment: resolve and run `legion` and `gh` exactly
 	// there, in a directory that is no clone of another owner's repository, as the agent's

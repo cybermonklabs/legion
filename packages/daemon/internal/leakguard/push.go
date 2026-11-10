@@ -91,16 +91,25 @@ type PushRequest struct {
 	Updates []Update
 }
 
+// PushName is what a refusal and a setup failure of a push call the write: "the push to origin",
+// and "the push" where the caller has no remote's name. It is exported because a caller that
+// reports a failure of its own before the guard runs — `legion leak-check pre-push` reading
+// git's update lines, internal/rescue reading the remote's URL — must name the write in the same
+// words the guard would, and three copies of one sentence are three that drift apart.
+func PushName(remote string) string {
+	if remote == "" {
+		return "the push"
+	}
+	return "the push to " + remote
+}
+
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
 // lines on its standard input, the repository as its working directory — and then, for a
 // destination GitHub reports public, this repository's own rules read the push's records: each
 // ref name, and for each commit the destination does not already hold, the author, the
 // committer, the message, each added or renamed path, and each added line.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
-	what := "the push"
-	if req.Remote != "" {
-		what += " to " + req.Remote
-	}
+	what := PushName(req.Remote)
 	check, err := g.Resolve()
 	if err != nil {
 		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
@@ -214,58 +223,93 @@ func zeroSHA(sha string) bool {
 }
 
 // commitRecords is one commit as records. The identities and the message come from the commit
-// itself; the added and renamed paths and the added lines come from its diff against its first
-// parent, which is what a merge commit of its own adds — nothing — and what an ordinary commit
-// adds.
+// itself; the added and renamed paths and the added lines come from its diff, read in the shape
+// its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
 func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
-	// own holding a zero byte is a child that cannot be started at all.
+	// own holding a zero byte is a child that cannot be started at all. %P comes before the
+	// body, which is the one field that can hold a newline, so the parents are read without a
+	// second git.
 	const separator = "%x00"
 	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
-		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%B"+separator, commit)
+		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
 	if err != nil {
 		return nil, err
 	}
 	parts := strings.Split(out, "\x00")
-	if len(parts) < 4 {
-		return nil, fmt.Errorf("git show %s answered no identity and message", short(commit))
+	if len(parts) < 5 {
+		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
+	parents := len(strings.Fields(parts[3]))
 	records := []Record{
 		{Label: "commit " + short(commit) + " author", Text: parts[1]},
 		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
-		{Label: "commit " + short(commit) + " message", Text: parts[3]},
+		{Label: "commit " + short(commit) + " message", Text: parts[4]},
 	}
-	paths, err := g.addedPaths(ctx, dir, commit)
+	paths, err := g.addedPaths(ctx, dir, commit, parents)
 	if err != nil {
 		return nil, err
 	}
 	for _, path := range paths {
 		records = append(records, Record{Label: path, Text: path})
 	}
-	added, err := g.addedLines(ctx, dir, commit)
+	added, err := g.addedLines(ctx, dir, commit, parents)
 	if err != nil {
 		return nil, err
 	}
 	return append(records, added...), nil
 }
 
+// diffTree is a diff-tree of one commit, in the shape its parents call for: --root for a root
+// commit, whose diff is otherwise empty, and -c for a merge.
+//
+// -c is the combined diff, which is the merge's own resolution: the lines of the result that
+// stand in none of the parents, and the files modified from all of them. That is what a merge
+// publishes of its own and what no other record of this push holds. Everything else the merge
+// carries came from one of its parents, and a parent is either a commit this same push adds —
+// read as records of its own, since Guard.commits lists every commit the destination does not
+// reach — or a commit the destination already holds. --cc, the dense form, drops more than this
+// (a hunk whose result matches one parent exactly), and -m, the diff against each parent in
+// turn, reads whole branches the destination already has; between the three, -c is the one that
+// reads the resolution and nothing the destination can already read.
+//
+// A git that refuses the option answers a non-zero status, which Guard.git makes an error of and
+// Guard.Push a setup failure: a diff that could not be read refuses the push, and is never a
+// commit read as clean.
+func diffTree(parents int, args ...string) []string {
+	argv := []string{"diff-tree", "-r", "-M", "--no-commit-id"}
+	switch {
+	case parents == 0:
+		argv = append(argv, "--root")
+	case parents > 1:
+		argv = append(argv, "-c")
+	}
+	return append(argv, args...)
+}
+
 // addedPaths are the paths one commit adds or renames a file to, which are the paths the
 // destination would hold that it does not hold already.
-func (g *Guard) addedPaths(ctx context.Context, dir, commit string) ([]string, error) {
-	out, err := g.git(ctx, dir, "diff-tree", "-r", "-M", "--no-commit-id", "--name-status", "--diff-filter=AR", "-z", commit)
+//
+// A merge's combined diff writes one status letter per parent and one path, with no path a
+// rename came from, where an ordinary diff writes one letter and, for a rename, the two paths.
+// Both are read here: a status of as many letters as the commit has parents is the combined
+// shape.
+func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int) ([]string, error) {
+	out, err := g.git(ctx, dir, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
 	if err != nil {
 		return nil, err
 	}
+	combined := parents > 1
 	fields := strings.Split(out, "\x00")
 	var paths []string
 	for i := 0; i < len(fields); i++ {
 		switch status := fields[i]; {
 		case status == "":
-		case strings.HasPrefix(status, "R"):
+		case !combined && strings.HasPrefix(status, "R"):
 			// A rename is three fields: the status, the path it was at, and the path it is at.
 			// The destination learns the new path alone.
 			if i+2 < len(fields) {
@@ -284,20 +328,34 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string) ([]string, e
 
 // addedLines are the lines one commit adds, each as a record of the file it is added to. The
 // diff is read with no context lines, so every line of it that a patch marks as added is one.
-func (g *Guard) addedLines(ctx context.Context, dir, commit string) ([]Record, error) {
-	out, err := g.git(ctx, dir, "diff-tree", "-r", "-M", "--no-commit-id", "--unified=0", "--no-color", commit)
+//
+// A merge's combined diff marks each line with one column per parent, so a line added against
+// any of them begins with that many characters, one of which is a "+" ("++text" for a line of
+// the resolution's own, in a merge of two). The whole prefix comes off, and a line added against
+// one parent alone is read as added: the destination gains it from this commit whatever a parent
+// holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
+// "diff --" line and the hunk that follows it, so a line of content that reads like one is not
+// mistaken for the name of a file.
+func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
+	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
 	if err != nil {
 		return nil, err
 	}
+	width := max(parents, 1)
 	var records []Record
-	path := ""
+	path, header := "", false
 	for line := range strings.Lines(out) {
 		line = strings.TrimRight(line, "\r\n")
 		switch {
-		case strings.HasPrefix(line, "+++ "):
+		case strings.HasPrefix(line, "diff --"):
+			path, header = "", true
+		case header && strings.HasPrefix(line, "+++ "):
 			path = diffPath(strings.TrimPrefix(line, "+++ "))
-		case strings.HasPrefix(line, "+") && path != "":
-			if text := line[1:]; strings.TrimSpace(text) != "" {
+		case strings.HasPrefix(line, "@@"):
+			header = false
+		case header || path == "" || len(line) < width:
+		case strings.Contains(line[:width], "+"):
+			if text := line[width:]; strings.TrimSpace(text) != "" {
 				records = append(records, Record{Label: path, Text: text})
 			}
 		}

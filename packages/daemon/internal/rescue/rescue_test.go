@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
@@ -421,4 +422,30 @@ func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
 
 	d.LeakCheck(rescuetest.Passes)
 	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+}
+
+// The guard's call keeps a reserve of the workspace's bound for the push it clears, and that
+// reserve now holds two things: the push itself, and the second run of the shared check that a
+// pod's pre-push hook makes inside it (guardReserve, 150 s, and the gitPins comment for why the
+// hook runs at all). A workspace bound that cannot hold the reserve is refused before the guard
+// runs at all, with nothing pushed — the fail-closed answer, and the reason the daemon's own
+// bound is six minutes (internal/daemon's rescueWorkspaceTimeout). The minute a bound was here
+// before is now such a bound, which is what this reads.
+func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "feature.txt", "work a bound too small never carries\n")
+	d.JJ("commit", "-m", "work a bound too small never carries")
+	before := d.RemoteBranches()
+
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: time.Minute, Deadline: time.Now().Add(2 * time.Minute),
+	})
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "has no time left to check this push in") {
+		t.Fatalf("the check reported %+v, want a refusal naming the bound and no branch", w)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
 }

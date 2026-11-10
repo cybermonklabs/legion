@@ -106,8 +106,7 @@ func TestResolveReadsTheCheckAgainAtEveryCall(t *testing.T) {
 
 // The visibility read is the one the shared check itself makes, argv for argv and variable for
 // variable, so that the exemption `legion gh` makes for the check's own read covers this one too
-// and a pod's gh, which is `legion gh`, cannot call the guard again. The answer is cached: one
-// write makes several calls, and a repository does not change what it is between them.
+// and a pod's gh, which is `legion gh`, cannot call the guard again.
 func TestTheVisibilityReadIsTheOneTheSharedCheckMakes(t *testing.T) {
 	dir := t.TempDir()
 	record := filepath.Join(dir, "record")
@@ -132,14 +131,29 @@ func TestTheVisibilityReadIsTheOneTheSharedCheckMakes(t *testing.T) {
 	if string(read) != want {
 		t.Errorf("gh was called as\n%s\nwant\n%s", read, want)
 	}
-	if err := os.Remove(record); err != nil {
-		t.Fatal(err)
+}
+
+// A destination the exemption could not cover is read for no visibility at all, and refuses the
+// write. `legion gh` lets the check's own visibility read through unchecked only for a slug
+// ghrepo.Parse takes, so a read for any other slug would come back through `legion gh`, into
+// the guard, into a read of the same slug, with no end to it. The guard makes no such read: a
+// slug the parser refuses is a setup failure where the write is, which is where the recursion
+// is broken, and the gh of the pod is never started.
+func TestADestinationTheParserRefusesReadsNoVisibility(t *testing.T) {
+	var asked []string
+	guard := New(Options{
+		Check:      standIn(t, passes),
+		Visibility: answers(Public, &asked),
+		Env:        fixtureenv.Isolated(t.TempDir()),
+	})
+	// An owner GitHub serves none under: a name beginning with a hyphen.
+	err := guard.Text(bound(t), TextRequest{Repo: "-invented-org/invented-repo", Text: "a clean title\n"})
+	failed := setupFailure(t, err)
+	if !strings.Contains(failed.Why, "no repository GitHub serves") {
+		t.Errorf("the setup failure is %q, want it to say the destination is no repository", failed.Error())
 	}
-	if _, err := guard.Visibility(bound(t), "invented-org/invented-repo"); err != nil {
-		t.Fatalf("read the visibility again: %v", err)
-	}
-	if _, err := os.Stat(record); err == nil {
-		t.Error("the second read ran gh again, want the first answer cached")
+	if len(asked) != 0 {
+		t.Errorf("the visibility of %q was read, want no read at all", asked)
 	}
 }
 

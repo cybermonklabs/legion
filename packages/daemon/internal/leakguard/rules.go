@@ -73,7 +73,18 @@ func compile() (built *rules, err error) {
 		}
 		names = append(names, rule.Regex)
 	}
-	return &rules{detector: detect.NewDetector(cfg), names: names}, nil
+	detector := detect.NewDetector(cfg)
+	// The engine's own inline escape is turned off. A `gitleaks:allow` anywhere on a line makes
+	// the engine drop every finding of that line, and the script these rules are ported from,
+	// .github/scripts/check-private-names.sh, honours no such thing: left on, this package would
+	// hand a writer an opt-out from the four classes that the check it stands in for never had,
+	// and the whole of the cover would be one comment wide. The release lane's own gitleaks is
+	// turned off the same way, with --ignore-gitleaks-allow (.github/scripts/release-push.sh).
+	// It changes no rule and no match: the cost is that a legitimate text holding those two
+	// words beside a name of one of the four classes is refused like any other, and its writer
+	// rewrites the name rather than exempting the line.
+	detector.IgnoreGitleaksAllow = true
+	return &rules{detector: detector, names: names}, nil
 }
 
 // scan is the report of records: one line per refusal, naming the record and the class and
