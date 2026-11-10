@@ -1842,7 +1842,10 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 // commit_id its webhook carried, with no footer to read; the same person's review read from
 // GitHub's list of the pull request's reviews decides nothing, since the list answers with
 // GitHub's own commit_id for every review it holds and that id moves with the pull request
-// (intake.PullRequestReview.ReadFromList, dispatch://INFRA-1557).
+// (intake.PullRequestReview.ReadFromList, dispatch://INFRA-1557). That refusal stands at every
+// head the record can come to hold (RoundRefusal.AtEveryHead), so the reviewer's row keeps
+// nothing of it: the row carries a refusal a later head could have spared the round, and the
+// stuck notice of a round only a listed review was refused in carries its base reason alone.
 func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -1866,8 +1869,8 @@ func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
 			if !tc.readFromList {
 				return
 			}
-			if got := reviewerDecision(t, pool); got == nil || got.State != "" || got.Refused != "a person's review read from the list" {
-				t.Fatalf("the reviewer's decision = %+v, want no decision and the listed review's refusal", got)
+			if got := reviewerDecision(t, pool); got != nil {
+				t.Fatalf("the reviewer's decision = %+v, want nothing recorded: the refusal stands at every head", got)
 			}
 			if got := logs.String(); !strings.Contains(got, "a review decides nothing: a person's review read from the list") ||
 				!strings.Contains(got, "author=a-writer") {

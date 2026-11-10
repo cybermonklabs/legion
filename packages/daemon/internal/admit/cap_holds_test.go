@@ -42,9 +42,9 @@ func acceptingRoot(t *testing.T, pool *pgxpool.Pool, key string) {
 }
 
 // oweMemberStart queues the start of key's worker in the phase it stands in, as the transition
-// into that phase does (workflow.StartOrOwe): the relaunch row, and the task row the outbox
-// holds unclaimable until key holds a row. stands is the phase the row names, which is the
-// issue's own except where a case is about a row the issue has moved past.
+// into that phase does (workflow.StartOrOwe): the one row that carries the task, which the
+// outbox holds unclaimable until key holds a row. stands is the phase the row names, which is
+// the issue's own except where a case is about a row the issue has moved past.
 func oweMemberStart(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {

@@ -33,7 +33,13 @@ func (r *roleRig) laterEvent(t *testing.T, key string, actor model.Actor) model.
 
 // An owner is given back as its own sends settle, not when its batch ends: an issue read in the
 // same batch as a silent holder's, whose own forward was answered, has its later event - one
-// committed while the silent holder's receipt wait is still running - published at once.
+// committed while the silent holder's receipt wait is still running - forwarded while that wait
+// is still running.
+//
+// The verdict is the order of those two facts rather than a clock, because a clock measures the
+// machine as much as the outbox: this row bounded the later forward at 1 s, and under 48 busy
+// loops on this 2-CPU box that bound failed 10 of 20 runs with nothing wrong in any of them, the
+// slowest at 3.86 s.
 //
 // TestAHolderThatNeverAnswersDoesNotDelayAnotherIssuesEvents covers two owners in two batches;
 // this covers two owners in one, which only a per-owner release reaches. Both issues' events are
@@ -42,7 +48,16 @@ func TestAnOwnerOfTheSilentHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T
 	const (
 		silentRole, silentHolder = "silent-reviewer", "ses_never_answers"
 		liveRole, liveHolder     = "live-reviewer", "ses_answers"
-		within                   = time.Second
+		// What the outbox waits for the silent holder's receipt (Deps.receiptWait). It
+		// outlasts the whole test, so the wait is still running when the verdict below is read
+		// and a batch that held its owners until it ended could not end during this test at all,
+		// however slow the machine is.
+		silentHolderWait = 10 * time.Minute
+		// A hang guard on each wait for a forward, not a bound this row measures anything
+		// against: a healthy run reaches every one of them in milliseconds, and a batch that
+		// holds its owners until it ends forwards the later event only after silentHolderWait,
+		// ten times this.
+		hangGuard = 60 * time.Second
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	rig := newRoleRig(t)
@@ -50,23 +65,24 @@ func TestAnOwnerOfTheSilentHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T
 	rig.claim(t, liveRole, liveHolder, session.SessionEntry{SelfSubscribed: true})
 	silent := rig.receiver(t, silentHolder, false)
 	live := rig.receiver(t, liveHolder, true)
-	rig.routedEvent(t, "T-1", silentRole, alice)
+	held := rig.routedEvent(t, "T-1", silentRole, alice)
 	rig.routedEvent(t, "T-2", liveRole, alice)
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
+	deps.receiptWait = silentHolderWait
 	stop := runDeps(t, deps, 15*time.Second)
 	defer stop()
 
 	select {
 	case <-silent.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the silent holder never received its forward")
+	case <-time.After(hangGuard):
+		t.Fatalf("the silent holder never received its forward within %s", hangGuard)
 	}
 	select {
 	case <-live.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the answering holder never received its issue's first forward")
+	case <-time.After(hangGuard):
+		t.Fatalf("the answering holder never received its issue's first forward within %s", hangGuard)
 	}
 
 	// The silent holder's receipt wait is running, and every send of the other owner of its batch
@@ -76,12 +92,22 @@ func TestAnOwnerOfTheSilentHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T
 	rig.laterEvent(t, "T-2", alice)
 	select {
 	case <-live.arrived:
-		if waited := time.Since(committed); waited > within {
-			t.Fatalf("the answering holder received its issue's later forward %s after its commit, want within %s: "+
-				"the owner was held in flight until its batch ended", waited.Round(time.Millisecond), within)
+		// The later forward counts only while the silent holder's forward is still outstanding:
+		// one that arrived after its batch had settled would prove nothing about the release.
+		if settled, state := settledState(t, rig.database, held.ID); settled {
+			t.Fatalf("the silent holder's event %d had been settled when the answering holder's later "+
+				"forward arrived (%s), so the later forward followed its batch rather than overtaking it: "+
+				"the %s receipt wait should still have been running",
+				held.ID, state, silentHolderWait)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the answering holder never received its issue's later forward")
+		// Logged, not asserted: how long the later forward took is as much a measure of the
+		// machine as of the outbox.
+		t.Logf("the answering holder received its issue's later forward %s after its commit",
+			time.Since(committed).Round(time.Millisecond))
+	case <-time.After(hangGuard):
+		t.Fatalf("the answering holder never received its issue's later forward within %s, while the "+
+			"silent holder's %s receipt wait was still running: the owner was held in flight until its "+
+			"batch ended", hangGuard, silentHolderWait)
 	}
 }
 

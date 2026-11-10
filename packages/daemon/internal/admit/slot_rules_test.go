@@ -82,9 +82,9 @@ func takeSlot(t *testing.T, pool *pgxpool.Pool, key string) {
 	})
 }
 
-// oweStart queues the start of key's worker as a transition does (workflow.StartOrOwe): the
-// relaunch row, and the task row the outbox holds unclaimable until key holds a slot. It is what
-// puts an issue whose work came back in the waiting line.
+// oweStart queues the start of key's worker as a transition does (workflow.StartOrOwe): the one
+// row that carries the task, which the outbox holds unclaimable until key holds a slot. It is
+// what puts an issue whose work came back in the waiting line.
 func oweStart(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase) {
 	t.Helper()
 	role := workflow.RoleFor(stands)

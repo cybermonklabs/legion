@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -464,6 +466,68 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 	}
 	if got, _ := reviewerDecision(t, pool); got != "" || outsiderReads.Load() != 1 || reads.Load() != 2 {
 		t.Fatalf("the round's decision is %q, the outsider's permission was read %d times and the reviews %d; want none, once and twice", got, outsiderReads.Load(), reads.Load())
+	}
+}
+
+// What the read keeps a review as refused for is a refusal that stands at every head
+// (workflow.RoundRefusal.AtEveryHead), not only one for who wrote the review. A person's listed
+// approval is refused whatever head the record comes to hold, since the commit_id GitHub lists it
+// under is GitHub's own and moves with the pull request (dispatch://INFRA-1557): this process
+// judges it once, so the read after it reads the author's write access no more and logs no second
+// refusal. A review-App review refused for the head its footer names is judged again on the next
+// read, which is what lets it decide the round once that head arrives. Kept by who wrote it
+// alone, the person's review would cost a permission read and a warning on every read of the
+// issue until a newer review moved the pull request's newest deciding review past it.
+func TestTheReadKeepsAReviewRefusedAtEveryHead(t *testing.T) {
+	const passedOver = "this read passes over it and reads the review below it"
+	for _, tc := range []struct {
+		name            string
+		listed          string
+		permissionReads int64
+		refusals        int
+		kept            bool
+	}{
+		{name: "a person's listed approval", listed: listedReview(50, "an-outsider", "APPROVED", captureHead, "2026-10-08T22:15:40Z"),
+			permissionReads: 1, refusals: 1, kept: true},
+		{name: "the review App's approval of a head the branch has left", listed: legionReview(50, "APPROVED", captureHead, "2026-10-08T22:15:40Z", pushedHead),
+			refusals: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
+			captureHeadAt(t, pool, captureHead)
+			// an-outsider has write access here, so the workflow lets the account decide and
+			// refuses its review for the list alone; every read of write access asks GitHub,
+			// since only an answer of no write access is kept (reviewPermissionTTL).
+			var reads, permissionReads atomic.Int64
+			api := reviewsStandInWith(t, func() string { return "[" + tc.listed + "]" }, &reads,
+				func() string { return "write" }, &permissionReads).URL
+			var logs bytes.Buffer
+			w := reviewReadRuntime(pool, api)
+			w.log = slog.New(slog.NewJSONHandler(&logs, nil))
+			for range 2 {
+				readCapture(t, w)
+			}
+			if got, pr := capturePhase(t, pool); got != phase.Reviewing || pr.ReviewSeen.ID != 0 {
+				t.Fatalf("after two reads the issue is in %s with %d as its newest deciding review, want reviewing and none: the read refuses the only review GitHub lists",
+					got, pr.ReviewSeen.ID)
+			}
+			if got, _ := reviewerDecision(t, pool); got != "" {
+				t.Fatalf("the round's recorded decision = %q, want none", got)
+			}
+			if reads.Load() != 2 {
+				t.Fatalf("the reviews were read %d times, want twice", reads.Load())
+			}
+			if got := strings.Count(logs.String(), passedOver); got != tc.refusals {
+				t.Fatalf("the two reads logged the refusal %d times, want %d: %s", got, tc.refusals, logs.String())
+			}
+			if permissionReads.Load() != tc.permissionReads {
+				t.Fatalf("the author's write access was read %d times, want %d", permissionReads.Load(), tc.permissionReads)
+			}
+			if got := w.refusedReviews[50]; got != tc.kept {
+				t.Fatalf("the read keeps review 50 as refused: %t, want %t", got, tc.kept)
+			}
+		})
 	}
 }
 

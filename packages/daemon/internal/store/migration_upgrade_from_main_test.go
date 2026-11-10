@@ -14,8 +14,9 @@ import (
 // the two that rewrite outbox_kind_check (20261105081500 and 20261107095842) after main's own
 // 20261108000545, which added the claim-release kind, and after both the head-arrival column and
 // the drop that takes it away again (20261109130413), which leaves the table as main has it. The
-// one version of main's above the claim-death charge, the drop of the waiting-for-slot notice
-// (20261109060737), is main's own and is applied as main's run applied it.
+// two versions of main's above the claim-death charge, the drop of the waiting-for-slot notice
+// (20261109060737) and the retirement's write mark (20261109191929), are main's own and are
+// applied as main's run applied them.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -27,10 +28,10 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413,
 }
 
-// mainsNewestMigration is the newest version main carries, the drop of the waiting-for-slot
-// notice an issue no longer gets, since it keeps its admission slot until its work ends. Every
+// mainsNewestMigration is the newest version main carries, the write mark a claim's retirement
+// takes, which tells a start row written before a retirement from one written after it. Every
 // embedded version above it is this branch's own.
-const mainsNewestMigration = 20261109060737
+const mainsNewestMigration = 20261109191929
 
 // mainsOutboxKinds is every kind main's daemon writes, which is the list main's own
 // 20261108000545 admits. A database main migrated can carry a row of each at the upgrade.

@@ -88,7 +88,7 @@ as the fingerprint decides (*The reviewer*, below, and
   read `gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid` before you
   submit, and where it names another head a push landed under you, so review that head and
   submit at it rather than renaming the footer to a head you have not read.
-  the daemon takes it as the review's own word for the code it read, and cannot take GitHub's
+  The daemon takes that head as the review's own word for the code it read, and cannot take GitHub's
   `commit_id` for the review instead, which GitHub rewrites onto the pull request's current head,
   so its record of a review can name a head the review never saw.
   A review whose footer names another head, or no head, decides no round:

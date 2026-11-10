@@ -110,7 +110,8 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // reviewer's claim (workflow.Engine.ReviewerSession, read once per pull request that has a
 // candidate), anyone else's against the write access GitHub gives the account as a webhook's
 // review reads it (intake.ResolveAuthorCanWrite with reviewerCanWrite) - and the head the
-// review says it read.
+// review says it read, and it says of a refusal whether it stands at every head
+// (workflow.RoundRefusal.AtEveryHead), which is what this read remembers one by.
 //
 // GitHub lists reviews in the order they were created, and a draft keeps its place when it is
 // submitted later, so the list's order decides nothing. Its body is the review's whole body,
@@ -131,19 +132,25 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // Nothing is applied for a review this passes over, so no event id of it is marked applied and
 // the pull request's newest deciding review stands where it was: a review-App review refused
 // because the record had not yet reached the head its footer names is judged again by the next
-// read of the issue, and decides the round once that head has arrived. The refusal a reviewer's
-// own mistake leaves on its row for the stuck notice (record.ReviewDecision.Refused) is the
-// webhook's to record, which is where such a review arrives first.
+// read of the issue - the read the runtime makes as it starts, and the one a handoff of the issue
+// queues, there being no other moment it reads one (readIssuePullRequest) - and decides the round
+// once that head has arrived. The refusal a reviewer's own mistake leaves on its row for the
+// stuck notice (record.ReviewDecision.Refused) is the webhook's to record, and the reviewer's row
+// carries it only for a review whose webhook arrived; a review this read alone saw leaves nothing
+// on the row, so the stuck notice of its round carries its base reason and no refusal.
 //
-// A review is judged once per daemon process for the half of the judgement that answers for good
-// (workflow.Engine.DecidesRound), as a webhook's review is judged once when it is delivered: a
-// review whose author the workflow does not let decide - an account without write access, or the
-// review App from a session that is not the reviewer's - is kept as refused (refusedReviews) and
-// not judged again by this process, so an account given write access after the read judged its
-// review cannot turn that review into a later round's decision, which its webhook could not
-// either. The set is held in memory, so after a restart the first read judges a review not yet
-// recorded again, with the permission GitHub gives then. A read that failed judged nothing, and
-// the next read of the issue asks again.
+// A review is judged once per daemon process for the half of the judgement that stands at every
+// head, as a webhook's review is judged once when it is delivered: a review whose author the
+// workflow does not let decide - an account without write access, or the review App from a
+// session that is not the reviewer's - and a person's review read from the list, whose commit_id
+// is GitHub's own and no evidence of the code it read whatever head the record comes to hold, are
+// kept as refused (refusedReviews) and not judged again by this process. So an account given
+// write access after the read judged its review cannot turn that review into a later round's
+// decision, which its webhook could not either, and a person's listed review costs one read of
+// the author's write access and one refusal logged, not one of each per read of the issue. The
+// set is held in memory, so after a restart the first read judges a review not yet recorded
+// again, with the permission GitHub gives then. A read that failed judged nothing, and the next
+// read of the issue asks again.
 func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.Client, pr record.PullRequest, reviews []githubReview) (intake.PullRequestReview, bool, error) {
 	var candidates []intake.PullRequestReview
 	for _, listed := range reviews {
@@ -190,16 +197,16 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 			return intake.PullRequestReview{}, false, fmt.Errorf("read whether %s may decide review %d: %w", review.Author, review.ID, err)
 		}
 		refusal := w.engine.RefusesRound(resolved, pr, reviewerSession)
-		if refusal == "" {
+		if refusal.Reason == "" {
 			return resolved, true, nil
 		}
 		w.log.Warn("workflow: a review GitHub lists decides nothing; this read passes over it and reads the review below it",
 			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "review", resolved.ID, "author", resolved.Author,
-			"state", resolved.State, "refused", refusal, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
-		// Only the half of the judgement that answers for good is remembered: a review refused
-		// for the head its footer names is refused at the head the record holds now, and the
-		// next read of the issue judges it at the head the record holds then.
-		if !w.engine.DecidesRound(resolved, reviewerSession) {
+			"state", resolved.State, "refused", refusal.Reason, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
+		// Only a refusal that stands at every head is remembered: a review refused for the head
+		// its footer names is refused at the head the record holds now, and the next read of the
+		// issue judges it at the head the record holds then.
+		if refusal.AtEveryHead {
 			w.refuseReview(review.ID)
 		}
 	}
@@ -207,7 +214,7 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 }
 
 // reviewRefused is whether this process has already judged the review GitHub lists under id and
-// found the workflow lets its author decide nothing (workflow.Engine.DecidesRound), and
+// found the workflow refuses it at every head (workflow.RoundRefusal.AtEveryHead), and
 // refuseReview records one it has. A review refused for the head it read is in neither: it is
 // judged again at the head the record holds then (reviewToApply). The per-issue
 // read (readIssuePullRequest) judges reviews on a goroutine of its own for each issue, so the set

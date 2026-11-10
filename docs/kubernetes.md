@@ -1738,13 +1738,16 @@ The earlier release's `line` passes over a root that already holds a slot, and i
 With the cap full, which is the normal state, that strands every root waiting in the line.
 
 **The outbox rows the earlier release refuses must go, with or without a dump.**
-This release writes two marks into every phase worker's start — `needsSlot` on the row that carries the task, `relaunch` on the row that brings the worker's session back (`record.SuperviseRequest`, written by `workflow.StartOrOwe`) — and two notice kinds, `children-first` and `waiting-for-slot`.
+This release writes one mark into a phase worker's start — `needsSlot`, on the one row that start is (`record.SuperviseRequest`, written by `workflow.StartOrOwe`) — and two notice kinds, `children-first` and `waiting-for-slot`.
+A start a daemon that ran before INFRA-1573 wrote carries a second mark, `relaunch`, on the task-less row of the pair a start was then;
+this release writes that mark nowhere and acts on it nowhere, but such a row can still be queued when the rollback runs, so the statement below strips it too.
 The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), its `validNoticeKind` knows neither kind, and its `execute` returns the decode error, which is a permanent refusal for neither kind of row: every such row still queued fails and is retried on its backoff for ever, so the worker it was written for is never started again and the notice reaches nobody.
 A notice row left there costs that daemon more than its own notice: while it waits on its backoff it is one of the rows `WaitingNotices` returns, the state source reads every one of them through `pacedCatchUps`, and the decode fails there too, so `GET /legion/v1/state` fails for the whole project — `legion state`, every role's `read_record` and the controller's state reads with it — and the release of an architect's waiting notices (`releaseWaiting`) fails the same way.
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
--- The marks this release writes into the pair of rows a phase worker's start is.
+-- The marks a phase worker's start carries: needsSlot, which this release writes, and relaunch,
+-- which an earlier build of it wrote onto the task-less row of a pair.
 update outbox set payload = payload - 'needsSlot' - 'relaunch'
  where kind = 'supervise' and (payload ? 'needsSlot' or payload ? 'relaunch');
 -- The notice kinds the earlier release does not know.
@@ -1753,10 +1756,11 @@ delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slo
 ```
 
 A start that was waiting for its issue's slot loses the mark that held it unclaimable, so the earlier release claims it as soon as it is due and delivers its task: that worker starts under the earlier release's own cap, which counts the trees holding a slot and not the issues at work, and the slot statements above are what keep that cap honest.
-The relaunch row beside it becomes an ordinary start of the same role carrying no task, which brings the claim back and delivers nothing, so for a claim that holds no task of its own the pair starts one worker and hands it one task between them.
-One case hands that worker the same task twice: the architect's or the operator's retry of a held phase, whose pair carries `ResumeTask` on neither row (`restart` → `started`, `internal/workflow/effects.go`), where the claim failed still holding the task of the phase being retried.
-Stripped of its mark, the relaunch row no longer leaves that failed claim to the task row behind it: the earlier release retries the claim as a plain start does, and the retry sends it the task it kept.
-The task row then fails the earlier release's guard against a second copy, which holds only for a row marked `ResumeTask` or a claim still failed (`internal/daemon/outbox.go` on that release), so the row's own copy waits while the kept task is pending and is delivered after it, a second prompt for the phase the worker is already on.
+A phase worker's start is one row, so nothing stands beside it to bring the session back on its own: the row the earlier release claims starts the worker and delivers that worker's task.
+A row still carrying `relaunch` is the task-less half of a pair a daemon that ran before INFRA-1573 wrote, and stripped of both marks it is an ordinary start of the same role carrying no task, which brings the claim back and delivers nothing, so for a claim that holds no task of its own that pair starts one worker and hands it one task between them.
+One case hands that worker the same task twice: the architect's or the operator's retry of a held phase, whose start carries `ResumeTask` nowhere (`restart` → `started`, `internal/workflow/effects.go`), where the claim failed still holding the task of the phase being retried.
+The earlier release retries that failed claim as a plain start does, and the retry sends it the task it kept.
+The start row then fails the earlier release's guard against a second copy, which holds only for a row marked `ResumeTask` or a claim still failed (`internal/daemon/outbox.go` on that release), so the row's own copy waits while the kept task is pending and is delivered after it, a second prompt for the phase the worker is already on.
 It is one worker still, told the same work twice, and no other part of the rollback turns on it.
 A deleted `children-first` notice is told to nobody, and nothing of the earlier release keeps the wait it named: that release starts a parent's own first phase whatever the Dispatch children under it are doing.
 A deleted `waiting-for-slot` notice is told to nobody either, and the whole of its cost is the sentence nobody reads: it says that a person answered the root's wait, where that root stood in the admission line and that the daemon starts its architect again at the next free slot, and the earlier release does that last thing without saying it.
@@ -2237,7 +2241,7 @@ capabilities:                   # optional: the deployment capabilities decided 
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
 `runtime.kubernetes.resources` takes exactly two keys:
-`issue`, the one reservation every issue pod's `roles` container and both its init containers carry, and `controller`, the daemon-launched controller's pod's, only under `controller: daemon`.
+`issue`, the one reservation every issue pod's `roles` container and both its init containers carry — the third too, where the deployment names a `skills_repository` — and `controller`, the daemon-launched controller's pod's, only under `controller: daemon`.
 Each takes the six fields `cpu` and `memory` (the limits), `cpu_request` and `memory_request`, `ephemeral_storage` (the limit) and `ephemeral_storage_request`, any of them.
 A limit the file leaves out takes the daemon's default (`config.DefaultResources()`, `packages/daemon/internal/config/kubernetes.go`);
 a `cpu_request` or `memory_request` it leaves out takes the file's limit where it set one, else the default's request (`settledRequest`), so a file that raises `memory` alone is requested in full.
@@ -2870,7 +2874,9 @@ architect, planner, implementer, tester, reviewer, merger):
    Its environment is the image's `PATH` and the XDG base directories (`initEnvironment`, `manifest.go`);
    nothing names a role, a generation, a lock wait, another issue's workspace, or anything the disk is expected to hold already
    — the disk is created with the pod, so every provision is the issue's first.
-   The workspace starts at the issue's branch, `legion/<KEY>`, which the daemon created on GitHub at the repository's default branch, as GitHub names it (`default_branch`, `release/v7.1` as readily as `main`), before the issue's architect or planner started;
+   The workspace starts at whatever commit GitHub holds the issue's branch, `legion/<KEY>`, at:
+   the daemon's `issue_branch` row creates it at the issue's base branch, the default branch as GitHub names it (`default_branch`, `release/v7.1` as readily as `main`), and moves no branch GitHub has,
+   so whoever wants work to start at another commit creates `legion/<KEY>` there first, for a root before the issue is admitted, for a child before its first phase starts, after the tree's gate opens;
    with no such branch it starts at that default branch, which the pod's command names (`--default-branch`), and its log says which (`workspace-init: <dir> on legion/<KEY> from <default branch>`).
    Before any git or jj runs it removes every git lock file (`<file>.lock`) in the clone's git directory and in the issue's own worktree entry of it, and logs each with its path and age (`RemoveStaleGitLocks`, `internal/workspace/stalelock.go`):
    the kubelet retries a failed init container on the pod it failed in, so a first attempt killed mid-fetch leaves its locks on the same disk the retry works on, and every later write of a locked file fails on it
@@ -2990,7 +2996,7 @@ When that reason is `OOMKilled`, each role whose turn the end cut off gets its t
 a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
-the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default).
+the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default), and the third init container, where the deployment names a `skills_repository`, that same reservation.
 At the default every request equals its limit and the pod is `Guaranteed`; a `cpu_request` or `memory_request` below its limit makes the pod `Burstable`.
 The pod is bounded on the node's disk, and Legion sets no affinity on it (GKE Autopilot adds its own, below;
 [Issue sizing](#issue-sizing-one-reservation-per-pod)).
@@ -4078,7 +4084,7 @@ Narrowing the identity to a per-project one is dispatch://INFRA-153's work, not 
 ### Issue sizing: one reservation per pod
 
 Every container of a Legion pod carries a cpu and memory limit with a request no greater than it (`requirements`, `internal/daemon/kubernetes.go`), and an ephemeral-storage limit over a smaller ephemeral-storage request (the node-disk bound, below):
-an issue pod's `roles` container and both its init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
+an issue pod's `roles` container and both its init containers — three where the deployment names a `skills_repository` — the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
 — [Configuration](#configuration)), the controller's launcher the controller's (`runtime.kubernetes.resources.controller`), and the image probe's one container the probe's own fixed 250m / 1Gi, request equal to limit (`probeReservation`, [Configuration](#configuration)).
 At the default an issue pod reserves 3 CPU and 19 GiB, the init containers adding nothing:
 a pod's effective request is the larger of its containers' sum and its largest init container, and they carry the same reservation.

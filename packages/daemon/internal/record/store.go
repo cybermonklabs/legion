@@ -1802,6 +1802,15 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // (StillWorked) and every completion of it is refused HANDOFF_STALE_ASSIGNMENT. A row that has
 // never been leased keeps the empty token, which is what an unleased row carries.
 //
+// The rewrite takes a fresh number from outbox_write_mark_seq, the sequence an insert takes one
+// from through the column's own default. The row keeps the id that holds its place in the line,
+// so its id says when the issue first came to wait and nothing about when this payload was
+// written; the write mark says the second, which is what the stop rule needs of it (admit's
+// stopOutlivedStart, and store's putClaim for what the sequence orders). A rewrite that left
+// the mark where it stood would hand that rule a start written after an operator's stop under
+// the number the row took before it, and the rule would end the start the retry had just
+// written.
+//
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
@@ -1810,6 +1819,7 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
 	}
 	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
+			write_mark = nextval('outbox_write_mark_seq'),
 			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
 		where id = (select id from outbox
 			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
@@ -1825,19 +1835,20 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
 // admission slot and that no live lease holds, oldest first by the pair the waiting line orders
-// them on (OwedStart), with the role, phase and generation each row serves and the lease token
-// it still carries. A row a lane holds now is left out: its slot came, so it is neither waiting
-// in the line nor safe for admission's repair to finish. A row whose lease has lapsed is not
-// that — the lane that held it is gone and only a finished delivery removes a row — so it is
-// listed, exactly as the outbox's own due predicate lists it again (outboxUnleasedDue); left
-// out, its issue would stand in no part of the line and nothing would ever deliver or repair it.
+// them on (OwedStart), with the write mark of the write that last set each row's payload, the
+// role, phase and generation each row serves and the lease token it still carries. A row a lane
+// holds now is left out: its slot came, so it is neither waiting in the line nor safe for
+// admission's repair to finish. A row whose lease has lapsed is not that — the lane that held
+// it is gone and only a finished delivery removes a row — so it is listed, exactly as the
+// outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
+// stand in no part of the line and nothing would ever deliver or repair it.
 //
 // The lapse is judged against the database's own clock, the one moment a read with no caller's
 // now can ask for. The lane that wrote the lease and the rows' other readers compare against the
 // daemon's clock, which the deployment keeps on the same time.
 func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([]OwedStart, error) {
-	rows, err := tx.Query(ctx, `select issue, created_at, id, coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),
-			coalesce((payload->>'generation')::bigint, 0), lease_token
+	rows, err := tx.Query(ctx, `select issue, created_at, id, write_mark, coalesce(payload->>'role', ''),
+			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token
 		from outbox where kind = $1 and split_part(issue, '-', 1) = $2
 			and payload->>'op' = 'start' and payload->>'needsSlot' = 'true'
 			and (lease_until is null or lease_until <= now())
@@ -1849,8 +1860,8 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 	var owed []OwedStart
 	for rows.Next() {
 		var start OwedStart
-		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.Role, &start.Phase, &start.Generation,
-			&start.LeaseToken); err != nil {
+		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.WriteMark, &start.Role, &start.Phase,
+			&start.Generation, &start.LeaseToken); err != nil {
 			return nil, fmt.Errorf("list the starts %s owes its workers: %w", project, err)
 		}
 		owed = append(owed, start)
@@ -2314,7 +2325,9 @@ type roleRunIdentity struct {
 // misses was deleted before the second one ran, and the second one reads the claim state that
 // delete stands for. Reading the rows first is therefore what keeps a caller from ever seeing a
 // queued start gone beside a claim that has not yet moved, which is the one pair a rule that
-// deletes a row would read as a worker nothing is starting again (admit's finishFencedStarts).
+// weighs a claim against rows it has read would take for a worker nothing is starting again
+// (workflow.StartFor, for admit's resumeSlottedWorkers and startMidPhaseMembers; RoleClaims
+// says what the same order means for a caller that reads the claims alone).
 func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error) {
 	runs := make(map[claim.Token]RoleRun, len(keys))
 	if len(keys) == 0 {
@@ -2377,11 +2390,55 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	}
 	rows.Close()
 
-	rows, err = tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
-		coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
+	if err := readRoleClaims(ctx, tx, tokens, func(token claim.Token, held *RoleClaim) {
+		run := runs[token]
+		run.Claim = held
+		runs[token] = run
+	}); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
+// statement alone, for a caller that judges a role run by its claim and never reads the queued
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart). A token the store
+// holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
+// It saves that caller RoleRuns' first statement, which selects and strictly decodes every
+// supervise row of every issue that owes a start, once per admission pass.
+//
+// Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
+// claims must be read after the owed rows they are judged against, so that a stop made between
+// the two reads is in the claim read here and the rule acts on this pass rather than the next.
+// The mark it weighs each owed row against is RoleClaim.RetiredAtWriteMark, taken in store's
+// putClaim, whose doc holds what the sequence behind it orders. That is where the call sits —
+// the pass reads its owed rows into record.LineFacts first, and weighs them here after.
+func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error) {
+	held := make(map[claim.Token]*RoleClaim, len(tokens))
+	if len(tokens) == 0 {
+		return held, nil
+	}
+	names := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		names = append(names, string(token))
+	}
+	if err := readRoleClaims(ctx, tx, names, func(token claim.Token, c *RoleClaim) {
+		held[token] = c
+	}); err != nil {
+		return nil, err
+	}
+	return held, nil
+}
+
+// readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
+// RoleClaims share, with the task pending on each claim read beside it (the two tables are
+// written apart and read together, as claimSelect reads them).
+func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
+		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
-		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -2390,8 +2447,9 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var pending bool
 		var task supervise.Delivery
 		var confirmed *time.Time
-		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
-			return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
+			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if pending {
 			if confirmed != nil {
@@ -2399,14 +2457,12 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			}
 			held.Pending = &task
 		}
-		run := runs[claim.Token(token)]
-		run.Claim = &held
-		runs[claim.Token(token)] = run
+		found(claim.Token(token), &held)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
-	return runs, nil
+	return nil
 }
 
 // PendingStatusWrites lists every Dispatch status write of project's issues the outbox has not

@@ -155,6 +155,10 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
+	// The issue is at work, so it holds one of the cap's slots: a phase worker's start is one
+	// row, which carries the task and runs when the issue holds a slot (workflow.StartOrOwe).
+	// This test runs no admission pass of its own, so the slot is seeded here.
+	holdSlot(t, pool, issue.Key)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
