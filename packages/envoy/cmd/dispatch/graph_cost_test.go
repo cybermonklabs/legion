@@ -54,9 +54,16 @@ import (
 )
 
 const (
-	// costRuns is how many readings each measurement takes of each path on each arm, as
-	// api/inbox_dismissed_scale_test.go's dismissedScaleRuns takes 20.
-	costRuns = 20
+	// costWriteRuns is how many readings the write measurement takes of each path on each arm,
+	// as api/inbox_dismissed_scale_test.go's dismissedScaleRuns takes 20. A write path costs
+	// seconds and its budget is a relative one with a wide margin, so the readings need only be
+	// enough to show a path that moved.
+	costWriteRuns = 20
+	// costReadReadings is how many the read measurement takes, which is more, because a read
+	// costs tens of milliseconds and p99 by nearest rank is the ceil(0.99 x n)th reading: at
+	// twenty readings, and at fifty, that is the slowest of them, so one scheduling hiccup of
+	// this pod decides the cell. At two hundred it is the 198th, which sits below the top.
+	costReadReadings = 200
 	// costWarmUp is the reading taken before those 20 and not counted: the first run of a
 	// statement on a fresh connection pays for the pages every run after it finds cached, and
 	// a measurement of a corpus is not a measurement of a cold cache (measureDismissedScale).
@@ -211,7 +218,7 @@ type costReading struct {
 }
 
 // percentile is the nearest-rank percentile of this reading's runs: the ceil(q*n)th of them
-// sorted, so p50 of 20 readings is the tenth and p99 the twentieth. No interpolation, so every
+// sorted, so p50 of 200 readings is the hundredth and p99 the 198th. No interpolation, so every
 // number printed is a run that happened - the rule api/inbox_dismissed_scale_test.go's
 // percentileOfDismissedScale states, which these two measurements follow.
 func (r costReading) percentile(quantile float64) time.Duration {
@@ -244,25 +251,25 @@ func costMilliseconds(taken time.Duration) float64 {
 	return float64(taken.Microseconds()) / 1000
 }
 
-// costInterleaved measures one path on both arms in one pass, a reading at a time: each run
+// costInterleaved measures one path on both arms in one pass, runs readings of each: each run
 // takes one reading on each arm before the next run takes another, and which arm goes first
 // alternates from run to run, so neither arm is systematically the one that runs while the pod
 // is busiest and neither warms the pod for the other. costWarmUp readings are taken on each arm
 // first and not counted: the first run of a statement on a fresh connection pays for the pages
 // every run after it finds cached (measureDismissedScale).
 func costInterleaved(
-	t *testing.T, operation, shape string, arms []*costArm,
+	t *testing.T, operation, shape string, runs int, arms []*costArm,
 	take func(arm *costArm, run int) time.Duration,
 ) map[*costArm]costReading {
 	t.Helper()
 	readings := map[*costArm]costReading{}
 	for _, arm := range arms {
-		readings[arm] = costReading{operation: operation, arm: arm.name, shape: shape, runs: make([]time.Duration, 0, costRuns)}
+		readings[arm] = costReading{operation: operation, arm: arm.name, shape: shape, runs: make([]time.Duration, 0, runs)}
 		for warm := range costWarmUp {
 			take(arm, -1-warm)
 		}
 	}
-	for run := range costRuns {
+	for run := range runs {
 		order := slices.Clone(arms)
 		if run%2 == 1 {
 			slices.Reverse(order)
@@ -306,8 +313,9 @@ func (a *costArm) count(t *testing.T, statement string, args ...any) int64 {
 }
 
 // costTableOf prints every reading of a measurement: the summary line of each path on each arm,
-// then every reading it took. Both are printed for every path, because a p99 of 20 readings is
-// their maximum and a reader has to see the spread it came out of.
+// then every reading it took. Both are printed for every path, because a reader has to see the
+// spread a percentile came out of - and for the write paths, whose 20 readings make the p99
+// their maximum, that spread is the whole of what a single swinging reading means.
 func costTableOf(t *testing.T, readings []costReading) {
 	t.Helper()
 	t.Log("reading\tshape\tarm\tp50 ms\tp99 ms\truns")
@@ -424,5 +432,16 @@ func costRunBackfill(t *testing.T, arm *costArm) {
 	if incomplete != 0 {
 		t.Fatalf("%s: %d kind(s) of graph_store_cutover read false after the backfill, so no reading below is of the tuple arm",
 			arm.name, incomplete)
+	}
+}
+
+// analyze gives the planner statistics for what the corpus just wrote. A table written in one
+// burst and read at once still reads reltuples = -1, which no deployment serves: autovacuum has
+// analysed a live table long before a person reads it, and a plan chosen from no statistics is
+// not the plan the budget is about.
+func (a *costArm) analyze(t *testing.T) {
+	t.Helper()
+	if _, err := a.pool.Exec(context.Background(), "analyze"); err != nil {
+		t.Fatalf("%s: analyze the corpus: %v", a.name, err)
 	}
 }

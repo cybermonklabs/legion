@@ -106,6 +106,14 @@ func seedReadCost(t *testing.T, arm *costArm) []*readCostShape {
 		seedReadCostChain(t, arm),
 		seedReadCostHistory(t, arm),
 	}
+	// The planner reads a table it has no statistics for as reltuples = -1, and chooses for it
+	// accordingly: measured on this pod, the unchanged BlockLinks statement costs 177 to 1,831 ms
+	// over an un-analysed copy of this corpus and 1 to 9 ms over the analysed one, on both arms
+	// and under force_custom_plan alike. A corpus written in one burst and read at once is that
+	// cold database, which no deployment serves: autovacuum has analysed a live table long
+	// before a person reads it. So the run analyses what it wrote, and measures the plan
+	// production takes.
+	arm.analyze(t)
 	t.Logf("%s: the four corpora were written in %s", arm.name, time.Since(started).Round(time.Second))
 	return shapes
 }
@@ -118,7 +126,7 @@ func seedReadCostHeavy(t *testing.T, arm *costArm) *readCostShape {
 	issue := createCostIssue(t, arm, readCostProject, "The document of 8,001 blocks")
 	targets := costPointerTargets(t, arm, issue, "heavy-targets.md", costPointerCount(readCostHeavyBlocks))
 	document := costUploadDocument(t, arm, issue, "heavy.md",
-		costDocumentText(readCostHeavyBlocks, writeCostNesting, costPointerCount(readCostHeavyBlocks), targets, 0)+
+		costDocumentText(readCostHeavyBlocks, writeCostNesting, costPointerCount(readCostHeavyBlocks), targets, 0, -1)+
 			"\n"+phrase+" is in this document and in no other of the corpus.\n")
 	return &readCostShape{
 		name:        "a document of 8,001 blocks nested eight deep",
@@ -224,7 +232,7 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 	targets := costPointerTargets(t, arm, issue, "history-targets.md", costPointerCount(readCostHistoryBlocks))
 	for index := range readCostHistoryDocuments {
 		costUploadDocumentAs(t, arm, readCostOther, issue, fmt.Sprintf("history%d.md", index),
-			costDocumentText(readCostHistoryBlocks, writeCostNesting, costPointerCount(readCostHistoryBlocks), targets, index))
+			costDocumentText(readCostHistoryBlocks, writeCostNesting, costPointerCount(readCostHistoryBlocks), targets, index, -1))
 	}
 	document := costUploadDocument(t, arm, issue, "person.md",
 		"# The document of the person's own shape\n\n"+
@@ -573,9 +581,12 @@ func readCostNodeIsThere(t *testing.T, arm *costArm, node graphstore.Node) bool 
 // this branch forked from, in one run, interleaved, over one corpus written to each arm by one
 // seeding pass. This child's arm is read twice over, once with the rows of graph_store_cutover
 // on and once with them off, so the view's cutover test is inside every reading of it. Every
-// reading is printed and the statistic is a real order statistic by nearest rank - of 20
-// readings the p99 is the twentieth of them sorted. A read whose p99 rises by more than 100 ms
-// fails, and the failure prints the read, the shape and both readings.
+// reading is printed and the statistic is a real order statistic by nearest rank. It takes 200
+// readings of each read on each arm, as the root's R22 requires, because p99 by nearest rank is
+// the ceil(0.99 x n)th: at twenty readings, and at fifty, that is the slowest of them, so one
+// scheduling hiccup of this pod decides a cell on its own. At two hundred it is the 198th. A read
+// whose p99 rises by more than 100 ms fails, and the failure prints the read, the shape and both
+// readings.
 //
 // The run then reads each notification against its own node from a second connection, which is
 // the second half of this check: an event is on no reader's stream before the transaction that
@@ -637,7 +648,7 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 				measured = []*costArm{headOn, headOff}
 			}
 			shapeName := shapes[head][shapeIndex].name
-			taken := costInterleaved(t, read.name, shapeName, measured, func(subject *costArm, _ int) time.Duration {
+			taken := costInterleaved(t, read.name, shapeName, costReadReadings, measured, func(subject *costArm, _ int) time.Duration {
 				subject.ready(t)
 				return read.take(t, subject, corpus(subject)[shapeIndex])
 			})

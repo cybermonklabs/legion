@@ -104,12 +104,12 @@ func seedWriteCost(t *testing.T, arm *costArm) *writeCostCorpus {
 	corpus.targets = costPointerTargets(t, arm, corpus.issue, "wtargets.md", costPointerCount(writeCostOverBlocks))
 
 	corpus.under = costUploadDocument(t, arm, corpus.issue, "under.md",
-		costDocumentText(writeCostUnderBlocks, writeCostNesting, costPointerCount(writeCostUnderBlocks), corpus.targets, 0))
+		costDocumentText(writeCostUnderBlocks, writeCostNesting, costPointerCount(writeCostUnderBlocks), corpus.targets, 0, -1))
 	corpus.over = costUploadDocument(t, arm, corpus.issue, "over.md",
-		costDocumentText(writeCostOverBlocks, writeCostNesting, costPointerCount(writeCostOverBlocks), corpus.targets, 0))
+		costDocumentText(writeCostOverBlocks, writeCostNesting, costPointerCount(writeCostOverBlocks), corpus.targets, 0, -1))
 	for index := range writeCostTickDocuments {
 		corpus.tick = append(corpus.tick, costUploadDocument(t, arm, corpus.issue, writeCostTickName(index),
-			costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, 0)))
+			costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, 0, -1)))
 	}
 	corpus.mentioned = costMentionComment(t, arm, corpus.issue,
 		"The comment every measured delivery record is recorded against.", writeCostSession)
@@ -120,6 +120,10 @@ func seedWriteCost(t *testing.T, arm *costArm) *writeCostCorpus {
 	// the check states.
 	corpus.underBlocks = costBlockCount(t, arm, corpus.under)
 	corpus.overBlocks = costBlockCount(t, arm, corpus.over)
+	// The planner chooses from statistics, and a corpus written in one burst and measured at
+	// once has none: a live deployment's tables are analysed long before a person writes to
+	// them. costArm.analyze says what that costs when it is skipped.
+	arm.analyze(t)
 	t.Logf("%s: seeded in %s - %s holds %d comment(s), under.md %d block(s), over.md %d block(s), and %d tick document(s) of %d block(s)",
 		arm.name, time.Since(started).Round(time.Second), corpus.issue,
 		arm.count(t, `select count(*) from comments where issue_key = $1`, corpus.issue),
@@ -201,13 +205,16 @@ func writeCostDeliveryRecord(t *testing.T, corpus *writeCostCorpus, _ int) time.
 	return taken
 }
 
-// writeCostVersion is one document version write: the whole document again with one word of
-// every item changed, which is a version of the same shape as the one before it.
-func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks, run int) time.Duration {
+// writeCostVersion is one document version write. changedOnly names the one item whose text
+// this version moves, which is the edit a person makes: Dispatch carries a block's id across
+// versions, so the index sees one new block and the rest unchanged. -1 instead is the whole
+// document rewritten, every block new to the index, which a bulk action makes and a person
+// does not.
+func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks, run, changedOnly int) time.Duration {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"name":    name,
-		"content": costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1),
+		"content": costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly),
 	})
 	if err != nil {
 		t.Fatalf("encode the version: %v", err)
@@ -235,7 +242,7 @@ func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 	for index := range corpus.tick {
 		body, err := json.Marshal(map[string]any{
 			"name":    writeCostTickName(index),
-			"content": costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2),
+			"content": costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
 		})
 		if err != nil {
 			release()
@@ -289,11 +296,20 @@ func writeCostPaths() []writeCostPath {
 	return []writeCostPath{
 		{name: "comment create", take: writeCostCommentCreate},
 		{name: "comment delivery record", take: writeCostDeliveryRecord},
-		{name: "document version, 1,999 blocks", take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
-			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run)
+		// The edit a person makes: one block of a 1,999-block document moved, the rest carried
+		// across the version by their own ids. This is the shape Dispatch serves all day.
+		{name: "document version, one changed block of 1,999", take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, writeCostUnderBlocks/2)
+		}},
+		// The whole document rewritten, every block new to the index: a bulk action, rare and
+		// started by a person who asked for it, measured apart from the edit above because a
+		// path that writes four thousand node rows cannot be within a hundred milliseconds of
+		// one that writes none.
+		{name: "document version, 1,999 blocks rewritten", take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, -1)
 		}},
 		{name: "document version, 8,001 blocks", absolute: writeCostAbsolute, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
-			return writeCostVersion(t, corpus, "over.md", writeCostOverBlocks, run)
+			return writeCostVersion(t, corpus, "over.md", writeCostOverBlocks, run, -1)
 		}},
 		{name: writeCostTickPath, take: writeCostTick},
 	}
@@ -307,7 +323,10 @@ func writeCostPaths() []writeCostPath {
 // one reconciliation tick. Every reading is printed, so a swinging one is visible rather than
 // hidden in a summary, and the statistic each path is held to is a real order statistic of the
 // 20 readings by nearest rank - of 20 readings the p99 is the twentieth of them sorted, their
-// maximum.
+// maximum. Twenty is what R18 fixes for the write paths, where the read measurement takes 200:
+// a write path costs seconds against a relative budget with a wide margin, so a reading at the
+// top of the spread does not decide it, and two hundred readings of a 30-second tick would be
+// hours of wall time for nothing.
 //
 // A path whose p99 rises by more than 100 ms fails. The 8,001-block path carries a second bound,
 // 1 s absolute, because IndexDocumentReferences already spends 347 ms on that version inside a
@@ -364,7 +383,7 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 				held = append(held, costHoldBlockIndex(t, arm))
 			}
 		}
-		readings[path.name] = costInterleaved(t, path.name, "", arms, func(arm *costArm, run int) time.Duration {
+		readings[path.name] = costInterleaved(t, path.name, "", costWriteRuns, arms, func(arm *costArm, run int) time.Duration {
 			return path.take(t, corpora[arm], run)
 		})
 		for _, release := range held {
@@ -456,7 +475,7 @@ func writeCostWhereTheTimeWent(t *testing.T, arms []*costArm, corpora map[*costA
 			before[index] = arm.count(t, count.statement)
 		}
 		release := costHoldBlockIndex(t, arm)
-		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costRuns+7)
+		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+7, -1)
 		release()
 		written := []string{}
 		var nodes, tuples int64
@@ -775,7 +794,13 @@ func seedCostComments(t *testing.T, arm *costArm, issue string, count int) {
 // each of its items a paragraph. It is never taken on trust - every reading here is taken over a
 // document whose blocks were read back from the server and found to be the count the shape
 // states (requireWriteCostShapes).
-func costDocumentText(blocks, deep, pointers int, targets []string, revision int) string {
+// costDocumentText renders the corpus's document. revision is the number every item carries,
+// which is what makes a later render change every block; changedOnly names the one item that
+// takes it instead, every other item keeping revision 0, which is the edit a person makes:
+// Dispatch carries a block's id across versions (pmdoc.carryBlockIDs), so only the block whose
+// text moved is new to the index. costDocumentEditOnly is that second shape's name for -1's
+// opposite, and -1 is the whole-document rewrite.
+func costDocumentText(blocks, deep, pointers int, targets []string, revision, changedOnly int) string {
 	var text strings.Builder
 	text.WriteString("# The document this run measures\n\n")
 	for level := range deep {
@@ -793,12 +818,16 @@ func costDocumentText(blocks, deep, pointers int, targets []string, revision int
 	}
 	written := 0
 	for index := range items {
+		at := revision
+		if changedOnly >= 0 && index != changedOnly {
+			at = 0
+		}
 		if every > 0 && index%every == 0 && written < pointers && len(targets) > 0 {
-			fmt.Fprintf(&text, "- item %d of revision %d points at %s\n", index, revision, targets[written%len(targets)])
+			fmt.Fprintf(&text, "- item %d of revision %d points at %s\n", index, at, targets[written%len(targets)])
 			written++
 			continue
 		}
-		fmt.Fprintf(&text, "- item %d of revision %d\n", index, revision)
+		fmt.Fprintf(&text, "- item %d of revision %d\n", index, at)
 	}
 	return text.String()
 }
