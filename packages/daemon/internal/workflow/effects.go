@@ -220,12 +220,16 @@ func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role
 	if err != nil {
 		return err
 	}
+	// Nothing to clear is nothing to write. The row is read field by field rather than compared
+	// whole: PhaseRow carries the map of its backward moves (record.PhaseRow.BackwardMoves), and
+	// no == compares a struct that holds a map.
+	if row.HandoffCommit == "" && row.HandoffRecord == "" && row.HandoffVersion == 0 && row.Verdict == "" &&
+		row.Summary == "" && row.Decision == nil && row.CompletedAt.IsZero() && row.MergeNote == "" {
+		return nil
+	}
 	cleared := row
 	cleared.HandoffCommit, cleared.HandoffRecord, cleared.HandoffVersion = "", "", 0
 	cleared.Verdict, cleared.Summary, cleared.Decision, cleared.CompletedAt, cleared.MergeNote = "", "", nil, time.Time{}, ""
-	if cleared == row {
-		return nil
-	}
 	return e.store.PutPhase(ctx, tx, cleared)
 }
 
