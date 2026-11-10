@@ -512,17 +512,21 @@ export function IssueTablePager({
   const rowsOnPages = table.getPrePaginationRowModel().rows.length;
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
+  // The row wraps inside the table's own box, and nothing in it holds a width the box cannot
+  // give: `min-w-0` on the row and on each piece of text, so a phone reads the count, the rows,
+  // the pages and the page size on as many lines as they need rather than pushing the page
+  // wider than the window.
   return (
     <div
       ref={pagerRef}
       data-testid="issues-table-pager"
-      className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
+      className={`flex min-w-0 grow flex-wrap items-center gap-x-3 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
     >
-      <span>
+      <span className="min-w-0">
         {leafCount} of {items.length} {items.length === 1 ? "issue" : "issues"}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>
-      <span className="ml-auto">
+      <span className="ml-auto min-w-0">
         {pageSize >= ALL_ROWS
           ? `All ${rowsOnPages} ${rowsOnPages === 1 ? "row" : "rows"}`
           : `Rows ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
@@ -530,7 +534,7 @@ export function IssueTablePager({
       <Action disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
         ‹ Previous
       </Action>
-      <span>
+      <span className="min-w-0">
         Page {pageIndex + 1} of {Math.max(table.getPageCount(), 1)}
       </span>
       <Action disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
