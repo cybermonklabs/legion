@@ -2510,6 +2510,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/search/results": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The same search as GET /api/v1/search: every parameter, every answer and every refusal is that route's, and the same handler serves both. It has a path of its own so that a search carrying a member beyond ?q=, ?project=, ?limit= and ?offset= - ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= - asks for something a build released before those members does not serve: such a build answers this path 404 no route, where it answers GET /api/v1/search with the members dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends a filter there is still answered narrowed. */
+    get: operations["getApiV1SearchResults"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/settings/architecture-sources": {
     parameters: {
       query?: never;
@@ -11650,11 +11667,6 @@ export interface operations {
       query?: {
         q?: string;
         project?: string;
-        number_project?: string;
-        status?: string;
-        author?: string;
-        updated_since?: string;
-        keywords_only?: boolean;
         limit?: number;
         offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -11705,6 +11717,47 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SearchCoverage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1SearchResults: {
+    parameters: {
+      query?: {
+        q?: string;
+        project?: string;
+        number_project?: string;
+        status?: string;
+        author?: string;
+        updated_since?: string;
+        keywords_only?: boolean;
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SearchResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
