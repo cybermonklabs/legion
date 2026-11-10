@@ -112,8 +112,9 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
   return { agents: listed, current: true, refilling: false };
 }
 
-// The signed-in reader is `alice`, and a card's first number is their own work: these rows are
-// on an issue assigned to them.
+// The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
+// on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
+// on whose issue is theirs.
 const inbox: InboxRow[] = [1, 2].map((number) => ({
   anchor: null,
   answer: null,
@@ -123,6 +124,7 @@ const inbox: InboxRow[] = [1, 2].map((number) => ({
   id: `ask-${number}`,
   issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
   issue_key: "CORE-1",
+  waiting_on_person: "alice",
   kind: "question",
   multiple: false,
   opened_event_id: number,
@@ -493,6 +495,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
         id: "builder-bobs",
         issue: { assignee: "bob", key: "CORE-2", title: "Bob's work" },
         issue_key: "CORE-2",
+        waiting_on_person: "bob",
       }),
       builderAsk({
         id: "builder-snoozed",

@@ -46,9 +46,12 @@ export function installInboxApiMocks(): InboxApiMocks {
   return mocks;
 }
 
-/** A single open ask on an issue, overridable per test. */
+/** A single open ask on an issue, overridable per test. The person the row waits on is resolved
+ *  as the server resolves it (`coalesce(a.asked_of, i.assignee)`), so an override that moves the
+ *  issue's assignee, or hands the ask to somebody, moves that person with it; an override naming
+ *  `waiting_on_person` itself wins. */
 export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
     author: { id: "session-1", kind: "session" },
@@ -80,6 +83,9 @@ export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  if (row.waiting_on_person !== undefined) return row;
+  const person = row.asked_of ?? row.issue?.assignee ?? null;
+  return person === null ? row : { ...row, waiting_on_person: person };
 }
 
 /** Resolves `getAsk` for each row's full thread from the same fixtures `getInbox` already seeded. */

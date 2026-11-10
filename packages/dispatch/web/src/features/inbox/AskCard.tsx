@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -9,6 +10,7 @@ import {
 } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
+import { usersQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
@@ -22,6 +24,7 @@ import {
   badgeHigh,
   badgeLow,
   badgeMed,
+  badgePrimary,
   borderDefault,
   card,
   cardHoverBorder,
@@ -39,6 +42,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -67,6 +71,7 @@ import { URGENCY_LABELS } from "./ask-urgency";
 import { EarlierApproval } from "./EarlierApproval";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
+import { useAskHandOn } from "./useAskHandOn";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
@@ -169,6 +174,108 @@ function useFormRef(): [
     };
   }, []);
   return [formRef, track];
+}
+
+/**
+ * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
+ * card rather than in the Inbox, so every surface that draws an open ask has it: the Inbox row
+ * and its reading pane, the issue page, a document's margin, a document's ask block and
+ * `ThreadBody`.
+ *
+ * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to, and
+ * the assignee of its issue until somebody hands it on), and the picker over it is the same
+ * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
+ * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
+ * (`usersQuery`, read only once the reader reaches for the control and then kept for the
+ * session), with the assignee of the ask's own issue offered first where the read carries it -
+ * the Inbox hydrates `issue.assignee` and the other ask reads do not - since handing the ask
+ * back to them is what empties the stored field and lets the ask follow its issue again.
+ *
+ * Under it, where somebody has already handed the ask on, who did it and when
+ * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
+ * reader pressed it, as `AssignToMe` and `SnoozeControl` do.
+ */
+function AskHandOn({ ask }: { ask: Ask }): ReactNode {
+  const [wanted, setWanted] = useState(false);
+  const people = useQuery({ ...usersQuery(), enabled: wanted });
+  const want = () => setWanted(true);
+  const write = useAskHandOn(ask.id);
+  const assignee = ask.issue?.assignee ?? null;
+  const waitingOn = ask.waiting_on_person ?? "";
+  const logins = (people.data ?? [])
+    .map((user) => user.login)
+    .filter((login) => login !== assignee);
+  // Whoever holds the ask stays selectable even where the people list does not carry them (it
+  // is unread until the reader reaches for the control), so the select never shows a value its
+  // options lack.
+  const others =
+    waitingOn === "" || waitingOn === assignee || logins.includes(waitingOn)
+      ? logins
+      : [waitingOn, ...logins];
+  const handedOnBy = ask.asked_of_by ?? "";
+  const handedOnAt = ask.asked_of_at ?? null;
+  const tone = waitingOn === "" ? badgeLow : badgePrimary;
+  return (
+    <div
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
+    >
+      <span className={badgeSelectWrapper}>
+        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+          {write.pending
+            ? "Handing on…"
+            : waitingOn === ""
+              ? "Asked of nobody"
+              : `Asked of ${waitingOn}`}
+        </span>
+        <select
+          aria-label="Hand this question to"
+          className={badgeSelectOverlay}
+          data-ask-hand-on={ask.id}
+          onChange={(event) => {
+            const { value } = event.target;
+            if (value !== "") write.submit(value);
+          }}
+          onFocus={want}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerEnter={want}
+          onTouchStart={(event) => {
+            event.stopPropagation();
+            want();
+          }}
+          value={waitingOn}
+        >
+          {/* The ask waits on nobody until somebody is picked, and nobody is not a pick: the
+              route takes a person's email and refuses anything else. */}
+          <option disabled value="">
+            Nobody
+          </option>
+          {assignee === null ? null : (
+            <option value={assignee}>{assignee} (the issue's assignee)</option>
+          )}
+          {others.map((login) => (
+            <option key={login} value={login}>
+              {login}
+            </option>
+          ))}
+        </select>
+      </span>
+      {handedOnBy === "" || handedOnAt === null ? null : (
+        <span>
+          handed on by {handedOnBy} <Timestamp at={handedOnAt} />
+        </span>
+      )}
+      {write.failed ? (
+        <span className="basis-full">
+          <QueryError
+            message={write.error ?? "Could not hand this question on."}
+            onRetry={write.retry}
+            retrying={write.pending}
+          />
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 export function AskCard({
@@ -694,6 +801,11 @@ export function AskCard({
             </span>
           )}
         </div>
+        {/* Whose question it is now, and the one control that hands it to somebody else. An
+            ask that is not open waits on nobody, so it has none: a card whose ask is answered,
+            resolved or withdrawn draws its record instead, and the one case that reaches here
+            is a reader changing the answer of a closed ask. */}
+        {displayedAsk.state === "open" ? <AskHandOn ask={displayedAsk} /> : null}
         <AskEditHistory ask={displayedAsk} edits={edits} />
         {referencedByNode}
       </div>

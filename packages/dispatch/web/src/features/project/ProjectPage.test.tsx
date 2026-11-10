@@ -21,8 +21,11 @@ function LocationProbe() {
   );
 }
 
+/** One open ask. The person it waits on is resolved as the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
+ *  hands the ask to somebody, moves that person with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
     author: { id: "session-1", kind: "session" },
@@ -55,6 +58,9 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  if (row.waiting_on_person !== undefined) return row;
+  const person = row.asked_of ?? row.issue?.assignee ?? null;
+  return person === null ? row : { ...row, waiting_on_person: person };
 }
 
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a

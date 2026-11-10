@@ -1402,11 +1402,14 @@ async function filterTrigger(user: UserEvent): Promise<HTMLElement> {
 }
 
 /** Opens the assignee filter if it is shut and toggles one of its rows. The popover is portalled
- *  onto the body, so its options are reached from the screen rather than from the list. */
+ *  onto the body, so its options are reached from the screen rather than from the list, and from
+ *  its own listbox rather than from the screen: every open ask's card carries a people picker of
+ *  its own (the hand-on control), whose options name the same people. */
 async function toggleAssignee(user: UserEvent, option: RegExp) {
   const trigger = await filterTrigger(user);
   if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
-  await user.click(await screen.findByRole("option", { name: option }));
+  const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
+  await user.click(await within(listbox).findByRole("option", { name: option }));
 }
 
 function headings(): string[] {
@@ -1706,9 +1709,14 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
       )
     );
     expect(rowIds()).toEqual(["ask-orphan"]);
-    // Once the server has recorded it, the refetched inbox carries the new assignee.
+    // Once the server has recorded it, the refetched inbox carries the new assignee, and with
+    // it the person the row waits on (`coalesce(asked_of, assignee)`, which the server resolves).
     getInbox.mockResolvedValue([
-      { ...orphan, issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" } },
+      {
+        ...orphan,
+        issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
     ]);
     await act(async () => {
       save.resolve(narrowIssueOf(orphan, "alice"));
@@ -1765,7 +1773,11 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
     expect(rowIds()).toEqual(["ask-orphan"]);
 
     getInbox.mockResolvedValue([
-      { ...orphan, issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" } },
+      {
+        ...orphan,
+        issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
     ]);
     await user.click(within(alert).getByRole("button", { name: /Retry/ }));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
@@ -3144,7 +3156,11 @@ test("an unmount inside the column keeps the record: the focus falls to the body
     await user.click(assign);
     served = served.map((row) =>
       row.id === "ask-b"
-        ? { ...row, issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" } }
+        ? {
+            ...row,
+            issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" },
+            waiting_on_person: "alice",
+          }
         : row
     );
     await act(async () => {
@@ -3219,7 +3235,11 @@ test("a focus landing outside the column drops the record an unmount inside it l
     await user.click(assign);
     served = served.map((row) =>
       row.id === "ask-b"
-        ? { ...row, issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" } }
+        ? {
+            ...row,
+            issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" },
+            waiting_on_person: "alice",
+          }
         : row
     );
     await act(async () => {
@@ -3300,7 +3320,11 @@ test("l back into a column an unmount dropped the focus out of leaves the record
     await user.click(assign);
     served = served.map((row) =>
       row.id === "ask-b"
-        ? { ...row, issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" } }
+        ? {
+            ...row,
+            issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" },
+            waiting_on_person: "alice",
+          }
         : row
     );
     await act(async () => {

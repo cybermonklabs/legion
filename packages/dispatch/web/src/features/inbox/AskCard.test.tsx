@@ -642,6 +642,47 @@ test("a question closed under the reader keeps their unsent answer, out of the f
   }
 });
 
+// Handing a question to somebody else is a move on a question still waiting for an answer, so
+// the control is part of an open card and of no record: an answered, a resolved or a withdrawn
+// question waits on nobody.
+test("the hand-on control is on an open question and on no closed one", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  try {
+    expect(
+      await within(view.container).findByLabelText("Hand this question to")
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+
+  const closedBy = (kind: "resolved" | "withdrawn"): Ask =>
+    answeredAsk({
+      answer: null,
+      resolution: {
+        actor: { id: "session-1", kind: "session" },
+        at: "2026-10-08T03:00:00Z",
+        kind,
+        reason: "Settled elsewhere.",
+      },
+      state: "resolved",
+    });
+  for (const closed of [answeredAsk(), closedBy("resolved"), closedBy("withdrawn")]) {
+    const card = renderCard(<AskCard ask={closed} initialThread={thread(closed)} />);
+    try {
+      // The record the card draws instead of the open question, which is what carries the
+      // control: the open card's own article (`data-ask-card`) is not on screen at all.
+      await waitFor(() => expect(card.view.getByTestId(`ask-${closed.id}`)).toBeInTheDocument());
+      expect(card.view.container.querySelector("[data-ask-card]")).toBeNull();
+      expect(
+        within(card.view.container).queryByLabelText("Hand this question to")
+      ).not.toBeInTheDocument();
+    } finally {
+      card.view.unmount();
+    }
+  }
+});
+
 /** The thread's reply bodies, in the order the card draws them. */
 function threadReplyBodies(thread: HTMLElement): (string | null | undefined)[] {
   return Array.from(

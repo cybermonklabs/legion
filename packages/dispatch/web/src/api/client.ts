@@ -515,6 +515,16 @@ export function askSnoozeRequest(id: string, snoozedUntil: string): WriteRequest
   };
 }
 
+/** `PUT /api/v1/asks/{id}/asked-of`: the person an open ask waits on from now on
+ *  (`handAskTo`). */
+export function askAskedOfRequest(id: string, askedOf: string): WriteRequest<Ask> {
+  return {
+    body: { asked_of: askedOf },
+    method: "PUT",
+    path: `/api/v1/asks/${pathSegment(id)}/asked-of`,
+  };
+}
+
 /** `PUT /api/v1/me/threads/{id}/read`: a thread's read mark (`markThreadRead`). */
 export function threadReadRequest(threadId: string, readThrough: string): WriteRequest {
   return {
@@ -1126,6 +1136,15 @@ export class DispatchApiClient {
    *  answers the same 204. */
   async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
     await this.remove(`/api/v1/me/asks/${pathSegment(id)}/snooze`, bounds);
+  }
+
+  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
+   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
+   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
+   *  person asking another. */
+  handAskTo(id: string, askedOf: string, bounds: WriteBounds): Promise<Ask> {
+    return this.send<Ask>(askAskedOfRequest(id, askedOf), bounds);
   }
 
   listAgents(): Promise<Agent[]> {

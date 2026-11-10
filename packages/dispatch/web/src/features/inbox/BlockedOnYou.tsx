@@ -19,8 +19,8 @@ import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";
 
 /** Open asks whose turn is a person's (`waiting_on === "human"`) and that the viewer has not
- *  deferred. Whose turn it is, not whose question it is: who answers it is the issue's assignee,
- *  which `needsYou` below adds. An agent's progress note keeps its ask waiting on the
+ *  deferred. Whose turn it is, not whose question it is: who answers it is the person the ask
+ *  waits on, which `needsYou` below adds. An agent's progress note keeps its ask waiting on the
  *  agent, whoever replied last; a snooze keeps its ask off every "needs you" surface - the nav
  *  badge, the sidebar, this banner - until it returns, because deferring it is the viewer
  *  saying it does not need them now. A row that carries no snooze at all (an issue header's
@@ -32,10 +32,12 @@ export function waitingOnHuman<
 }
 
 /** The one rule for work waiting on the reader themselves: an open ask whose turn is a
- *  person's and that they have not deferred (`waitingOnHuman`), on an issue assigned to them
- *  (`isMine`, the same rule the list's own filter reads). A question on nobody's issue, and
- *  every document question (a document has no assignee), is nobody's, so it waits on nobody
- *  here. Nobody is the reader until the login resolves, so an unknown viewer is waited on by
+ *  person's and that they have not deferred (`waitingOnHuman`), waiting on them
+ *  (`isMine`, the same rule the list's own filter reads, which reads the server's
+ *  `waiting_on_person`: whoever the ask was handed to, and the assignee of its issue until
+ *  somebody hands it on). A question nobody waits on - one on an issue nobody holds that
+ *  nobody was handed, and every document question - is nobody's, so it waits on nobody here.
+ *  Nobody is the reader until the login resolves, so an unknown viewer is waited on by
  *  nothing: a list taken over the whole inbox while the shell loads would not be theirs.
  *  Every count of such work - the badges, the banner, the Agents page's first card number -
  *  reads this, so they all mean the same thing. */

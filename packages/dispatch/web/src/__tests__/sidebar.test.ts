@@ -59,9 +59,11 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-1",
-      // Needs you counts the reader's own questions, so these sit on their issues.
+      // Needs you counts the questions waiting on the reader, which is what the server answers
+      // in `waiting_on_person`: nobody has handed these on, so it is their issue's assignee.
       issue: { assignee: "alice", key: "CORE-1", title: "Pinned work" },
       issue_key: "CORE-1",
+      waiting_on_person: "alice",
       priority: null,
       snoozed_until: null,
       kind: "question",
@@ -124,6 +126,7 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
       id: "ask-3",
       issue: { assignee: "alice", key: "OPS-2", title: "Operations work" },
       issue_key: "OPS-2",
+      waiting_on_person: "alice",
       priority: null,
       snoozed_until: null,
       kind: "question",
