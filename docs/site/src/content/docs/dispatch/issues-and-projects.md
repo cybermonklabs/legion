@@ -68,9 +68,49 @@ Legion, when it works an issue, moves that issue's status itself.
 The **List** and **Board** buttons switch between two views of the same issues. Press `v` to
 toggle. Dispatch remembers your choice.
 
-Both views use one order. Issues are grouped by status, and within a status they keep the order
-people set on the Board. A card you drag to the top of its column is first in the List too.
-Priority is shown as a badge and can be filtered on, but it does not change the order.
+The **List** is a sortable table, initially ordered by **Queue**, with Done excluded.
+Queue numbers are the waiting order of Todo issues labelled `legion`, using the Board's rank order.
+Click a column heading to sort; hold Shift to add another sort column.
+Use **Group by** for status, priority, epic, assignee, created by, claimed by, or an age band.
+An epic is an open root issue labelled `epic`.
+It is an ordinary row of the table — searchable, filterable, selectable, editable — except while you group by epic, where it is its group's linked heading rather than a row inside it.
+
+The table scrolls vertically and horizontally inside its own box.
+Its header stays visible. On phones Select, Key and Title stay pinned within 85% of the box, so a title reads as words; Priority and the other columns scroll sideways.
+Title narrows and keeps its two-line clamp, even with saved desktop widths.
+The box has room for at least three full issue rows; on compact windows, scroll the page to reach the table and its pager.
+Drag a header edge to resize a column, double-click it to reset its width, or drag a header to reorder columns.
+**Columns** hides or shows optional columns; widths, order and visibility are remembered per project.
+Choose 25, 50, 100, 250 or All rows per page.
+A page starting inside a group repeats that group's heading.
+
+The horizontally scrollable status strip above the table shows full lifecycle labels and counts; every segment is a touch-sized button. Click a segment to filter to that status.
+It counts what is loaded, so with closed issues unloaded it shows no Done segment at all.
+Open issues load first; Done loads when the Status filter includes it or is cleared.
+The open rows and filters stay usable while Done loads, or if that read fails; **Retry** asks again.
+Until Done has loaded, its filter option says so instead of claiming there are no closed issues.
+**Clear filters** also clears Needs you and Unread.
+Tick rows to open a floating action bar: **Start next**, **Move to epic…**, **Take out of epic**, or **New epic from these**.
+Press `x` to select or deselect the row your keys are on; the search bar then acts on what you have selected, and leaving the table clears it.
+An issue the table stops listing drops out of the selection, so a row listed again comes back unselected.
+On phones the bar stays in one horizontally scrollable row above the project content, so it cannot cover the table or pager.
+**Select all N matching** includes rows beyond the current page.
+Start next moves queued selections ahead of the rest of Legion's waiting line, keeping their queue order.
+Each rank change waits for the previous one. A refusal stops the later changes, and the notice identifies every issue that did not move up.
+Selecting every queued row says they already start next rather than doing nothing.
+An epic group's **Epic actions** can rename it, merge its open work into another epic and close it with a reason, or start all its queued issues next, including those hidden by filters.
+Merge moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after every move succeeds; otherwise the source stays open and the notice identifies the failed moves.
+Closed issues keep their original parent and history.
+Move, Take out and New epic skip selected closed issues and report how many were skipped; New epic requires at least one open selection.
+Naming and renaming an epic happen in a dialog in the page, like creating an issue.
+If a new epic may duplicate another issue, **Create anyway** is an explicit choice.
+If Dispatch created the epic but lost its answer, the table says so and leaves the selected issues in place rather than guessing the new epic's key.
+Independent bulk changes register together and finish independently, at most eight requests at a time. Each refused request stays in the shell's pending-writes indicator and has its own **Retry**; it does not hold the others.
+Reload restores requests already registered. New epic registers its parent changes only after the create answers; merge registers its reason and close only after its moves succeed.
+
+Changes made in another tab or by another person appear live without reloading.
+Selection and the row being read stay in place when a live update inserts rows above it.
+The Board keeps its own rank order within each status; sorting the table does not reorder the Board.
 
 ![The Board, with a column per status and cards showing priority, labels, and open asks](/legion/media/dispatch/board.png)
 
@@ -126,18 +166,19 @@ closes.
 
 ### Filters
 
-Choose **Filters** above the List or the Board to open the filter strip. It holds:
+In the List, each column's filter button opens a searchable list of values and their matching counts.
+Title instead takes a typed, case-insensitive text filter.
+Values selected in one column match any of them, except Labels, which uses all-of matching: an issue must carry every picked label, compared case-insensitively in both List and Board.
+Different columns narrow one another.
+Each option count applies the search and every other column's filter, not its own column's picks.
+The **Search issues** box matches every word across keys, titles, epics, assignees, creators, claim holders and labels.
+A word of five or more characters can be one edit away.
 
-- **Status** (List only), to keep issues in the statuses you pick.
-- **Labels**, to keep issues that carry every label you pick.
-- **Search**, to match issue keys and titles.
-- **Needs you**, to keep issues with open asks.
-- **Unread**, to keep issues with activity you have not seen.
-- **Unclaimed**, to keep issues no agent is implementing.
-
-Each active filter shows as a chip next to **Filters · N active**. Choose a chip to remove it.
-Filters live in the page address, so a filtered view survives a reload and can be shared as a
-link.
+The Board keeps the **Filters** strip: Labels requires every selected label, and Search matches keys and titles.
+The List and Board share **Needs you** (open asks) and **Unread** (unseen activity).
+The List folds unclaimed work into its **Claimed by** column: its **Nobody or lapsed** value lists the issues nobody holds plus those whose claim the server would hand over. The Board keeps its **Unclaimed** chip, and both read the same `unclaimed=1` address parameter.
+The Board's active-filter chips remove individual picks.
+Filters, table sort, grouping, search and page live in the address, so a reload or shared link restores them.
 
 An issue an agent is implementing shows **Claimed by** and the agent's name, which opens its
 [live view](/legion/dispatch/agents/#the-live-view). The claim holds while that agent's session is
@@ -146,8 +187,9 @@ unresponsive session has missed its registration window but is still working, an
 claimed. The chip then reads **unresponsive since** the moment the session was last seen, and
 names the moment the issue becomes takeable, 20 minutes after that one. Another agent's take is
 refused until then, naming the same moment; you can take it yourself at any time. From that
-moment the chip reads **takeable now** in the tone of a free issue, and the **Unclaimed** filter
-lists the issue, while the session is still drawn as unresponsive, because it has not ended and
+moment the chip reads **takeable now** in the tone of a free issue, and the List's **Nobody or
+lapsed** value (the Board's **Unclaimed** chip) lists the issue, while the session is still drawn
+as unresponsive, because it has not ended and
 may yet answer. A session that reads `gone` is unclaimed at once: its
 [running mark](/legion/dispatch/agents/#how-dispatch-shows-an-agent) is a hollow ring and the chip
 reads **not running**.

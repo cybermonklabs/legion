@@ -1,0 +1,5 @@
+kind: Added
+body: 'GET /api/v1/search/results answers the same search as GET /api/v1/search, and is the route a client sends a search carrying number_project, status, author, updated_since or keywords_only to: a build released before those members answers this path 404 no route, where it would answer GET /api/v1/search with the member dropped. GET /api/v1/search still reads all nine, so a page served by an earlier release is still answered narrowed.'
+time: 2026-11-10T05:23:48.621879841Z
+custom:
+    Issue: pr3431

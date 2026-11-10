@@ -161,6 +161,7 @@ GET /api/v1/related-checks any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any
+GET /api/v1/search/results any
 GET /api/v1/settings/architecture-sources any
 GET /api/v1/settings/delivery any
 PUT /api/v1/settings/delivery any
