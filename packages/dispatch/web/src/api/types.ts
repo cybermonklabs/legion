@@ -202,6 +202,7 @@ export type {
   LegionFiledIssue,
   LegionFilingClass,
   LegionIssueTimeline,
+  LegionLargestTree,
   LegionMetricsResponse,
   LegionMetricsScope,
   LegionPhaseBreakdown,

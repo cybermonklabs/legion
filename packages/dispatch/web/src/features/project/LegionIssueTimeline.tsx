@@ -44,10 +44,13 @@ const SEGMENT_FILL: Record<string, string> = {
 /** An ask's own stretch: a darker rose than the waiting-on-a-person hours it causes. */
 const ASK_FILL = chartParts[4];
 const SOURCE_LABEL: Record<LegionTimelineSpan["source"], string> = {
-  observed: "observed events",
-  status_history: "status-history fallback",
+  observed: "the daemon's observed events",
+  status_history: "the issue's status changes",
   asks: "Dispatch's asks",
 };
+
+/** The phases after implementing that a return to implementing counts as a send-back from. */
+const SENT_BACK_FROM = new Set(["testing", "reviewing", "accepting", "retro", "merging"]);
 
 /** One stretch of a lane: its label and fill, hatched where a root's phase overlaps the hours it
  *  waited on its children. */
@@ -197,11 +200,14 @@ function TimelineBody({
       },
       {
         name: "Where the hours went",
-        spans: timeline.segments.map((span) => ({
-          span,
-          label: `${SEGMENT_LABEL[span.name] ?? span.name} (${span.bar ?? ""})`,
-          fill: SEGMENT_FILL[span.name] ?? surfaceMutedBg,
-        })),
+        // A row that is all unknown says nothing: it is left out and said in one sentence.
+        spans: timeline.segments.some((span) => span.name !== "unknown")
+          ? timeline.segments.map((span) => ({
+              span,
+              label: `${SEGMENT_LABEL[span.name] ?? span.name} (${span.bar ?? ""})`,
+              fill: SEGMENT_FILL[span.name] ?? surfaceMutedBg,
+            }))
+          : [],
       },
       ...roles.map((role) => ({
         name: `Turn: ${role}`,
@@ -220,7 +226,10 @@ function TimelineBody({
     ];
   }, [timeline]);
   // A lane with nothing recorded is left out and named once under the axis.
-  const empty = lanes.filter((lane) => lane.spans.length === 0).map((lane) => lane.name);
+  const empty = lanes
+    .filter((lane) => lane.spans.length === 0 && lane.name !== "Where the hours went")
+    .map((lane) => lane.name);
+  const split = lanes.some((lane) => lane.name === "Where the hours went" && lane.spans.length > 0);
   const shown = lanes.filter((lane) => lane.spans.length > 0);
   const all = shown.flatMap((lane) => lane.spans.map((one) => one.span));
   // The colour key: each phase once in the order drawn (the Phase lane and the child lanes), then
@@ -258,13 +267,24 @@ function TimelineBody({
   const length = Math.max(end - start, 1);
   const at = (iso: string) => ((Date.parse(iso) - start) / length) * 100;
   const hours = timeline.segment_hours;
+  // Each return to implementing from a later phase is one send-back.
+  const sentBack = timeline.phases.filter(
+    (span, index) =>
+      span.name === "implementing" && SENT_BACK_FROM.has(timeline.phases[index - 1]?.name ?? "")
+  ).length;
   const figures = [
     ["Work time", formatHours(timeline.work_hours)],
     ["Parked", formatHours(timeline.parked_hours)],
     ["Queued", formatHours(timeline.queued_hours)],
     ["Review rounds", `${timeline.review_rounds}`],
-    ["Sent back", timeline.sent_back ? "yes" : "no"],
-    ["Phases from", SOURCE_LABEL[timeline.source]],
+  ];
+  const story = [
+    `Phases read from ${SOURCE_LABEL[timeline.source]}.`,
+    sentBack > 0
+      ? `Sent back to implementing ${sentBack === 1 ? "once" : `${sentBack} times`} over ${timeline.review_rounds} review round${timeline.review_rounds === 1 ? "" : "s"}.`
+      : timeline.sent_back
+        ? "Sent back to implementing at least once."
+        : "Never sent back to implementing.",
   ];
   return (
     <>
@@ -295,11 +315,18 @@ function TimelineBody({
           </div>
         ) : null}
       </dl>
+      <p className={`text-xs ${textSecondaryOnCanvas}`} data-legion-timeline-story>
+        {story.join(" ")}
+      </p>
       <p className={`text-xs ${textMutedOnSurface}`} data-legion-timeline-segments>
-        The bars' hours:{" "}
-        {Object.entries(SEGMENT_LABEL)
-          .map(([key, label]) => `${label} ${formatHours(hours[key as keyof typeof hours] ?? 0)}`)
-          .join(" · ")}
+        {split
+          ? `The bars' hours: ${Object.entries(SEGMENT_LABEL)
+              .filter(([key]) => (hours[key as keyof typeof hours] ?? 0) > 0)
+              .map(
+                ([key, label]) => `${label} ${formatHours(hours[key as keyof typeof hours] ?? 0)}`
+              )
+              .join(" · ")}.`
+          : "Nothing recorded splits this issue's hours into turns, CI waits, asks or children, so the row of where the hours went is left out."}
       </p>
       <div
         className="grid grid-cols-[minmax(7rem,11rem)_1fr] items-center gap-x-2 gap-y-1"

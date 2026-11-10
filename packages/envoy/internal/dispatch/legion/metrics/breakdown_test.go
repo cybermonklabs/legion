@@ -1,7 +1,9 @@
 package metrics
 
 import (
+	"fmt"
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -52,5 +54,35 @@ func TestThePhaseBreakdownSharesOutEachIssuesBarHours(t *testing.T) {
 	}
 	if math.Abs(shares-1) > 0.001 {
 		t.Errorf("the shares add up to %g, want 1", shares)
+	}
+}
+
+// TestALeftOutTreeIsCountedNowhere: excluding a tree root leaves its issues out of every metric,
+// and the largest tree names the tree with the most finished issues, beside the rest's median.
+func TestALeftOutTreeIsCountedNowhere(t *testing.T) {
+	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(20))
+	reviews := []*Issue{root}
+	for n := 2; n <= 4; n++ {
+		at := float64(n)
+		reviews = append(reviews, newIssue(fmt.Sprintf("INFRA-%d", n)).under("INFRA-1").worked("planner", hour(at)).closedAt(hour(at+1)))
+	}
+	other := newIssue("INFRA-9").worked("implementer", hour(0)).closedAt(hour(10))
+	population := fixture(hour(-24), hour(24), append(reviews, other)...)
+
+	report := Compute(population, ScopeAll, hour(24))
+	if report.LargestTree == nil || report.LargestTree.Root != "INFRA-1" || report.LargestTree.Finished != 4 {
+		t.Fatalf("the largest tree is %+v, want INFRA-1 with 4 finished", report.LargestTree)
+	}
+	if report.LargestTree.RestMedianHours != 10 {
+		t.Errorf("the rest's median is %g h, want 10", report.LargestTree.RestMedianHours)
+	}
+
+	population.ExcludeTrees = map[string]bool{"INFRA-1": true}
+	left := Compute(population, ScopeAll, hour(24))
+	if left.Finished != 1 || len(left.WorkTime.Issues) != 1 || left.WorkTime.Issues[0].Key != "INFRA-9" {
+		t.Fatalf("with INFRA-1's tree left out, %d finished (%v), want INFRA-9 alone", left.Finished, left.WorkTime.Issues)
+	}
+	if len(left.PhaseBreakdown.Issues) != 1 || !slices.Equal(left.ExcludedTrees, []string{"INFRA-1"}) {
+		t.Errorf("the breakdown holds %d issues and the answer names %v as left out", len(left.PhaseBreakdown.Issues), left.ExcludedTrees)
 	}
 }

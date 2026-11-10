@@ -131,6 +131,9 @@ type Population struct {
 	Project string
 	From    time.Time
 	To      time.Time
+	// ExcludeTrees are tree roots whose issues no metric counts: a reader leaving out one tree
+	// (Report.LargestTree) that is not the work they are measuring.
+	ExcludeTrees map[string]bool
 
 	// Issues is every issue of the project the read touched, by key; Keys lists them in order so
 	// a pass over them is deterministic.

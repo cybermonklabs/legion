@@ -12,8 +12,14 @@ import { formatDuration, pct } from "../delivery/lib/format";
 import { DAY_MS, liveWindow, type WindowChoice } from "../delivery/lib/window";
 
 /** Hours as the page writes them ("3.2h"; minutes under an hour). */
+/** Hours as the Legion tab writes them: minutes under an hour, else hours ("2.5h", never
+ *  "152m"), whole hours from 100 on. */
 export const formatHours = (value: number): string =>
-  value >= 100 ? `${Math.round(value).toLocaleString("en-US")}h` : formatDuration(value * 60);
+  value >= 100
+    ? `${Math.round(value).toLocaleString("en-US")}h`
+    : value >= 1
+      ? `${value.toFixed(1)}h`
+      : formatDuration(value * 60);
 
 /** The four classes of filing, in the order the splitting chart lists them. */
 const CLASSES: readonly { readonly key: LegionFilingClass; readonly label: string }[] = [
@@ -164,20 +170,8 @@ export function splittingDaySeries(report: LegionMetricsResponse): ChartSeries[]
   }
   const count = (value: number) => `${value}`;
   return [
-    perDay(
-      report,
-      "Issues filed by Legion sessions",
-      "issues a day",
-      count,
-      (day) => filed.get(day) ?? 0
-    ),
-    perDay(
-      report,
-      "Issues finished (roots and children)",
-      "issues a day",
-      count,
-      (day) => byDay.get(day)?.length ?? 0
-    ),
+    perDay(report, "Issues filed", "issues a day", count, (day) => filed.get(day) ?? 0),
+    perDay(report, "Issues finished", "issues a day", count, (day) => byDay.get(day)?.length ?? 0),
   ];
 }
 

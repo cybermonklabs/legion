@@ -5197,6 +5197,14 @@ export interface LegionBreakdownIssue {
 }
 
 /** The finished issues' work hours by part, and each issue's, most hours first. */
+export interface LegionLargestTree {
+  readonly root: string;
+  readonly title: string;
+  readonly finished: number;
+  readonly median_hours: number;
+  readonly rest_median_hours: number;
+}
+
 export interface LegionPhaseBreakdown {
   readonly hours: number;
   /** Every root's hours while a child worked, counted once already as the children's work. */
@@ -5255,6 +5263,11 @@ export interface LegionMetricsResponse {
    *  part's id is a board column's where it has one, so a page colours it as the issues table
    *  does. Read from the status history where the daemon observed nothing. */
   readonly phase_breakdown: LegionPhaseBreakdown;
+  /** The tree with the most finished issues, its median work time against the rest's; null when
+   *  nothing finished. */
+  readonly largest_tree: LegionLargestTree | null;
+  /** The tree roots this answer leaves out (`exclude_tree`). */
+  readonly excluded_trees: readonly string[];
 }
 
 /** A window by preset, whose end stays at the present, or by the exact `from`/`to` of a custom range. */

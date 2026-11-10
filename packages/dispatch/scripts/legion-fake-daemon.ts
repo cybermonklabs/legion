@@ -24,12 +24,16 @@
  * --history-dsn reads each issue's phase entry time from a local Dispatch's imported history (its
  * last status change into the phase's status, or the handoff that starts the phase), and each
  * issue's parent, which tells --simulate a root that is held for its children; a phase no record
- * places is sent with `at_unknown`, which the page shows as no time in phase.
+ * places is sent with `at_unknown`, which the page shows as no time in phase. It reads only the
+ * records the replayed daemon could have seen: none later than the replay (--replay-at, by default
+ * the replay file's modification time) and none of the fake daemon's own session, so a restart
+ * reads the same entry times as the first boot.
  *
  * --drop-every N gives every Nth change event a seq but never sends it the first time, so the
  * gap repair is visible. --keep N keeps only the last N change events, so a gap older than them
  * takes a snapshot.
  */
+import { statSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import { SQL } from "bun";
@@ -37,6 +41,8 @@ import { SQL } from "bun";
 import {
   type DaemonState,
   FakeDaemonModel,
+  type HistoryRow,
+  historyMarks,
   type PushEvent,
   phaseEntryTimes,
 } from "./legion-fake-daemon-model";
@@ -57,6 +63,8 @@ const { values: args } = parseArgs({
     // A local Dispatch's database holding the imported history: each issue's phase entry time
     // is read from its status changes and handoffs there (phaseEntryTimes).
     "history-dsn": { type: "string" },
+    // When the replay was read: no record later than this is an entry time.
+    "replay-at": { type: "string" },
     // The shared token needs a session actor, as the daemon's own status writes carry.
     session: { type: "string", default: "019a1c09-0000-7000-8000-00000000da01" },
   },
@@ -77,6 +85,8 @@ const keepLimit = Number(args.keep);
 const movesPerMinute = Number(args.simulate);
 
 const replay = (await Bun.file(replayPath).json()) as DaemonState;
+const replayAt = args["replay-at"] ?? statSync(replayPath).mtime.toISOString();
+const session = args.session as string;
 
 /** Each issue's phase entry time, and each issue's parent, from the imported history where
  *  --history-dsn names it. */
@@ -92,25 +102,28 @@ async function fromHistory(
     parents.set(row.key, row.parent_key);
   }
   const keys = Object.keys(replay.issues);
-  const statuses = new Map<string, { at: string; status: string }[]>();
-  for (const row of (await db.unsafe(
-    `select issue_key, created_at, payload->>'status' as status from events
-     where issue_key = any($1) and payload->>'status' is not null order by created_at, id`,
-    [keys]
-  )) as { issue_key: string; created_at: Date; status: string }[]) {
-    const marks = statuses.get(row.issue_key) ?? [];
-    marks.push({ at: row.created_at.toISOString(), status: row.status });
-    statuses.set(row.issue_key, marks);
-  }
-  const handoffs = new Map<string, { at: string; phase: string }[]>();
-  for (const row of (await db.unsafe(
-    `select issue_key, created_at, phase from handoffs where issue_key = any($1) order by created_at`,
-    [keys]
-  )) as { issue_key: string; created_at: Date; phase: string }[]) {
-    const list = handoffs.get(row.issue_key) ?? [];
-    list.push({ at: row.created_at.toISOString(), phase: row.phase });
-    handoffs.set(row.issue_key, list);
-  }
+  const rows = (kind: "status" | "handoff", sql: string) =>
+    db
+      .unsafe(sql, [keys])
+      .then((found: { key: string; at: Date; value: string; actor: string | null }[]) =>
+        found.map((row): HistoryRow => ({ ...row, kind, at: row.at.toISOString() }))
+      );
+  const { statuses, handoffs } = historyMarks(
+    [
+      ...(await rows(
+        "status",
+        `select issue_key as key, created_at as at, payload->>'status' as value, actor->>'id' as actor
+         from events where issue_key = any($1) and payload->>'status' is not null
+         order by created_at, id`
+      )),
+      ...(await rows(
+        "handoff",
+        `select issue_key as key, created_at as at, phase as value, author->>'id' as actor
+         from handoffs where issue_key = any($1) order by created_at`
+      )),
+    ],
+    { replayAt, self: session }
+  );
   await db.close();
   const phases = new Map(
     Object.values(replay.issues).flatMap((issue) =>

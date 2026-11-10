@@ -1677,6 +1677,7 @@ export class DispatchApiClient {
     from: string;
     to: string;
     scope: LegionMetricsScope;
+    exclude_tree?: readonly string[];
   }): Promise<LegionMetricsResponse> {
     return this.json<LegionMetricsResponse>(pathWithQuery("/api/v1/legion/metrics", query));
   }

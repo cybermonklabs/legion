@@ -35,8 +35,11 @@ const HELD_FOR_CHILDREN: Record<string, true> = {
   awaiting_merge: true,
   awaiting_person: true,
 };
-/** A CI verdict in the Slots table's narrow column; the full word is its title. */
-const CI_SHORT: Record<string, string> = { green: "✓", failing: "✗", pending: "…" };
+/** A CI verdict in words, for every value the daemon sends: `green` when every required check
+ *  passed, `red` when one failed, and none while one is pending or nothing was judged. */
+const CI_WORD: Record<string, string> = { green: "passed", red: "failed" };
+const ciWord = (verdict: string | null): string =>
+  verdict === null || verdict === "" ? "none yet" : (CI_WORD[verdict] ?? verdict);
 const CHILD_WORK: Record<string, true> = { implementing: true, testing: true, reviewing: true };
 /** How many rows a live table shows before its "show all". */
 const FIRST_ROWS = 10;
@@ -134,18 +137,20 @@ function Slots({
   const holders = cards
     .filter((card) => card.slot !== null)
     .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
-  // A worker in a turn, an architect's included, makes the slot working whatever the phase.
+  // The slot's use, with why: a worker in a turn (an architect's included) or the root's own
+  // phase makes it working; else a root waiting on its children holds it.
   const state = (card: LegionBoardCard): string => {
-    if (card.roles.length > 0 || !HELD_FOR_CHILDREN[card.phase]) return "working";
+    if (card.roles.length > 0) return `working: ${card.roles.join(", ")} in a turn`;
+    if (!HELD_FOR_CHILDREN[card.phase]) return "working: its own phase";
     const busy = cards.some(
       (other) =>
         other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
     );
-    return busy ? "held for children only" : "held, children idle";
+    return busy ? "held: for its children" : "held: children idle";
   };
   const shown = all ? holders : holders.slice(0, FIRST_ROWS);
-  const held = holders.filter((card) => state(card) !== "working");
-  const idle = holders.filter((card) => state(card) === "held, children idle");
+  const held = holders.filter((card) => state(card).startsWith("held"));
+  const idle = holders.filter((card) => state(card) === "held: children idle");
   const { header } = board;
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
@@ -159,8 +164,8 @@ function Slots({
         A slot is working while a worker of its issue is in a turn, the architect's included, or
         while its root is in a phase of its own work. It is held for children only while its root is
         accepting, awaiting merge or awaiting a person with no worker in a turn; held, children idle
-        when, besides, nothing under the root is implementing, testing or reviewing. CI: ✓ green, ✗
-        failing, … pending, — no verdict.
+        when, besides, nothing under the root is implementing, testing or reviewing. CI: passed,
+        failed, or none yet (a required check is pending, or nothing was judged).
       </p>
       <div className="hidden md:block">
         <table className="w-full text-left text-xs">
@@ -206,11 +211,10 @@ function Slots({
                   <td
                     className="px-1 py-1 whitespace-nowrap"
                     data-legion-slot-ci={card.checks_verdict ?? ""}
-                    title={card.checks_verdict ?? "No CI verdict"}
                   >
-                    {CI_SHORT[card.checks_verdict ?? ""] ?? card.checks_verdict ?? "—"}
+                    {ciWord(card.checks_verdict)}
                   </td>
-                  <td className="px-1 py-1 whitespace-nowrap" data-legion-slot-state={state(card)}>
+                  <td className="px-1 py-1" data-legion-slot-state={state(card)}>
                     {state(card)}
                   </td>
                 </tr>
@@ -229,13 +233,7 @@ function Slots({
               phase === undefined ? "—" : <SlotPhase card={card} key="phase" phase={phase} />,
             ],
             ["Children not started", card.children],
-            [
-              "CI",
-              <span key="ci" title={card.checks_verdict ?? "No CI verdict"}>
-                {CI_SHORT[card.checks_verdict ?? ""] ?? card.checks_verdict ?? "—"}{" "}
-                {card.checks_verdict ?? "no verdict"}
-              </span>,
-            ],
+            ["CI", <span key="ci">{ciWord(card.checks_verdict)}</span>],
             ["Slot use", state(card)],
           ];
           return (

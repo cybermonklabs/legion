@@ -83,6 +83,10 @@ type Report struct {
 	Splitting Splitting `json:"splitting"`
 	// PhaseBreakdown is where the finished issues' bar hours went, by phase.
 	PhaseBreakdown PhaseBreakdown `json:"phase_breakdown"`
+	// LargestTree is the tree with the most finished issues, nil when none finished.
+	LargestTree *LargestTree `json:"largest_tree"`
+	// ExcludedTrees are the tree roots whose issues this answer leaves out, as asked.
+	ExcludedTrees []string `json:"excluded_trees"`
 }
 
 // WorkTime is metric 1: hours from an issue's first worker event to its close, less its parked
@@ -219,7 +223,19 @@ func Compute(population *Population, scope Scope, now time.Time) Report {
 		Rework:         computed.rework(finished),
 		Splitting:      computed.splitting(finished),
 		PhaseBreakdown: computed.phaseBreakdown(finished),
+		LargestTree:    computed.largestTree(finished),
+		ExcludedTrees:  excludedTrees(population),
 	}
+}
+
+// excludedTrees is the population's excluded tree roots in key order, never nil.
+func excludedTrees(population *Population) []string {
+	roots := make([]string, 0, len(population.ExcludeTrees))
+	for root := range population.ExcludeTrees {
+		roots = append(roots, root)
+	}
+	slices.Sort(roots)
+	return roots
 }
 
 // computation is one answer being computed, with the timelines and views each metric shares.
@@ -257,7 +273,7 @@ func (c *computation) finished() []*Issue {
 	var finished []*Issue
 	for _, key := range c.population.Keys {
 		issue := c.population.Issues[key]
-		if !c.finishedInWindow(issue) {
+		if !c.finishedInWindow(issue) || c.population.ExcludeTrees[c.treeRoot(issue.Key)] {
 			continue
 		}
 		switch c.scope {
