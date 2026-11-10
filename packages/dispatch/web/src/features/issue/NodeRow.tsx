@@ -269,11 +269,7 @@ function NodeEdges({ node }: { node: TreeNode }): ReactNode {
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip
-          chip={chip}
-          key={`also:${chip.ref}`}
-          label={CONTROL_LABELS.also_under}
-        />
+        <Chip chip={chip} key={`also:${chip.ref}`} label={CONTROL_LABELS.also_under} />
       ))}
       {node.chips.map((chip) => (
         <Chip chip={chip} key={chip.ref} />
@@ -430,11 +426,7 @@ function NodeBody({
         </p>
       )}
       {node.type === "decision" ? (
-        <DecisionActions
-          document={document}
-          isClosed={isClosed}
-          nodeReference={node.reference}
-        />
+        <DecisionActions document={document} isClosed={isClosed} nodeReference={node.reference} />
       ) : null}
       <p>
         <button
