@@ -34,7 +34,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a reply taller than the reading pane is marked read by reading it, and its row stays", async ({
+// @pr: The read mark's own row: reading a reply taller than the pane marks it read and leaves its row in the list.
+test("a reply taller than the reading pane is marked read by reading it, and its row stays @pr", async ({
   browser,
 }) => {
   await setLiveSessions([THREAD_SESSION]);

@@ -28,14 +28,17 @@
 #     same database, the retried write succeeds, the completion is accepted, and GET
 #     /api/v1/issues/<KEY>/handoffs (what Conversation lists) holds it.
 #
-# Run it from a checkout on a Linux host with go, bun (after `bun install` at the checkout's root)
-# and awk, as
-#   LEGION_TEST_PG_DSN=postgres://<user>@<host>:<port>/<database>?sslmode=disable \
+# Run it from a checkout on a Linux host with go, bun (after `bun install` at the checkout's
+# root), awk and python3, as
+#   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/handoff-records.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on; the
 # driver also creates Dispatch's database on the same server (its role must be allowed to create
 # and drop databases, and the server must offer the pgvector extension, which Dispatch's migrations
-# create) and drops it on exit. This script starts no database. The broker is the run's own: a
+# create) and drops it on exit. That server must be this machine's: prerequisites reads the DSN
+# with lib/loopback-dsn.sh's require_loopback_dsn and refuses a host that is not 127.0.0.1,
+# localhost or ::1 with exit 2, before it builds or starts anything. This script starts no
+# database. The broker is the run's own: a
 # nats-server from LEGION_E2E_NATS_BIN, or the pinned one installed with `go install`.
 # HANDOFF_RECORDS_EVIDENCE_DIR (default a fresh directory under TMPDIR, or /tmp when it is unset,
 # kept and printed) keeps the transcript, the nats-server's log, the daemon's, Dispatch's
