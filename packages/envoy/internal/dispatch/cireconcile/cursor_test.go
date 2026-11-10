@@ -287,9 +287,8 @@ func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
 // below the refused page is merged while the pages before it are read, so the listing the pass
 // falls back to at the refusal is shorter below that page than the pages the queries answered
 // were: the page sits five places earlier in the listing than its position in the repository,
-// and nothing but its number still finds it. No pass has to stand between the refusal and the
-// listing for that -- the pages of a query are read one after another, and GitHub answers each
-// of them from the pull requests open at the moment it is asked.
+// and nothing but its number still finds it. The pages of a query are read one after another,
+// and GitHub answers each of them from the pull requests open at the moment it is asked.
 func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)

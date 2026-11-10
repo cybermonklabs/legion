@@ -316,13 +316,14 @@ func (w *walk) sweep(ctx context.Context) *ending {
 		if !page.hasNextPage {
 			return nil
 		}
-		// The page after this one begins above its last head: every head of an answered query
-		// page carries a number (graphql.go), as every head of a window of the listing does,
-		// so one more than the last of them names the page after it in any listing of this
-		// repository, whatever has closed below. A page that answered no head at all names
-		// nothing of its own, so the cursor keeps the number this page was named by: that
-		// number is at or below the first head of the page after it, so a walk resuming there
-		// reads heads a second time at worst and skips none.
+		// The page after this one begins above its last head. A query answers a repository's
+		// pages in pull request number order (graphql.go, headsQuery's orderBy), and the listing
+		// is sorted the same way, so one more than the last head of either kind of page names
+		// the page after it in any listing of this repository, whatever has closed below; an
+		// orderBy that is not number ascending breaks this rule. A page that answered no head
+		// at all names nothing of its own, so the cursor keeps the number this page was named
+		// by: that number is at or below the first head of the page after it, so a walk
+		// resuming there reads heads a second time at worst and skips none.
 		from := w.here.from
 		if read := len(page.heads); read > 0 {
 			from = page.heads[read-1].number + 1
@@ -344,8 +345,8 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 	r, c := w.r, w.c
 	if w.here.rest {
 		// A pass before this one fell back to the listing within this repository and was cut
-		// short there, and the cursor it left names its page by the number that page begins
-		// at (cursor.from).
+		// short there, and the cursor it left names its page by a number: one more than the
+		// last head read before it (cursor.from), which need not be an open pull request's.
 		return w.restPage(ctx)
 	}
 	if at := r.limited(ctx, w.repository.queryScopes...); at != nil {
