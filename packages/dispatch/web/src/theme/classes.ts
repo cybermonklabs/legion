@@ -1,3 +1,5 @@
+import type { IssueStatus } from "@legion/contracts/dispatch-tools";
+
 import type { Swatch } from "./palette";
 import * as P from "./palette";
 
@@ -198,29 +200,34 @@ registerText("danger text on canvas", DANGER_TEXT, CANVAS);
 registerText("success text on surface", SUCCESS_TEXT, SURFACE);
 registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
 
-/** A single light-to-dark lifecycle scale, independent of the page's background. */
-export const issueStatusScale: Record<string, string> = {
-  triage: "bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950",
-  icebox: "bg-sky-200 text-sky-950 dark:bg-sky-200 dark:text-sky-950",
-  backlog: "bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950",
-  todo: "bg-sky-400 text-sky-950 dark:bg-sky-400 dark:text-sky-950",
-  in_progress: "bg-sky-500 text-sky-950 dark:bg-sky-500 dark:text-sky-950",
-  testing: "bg-sky-700 text-white dark:bg-sky-700 dark:text-white",
-  needs_review: "bg-sky-800 text-white dark:bg-sky-800 dark:text-white",
-  retro: "bg-sky-900 text-white dark:bg-sky-900 dark:text-white",
-  done: "bg-sky-950 text-white dark:bg-sky-950 dark:text-white",
-};
-for (const [status, background, foreground] of [
-  ["triage", P.SKY_100, P.SKY_950],
-  ["icebox", P.SKY_200, P.SKY_950],
-  ["backlog", P.SKY_300, P.SKY_950],
-  ["todo", P.SKY_400, P.SKY_950],
-  ["in_progress", P.SKY_500, P.SKY_950],
-  ["testing", P.SKY_700, P.WHITE],
-  ["needs_review", P.SKY_800, P.WHITE],
-  ["retro", P.SKY_900, P.WHITE],
-  ["done", P.SKY_950, P.WHITE],
-] as const)
+/**
+ * A single light-to-dark lifecycle scale, independent of the page's background: one row per
+ * issue status, holding the rendered class string and, beside it, the OKLCH background and
+ * foreground swatches the contrast check registers. The class string stays a static literal
+ * (Tailwind's scanner reads this file as text), so the row is what ties `bg-sky-700` to
+ * `P.SKY_700`: changing a shade means editing one row, and a missing status is a type error
+ * rather than an unstyled chip.
+ */
+const ISSUE_STATUS_SCALE: readonly (readonly [IssueStatus, string, Swatch, Swatch])[] = [
+  ["triage", "bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950", P.SKY_100, P.SKY_950],
+  ["icebox", "bg-sky-200 text-sky-950 dark:bg-sky-200 dark:text-sky-950", P.SKY_200, P.SKY_950],
+  ["backlog", "bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
+  ["todo", "bg-sky-400 text-sky-950 dark:bg-sky-400 dark:text-sky-950", P.SKY_400, P.SKY_950],
+  [
+    "in_progress",
+    "bg-sky-500 text-sky-950 dark:bg-sky-500 dark:text-sky-950",
+    P.SKY_500,
+    P.SKY_950,
+  ],
+  ["testing", "bg-sky-700 text-white dark:bg-sky-700 dark:text-white", P.SKY_700, P.WHITE],
+  ["needs_review", "bg-sky-800 text-white dark:bg-sky-800 dark:text-white", P.SKY_800, P.WHITE],
+  ["retro", "bg-sky-900 text-white dark:bg-sky-900 dark:text-white", P.SKY_900, P.WHITE],
+  ["done", "bg-sky-950 text-white dark:bg-sky-950 dark:text-white", P.SKY_950, P.WHITE],
+];
+export const issueStatusScale = Object.fromEntries(
+  ISSUE_STATUS_SCALE.map(([status, classes]) => [status, classes])
+) as Record<IssueStatus, string>;
+for (const [status, , background, foreground] of ISSUE_STATUS_SCALE)
   registerText(
     `issue status scale: ${status}`,
     pair(foreground, foreground),

@@ -269,7 +269,7 @@ export function ProjectPage(): ReactNode {
             <IssuesTable key={route.project} project={route.project} />
           ) : (
             <>
-              <IssueFilters key={route.project} project={route.project} showStatus={false} />
+              <IssueFilters key={route.project} project={route.project} />
               <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
             </>
           )

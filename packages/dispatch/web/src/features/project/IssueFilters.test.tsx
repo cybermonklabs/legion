@@ -53,8 +53,8 @@ async function openFilters(): Promise<void> {
   }
 }
 
-/** Opens the `Labels` (or `Status`) picker if it is closed and toggles one option. */
-async function pickOption(picker: "Labels" | "Status", option: string): Promise<void> {
+/** Opens the `Labels` picker if it is closed and toggles one option. */
+async function pickOption(picker: "Labels", option: string): Promise<void> {
   const user = userEvent.setup();
   const trigger = screen.getByRole("button", { name: new RegExp(`^${picker}( · \\d+)?$`) });
   if (trigger.getAttribute("aria-expanded") === "false") {
@@ -64,10 +64,10 @@ async function pickOption(picker: "Labels" | "Status", option: string): Promise<
 }
 
 /** The Board and its filter strip share the URL. */
-function StripAndList({ showStatus }: { showStatus: boolean }) {
+function StripAndList() {
   return (
     <>
-      <IssueFilters project="CORE" showStatus={showStatus} />
+      <IssueFilters project="CORE" />
       <IssueBoard project="CORE" showEdges />
     </>
   );
@@ -77,8 +77,7 @@ function renderStrip(
   issues: IssueSummary[],
   state: UserState = {},
   initialEntry = "/projects/CORE",
-  login = "alice",
-  showStatus = true
+  login = "alice"
 ) {
   const listIssues = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
     const labels = options.label ?? [];
@@ -89,15 +88,15 @@ function renderStrip(
   const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["whoami"], { kind: "user", login });
-  const tree = (status: boolean) => (
+  const tree = () => (
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
-        <StripAndList showStatus={status} />
+        <StripAndList />
         <LocationSearch />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(tree(showStatus));
+  const view = render(tree());
   return { getMyState, listIssues, tree, view };
 }
 
@@ -297,17 +296,17 @@ test("collapses filter controls by default and retains the disclosure preference
     await screen.findByText("Core work");
     const disclosure = screen.getByRole("button", { name: "Filters · 0 active" });
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: "Status" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument();
 
     await user.click(disclosure);
-    await pickOption("Status", "Done");
+    await user.click(screen.getByRole("button", { name: "Needs you" }));
     expect(screen.getByRole("button", { name: "Filters · 1 active" })).toHaveAttribute(
       "aria-expanded",
       "true"
     );
 
     await user.click(screen.getByRole("button", { name: "Filters · 1 active" }));
-    await user.click(screen.getByRole("button", { name: "Remove Status: Done filter" }));
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
     expect(screen.getByRole("button", { name: "Filters · 0 active" })).toBeTruthy();
     expect(
       window.localStorage.getItem(userPreferenceStorageKey("alice", "project.issue-filters"))
@@ -355,7 +354,7 @@ test("a pending viewer keeps a URL-only filter disclosure collapsed without pers
   const view = render(
     <MemoryRouter initialEntries={["/projects/CORE?q=guid"]}>
       <QueryClientProvider client={queryClient}>
-        <StripAndList showStatus />
+        <StripAndList />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -373,13 +372,11 @@ test("a pending viewer keeps a URL-only filter disclosure collapsed without pers
   }
 });
 
-test("without showStatus the strip offers no Status picker and no Status chip", async () => {
+test("a ?status= in the URL is neither counted nor chipped by the strip", async () => {
   const { getMyState, listIssues, view } = renderStrip(
     [issue()],
     {},
-    "/projects/CORE?label=x&status=done",
-    "alice",
-    false
+    "/projects/CORE?label=x&status=done"
   );
 
   try {
