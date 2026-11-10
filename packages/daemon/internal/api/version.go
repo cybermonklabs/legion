@@ -846,16 +846,16 @@ package api
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 60: INFRA-204 -- api.State gains `questionsForController`, every question to a stopped agent
+// 61: INFRA-204 -- api.State gains `questionsForController`, every question to a stopped agent
 // that the daemon's answer loop passed to the controller in the last seven days (id, issue, role,
 // session, asker, ref, reason, passedAt), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
-// missed here. Never null, so a 59 plugin's strict reader refuses the state, and the boot gate
+// missed here. Never null, so a 60 plugin's strict reader refuses the state, and the boot gate
 // and `legion probe-image` refuse the mixed pair. (This branch took 38, then 52 while main stood
 // at 51, then 57 while main stood at 56, then 58 while main stood at 57, then 59 while main
-// stood at 58; main has since landed INFRA-956's end of fix-attempt counting at 59, which
-// carries no `questionsForController`, so this change takes the number above it, as
-// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. main held 59 at the forward merge that renumbered this entry, main's 34af5e28; read
-// main's own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 60
+// stood at 58, then 60 while main stood at 59; main still stands at 59, but #2539 and #2731 also
+// declare 60, so this change takes 61, the lowest number above main's that no open pull request
+// declares, as .github/scripts/check-daemon-api-contract.sh names it. main held 59 at the forward
+// merge that renumbered this entry, main's fb26c8e53a72; read main's own number again at the next
+// merge rather than from this line.)
+const DaemonAPIVersion = 61

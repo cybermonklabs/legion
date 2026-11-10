@@ -734,7 +734,7 @@ const retiredStrandedContract = 56
 // It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
 // held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
 // the first number above it, and the release that carries the record declares that number. This
-// daemon's own contract is never below it — it declares 60, INFRA-204's questions passed to the
+// daemon's own contract is never below it — it declares 61, INFRA-204's questions passed to the
 // controller (version.go) — so a pod at either is served the record and only a pod still running
 // an older plugin is not.
 const stallRecordContract = 57

@@ -7,4 +7,4 @@ body: |-
   it as `intake.Handoff`.
 time: 2026-11-06T22:00:00.000000000Z
 custom:
-    Issue: INFRA-204
+    Issue: pr2230

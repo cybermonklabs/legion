@@ -1391,7 +1391,7 @@ refusing it, and the loop writes it into the asking agent's conversation rather 
   topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text}}`, the text cut at
   2,000 characters), and, because that topic is a live wake only, `legion state` lists every
   question passed on in the last seven days, newest first and at most 100, as
-  `questionsForController` (daemon API contract 60), which the controller reads at its start.
+  `questionsForController` (daemon API contract 61), which the controller reads at its start.
 - **Posting**, in the agent's name and once: a Dispatch message through its delivery's reply route,
   a mention through the comment's reply route, an ask thread as a comment carrying the reply's
   marker (the thread is read for it before a post is made again), an Envoy message by a direct

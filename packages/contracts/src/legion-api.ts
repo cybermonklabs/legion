@@ -410,7 +410,7 @@ const legionHeldOutboxRow = z.object({
 });
 
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
- * passed to the controller (its `agent-question` notice, contract 60): the question's id, the
+ * passed to the controller (its `agent-question` notice, contract 61): the question's id, the
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
@@ -677,7 +677,7 @@ const legionConsumerLag = z.object({
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. `questionsForController` is every question the answer loop passed to the controller in
  * the last seven days, newest first, at most 100, never null: the `agent-question` notice is a
- * live wake only, so a controller that starts later reads here what it missed (contract 60). */
+ * live wake only, so a controller that starts later reads here what it missed (contract 61). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   admission: legionAdmission,

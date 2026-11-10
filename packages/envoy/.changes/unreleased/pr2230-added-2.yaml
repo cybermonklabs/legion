@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  Dispatch records a stopped Legion agent as a delivery's recipient (INFRA-204). A targeted
+  Dispatch records a stopped Legion agent as a delivery's recipient. A targeted
   message (on an issue or on the agent's conversation page) or a mention whose session the
   listener holds no live record of or calls gone, or whose role has finished and has no live
   holder, is looked up
@@ -23,4 +23,4 @@ body: |-
   its workers, Envoy keeps what is published to it, and the next worker takes it on its claim.
 time: 2026-11-08T10:01:00.000000000Z
 custom:
-    Issue: INFRA-204
+    Issue: pr2230

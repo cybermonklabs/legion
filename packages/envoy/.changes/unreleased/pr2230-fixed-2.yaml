@@ -20,4 +20,4 @@ body: |-
   conversation too short to cache is marked exactly as before.
 time: 2026-11-09T09:30:00.000000000Z
 custom:
-    Issue: INFRA-204
+    Issue: pr2230

@@ -28,4 +28,4 @@ body: |-
   speaks a vendor's protocol is not always that vendor.
 time: 2026-11-07T12:00:00.000000000Z
 custom:
-    Issue: INFRA-204
+    Issue: pr2230
