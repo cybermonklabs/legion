@@ -104,11 +104,12 @@ const erasedMessageFields = ["bodySize", "cookies", "headersSize"] as const;
  *  file no longer names: the URLs are retargeted at the placeholder and these three would
  *  otherwise keep the port the harness happened to serve on), `user-agent` and the `sec-ch-ua` family (the browser build, which moves with
  *  Playwright), `if-none-match` (the browser's own cache state).
- *  A claim about a transport this file replaces: `content-encoding` and `content-length`. A HAR
- *  holds a body decoded, so a recording that kept the `gzip` the server answered with, and the
- *  byte count of the compressed form beside it, would describe a body no entry carries; a reader
- *  comparing two recordings would then be reading how the transport framed an answer rather than
- *  the answer. */
+ *  A claim about a transport this file replaces: `content-encoding`, `content-length` and
+ *  `transfer-encoding`. A HAR holds a body decoded, so a recording that kept the `gzip` the
+ *  server answered with, the byte count of the compressed form beside it, or the `chunked`
+ *  framing that answer went out in, would describe a body no entry carries; a reader comparing
+ *  two recordings would then be reading how the transport framed an answer rather than the
+ *  answer. */
 const erasedHeaders: Record<string, true> = {
   authorization: true,
   "content-encoding": true,
@@ -124,6 +125,7 @@ const erasedHeaders: Record<string, true> = {
   "sec-ch-ua-mobile": true,
   "sec-ch-ua-platform": true,
   "set-cookie": true,
+  "transfer-encoding": true,
   "user-agent": true,
 };
 
