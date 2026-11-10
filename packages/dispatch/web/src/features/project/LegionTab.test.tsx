@@ -210,7 +210,8 @@ async function renderTab(issue?: string, timeline: typeof TIMELINE = TIMELINE) {
     spyOn(api, "getMyState").mockResolvedValue({}),
     spyOn(api, "listAgents").mockResolvedValue([])
   );
-  // The unit DOM has no layout engine and the grid's rows are virtual: give its box a height.
+  // The unit DOM has no layout engine and the grid's rows are virtual: give its box a height,
+  // and a desktop width, so the grid keeps every column (below 640 px it keeps its primary ones).
   const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
     configurable: true,
@@ -218,10 +219,17 @@ async function renderTab(issue?: string, timeline: typeof TIMELINE = TIMELINE) {
       return this.dataset.testid === "issue-grid-scroll" ? 600 : (height?.get?.call(this) ?? 0);
     },
   });
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = function bounds(this: HTMLElement) {
+    const measured = rect.call(this) as DOMRect;
+    if (this.dataset.testid !== "issue-grid-scroll") return measured;
+    return { ...measured.toJSON(), width: 1000, height: 600 } as DOMRect;
+  };
   spies.push({
     mockRestore: () => {
       if (height !== undefined)
         Object.defineProperty(HTMLElement.prototype, "clientHeight", height);
+      HTMLElement.prototype.getBoundingClientRect = rect;
     },
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

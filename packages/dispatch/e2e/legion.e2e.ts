@@ -341,10 +341,13 @@ test("the Legion tab says where the finished issues' time went, then each metric
 
   try {
     await page.goto(`/projects/${LEGION_PROJECT}/legion`);
-    // One column, in the order a reader asks, each section with its headline line.
-    // Six: the four metrics, the CI-and-deploys line under them and the finished issues'
-    // own table (`LegionSections.test.tsx` lists the same six).
-    await expect(page.locator("[data-legion-section]")).toHaveCount(6);
+    // One column, in the order a reader asks, each section with its headline line: the four
+    // metrics and the finished issues' own table (`LegionSections.test.tsx` lists the same
+    // five); CI and deploys, measured for no repository here, is one line, not a section.
+    await expect(page.locator("[data-legion-section]")).toHaveCount(5);
+    await expect(page.locator("[data-legion-delivery-unmeasured]")).toContainText(
+      "CI and deploys: not measured"
+    );
     const headline = (id: string) =>
       page.locator(`[data-legion-section="${id}"] [data-legion-headline]`);
     await expect(headline("phase_breakdown")).toContainText("2 issues finished");
@@ -352,28 +355,33 @@ test("the Legion tab says where the finished issues' time went, then each metric
     // Two issues finished: the root with no review round, the child with one.
     await expect(headline("rework")).toContainText("median 0.5 review rounds");
     await expect(headline("rework")).toContainText("50% sent back");
-    await expect(headline("splitting")).toContainText("1 issues filed");
+    await expect(headline("splitting")).toContainText("1 issue filed");
+    // The range is named once, beside the window control.
+    await expect(page.locator("[data-legion-range]")).toContainText(" to ");
 
-    // The finished issues' phase bar and each issue's own bar, each key opening its timeline.
+    // The finished issues' phase bar and each issue's own row, each key opening its timeline.
     await expect(
       page.locator("[data-legion-phase-bar] [data-legion-phase-part]").first()
     ).toBeVisible();
-    await expect(page.locator("[data-legion-breakdown-issue]")).toHaveCount(2);
-    await page.locator("[data-legion-breakdown-issue] button").first().click();
-    await expect(page).toHaveURL(
-      new RegExp(`/projects/${LEGION_PROJECT}/legion/${LEGION_PROJECT}-\\d+$`)
-    );
-    await expect(page.locator("[data-legion-timeline] [data-legion-timeline-axis]")).toBeVisible();
+    const finished = page.locator('[data-legion-section="finished"] [data-issue-row]');
+    await expect(finished).toHaveCount(2);
 
-    // Each chart has its axes, its legend and the two controls.
+    // Each chart has its axes, its unit and the two controls.
     const work = page.locator('[data-legion-section="work_time"]');
     await expect(work.locator("[data-chart-unit]").first()).toContainText("hours");
-    await expect(work.getByRole("group", { name: "Work time to merge view" })).toBeVisible();
-    await expect(work.locator('select[data-chart-compare="Work time to merge"]')).toBeVisible();
+    await expect(work.getByRole("group", { name: "Work time view" })).toBeVisible();
+    await expect(work.locator('select[data-chart-compare="Work time"]')).toBeVisible();
 
     // The toggle reads the metrics again for the roots alone: one of the two finished.
     await page.getByRole("button", { name: "Roots" }).click();
-    await expect(headline("work_time")).toContainText("1 issues finished");
+    await expect(headline("work_time")).toContainText("1 issue finished");
+    await page.getByRole("button", { name: "All issues" }).click();
+
+    await finished.first().locator('a[data-issue-link][href*="/legion/"]').click();
+    await expect(page).toHaveURL(
+      new RegExp(`/projects/${LEGION_PROJECT}/legion/${LEGION_PROJECT}-\\d+$`)
+    );
+    await expect(page.locator("[data-legion-timeline]")).toBeVisible();
   } finally {
     await context.close();
     await daemon.close();

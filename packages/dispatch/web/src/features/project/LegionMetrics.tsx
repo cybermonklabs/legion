@@ -8,7 +8,7 @@ import type {
   LegionWorkTimeIssue,
 } from "../../api/types";
 import type { ChartRange, ChartSeries } from "../delivery/Chart";
-import { formatDuration, pct } from "../delivery/lib/format";
+import { pct } from "../delivery/lib/format";
 import { DAY_MS, liveWindow, type WindowChoice } from "../delivery/lib/window";
 
 /** Hours as the page writes them ("3.2h"; minutes under an hour). */

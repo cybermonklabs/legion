@@ -204,7 +204,7 @@ export function LegionSections({
           <TrendSection
             compare={source(compared.data)}
             headline={line(
-              `${count(report.finished)} finished`,
+              `${issues(report.finished)} finished`,
               `median ${formatHours(report.work_time.median_hours)}`,
               `p90 ${formatHours(report.work_time.p90_hours)}`
             )}
@@ -236,7 +236,7 @@ export function LegionSections({
           <TrendSection
             compare={source(compared.data)}
             headline={line(
-              `${count(report.splitting.filed.length)} filed`,
+              `${issues(report.splitting.filed.length)} filed`,
               `${count(report.splitting.finished_roots)} roots finished`,
               `${report.splitting.children_per_root.toFixed(1)} children per root`,
               `median ${formatHours(report.splitting.median_hours_roots_with_children)} with children`,
@@ -260,6 +260,9 @@ export function LegionSections({
 
 /** A count as the headlines write it: "1,259". */
 const count = (value: number): string => value.toLocaleString("en-US");
+
+/** A count of issues as the headlines write it: "1 issue", "1,259 issues". */
+const issues = (value: number): string => `${count(value)} issue${value === 1 ? "" : "s"}`;
 
 /** One row of the finished-issues table. */
 interface FinishedRow {
@@ -311,6 +314,7 @@ function FinishedIssues({
             cell: (row) => <span className="tabular-nums">{formatHours(row.hours)}</span>,
             filter: false,
             size: 110,
+            primary: true,
           },
           {
             id: "phase_hours",
@@ -329,6 +333,7 @@ function FinishedIssues({
             cell: (row) => <PhaseHoursBar hours={row.phases} max={max} mode={mode} />,
             filter: false,
             size: 300,
+            primary: true,
           },
           {
             id: "review_rounds",
@@ -341,6 +346,7 @@ function FinishedIssues({
           },
         ]}
         empty="No issues finished in the window."
+        fit="rows"
         initialSort={[{ id: "work_hours", desc: true }]}
         keyHref={(row) => buildProjectPath({ kind: "legion", project, issue: row.key })}
         label="Finished issues"
@@ -520,7 +526,7 @@ function PhaseBreakdownSection({ report }: { report: LegionMetricsResponse }): R
   return (
     <Section
       headline={line(
-        `${count(breakdown.issues.length)} finished`,
+        `${issues(breakdown.issues.length)} finished`,
         `${formatHours(breakdown.hours)} in phases`,
         breakdown.waiting_on_children_hours > 0 &&
           `${formatHours(breakdown.waiting_on_children_hours)} roots waited on children`,

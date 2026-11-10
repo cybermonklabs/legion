@@ -330,9 +330,9 @@ test("the sections come in one column, in the order a reader asks, each with its
     )
   ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "finished"]);
   // Each headline holds numbers with their units and nothing else.
-  expect(headline("work_time")).toBe("2 finished · median 24.0 h · p90 36.8 h");
+  expect(headline("work_time")).toBe("2 issues finished · median 24.0 h · p90 36.8 h");
   expect(headline("phase_breakdown")).toBe(
-    "2 finished · 18.0 h in phases · 30.0 h roots waited on children"
+    "2 issues finished · 18.0 h in phases · 30.0 h roots waited on children"
   );
   // Each title is short, and carries its info button.
   expect(
@@ -394,7 +394,7 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Roots" }));
-  await waitFor(() => expect(headline("work_time")).toStartWith("1 finished"));
+  await waitFor(() => expect(headline("work_time")).toStartWith("1 issue finished"));
   expect(metrics).toHaveBeenCalledWith(
     expect.objectContaining({ project: "ACME", scope: "roots" })
   );

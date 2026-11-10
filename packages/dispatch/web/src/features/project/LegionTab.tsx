@@ -146,7 +146,7 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
             value: (row) => row.card.slot ?? -1,
             cell: (row) => <span className="tabular-nums">{row.card.slot}</span>,
             filter: false,
-            size: 72,
+            size: 56,
           },
           "key",
           "title",
@@ -159,17 +159,9 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
               return phase === undefined ? null : <LegionPhaseCell phase={phase} />;
             },
             filter: "picks",
-            size: 180,
+            size: 160,
+            primary: true,
           },
-          {
-            id: "children_not_started",
-            header: "Children not started",
-            value: (row) => row.card.children,
-            cell: (row) => <span className="tabular-nums">{row.card.children}</span>,
-            filter: false,
-            size: 120,
-          },
-          "ci",
           {
             id: "slot_use",
             header: "Slot use",
@@ -184,10 +176,28 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
               </span>
             ),
             filter: "picks",
-            size: 140,
+            size: 130,
+          },
+          {
+            id: "children_not_started",
+            header: "Children",
+            info: "Children not started",
+            value: (row) => row.card.children,
+            cell: (row) => <span className="tabular-nums">{row.card.children}</span>,
+            filter: false,
+            size: 96,
+          },
+          {
+            id: "slot_ci",
+            header: "CI",
+            value: (row) => row.card.checks_verdict ?? "No verdict",
+            cell: (row) => row.card.checks_verdict ?? "—",
+            filter: "picks",
+            size: 80,
           },
         ]}
         empty="No slot in use."
+        fit="rows"
         initialSort={[{ id: "slot_index", desc: false }]}
         keyHref={timelineHref(project)}
         label="Slots"
@@ -251,7 +261,7 @@ function WaitingLine({
   return (
     <section aria-label="Waiting line" className={CARD} data-legion-waiting-line>
       <SectionTitle
-        info="The daemon starts the roots in this order. Waited is the time since the issue entered its phase."
+        info="The daemon starts the roots in this order. Waited: the time since the issue entered its phase, or since it started to wait for a person."
         title="Waiting line"
       />
       <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
@@ -294,6 +304,7 @@ function WaitingLine({
             ),
             filter: false,
             size: 110,
+            primary: true,
           },
           {
             id: "waiting_why",
@@ -304,6 +315,7 @@ function WaitingLine({
           },
         ]}
         empty="Nothing waits."
+        fit="rows"
         initialSort={[{ id: "place", desc: false }]}
         keyHref={timelineHref(project)}
         label="Waiting line"
