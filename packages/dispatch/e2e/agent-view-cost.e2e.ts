@@ -25,12 +25,16 @@ import { asUser } from "./users";
  * pinned, each seeded with a conversation at the stream's limit, and each is opened in turn
  * through the rail; what the page then says about itself is the check: how many agent
  * subscriptions its one live socket holds, how many conversations it has drawn, and what its
- * heap reads. At most two subscriptions and at most two conversations, whichever of the eight
- * the reader is on.
+ * heap reads. One or two subscriptions and one or two conversations, never none, whichever of
+ * the eight the reader is on: a reading that comes back empty fails the row rather than passing
+ * it on an upper bound nothing happened under.
  *
  * The negative control is here too, as the check words it: the same case with the sleep rule
  * turned off by its test hook, where eight subscriptions stay open and eight conversations are
- * drawn - the two readings that make the row above fail.
+ * drawn - the two readings that make the row above fail. The check names a second control the
+ * floor answers, a report that comes back with neither count: measured by making the page's
+ * report answer zero, where the row fails on its floor (`the socket held 0, 0, ... agent
+ * subscriptions`) instead of passing on the bound.
  *
  * k11's one timed claim, that a sleeping view at the stream's worst case comes back inside 1.2
  * seconds, is not here: it runs in `chromium-alone`, with the machine to itself
@@ -106,14 +110,17 @@ test("eight agents opened in turn cost the page two live views, not eight", asyn
       }
     );
 
-    expect(
-      Math.max(...subscriptions),
-      `the socket held ${subscriptions.join(", ")} agent subscriptions after the eight opens`
-    ).toBeLessThanOrEqual(2);
-    expect(
-      Math.max(...drawn),
-      `the page had drawn ${drawn.join(", ")} conversations after the eight opens`
-    ).toBeLessThanOrEqual(2);
+    // One or two of each, never none: an upper bound alone is passed by a reading that never
+    // happened - a broken report hook, a selector that matches nothing - so the floor is what
+    // makes the row fail for the reason it exists (the check's v19 words). Both counts are in
+    // the annotations above and in each message here, so the figures are on the record whether
+    // the row passes or fails.
+    const heldSubscriptions = `the socket held ${subscriptions.join(", ")} agent subscriptions after the eight opens`;
+    expect(Math.min(...subscriptions), heldSubscriptions).toBeGreaterThanOrEqual(1);
+    expect(Math.max(...subscriptions), heldSubscriptions).toBeLessThanOrEqual(2);
+    const hadDrawn = `the page had drawn ${drawn.join(", ")} conversations after the eight opens`;
+    expect(Math.min(...drawn), hadDrawn).toBeGreaterThanOrEqual(1);
+    expect(Math.max(...drawn), hadDrawn).toBeLessThanOrEqual(2);
     // Eight were opened and none was closed: every one of them still has an entry, and the two
     // the shell mounts are the one in front and the one left last.
     const views = (await readLiveViews(page)).views;

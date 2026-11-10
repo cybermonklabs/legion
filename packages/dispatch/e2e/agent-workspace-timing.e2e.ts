@@ -75,8 +75,8 @@ const replay = {
 };
 
 /** What each timed row claims, and the most readings it takes to find one that holds. Each row
- *  takes its readings one at a time and stops at the first inside its bound, so a machine that
- *  is not sustained-slow pays one reading and only a slow node walks toward the cap. The
+ *  takes its readings one at a time and stops at the first inside its bound, so a machine with
+ *  a free slice pays one reading and only a busy one walks toward the cap. The
  *  comment above each row says where its bound and its cap come from. */
 const WAKE_MS = 1_200;
 const WAKES = 8;
@@ -117,22 +117,29 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
 // run-to-run variance. An ordinary conversation, far below the limit, comes back well under
 // half a second.
 //
-// The fastest rather than the median, because the node under this pod is slow for as long as
-// it runs - about two and a half times slower than the machine this bound was measured on -
-// so its median says what the node costs rather than what the page costs. Three runs of eight
-// wakes here on 2026-11-10 read medians of 1379, 1127 and 1102 ms, over the bound with the
-// page unchanged, and minima of 861, 861 and 972 ms. The fastest wake is the page's own
-// floor: the one slice of the eight the node left whole, and what the view does in that slice
-// is what it does on a machine that is not busy elsewhere.
+// The fastest rather than the median, because this machine's own readings move too far for a
+// median of them to be the page's. What was measured on 2026-11-10: three runs of eight wakes
+// read medians of 1379, 1127 and 1102 ms against minima of 861, 861 and 972 ms, and the parent
+// commit's unmodified copy of this file failed the same bound at this head (a wake of 1401 ms),
+// which is what rules the page out as the cause. What the readings cannot say is why the
+// machine is slow: nothing in this pod can measure its load - `/proc/loadavg` reads 0.00 with
+// both CPUs busy and `/proc/stat` reports 91% busy either way, both blind under gVisor
+// (measured 2026-11-10) - so a host that is slow for as long as it runs and another of this
+// pod's six roles working beside this run are the same reading from in here. Either way the
+// fastest wake is the page's own floor: the one slice of the eight the machine left whole, and
+// what the view does in that slice is what it does on a machine that is not busy elsewhere.
 //
 // So the row takes its wakes one at a time and stops at the first that comes back inside 1.2
 // seconds. That reading is the fastest of the ones taken - every wake before it was over the
-// bound - and it is the one judged. A machine that is not sustained-slow pays one wake: at
-// 2b4b2ddf this same view came back in 0.66 to 0.82 s, which is under the bound on the first
-// wake, and the walk ends there. Eight is the cap, and running out of it is how this row
-// fails: a view that cannot come back inside 1.2 s in any of eight slices is slow in itself
-// rather than unlucky with the node. Every wake taken is kept on the result in the order it
-// was taken, with the one the row judged.
+// bound - and it is the one judged. A machine with a free slice pays one wake: at 2b4b2ddf this
+// same view came back in 0.66 to 0.82 s, which is under the bound on the first wake, and the
+// walk ends there. Eight is the cap, and running out of it is how this row fails: a view that
+// cannot come back inside 1.2 s in any of eight slices is slow in itself rather than unlucky
+// with the machine. What the floor is blind to is the other shape of a regression: every
+// reading must cross for the row to fail, so a change that makes a slow wake more frequent
+// without raising the floor passes here, and a green row is the floor rather than a claim that
+// the page is fast for a reader. Every wake taken is kept on the result in the order it was
+// taken, with the one the row judged.
 //
 // Each wake is a page of its own, fresh from its own load and closed once its reading is
 // taken, so no wake is read on a page an earlier wake has already warmed. The rig is seeded
@@ -242,15 +249,23 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 // boot is no part of it, since no requirement here changed what a cold boot costs: this pod
 // takes about 140 ms to start the page whether it lists ten sessions or six hundred.
 //
-// The fastest rather than the median, because the node under this pod is slow for as long as
-// it runs - about two and a half times slower than the machine these bounds were measured on -
-// so its median says what the node costs rather than what the page costs. Three runs of twenty
-// loads here on 2026-11-10 read medians of 111, 109 and 101 ms, over the bound with the page
-// unchanged, and minima of 90, 57 and 59 ms. The fastest load is the page's own floor: the one
-// slice of the twenty the node left whole, and the work the page does in that slice is the
-// work it does on a machine that is not busy elsewhere. The 90 ms of the worst of those three
-// runs is a thin margin under the bound and is left as it is: a page that cannot paint inside
-// 100 ms in its best slice of twenty has lost what the windowing bought.
+// The fastest rather than the median, because this machine's own readings move too far for a
+// median of them to be the page's. What was measured on 2026-11-10: three runs of twenty loads
+// read medians of 111, 109 and 101 ms against minima of 90, 57 and 59 ms, and the parent
+// commit's unmodified copy of this file failed the same bound at this head (a paint of 128 ms),
+// which is what rules the page out as the cause. Why the machine is slow is not something a
+// reading here can say: nothing in this pod can measure its load - `/proc/loadavg` reads 0.00
+// with both CPUs busy and `/proc/stat` reports 91% busy either way, both blind under gVisor
+// (measured 2026-11-10) - so a host that is slow for as long as it runs and another of this
+// pod's six roles working beside this run read the same from in here. Either way the fastest
+// load is the page's own floor: the one slice of the twenty the machine left whole, and the
+// work the page does in that slice is the work it does on a machine that is not busy
+// elsewhere. The 90 ms of the worst of those three runs is a thin margin under the bound and
+// is left as it is: a page that cannot paint inside 100 ms in its best slice of twenty has
+// lost what the windowing bought. What the floor is blind to is the other shape of a
+// regression: every load must cross for the row to fail, so a change that makes a slow load
+// more frequent without raising the floor passes here, and a green row is the floor rather
+// than a claim that the page is fast for a reader.
 //
 // What the cap catches. On this change's base, 1ffc8dec, where the page draws all six hundred
 // rows, twenty loads on this same node read 256, 575, 270, 488, 341, 557, 476, 496, 768, 306,
@@ -278,9 +293,9 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 // as the prototype the spec measured: a draw of 50 to 90 ms here is that same 23 to 40 ms
 // render, not a regression.
 //
-// The timeout below budgets the full cap: twenty loads cost this node 83 to 94 s, about 4.5 s
-// a load, so 120 s covers the worst measured walk with a quarter to spare. A machine that is
-// not sustained-slow pays one load: at 2b4b2ddf this same page painted in 57, 56 and 52 ms, so
+// The timeout below budgets the full cap: twenty loads cost this machine 83 to 94 s, about
+// 4.5 s a load, so 120 s covers the worst measured walk with a quarter to spare. A machine
+// with a free slice pays one load: at 2b4b2ddf this same page painted in 57, 56 and 52 ms, so
 // its first load is inside both bounds and the walk ends there.
 //
 // The press is driven from inside the page, in one `evaluate`, and armed in a timer rather
