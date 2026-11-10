@@ -1,3 +1,4 @@
+import { withoutTrailingSlashes } from "./base-url";
 import {
   type BearerSource,
   bearerCredential,
@@ -60,19 +61,6 @@ export interface ActiveDispatchConfig {
 export type DispatchConfigResolution = ActiveDispatchConfig | SectionOff;
 
 type ValidCheckout = Extract<CheckoutEnvoyConfig, { readonly kind: "valid" }>;
-
-/**
- * `url` without the slashes it ends in, counted from the right. A `/\/+$/` replace reads the same
- * string once per position its unanchored search starts at, which costs a URL of n slashes O(n²)
- * (CodeQL js/polynomial-redos); this reads it once. It is exported because every reader of a base
- * URL in this package needs the same trim, and a second copy of it would take a fix to one of
- * them and leave the other.
- */
-export function withoutTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url[end - 1] === "/") end -= 1;
-  return url.slice(0, end);
-}
 
 /** A checkout's own server and the token written beside it, which only that server gets. Throws
  * when the checkout names no token. */

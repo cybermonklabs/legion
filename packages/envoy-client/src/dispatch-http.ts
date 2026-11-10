@@ -81,8 +81,8 @@ import {
 } from "@legion/contracts";
 
 import { textHead } from "./ask-answer";
+import { withoutTrailingSlashes } from "./base-url";
 import type { RequestCredential } from "./bearer";
-import { withoutTrailingSlashes } from "./dispatch-config";
 
 export type {
   CredentialPendingResponse,
