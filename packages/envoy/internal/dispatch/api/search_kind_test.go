@@ -65,6 +65,13 @@ func resultKinds(results []model.SearchResult) []string {
 	return kinds
 }
 
+// kindsPresent is the kinds a page holds, sorted. A test about which kinds a search ranks says
+// nothing about the order they come back in: every match is ranked on one list by one score
+// (searchFusedSQL), so what leads is the best match and not the first kind.
+func kindsPresent(results []model.SearchResult) []string {
+	return slices.Sorted(slices.Values(resultKinds(results)))
+}
+
 // A kind names the rows the search ranks, counts and pages: results, total, reachable, limit and
 // offset are that kind's rows alone, and the four rows of other kinds the same query matches are
 // absent. With no kind the route answers what it always has, every kind and the same counts,
@@ -78,10 +85,10 @@ func TestSearchByKindRanksAndCountsThatKindAlone(t *testing.T) {
 	if every.Degraded != contracts.SearchDegradedEmbedderUnavailable {
 		t.Fatalf("Degraded = %q, want %q: no embedder is configured", every.Degraded, contracts.SearchDegradedEmbedderUnavailable)
 	}
-	wantEvery := []string{"issue", "document", "ask", "comment", "message"}
-	if !slices.Equal(resultKinds(every.Results), wantEvery) || every.Total != 5 || every.Reachable != 5 {
+	wantEvery := []string{"ask", "comment", "document", "issue", "message"}
+	if !slices.Equal(kindsPresent(every.Results), wantEvery) || every.Total != 5 || every.Reachable != 5 {
 		t.Fatalf("no kind: kinds=%v total=%d reachable=%d, want %v, 5 and 5",
-			resultKinds(every.Results), every.Total, every.Reachable, wantEvery)
+			kindsPresent(every.Results), every.Total, every.Reachable, wantEvery)
 	}
 
 	for kind, id := range kindOf(corpus) {
@@ -186,10 +193,10 @@ func TestSearchKindHoldsInTheMeaningPath(t *testing.T) {
 	if every.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", every.Degraded)
 	}
-	wantEvery := []string{"issue", "comment"}
-	if !slices.Equal(resultKinds(every.Results), wantEvery) || every.Total != 2 || every.Reachable != 2 {
+	wantEvery := []string{"comment", "issue"}
+	if !slices.Equal(kindsPresent(every.Results), wantEvery) || every.Total != 2 || every.Reachable != 2 {
 		t.Fatalf("no kind: kinds=%v total=%d reachable=%d, want %v, 2 and 2",
-			resultKinds(every.Results), every.Total, every.Reachable, wantEvery)
+			kindsPresent(every.Results), every.Total, every.Reachable, wantEvery)
 	}
 
 	only := searchResponse(t, handler, "q=wibbleflorp&kind=comment")
