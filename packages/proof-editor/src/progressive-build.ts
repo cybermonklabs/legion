@@ -368,7 +368,8 @@ export async function buildTheDocumentInBatches({
   };
 
   /**
-   * Draws the block at `index` again, for a block another person changed.
+   * Draws the block at `index` again, for a block another person changed, and answers how many
+   * blocks the editor lost by it: one for a block the schema refuses, none otherwise.
    *
    * What goes into the editor is the smallest range of that block that differs
    * (`Fragment.findDiffStart` and `findDiffEnd`, ProseMirror's own), never the whole block, so
@@ -376,14 +377,38 @@ export async function buildTheDocumentInBatches({
    * person's insert moves along with their words, and one before it, or standing exactly
    * where they began writing, does not move at all. A block whose node type has changed under
    * them is the one case with nothing to map through, and it is replaced whole.
+   *
+   * That range goes in as an open `Slice` of the drawn block, which is what ProseMirror's own
+   * comparison of two documents puts in (`prosemirror-view`'s `readDOMChange`), and never as
+   * the fragment `Fragment.cut` answers. A block whose content is blocks - a list item, a
+   * quote, a table cell, a typed block holding paragraphs - differs at a position inside one
+   * of its own children, and `cut` keeps every ancestor of a cut that ends inside a child: the
+   * cut of a list at a position two levels down is `list_item(paragraph("X"))`, and a closed
+   * fragment of blocks put at a position inside a text node is fitted by splitting the
+   * paragraph and the item around it. Another person typing one character into `- item zero`
+   * made three list items of the one, all three under its one `blockId`, and the binding's
+   * first write after the adoption carried that split into the Yjs document
+   * (dispatch://INFRA-341, R11). A slice carries the depths it is open to, so the same range
+   * goes in as the characters it is.
    */
-  const redraw = (index: number): void => {
+  const redraw = (index: number): number => {
     const block = fragment.get(index) as Block | undefined;
-    if (block === undefined || index >= view.state.doc.childCount) return;
+    if (block === undefined || index >= view.state.doc.childCount) return 0;
     const drawn = convert([block]).firstChild;
     // A block `createNodeFromYElement` refused answers no node, and it deleted the Yjs type as
-    // it refused; the fragment's own observer brings that deletion back here.
-    if (drawn === null) return;
+    // it refused - inside a transaction carrying y-prosemirror's own origin, which
+    // `applyTheirChange` returns early for, so that deletion never comes back here. The
+    // editor's copy of the block goes with it, and the frontier with that: a frontier still
+    // counting it would leave the window one block wider than the editor, and the first block
+    // the batches have not reached would be read and then deleted through it.
+    if (drawn === null) {
+      change((tr) => {
+        const from = startOf(tr.doc, index);
+        tr.delete(from, from + tr.doc.child(index).nodeSize);
+      });
+      built -= 1;
+      return 1;
+    }
     change((tr) => {
       const from = startOf(tr.doc, index);
       const current = tr.doc.child(index);
@@ -399,17 +424,18 @@ export async function buildTheDocumentInBatches({
       // widened to the start, as ProseMirror's own document comparison does.
       const overlap = Math.max(start - Math.min(ends.a, ends.b), 0);
       const inside = from + 1;
-      tr.replaceWith(
-        inside + start,
-        inside + ends.a + overlap,
-        drawn.content.cut(start, ends.b + overlap)
-      );
+      tr.replace(inside + start, inside + ends.a + overlap, drawn.slice(start, ends.b + overlap));
     });
+    return 0;
   };
 
   /** Applies another person's insert or delete of a whole block inside the built run. The delta
    *  is walked over the fragment as it now stands, so `at` is the index each change lands at;
-   *  a block added at or past the frontier is left to the batch that reaches it. */
+   *  a block added at or past the frontier is left to the batch that reaches it, which is why
+   *  the loop below runs once more, synchronously, after its last `await`. The frontier moves
+   *  by what the conversion made, not by what the insert held: a block the schema refuses
+   *  makes no node, and `createNodeFromYElement` has deleted it from the fragment as it
+   *  refused it, so counting it would take the window past the editor. */
   const restructure = (delta: Y.YEvent<Y.XmlFragment>["changes"]["delta"]): void => {
     let at = 0;
     for (const op of delta) {
@@ -420,7 +446,7 @@ export async function buildTheDocumentInBatches({
         if (at < built) {
           const content = convert(added);
           change((tr) => tr.insert(startOf(tr.doc, at), content));
-          built += added.length;
+          built += content.childCount;
         }
         at += added.length;
       } else if (op.delete !== undefined) {
@@ -457,7 +483,12 @@ export async function buildTheDocumentInBatches({
       const [index] = event.path;
       if (typeof index === "number" && index < built) changed.add(index);
     }
-    for (const index of [...changed].sort((left, right) => left - right)) redraw(index);
+    // A block the schema refuses is gone from the fragment and from the editor by the redraw
+    // that found it, so every index read before that redraw has moved down by one.
+    let shift = 0;
+    for (const index of [...changed].sort((left, right) => left - right)) {
+      shift += redraw(index - shift);
+    }
   };
 
   /** The live path - the fragment's observer and the write wrapper - taken down once, in the
@@ -477,13 +508,8 @@ export async function buildTheDocumentInBatches({
     /** Whether the reader has the editor: its first batch is in it and its blocks take edits
      *  that reach the Yjs document. */
     let open = false;
-    // At least one pass, so a fragment holding nothing still replaces the empty document
-    // Milkdown created with the empty document the fragment says, exactly as `_forceRerender`
-    // would have: otherwise the binding would adopt a document holding a paragraph the
-    // fragment does not, and write that paragraph to the Yjs document at the reader's first
-    // keystroke.
-    do {
-      if (view.isDestroyed) return;
+    /** One batch: the fragment's next `take` unbuilt blocks into the editor, in this task. */
+    const batchOfBlocks = (): void => {
       const began = performance.now();
       const batch = fragment.toArray().slice(built, built + take) as Block[];
       const landed = onBatch?.(idsOf(batch));
@@ -518,6 +544,15 @@ export async function buildTheDocumentInBatches({
       }
       landed?.();
       take = nextBatch(batch.length, performance.now() - began);
+    };
+    // At least one pass, so a fragment holding nothing still replaces the empty document
+    // Milkdown created with the empty document the fragment says, exactly as `_forceRerender`
+    // would have: otherwise the binding would adopt a document holding a paragraph the
+    // fragment does not, and write that paragraph to the Yjs document at the reader's first
+    // keystroke.
+    do {
+      if (view.isDestroyed) return;
+      batchOfBlocks();
       if (built < fragment.length) await endOfTask();
     } while (built < fragment.length);
     // The last batch ends here, and the adoption is a task of its own; the live write path ends
@@ -525,6 +560,14 @@ export async function buildTheDocumentInBatches({
     // arrives afterwards is the binding's, which is what it is for.
     await endOfTask();
     if (view.isDestroyed) return;
+    // What another person appended while that await waited, in this task, before the live path
+    // comes down. `restructure` leaves a block added at or past the frontier to the batch that
+    // reaches it, and the loop above had already ended: nothing drew the block, so the editor
+    // stood one block short of the fragment and the binding's first write over the whole
+    // fragment deleted it from the Yjs document - a reader pressing Enter at the end of the
+    // document in that one task lost the block they had just made (dispatch://INFRA-341, R11).
+    // Synchronously, because no socket message can arrive inside this loop, so it ends.
+    while (built < fragment.length) batchOfBlocks();
     stopWatching();
     // The adoption reconfigures the editor's whole plugin set, and ProseMirror draws the
     // document again for it (`EditorView.updateState`). That draw replaces the DOM nodes the

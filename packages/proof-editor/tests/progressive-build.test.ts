@@ -38,6 +38,14 @@ function paragraphs(blocks: number): string {
   return `${Array.from({ length: blocks }, (_, index) => paragraph(index)).join("\n\n")}\n`;
 }
 
+/** A document of `BLOCKS` top-level blocks whose first is `opening` - a list, a quote, a table:
+ *  a block whose own content is blocks, which the first batch builds, so another person's edit
+ *  inside it lands in a block the batches have built. */
+function openingWith(opening: string): string {
+  const rest = Array.from({ length: BLOCKS - 1 }, (_, index) => paragraph(index + 1));
+  return `${opening}\n\n${rest.join("\n\n")}\n`;
+}
+
 /** A document of `count` sections, each a heading of its own and a paragraph under it, which is
  *  `count * 2` top-level blocks. A heading in every batch is what brings Milkdown's
  *  `syncHeadingIdPlugin` into the build: it is a plugin view, so ProseMirror runs its `update`
@@ -127,6 +135,29 @@ function paragraphBlock(id: string, text: string): Y.XmlElement {
   return block;
 }
 
+/** A block of a kind the schema has no node for, as a client of a newer schema writes one:
+ *  `createNodeFromYElement` refuses it, and deletes it from the Yjs document as it refuses. */
+function refusedBlock(id: string): Y.XmlElement {
+  const block = new Y.XmlElement("quokka_block");
+  block.setAttribute("blockId", id);
+  const content = new Y.XmlText();
+  content.insert(0, "Quokka.");
+  block.insert(0, [content]);
+  return block;
+}
+
+/** The `Y.XmlText` at `path` under `block`: what another person types into, inside the blocks a
+ *  nested block is made of. */
+function textAt(block: Y.XmlElement, path: readonly number[]): Y.XmlText {
+  let at: Y.XmlElement | Y.XmlText | undefined = block;
+  for (const step of path) {
+    if (!(at instanceof Y.XmlElement)) throw new Error(`no element at ${path.join(".")}`);
+    at = at.get(step) as Y.XmlElement | Y.XmlText | undefined;
+  }
+  if (!(at instanceof Y.XmlText)) throw new Error(`no text at ${path.join(".")}`);
+  return at;
+}
+
 /** Where the editor's top-level block `index` starts. */
 function startOf(doc: ProseMirrorNode, index: number): number {
   let pos = 0;
@@ -151,6 +182,19 @@ function textOf(node: Y.XmlFragment | Y.XmlText | Y.XmlHook): string {
   }
   // A `Y.XmlElement` is a `Y.XmlFragment`, so this arm is both.
   return node instanceof Y.XmlFragment ? node.toArray().map(textOf).join("") : "";
+}
+
+/** The shape `node` holds, as Yjs holds it: each element's own name around the names of its
+ *  children, with the text at the leaves. A block another person edits inside has to come out
+ *  of the build the one block it went in as, and its text alone cannot say so - a list item
+ *  split into three list items spells the same characters as the one item does. */
+function shapeOf(node: Y.XmlFragment | Y.XmlText | Y.XmlHook): string {
+  if (node instanceof Y.XmlText) return JSON.stringify(textOf(node));
+  // A `Y.XmlElement` is a `Y.XmlFragment`, so this arm is first.
+  if (node instanceof Y.XmlElement) {
+    return `${node.nodeName}(${node.toArray().map(shapeOf).join(", ")})`;
+  }
+  return node instanceof Y.XmlFragment ? node.toArray().map(shapeOf).join(", ") : "";
 }
 
 /** The text of the Yjs document's top-level block `index`, which is what a reader's edit has to
@@ -200,11 +244,27 @@ interface MidBuild {
   readonly ydoc: Y.Doc;
 }
 
+/** The other two moments of a build a row acts in, each a task of the build's own. */
+interface Hooks {
+  /** Once the binding has adopted the batches' mapping and the handle is in hand: the reader's
+   *  next keystroke, which is what carries whatever the build left in the editor into the Yjs
+   *  document. */
+  readonly afterwards?: (what: MidBuild) => void;
+  /** In the task between the last batch and the binding's adoption - the build's own
+   *  `await endOfTask()` before it adopts. A socket message lands there like any other. */
+  readonly inTheGap?: (what: MidBuild) => void;
+}
+
 /**
  * Builds the editor over a Y.Doc holding `markdown`, with `act` run the first time the build is
- * found partway through, and answers what the build left behind.
+ * found partway through and `hooks` run at the two moments after it, and answers what the build
+ * left behind.
  */
-async function build(markdown: string, act: (what: MidBuild) => void = () => {}): Promise<Built> {
+async function build(
+  markdown: string,
+  act: (what: MidBuild) => void = () => {},
+  hooks: Hooks = {}
+): Promise<Built> {
   const { parseMarkdown } = await createHeadlessProof({});
   const ydoc = new Y.Doc();
   const fragment = ydoc.getXmlFragment("prosemirror");
@@ -220,6 +280,7 @@ async function build(markdown: string, act: (what: MidBuild) => void = () => {})
       if (view === undefined) throw new Error("the build never handed its view over");
       act({ fragment, root, view, ydoc });
     });
+    let gap = hooks.inTheGap;
     const handle = await createProofEditor(root, {
       beforeBuild: (built) => {
         view = built;
@@ -229,6 +290,18 @@ async function build(markdown: string, act: (what: MidBuild) => void = () => {})
         const before = blocksBuilt(root);
         return () => {
           batches.push({ after: blocksBuilt(root), before, ids });
+          // The last batch: the editor holds every block the fragment has, so what the build
+          // does next is the `await endOfTask()` it adopts after. A real 0 ms timer, as the
+          // watcher above is and for the same reason: what this rides on is the order the
+          // browsing context's own queue serves two tasks in - this one was set first, so it
+          // runs in the gap, before the build's own continuation - which a fake clock would
+          // drive rather than observe. It waits for nothing.
+          const built = view;
+          if (gap === undefined || built === undefined) return;
+          if (built.state.doc.childCount !== fragment.length) return;
+          const inTheGap = gap;
+          gap = undefined;
+          setTimeout(() => inTheGap({ fragment, root, view: built, ydoc }), 0);
         };
       },
       onMarkClick: () => {},
@@ -241,6 +314,7 @@ async function build(markdown: string, act: (what: MidBuild) => void = () => {})
     const writePath = root.dataset.writePath;
     handle.reveal();
     const displayWhenRevealed = root.style.display;
+    if (view !== undefined) hooks.afterwards?.({ fragment, root, view, ydoc });
     try {
       return {
         batches,
@@ -650,6 +724,181 @@ describe("another person's change while the batches run", () => {
     ]);
     expect(built.markdown).toContain(`Beaver. ${paragraph(1)}`);
     expect(built.markdown).toContain(paragraph(BLOCKS - 1));
+  });
+
+  // The loop ends when the frontier reaches the fragment's length, and the adoption is a task
+  // of its own after it. A block another person appends in that gap - a peer pressing Enter at
+  // the end of the document - reaches `restructure` at the frontier, where the batch loop used
+  // to be left to draw it and no batch ran again: the editor never held it, and the binding's
+  // first write of the editor's document over the fragment deleted it from the Yjs document
+  // (dispatch://INFRA-341, R11).
+  test("keeps a block they append in the gap between the last batch and the adoption", async () => {
+    let afterwards: string[] = [];
+    const built = await build(paragraphs(BLOCKS), () => {}, {
+      afterwards: ({ fragment, view }) => {
+        // The reader's next keystroke, which is what carries the editor's own document into
+        // the Yjs document through the binding that has just adopted it.
+        caretIn(view, 0, 0);
+        view.dispatch(view.state.tr.insertText("!"));
+        afterwards = everyBlockText(fragment);
+      },
+      inTheGap: ({ ydoc }) => {
+        const peer = peerOf(ydoc);
+        peer
+          .getXmlFragment("prosemirror")
+          .insert(BLOCKS, [paragraphBlock("written-in-the-gap", "Pangolin.")]);
+        sendToTheEditor(peer, ydoc);
+      },
+    });
+
+    expect(afterwards.length).toBe(BLOCKS + 1);
+    expect(afterwards[BLOCKS]).toBe("Pangolin.");
+    expect(built.documentAfter[BLOCKS]).toBe("written-in-the-gap:Pangolin.");
+    expect(built.blocks).toBe(BLOCKS + 1);
+    expect(built.text).toContain("Pangolin.");
+  });
+
+  // A block the schema has no node for costs nothing but itself. `createNodeFromYElement`
+  // deletes such a block from the Yjs document as it refuses it, inside a transaction of
+  // y-prosemirror's own origin that never comes back to the observer here, so what the
+  // conversion made - not what the batch or the insert held - is what the frontier moves by:
+  // counting the refused block left the window one block wider than the editor, and the first
+  // block the batches had not reached was read and then deleted from the Yjs document
+  // (dispatch://INFRA-341, R11).
+  test("loses no block of its own to one of theirs the schema refuses", async () => {
+    let afterwards: string[] = [];
+    const built = await build(
+      paragraphs(BLOCKS),
+      ({ ydoc }) => {
+        const peer = peerOf(ydoc);
+        peer.getXmlFragment("prosemirror").insert(1, [refusedBlock("refused-while-building")]);
+        sendToTheEditor(peer, ydoc);
+      },
+      {
+        afterwards: ({ fragment, view }) => {
+          // The reader's next keystroke, which carries the editor's own document into the Yjs
+          // document through the binding that has just adopted it.
+          caretIn(view, 0, 0);
+          view.dispatch(view.state.tr.insertText("!"));
+          afterwards = everyBlockText(fragment);
+        },
+      }
+    );
+
+    expect(afterwards.length).toBe(BLOCKS);
+    expect(afterwards[0]).toBe(`!${paragraph(0)}`);
+    expect(afterwards.slice(1)).toEqual(
+      Array.from({ length: BLOCKS - 1 }, (_, index) => paragraph(index + 1))
+    );
+    expect(built.blocks).toBe(BLOCKS);
+    expect(built.text).toContain(paragraph(8));
+    expect(built.text).not.toContain("Quokka.");
+  });
+
+  // The same refusal reached through `redraw`: their edit makes a block the batches have
+  // already built one the schema cannot hold, so the whole block is refused and deleted from
+  // the Yjs document. The editor used to keep the block that is no longer there, and the
+  // frontier to count it, which took the window past the editor for every block after it.
+  test("takes a built block out of the editor when their edit makes the schema refuse it", async () => {
+    let afterwards: string[] = [];
+    const built = await build(
+      paragraphs(BLOCKS),
+      ({ ydoc }) => {
+        const peer = peerOf(ydoc);
+        const first = peer.getXmlFragment("prosemirror").get(0) as Y.XmlElement;
+        // A paragraph inside a paragraph: the block's content no longer fits its own node
+        // type, so `createNodeFromYElement` refuses the block whole.
+        first.insert(1, [paragraphBlock("nested-while-building", "Quokka.")]);
+        sendToTheEditor(peer, ydoc);
+      },
+      {
+        afterwards: ({ fragment, view }) => {
+          caretIn(view, 0, 0);
+          view.dispatch(view.state.tr.insertText("!"));
+          afterwards = everyBlockText(fragment);
+        },
+      }
+    );
+
+    expect(afterwards.length).toBe(BLOCKS - 1);
+    expect(afterwards[0]).toBe(`!${paragraph(1)}`);
+    expect(afterwards.slice(1)).toEqual(
+      Array.from({ length: BLOCKS - 2 }, (_, index) => paragraph(index + 2))
+    );
+    expect(built.blocks).toBe(BLOCKS - 1);
+    expect(built.text).not.toContain(paragraph(0));
+    expect(built.text).toContain(paragraph(BLOCKS - 1));
+  });
+});
+
+// A block whose own content is blocks - a list item, a quote, a table cell, a typed block
+// holding paragraphs - is where another person's edit used to split the document. The smallest
+// range of the block that differs is read at the depth it differs at, and the drawn block was
+// cut at those two positions with `Fragment.cut`, which keeps every ancestor of a cut that ends
+// inside a child: `list_item(paragraph("X"))` put at a position inside the reader's own
+// paragraph, which ProseMirror fits by splitting the paragraph and the item around it. One list
+// item became three, all three under the one `blockId`, and the binding's first write after the
+// adoption carried that into the Yjs document (dispatch://INFRA-341, R11).
+describe("another person's edit inside a nested block", () => {
+  /** The Yjs shape of the document's first block, after another person typed `X` two characters
+   *  into the text at `path` inside it while the batches ran, and the reader typed a character
+   *  of their own once the binding had adopted - the keystroke that carries whatever the build
+   *  left in the editor into the Yjs document. */
+  async function afterTypingInside(
+    markdown: string,
+    path: readonly number[]
+  ): Promise<{ readonly built: Built; readonly shape: string }> {
+    let shape = "";
+    const built = await build(
+      markdown,
+      ({ ydoc }) => {
+        const peer = peerOf(ydoc);
+        textAt(peer.getXmlFragment("prosemirror").get(0) as Y.XmlElement, path).insert(2, "X");
+        sendToTheEditor(peer, ydoc);
+      },
+      {
+        afterwards: ({ fragment, view }) => {
+          caretIn(view, BLOCKS - 1, 0);
+          view.dispatch(view.state.tr.insertText("!"));
+          shape = shapeOf(fragment.get(0) as Y.XmlElement);
+        },
+      }
+    );
+    return { built, shape };
+  }
+
+  test("leaves a list item the one list item it is", async () => {
+    const { built, shape } = await afterTypingInside(
+      openingWith("- item zero\n- item one"),
+      [0, 0, 0]
+    );
+
+    expect(shape).toBe(
+      'bullet_list(list_item(paragraph("itXem zero")), list_item(paragraph("item one")))'
+    );
+    expect(built.documentAfter.length).toBe(BLOCKS);
+  });
+
+  test("leaves a blockquote's paragraph the one paragraph it is", async () => {
+    const { built, shape } = await afterTypingInside(openingWith("> quote zero"), [0, 0]);
+
+    expect(shape).toBe('blockquote(paragraph("quXote zero"))');
+    expect(built.documentAfter.length).toBe(BLOCKS);
+  });
+
+  test("leaves a table cell's paragraph the one paragraph it is", async () => {
+    const { built, shape } = await afterTypingInside(
+      openingWith("| head a | head b |\n| --- | --- |\n| cell zero | cell one |"),
+      [1, 0, 0, 0]
+    );
+
+    expect(shape).toBe(
+      "table(" +
+        'table_header_row(table_header(paragraph("head a")), table_header(paragraph("head b"))), ' +
+        'table_row(table_cell(paragraph("ceXll zero")), table_cell(paragraph("cell one")))' +
+        ")"
+    );
+    expect(built.documentAfter.length).toBe(BLOCKS);
   });
 });
 

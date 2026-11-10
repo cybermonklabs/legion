@@ -434,9 +434,10 @@ function installSelfHealingParser(ctx: Ctx): void {
  * It exists for a host whose document is still arriving: Dispatch's socket carries the whole
  * state frame of a large document, and the construction cost 415 ms of the main thread for an
  * 81,294-character document and 493 ms for a 406,319-character one, on a phone at 4x CPU
- * throttling, after the sync rather than beside it (dispatch://INFRA-341, R11). A host that
- * has its document already - a past version, a reading pane - calls `createProofEditor`, which
- * is the two phases in one call.
+ * throttling, after the sync rather than beside it (dispatch://INFRA-341, R11). Every editor
+ * Dispatch builds comes through here, a past version and the reading pane included
+ * (`features/doc/editor.ts`'s `constructEditor`); `createProofEditor` is the two phases in one
+ * call, which this package's own tests build with.
  *
  * The root is hidden for the whole of the construction, so the editor a host builds while its
  * reader is reading the document's own draw puts no empty document on the screen in front of
@@ -865,10 +866,15 @@ async function theConstruction(
 }
 
 /**
- * The two phases in one call, for a host whose document is already in hand: a past version, a
- * reading pane, a test. A host whose document is still arriving over a socket constructs the
- * editor as the socket opens and binds it when the state frame has been applied, so the
- * construction runs beside the sync rather than after it (`constructProofEditor`).
+ * The two phases in one call, for a caller whose document is already in hand.
+ *
+ * This package's own tests are those callers: Dispatch builds every editor it has - the live
+ * document, a past version, the reading pane - through `constructProofEditor`, since even a
+ * host with its document in hand wants the editor's typed blocks on the view before the build
+ * (`features/doc/editor.ts`'s `constructEditor`). A host whose document is still arriving over
+ * a socket needs the two phases apart for a second reason: it constructs as the socket opens
+ * and binds when the state frame has been applied, so the construction runs beside the sync
+ * rather than after it.
  */
 export async function createProofEditor(
   root: HTMLElement,

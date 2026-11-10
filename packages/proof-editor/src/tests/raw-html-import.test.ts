@@ -107,6 +107,47 @@ await test("with rawHtml 'text', an opener the body leaves open or re-forms at a
   }
 });
 
+await test("with rawHtml 'text', a comment that closes against its own opener keeps what follows it", async () => {
+  const { parseMarkdown } = await createHeadlessProof();
+  // Three comment shapes the closer searched for after the opener's fourth character read
+  // otherwise than a browser does, each swallowing the words after it. A browser's tokenizer
+  // ends a comment at the `>` of `<!-->` and at the `->` of `<!--->` (its "abrupt closing of
+  // empty comment"), and CommonMark 0.31 says the same — "An HTML comment consists of
+  // `<!-->`, `<!--->`, or `<!--`, a string of characters not including the string `-->`, and
+  // `-->`" — while `--!>` is HTML's alone (the comment end bang state, which CommonMark has
+  // no rule for). Each body here is one HTML block, so the whole line reaches this transform
+  // as one `html` node and the reading is this file's own.
+  const shown: Record<string, string> = {
+    '<!--a--!>b': 'b',
+    '<!--->shown': 'shown',
+    '<!-->shown': 'shown',
+  };
+  for (const [body, expected] of Object.entries(shown)) {
+    const drawn = blocksOf(parseMarkdown(body, 'space', 'text')).join('|');
+    assert(
+      drawn === expected,
+      `Expected ${JSON.stringify(body)} to draw as ${JSON.stringify(expected)}, got ${JSON.stringify(drawn)}`,
+    );
+  }
+});
+
+await test("with rawHtml 'text', a body of comments written against each other costs its length", async () => {
+  const { parseMarkdown } = await createHeadlessProof();
+  // Any commenter can write this one, and over 2,000 characters it holds the one parse worker
+  // every other body on the page waits on. Each dropped comment used to push the empty piece
+  // between it and the one before, and the walk back over the three characters of a seam then
+  // walked over every piece pushed so far: 35,000 characters cost 76 ms, 140,000 cost 2,132 ms
+  // and these 280,000 cost 7,712 ms, against the 6 ms they cost now (dispatch://INFRA-341,
+  // R11). The bound is ten times under what this row cost before and a hundred times over what
+  // it costs now, so what fails it is the n² and not a slow machine.
+  const body = '<!---->'.repeat(40000);
+  const began = performance.now();
+  const drawn = blocksOf(parseMarkdown(body, 'space', 'text')).join('|');
+  const cost = performance.now() - began;
+  assert(drawn === '', `Expected the comments to draw as nothing, got ${JSON.stringify(drawn.slice(0, 40))}`);
+  assert(cost < 1000, `Expected ${body.length} characters of comments to parse well inside a second, took ${cost.toFixed(0)} ms`);
+});
+
 await test('a parse with no policy draws raw HTML as its own text and writes it back unchanged', async () => {
   const { parseMarkdown, serializeMarkdown } = await createHeadlessProof();
   // A document passes no policy. Its block of raw HTML is drawn as a paragraph holding the same
