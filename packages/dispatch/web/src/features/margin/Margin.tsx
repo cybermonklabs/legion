@@ -19,6 +19,7 @@ import {
   DEFAULT_MARGIN_WIDTH,
   MARGIN_WIDTH_STEP,
   MIN_MARGIN_WIDTH,
+  marginColumnWidth,
   maxMarginWidth,
 } from "./margin-width";
 import { useMarginSheet } from "./useMarginSheet";
@@ -42,7 +43,7 @@ export function Margin({
   const resizePointer = useRef<
     { pointerId: number; startWidth: number; startX: number } | undefined
   >(undefined);
-  const marginWidth = clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH);
+  const marginWidth = marginColumnWidth(width);
   const maxWidth = maxMarginWidth();
   const setClampedMarginWidth = (nextWidth: number) => {
     onWidthChange?.(clampMarginWidth(nextWidth));

@@ -1,6 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
 
 import {
+  createIssue,
+  createIssueArtifact,
   createProject,
   createProjectDocument,
   getArtifact,
@@ -225,16 +227,35 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
 // Name version and the dot are 8 px wider than the header card, and the dot alone would wrap onto a
 // line of its own under the picker; at 320 px a version view's two buttons and the dot are wider
 // than the card, and a group that could not wrap pushed the dot past its edge.
+// Every box in one layout, because the page's own width changes while it settles: the review
+// margin opens beside the document after the chrome is drawn, which narrows the card the dot has
+// to stay inside. Read one box per round trip and two of them can come from either side of that
+// change - in CI run 42743455211, job 129590901337, this read a dot ending at 1,244 against a card
+// ending at 872, which is the dot where the page was wide and the card where it had narrowed, not
+// a dot outside its card. One `evaluate` reads all three from the layout as it stands in that
+// task, so the row compares boxes that were true at the same moment, and the wait below puts that
+// moment after the margin is in the column the shell held open for it
+// (`web/src/features/margin/MarginColumn.tsx`): a column still carrying `data-margin-pending` is
+// a page still settling, which is the one layout this row must not read.
 async function expectDotBeside(page: Page, neighbour: string): Promise<void> {
   const header = page.getByTestId("artifact-header");
   const dot = connectedDot(header);
   await expect(dot).toHaveText("connected");
-  const beside = await header.getByRole("button", { name: neighbour }).boundingBox();
-  const dotBox = await dot.boundingBox();
-  const card = await header.boundingBox();
-  if (beside === null || dotBox === null || card === null) {
+  await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
+  const besideHandle = await header.getByRole("button", { name: neighbour }).elementHandle();
+  const dotHandle = await dot.elementHandle();
+  const headerHandle = await header.elementHandle();
+  if (besideHandle === null || dotHandle === null || headerHandle === null) {
     throw new Error("the version actions are not visible");
   }
+  const [beside, dotBox, card] = await page.evaluate(
+    ([besideNode, dotNode, headerNode]) =>
+      [besideNode, dotNode, headerNode].map((node) => {
+        const box = node.getBoundingClientRect();
+        return { height: box.height, width: box.width, x: box.x, y: box.y };
+      }),
+    [besideHandle, dotHandle, headerHandle] as const
+  );
   const dotMiddle = dotBox.y + dotBox.height / 2;
   expect(dotMiddle).toBeGreaterThan(beside.y);
   expect(dotMiddle).toBeLessThan(beside.y + beside.height);
@@ -256,6 +277,118 @@ test("a document's connection dot stays on the line with its version actions", a
     await page.setViewportSize({ height: 900, width: 1280 });
     await page.goto("/projects/CORE/documents/ask-blocks-design-md");
     await expectDotBeside(page, "Name version");
+  } finally {
+    await context.close();
+  }
+});
+
+declare global {
+  interface Window {
+    /** Every width the server's own draw of a document and the page's own draw were laid out
+     *  at, one entry per change, recorded from before the page's first script by the row
+     *  below. */
+    __firstScreenWidths?: { page: number[]; served: number[] };
+  }
+}
+
+// SLOW(>=2s): the whole load, from a navigation before any script of the page has run until the
+// margin is in the column the shell held open for it.
+//
+// The opening blocks of an issue document are drawn by the server into the page it sends, in
+// `#first-screen`, which sits after `#root` and so is on the screen before any script has run
+// (`web/index.html`, `internal/dispatch/routes/router.go`'s `servePageForDocument`). Nothing the
+// page can do reserves a column for them: `ReservedMarginColumn` is mounted after the route is
+// drawn (`web/src/features/margin/MarginColumn.tsx`), about a second after those blocks have
+// already been painted. So the shell reserves the sidebar's column, the margin's column and
+// `<main>`'s padding in static CSS (`web/src/styles.css`), and this row is what holds it: the
+// server's blocks are laid out at exactly the width the document keeps, on every frame they are
+// on the screen, so the reader's first paint of the document is the last layout of it.
+//
+// Without that CSS the server's draw was laid out across the whole 1,280 px viewport and
+// re-wrapped to 528 px when the page adopted it (dispatch://INFRA-341, R11).
+test("the blocks the server drew into the page are laid out at the width the document keeps", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A document" });
+  // Prose that wraps differently at the viewport's width than in the document's column, so a
+  // draw laid out at the wrong one is a re-wrap the reader sees rather than a number only.
+  const paragraph =
+    "The ask is a node of the document, and the reader meets it where the writer put it. ".repeat(
+      6
+    );
+  const uploaded = await createIssueArtifact(issue.key, {
+    content: `# Ask blocks design\n\n${paragraph}\n\n## What it says\n\n${paragraph}\n`,
+    name: "ask-blocks-design.md",
+  });
+  const path = `/issues/${issue.key}/artifacts/${uploaded.artifact.slug}`;
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 900, width: 1280 });
+    // The server draws the document only once it holds its tree, and sends the build's own
+    // bytes while it does not (`defaultFirstScreenBudget`). Asking for the page until it
+    // carries a draw is both the wait and the proof that there is one to read: without it a
+    // slow machine would leave this row reading a page with no server draw on it at all.
+    await expect
+      .poll(
+        async () =>
+          (await context.request.get(path))
+            .text()
+            .then((html) => html.includes("data-first-screen-address")),
+        { message: "the server never sent the document's opening blocks in the page" }
+      )
+      .toBe(true);
+
+    // Every frame from before the page's own first script: `addInitScript` runs at document
+    // start, ahead of the inline scripts of `index.html` and of the entry chunk.
+    await page.addInitScript(() => {
+      const widths: { page: number[]; served: number[] } = { page: [], served: [] };
+      window.__firstScreenWidths = widths;
+      const record = (into: number[], element: Element | null | undefined) => {
+        if (element === null || element === undefined) return;
+        const width = Math.round(element.getBoundingClientRect().width);
+        if (into.at(-1) !== width) into.push(width);
+      };
+      const look = () => {
+        record(widths.served, document.querySelector("#first-screen > [role='document']"));
+        record(
+          widths.page,
+          [...document.querySelectorAll("[role='document']")].find(
+            (element) => element.closest("#first-screen") === null
+          )
+        );
+        requestAnimationFrame(look);
+      };
+      requestAnimationFrame(look);
+    });
+    await page.goto(path);
+
+    // The page settled: the document's own draw is up and the margin is in its column rather
+    // than the box held open for it.
+    await expect(page.getByTestId("artifact-header")).toBeVisible();
+    await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
+    const card = await page.getByTestId("artifact-header").boundingBox();
+    if (card === null) {
+      throw new Error("the document's header card is not visible");
+    }
+    const column = Math.round(card.width);
+    const widths = await page.evaluate(() => window.__firstScreenWidths);
+
+    expect(
+      widths?.served ?? [],
+      "the server's draw was never on the screen, so this run says nothing about its layout"
+    ).not.toEqual([]);
+    expect(
+      widths?.page ?? [],
+      "the page's own draw of the document moved after it was first laid out"
+    ).toEqual([column]);
+    expect(
+      widths?.served ?? [],
+      "the server's opening blocks were laid out at a width the document does not keep, so " +
+        "every line of them re-wrapped under the reader when the page adopted them " +
+        "(`web/src/styles.css`, the reservation for `#first-screen`)"
+    ).toEqual([column]);
   } finally {
     await context.close();
   }

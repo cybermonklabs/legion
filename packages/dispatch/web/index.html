@@ -182,6 +182,67 @@
         window.__dispatchEarlyDocumentRead.response.catch(() => undefined);
       })();
     </script>
+    <!--
+      How much room the server's own draw of a document leaves on each side, read before that
+      draw is parsed.
+
+      The shell's preferences are private to the signed-in identity, so their keys carry the
+      login (src/features/shell/userPreference.ts) and nothing here can read them: this script
+      runs before the page knows who is signed in. The shell's layout is therefore written a
+      second time under one key for the whole browser, whenever it draws
+      (src/features/shell/last-shell-layout.ts), and that is what this reads: the margin's half
+      and the sidebar's, separated by `/`. The margin's is `rail` for a margin collapsed to its
+      rail and the column's width in pixels otherwise; the sidebar's is `rail` or `shown`. The
+      login-keyed preferences stay the source of truth the moment the app runs.
+
+      It sets the two properties src/styles.css lays those blocks out by, whose own defaults are
+      a shown sidebar and the margin's default width: a browser with nothing stored, storage
+      that cannot be read, a half this does not recognise, and a value written before this key
+      had two halves all get exactly the layout that rule carries, each side on its own. A
+      margin width is clamped here by the rule the margin lays its own column out by
+      (clampMarginWidth in src/features/margin/margin-width.ts: never under the minimum, never
+      over 60% of the viewport), so a width stored on a wider screen cannot reserve most of a
+      narrow one. A rail is 5rem on either side, which is what the shell pads the gutter for a
+      rail with (`xl:pl-20`, `xl:pr-20`).
+
+      For one reader per browser, which is the ordinary case, the server's blocks are laid out
+      at the width they keep from the first paint. Where two logins share a browser the key
+      holds whichever of them drew last, so the other sees one re-wrap on their first paint
+      until the shell writes their own layout, which it does on that same load.
+
+      A classic inline script, as the two above are, and for the same reason: Vite folds a
+      module script of this page into the entry chunk, which is the wait this is here to skip.
+    -->
+    <script>
+      (() => {
+        var stored;
+        var drawn;
+        var style;
+        var room;
+        try {
+          stored = window.localStorage.getItem("dispatch.shell.layout");
+        } catch {
+          return;
+        }
+        if (stored === null) {
+          return;
+        }
+        drawn = stored.split("/");
+        style = document.documentElement.style;
+        if (drawn[0] === "rail") {
+          style.setProperty("--first-screen-margin-inset", "5rem");
+        } else if (/^[0-9]{1,4}$/.test(drawn[0])) {
+          room = Math.max(280, Math.floor(window.innerWidth * 0.6));
+          style.setProperty(
+            "--first-screen-margin-inset",
+            `calc(${Math.min(Math.max(Number(drawn[0]), 280), room)}px + 1.5rem)`
+          );
+        }
+        if (drawn[1] === "rail") {
+          style.setProperty("--first-screen-sidebar-inset", "5rem");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
@@ -204,6 +265,16 @@
       page runs as after it. The server replaces the comment inside it and nothing else; a page
       carrying no document is the build's own bytes, and this element is empty, unlabelled and
       silent.
+
+      Where it is laid out is the main stylesheet's (src/styles.css, the rule on
+      `#first-screen > [data-first-screen-address]`): this element is outside #root, so until
+      React mounts nothing holds the columns the shell will draw, and the blocks were laid out
+      across the whole viewport and then re-wrapped to the document's own column when the page
+      adopted them. That rule reserves the sidebar's column, the margin's column and main's
+      padding at desktop widths, from the stylesheet the browser has before it paints anything,
+      so the server's blocks are laid out once (dispatch://INFRA-341, R11). The attribute it
+      selects on is the one the server writes (firstScreenElement in
+      internal/dispatch/routes/router.go), so a page with no document matches no rule.
     -->
     <div
       id="first-screen"

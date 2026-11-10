@@ -522,9 +522,15 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that long holds
  *  its own literal text until the answer lands, so a page read in between is a page of
  *  unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold.
+ *  per row about which bodies cross the threshold. `data-margin-pending` is the second of that
+ *  kind and reads the same way: the shell holds the margin's column open at the margin's own
+ *  width from the first frame and marks it while the margin's chunk is still on its way
+ *  (`web/src/features/margin/MarginColumn.tsx`), so a page still carrying it is a page whose
+ *  margin is an empty box. The column's width does not move when the margin lands in it - that
+ *  is what the reservation is for - but what is inside it does, and both layers want the real
+ *  margin rather than the box kept for it.
  *
- *  The landing highlight is the second of that page-wide half, and the only one of these that
+ *  The landing highlight is the last of that page-wide half, and the only one of these that
  *  ends on a clock rather than on an answer: an address that names an artifact rings that
  *  artifact's header for two seconds, to tell the reader which thing on the page they
  *  navigated to, and then the page drops the ring by itself
@@ -546,5 +552,6 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
   await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
 }

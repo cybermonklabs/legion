@@ -25,7 +25,7 @@ import { ReaderIsHere } from "./features/doc/first-batch";
 import { openDocumentEarly } from "./features/doc/open-document-early";
 import { InboxList, importInbox } from "./features/inbox/InboxList";
 import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./features/issue/issue-page-skeleton";
-import { MarginColumn } from "./features/margin/MarginColumn";
+import { MarginColumn, ReservedMarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { TextAskCard } from "./features/refs/markdown-cards";
@@ -59,6 +59,7 @@ import {
   MOD_KEY_LABEL,
   useKeymap,
 } from "./features/shell/keymap";
+import { rememberShellLayout } from "./features/shell/last-shell-layout";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
 import { ShellCounts } from "./features/shell/ShellCounts";
@@ -480,7 +481,15 @@ function NavigationContents({
   );
 }
 
-function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
+/**
+ * The shell itself, exported for `web/src/__tests__/shell-first-commit.test.tsx`.
+ *
+ * That row renders this with no effect ever flushed, which is the one way to read the commit
+ * the reader's first paint comes from: the margin's column is reserved in that commit wherever
+ * the route will draw a margin, and in no other (dispatch://INFRA-341, R11). Nothing else
+ * outside this module renders it; the app reaches it through `AuthGate`.
+ */
+export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
@@ -507,6 +516,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     String
   );
+  // The same layout under one key for the whole browser, so the next load's first paint can
+  // read it before it knows who is signed in (`features/shell/last-shell-layout.ts`). Here
+  // rather than beside each setter: `AppShell` is mounted only for a signed-in reader, so
+  // these three are always that reader's own resolved values, and a load that reads them
+  // writes them back unchanged - which is what gives a reader who set a column before this
+  // existed the benefit of it on their next load.
+  useEffect(() => {
+    rememberShellLayout(marginHidden, marginWidth, sidebarHidden);
+  }, [marginHidden, marginWidth, sidebarHidden]);
   const location = useLocation();
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
@@ -895,9 +913,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </Suspense>
           </ErrorBoundary>
         </main>
-        {/* The margin is the fourth part that waits for the route (`TheRouteIsDrawn`): it is
-            mounted on every route and draws nothing on the first frame of any of them
-            (`features/margin/MarginColumn.tsx`). */}
+        {/* The margin's chunk is the fourth part that waits for the route (`TheRouteIsDrawn`),
+            and its column is not: `MarginColumn` suspends, so mounting it before the route is
+            drawn would put a suspended boundary beside the route's own and cost the page a
+            300 ms fallback throttle, which is the whole reason the parts below wait. The box it
+            will fill suspends on nothing, so the shell holds it from its own first frame
+            instead - the same `ReservedMarginColumn` the chunk's `Suspense` falls back to, at
+            the same width and under the same three answers - and the chunk arrives into a
+            column that is already there. Without it `<main>` was laid out across the margin's
+            column for the 72 to 149 ms between the shell's first commit and the route's, on
+            every margin route measured (dispatch://INFRA-341, R11). */}
         {theRouteIsDrawn ? (
           <ErrorBoundary region="the margin" resetKey={location.pathname}>
             <MarginColumn
@@ -907,7 +932,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               width={marginWidth}
             />
           </ErrorBoundary>
-        ) : null}
+        ) : (
+          <ReservedMarginColumn collapsed={marginHidden} width={marginWidth} />
+        )}
         {/* The palette is mounted on every route, closed: it keeps the last `/` search and the
             row a close is about to run, so unmounting it when nothing is open would lose both.
             Closed it draws nothing, so the frames before its chunk arrives look exactly as the

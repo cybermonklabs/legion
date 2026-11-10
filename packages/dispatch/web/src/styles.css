@@ -48,6 +48,57 @@ body {
   margin: 0;
 }
 
+/* Where the server's own draw of a document is laid out, before any script of the page has run.
+
+   A reader who opens an issue document is sent its opening blocks as HTML, in `#first-screen`
+   (`web/index.html`, `internal/dispatch/routes/router.go`'s `servePageForDocument`). That
+   element is a child of `body`, after `#root`, so until React mounts there is no shell around
+   it and nothing holds the columns the shell will draw: the blocks were laid out across the
+   whole 1,280 px viewport and then re-wrapped to the 528 px the document keeps when the page
+   adopted them, measured at 1280x900 as `served=0..1280` on every frame to 1,478 ms and
+   `page=344..872` at 1,975 ms (dispatch://INFRA-341, R11). `MarginColumn`'s reservation cannot
+   reach this: it is mounted after `TheRouteIsDrawn`, which is a second after the paint these
+   blocks are already on the screen for. So the shell reserves the same columns here, in CSS the
+   browser has before it paints anything.
+
+   The numbers are the shell's own (`web/src/app.tsx`):
+     - the sidebar's column, `w-80`, and `<main>`'s `p-6` on each side;
+     - the margin's column, `DEFAULT_MARGIN_WIDTH`, which is `marginColumnWidth`'s answer for a
+       reader whose stored width is not known.
+       `web/src/features/margin/first-screen-reservation.test.ts` holds both to the modules
+       they were copied from, so they cannot drift;
+     - nothing below `xl`, where the margin is a sheet over the document rather than a column
+       beside it and the sidebar is not drawn at all: this query is the exact inverse of
+       `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`). At a compact width the blocks
+       are laid out across the viewport and inset by `<main>`'s padding when the page adopts
+       them - 1,279 px to 1,231 px, measured at 1279x900 - which is the page's own gutter and
+       not either column;
+     - nothing on a route that draws no margin, because the server writes this element on the
+       four issue document addresses alone (`documentAddress` in `routes/router.go`), and
+       `routeHasMargin` answers true for every one of them. A page with no draw carries no
+       element with this attribute and no rule matches.
+
+   What the page's own bytes cannot name is which of those columns this reader drew last: the
+   margin's width, the margin they collapsed to its rail and the sidebar they hid are all kept
+   under keys named for the signed-in login (`features/shell/userPreference.ts`), which the
+   page learns only from `/auth/whoami`, so nothing here can even spell them. So the shell
+   writes the layout it draws a second time under one key for the whole browser
+   (`features/shell/last-shell-layout.ts`), and the head of `web/index.html` reads that before
+   these blocks are parsed and sets the two properties below. The defaults are what a browser
+   with nothing stored gets, and are the whole rule where storage cannot be read or holds
+   something this build did not write. With them, a reader whose margin is 520 px, whose margin
+   is a rail, or whose sidebar is a rail has the blocks laid out at the width they keep from
+   the first paint; without them they were laid out at 528 px and re-wrapped to 392 px, 856 px
+   and 792 px (measured at 1280x900). Where two logins share a browser the key holds whichever
+   drew last, so the other sees that one re-wrap until the shell writes their own layout, which
+   it does on that same load. */
+@media (min-width: 1280px) {
+  #first-screen > [data-first-screen-address] {
+    margin-left: var(--first-screen-sidebar-inset, calc(20rem + 1.5rem));
+    margin-right: var(--first-screen-margin-inset, calc(384px + 1.5rem));
+  }
+}
+
 button,
 a {
   transition:
