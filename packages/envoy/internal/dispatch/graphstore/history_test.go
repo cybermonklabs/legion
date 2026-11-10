@@ -97,9 +97,14 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 		after := readTupleLog(t, ctx, pool)
 		// Two tuples per step, appended above every tuple already there, and every earlier row
 		// exactly as it was: an update or a delete moves the count, the highest sequence, or one
-		// of the rows the prefix holds.
-		if len(after) != len(before)+2 {
-			t.Fatalf("step %d: the log holds %d tuples, want %d", number+1, len(after), len(before)+2)
+		// of the rows the prefix holds. The first step makes the node, and the write states its
+		// two base attributes with it (Write), so that step appends four rows.
+		stated := 2
+		if number == 0 {
+			stated = 4
+		}
+		if len(after) != len(before)+stated {
+			t.Fatalf("step %d: the log holds %d tuples, want %d", number+1, len(after), len(before)+stated)
 		}
 		if highestSeq(after) <= highestSeq(before) {
 			t.Fatalf("step %d: the highest sequence is %d, want it above %d",

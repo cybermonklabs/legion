@@ -353,14 +353,19 @@ var indexPasses = map[string]indexPass{
 	"graphcensus/backfill.go#writeBlockBatch":    {input: "each pre-store document_blocks row's own content"},
 	"graphcensus/backfill.go#writeBlockRefBatch": {input: "each pre-store block_refs row's own content"},
 	"graphcensus/backfill.go#writeCommentBatch":  {input: "each pre-store comments row's own content"},
-	"graphstore/arms.go#nodeArm":                 {input: "the nodes its caller states"},
-	"graphstore/arms.go#claimArms":               {input: "the claims its caller states"},
-	"graphstore/arms.go#tupleInsert":             {input: "the tuples its caller states"},
-	"graphstore/write.go#writeNodes":             {input: "the nodes its caller states"},
-	"refs/blocks.go#IndexBlocks":                 {input: "the version's render"},
-	"refs/blocks.go#reconcileBlockParents":       {input: "the version's render"},
-	"refs/blocks.go#replaceBlockRefs":            {input: "the version's render"},
-	"refs/refs.go#Stamp":                         {input: "the event that recorded the write"},
+	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
+	// the operator named and what the store itself holds about it, which is neither side of a
+	// projection read to mend the other: it deletes both sides together rather than bringing
+	// one into line with the other, so it is no repair.
+	"graphcensus/erase.go#apply":           {input: "the node the operator named"},
+	"graphstore/arms.go#nodeArm":           {input: "the nodes its caller states"},
+	"graphstore/arms.go#claimArms":         {input: "the claims its caller states"},
+	"graphstore/arms.go#tupleInsert":       {input: "the tuples its caller states"},
+	"graphstore/write.go#writeNodes":       {input: "the nodes its caller states"},
+	"refs/blocks.go#IndexBlocks":           {input: "the version's render"},
+	"refs/blocks.go#reconcileBlockParents": {input: "the version's render"},
+	"refs/blocks.go#replaceBlockRefs":      {input: "the version's render"},
+	"refs/refs.go#Stamp":                   {input: "the event that recorded the write"},
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

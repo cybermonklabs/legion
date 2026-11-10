@@ -105,6 +105,9 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 // learns nothing about a node another write made, and its own made_at, made_by and source_event
 // would otherwise overwrite that write's. The base attributes are read off the rows the insert
 // returned, so they are stated once, by the write that made the node, rather than per event.
+//
+// That is the rule Write follows too, and the arm needs no second half of it: this upsert moves
+// no stored state, so there is never a state of a node already there for it to state.
 func nodeArm(first int) string {
 	return `graph_nodes_written as (
 	insert into graph_nodes (` + nodeColumns + `)
@@ -187,13 +190,18 @@ const (
 	do nothing`
 )
 
+// nodeArrays are the nine arrays a node write binds, in nodeColumns' order: one spelling of the
+// types, read by the arm the publisher's record splices in and by writeNodes alike.
+func nodeArrays(first int) string {
+	return arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint")
+}
+
 // nodeRows reads the nodes of a write in ascending (kind, id): a write touching several nodes
 // takes its row locks in that order, so two such writes cannot each hold the row the other waits
 // for (the lock order on api/inbox_read.go's markInboxReadThreads).
 func nodeRows(first int) string {
-	arrays := arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint")
 	return `select ` + nodeColumns + `
-	from unnest(` + arrays + `) as node(` + nodeColumns + `)
+	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
 	order by kind, id`
 }
 

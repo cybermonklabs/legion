@@ -106,19 +106,15 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 		t.Fatalf("the comment is authored by %q, want the session that wrote it", authored)
 	}
 
-	// Every node the run wrote carries both base attributes. The node row holds each, and the
-	// writer that states them as the tuples they are - the comment write path, and the arms the
-	// publisher's record splices in (graphstore.WriteArms) - is read as tuples too. A block's
-	// node is written through graphstore.Write by refs.IndexBlocks, which sets the two columns
-	// and appends no tuple for either; that is reported as a gap of this change rather than
-	// read here as if it were not one.
+	// Every node the run wrote carries both base attributes, as the node row's columns and as
+	// the tuples R8 makes them. graphstore.Write states them for each node its insert made, so
+	// every writer states them alike - the comment path, the arms the publisher's record
+	// splices in, and refs.IndexBlocks' block nodes - and a node written again unchanged states
+	// neither, which is what keeps a re-index of a document nothing moved appending nothing.
 	for _, held := range liveNodes(t, database) {
 		if held.Visibility == "" || held.State == "" {
 			t.Fatalf("%s %s carries visibility %q and state %q", held.Kind, held.ID,
 				held.Visibility, held.State)
-		}
-		if held.Kind != "comment" {
-			continue
 		}
 		for _, attribute := range []string{"visibility", "state"} {
 			value, ok, err := graphstore.CurrentValue(ctx, database.Pool, held.Kind, held.ID, attribute)

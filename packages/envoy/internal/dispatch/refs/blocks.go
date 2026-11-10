@@ -47,18 +47,13 @@ const (
 // block holds.
 const TupleInDocument = "in_document"
 
-// tupleState is the name of the base attribute every node of the store carries beside its
-// visibility, which graphstore states off the row its own node writer wrote (its nodeArm). A
-// block a version no longer holds states it again, as gone.
-const tupleState = "state"
-
 // BlockTuple is one fact a block index pass states, with whether the row behind it takes the
 // version's own event as its source_seq. A block_refs row the pass inserts outside a first
 // indexing is written with none, and refs.Stamp or docs' stampVersionEvent fills it with that
 // event in this same transaction, so the tuple's legacy_source_seq is that event's id; the pass
 // cannot read the value back, since no tuple may be updated later. A fact no row of the
-// projection dates that way - a block's parent, its membership of its document, its state -
-// leaves the mark false and its legacy_source_seq as the pass read it.
+// projection dates that way - a block's parent and its membership of its document - leaves the
+// mark false and its legacy_source_seq as the pass read it.
 type BlockTuple struct {
 	graphstore.Tuple
 	FromVersionEvent bool
@@ -273,17 +268,16 @@ func IndexBlocks(
 		}
 		write.Nodes = append(write.Nodes, blockNode(addresses[index], writer, versionAt, graphstore.StateLive))
 	}
+	// A block the version no longer holds has its node stated gone. The tuple that says so is
+	// not written here: graphstore.Write states a base attribute it moved, with this write's
+	// own time, writer and cause, so a block restored by a later version is stated live by the
+	// same rule and no writer of this store states a base attribute of its own.
 	for _, id := range deleted {
 		address := blockNodeAddress(refKey, id)
 		if !blockNodeFits(address) {
 			continue
 		}
 		write.Nodes = append(write.Nodes, blockNode(address, writer, versionAt, graphstore.StateGone))
-		write.Tuples = append(write.Tuples, BlockTuple{Tuple: graphstore.Tuple{
-			FromKind: BlockNodeKind, FromID: address, Kind: tupleState,
-			ToKind: graphstore.KindValue, ToID: graphstore.StateGone,
-			At: versionAt, Who: writer, Asserted: true,
-		}})
 	}
 	// The nodes go in before any projection row that names one: the foreign key is checked
 	// inside the statement writing that row, so a node written afterwards would be too late.
