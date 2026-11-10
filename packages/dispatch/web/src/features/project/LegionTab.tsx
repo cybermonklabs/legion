@@ -18,7 +18,7 @@ import {
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
 import { IssueGrid } from "./IssueGrid";
-import { formatPhaseTime, legionPhases } from "./issues-table-model";
+import { formatPhaseTime, legionPhaseLabel, legionPhases } from "./issues-table-model";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
 import { LegionSections, SectionTitle } from "./LegionSections";
 
@@ -120,7 +120,7 @@ function SlotPhase({ card, label }: { card: LegionBoardCard; label: string }): R
   const title = `${time.text === "—" ? "" : `${time.text} `}${time.about}${waiting}`;
   return (
     <span className="flex flex-col gap-1" data-legion-phase={card.phase} title={title}>
-      <span>{card.phase === "retro" ? "Retro" : label}</span>
+      <span>{legionPhaseLabel(label, card.phase)}</span>
       <span
         className={`hidden text-xs sm:block ${textMutedOnCanvas}`}
         data-legion-fact="phase-time"
