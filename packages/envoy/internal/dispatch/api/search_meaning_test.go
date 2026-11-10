@@ -1108,6 +1108,57 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 	}
 }
 
+// TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling is the test
+// above in the one state it does not cover: the fill window, where meaningStatementFor serves
+// the joined statement because the progress row does not read done yet.
+//
+// The switch's own claim is that the joined shape is what the release before this change did, so
+// a caller is never worse off while the fill runs. For four of the five arms that holds: each
+// carries its joined predicate inside its own candidate CTE. The comment arm does not.
+// searchMeaningCommentArm hoists both the project predicate and the comments join above the
+// candidate limit under meaningOneProjectJoined, where main keeps them inside the ordered,
+// limited select, so another project's crowd fills the arm's candidates again and this project's
+// comments are lost - the defect this whole change exists to end, for the length of the window.
+//
+// Measured on a Dispatch of this head against a real Postgres, with a crowd of
+// searchWindowCandidates+1 real comment windows of another project at cosine 1.000: the joined
+// shape answered 4 hits - ask, document, issue, message - with the comment gone, where the
+// scoped shape and a build of main both answered 5. The crowd is exactly the threshold: 1,001
+// windows lose it, 999 do not (INFRA-988).
+//
+// The fixture is the one above with the progress row left as a migrated database leaves it. Its
+// sibling records the fill done, which is what keeps that test green and is the honest state for
+// what that test measures; this is the half of the pair nothing covered.
+func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	mine := createInteractionIssue(t, handler, "MINE", "This project's issue", "Body text.")
+
+	own := make([]string, 0, 3)
+	for index := range cap(own) {
+		comment := createThreadComment(t, handler, mine.Key,
+			map[string]any{"body": fmt.Sprintf("Remark %d this project wants back.", index)}, "alice")
+		own = append(own, comment.ID)
+		embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 2+index))
+	}
+	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+	recordEmbeddingProjectKeyFill(t, database, false)
+	if embeddingProjectKeyFillIsDone(t, database) {
+		t.Fatal("the progress row reads done, so this fixture is not the fill window it is written for")
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	for _, id := range own {
+		searchHit(t, response, "comment", id)
+	}
+}
+
 // recordEmbeddingProjectKeyFill writes the one row of embeddings_project_key_backfill the read
 // path switches on, and embeddingProjectKeyFillIsDone reads it back. A test stands either side
 // of the fill by writing that row rather than by running the pass, which would label the very
