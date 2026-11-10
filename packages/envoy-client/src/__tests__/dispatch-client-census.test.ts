@@ -35,6 +35,10 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   getAgentArtifact: (client) => client.getAgentArtifact("session-1", "notes"),
   getIssueArtifact: (client) => client.getIssueArtifact("DSP-1", "notes"),
   search: (client) => client.search("notes"),
+  commentThreadsByTarget: (client) =>
+    client.commentThreadsByTarget({ project: "DSP", target: "sys_open holds." }),
+  commentThreadsByThreadState: (client) =>
+    client.commentThreadsByThreadState({ project: "DSP", state: "open" }),
   related: (client) => client.related("DSP", { title: "A title", text: "Some text." }),
   getIssue: (client) => client.getIssue("DSP-1"),
   updateIssue: (client) => client.updateIssue("DSP-1", { status: "testing", actor }),

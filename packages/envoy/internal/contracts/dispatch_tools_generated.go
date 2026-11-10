@@ -357,6 +357,32 @@ var DispatchTools = []DispatchTool{
 		Example: json.RawMessage("{\"query\":\"astrolabe\"}"),
 	},
 	{
+		Name:        "dispatch_threads_by_target",
+		Description: "List the comment threads anchored on one target, within one project or one issue, without a meaning search. The target is the whole quoted text of the entry a thread is anchored on - a function, a model file, or a heading such as \"Other targets\" - matched exactly, so a target names one entry and not every entry whose text holds those words. Each row is a thread: its root comment's id, author, time, anchor quote and opening words, how many replies the thread holds, and when anything was last written in it; a reply is part of its root's thread and never a row of its own. Rows come oldest first and page with limit and offset; the answer says how many threads match. Exactly one of project and issue is required: a project key such as CORE reads every issue of that project and its unlinked documents, and an issue reads that issue alone.",
+		Arguments: []ToolField{
+			{Name: "target", Kind: ToolFieldString, Required: true, Description: "The whole quoted text of the entry the threads are anchored on; matched exactly."},
+			{Name: "project", Kind: ToolFieldString, Description: "Project key whose issues and unlinked documents to read."},
+			{Name: "issue", Kind: ToolFieldString, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "artifact", Kind: ToolFieldString, Description: "Optional document id, slug or filename; lists only the threads anchored in that document."},
+			{Name: "limit", Kind: ToolFieldNumber, Description: "Threads per page, 1-200; default 50."},
+			{Name: "offset", Kind: ToolFieldNumber, Description: "Threads to skip before the page; nonnegative integer; default 0."},
+		},
+		Example: json.RawMessage("{\"project\":\"CORE\",\"target\":\"sys_open holds.\"}"),
+	},
+	{
+		Name:        "dispatch_threads_by_thread_state",
+		Description: "List the comment threads that are open or resolved, within one project or one issue, without a meaning search. A thread's state is its root's: resolving it sets the state, and a later reply in it opens the thread again. This is the thread's own state and not the requirement status of the Verified Linux spec loop's lines, which is a word with a revision behind it written in the text of the posts; git stays the record of that status (dispatch://LINUX-1239) and where it will live in Dispatch is open, so no state but open and resolved is taken here. Each row, the order and the paging are dispatch threads-by-target's. Exactly one of project and issue is required: a project key such as CORE reads every issue of that project and its unlinked documents, and an issue reads that issue alone.",
+		Arguments: []ToolField{
+			{Name: "state", Kind: ToolFieldEnum, Required: true, Description: "The thread state to list: open or resolved. The thread's own state, never a requirement status.", Values: []string{"open", "resolved"}},
+			{Name: "project", Kind: ToolFieldString, Description: "Project key whose issues and unlinked documents to read."},
+			{Name: "issue", Kind: ToolFieldString, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "artifact", Kind: ToolFieldString, Description: "Optional document id, slug or filename; lists only the threads anchored in that document."},
+			{Name: "limit", Kind: ToolFieldNumber, Description: "Threads per page, 1-200; default 50."},
+			{Name: "offset", Kind: ToolFieldNumber, Description: "Threads to skip before the page; nonnegative integer; default 0."},
+		},
+		Example: json.RawMessage("{\"project\":\"CORE\",\"state\":\"open\"}"),
+	},
+	{
 		Name:        "dispatch_related",
 		Description: "Run the related-item check that dispatch issue, dispatch ask and a new decision block in dispatch doc-edit run on their own write, and write nothing: it lists the three items of one project most like a title and a text (at most one per issue or document, open ones first), each ask with whether it is answered, and a past decision that already answers the same question. Use it to check a draft before filing it. It searches by meaning and by the text's rarest words, and says how it searched; when meaning search cannot run it searches by keywords only and says why. When it could not search at all it says why and names the dispatch search to run instead. exclude_issues leaves each named issue's own items out of the results, at most 50 of them, so a draft under a parent can leave out that parent and its children without changing how rare the text's words are; keywords_only skips meaning search.",
 		Arguments: []ToolField{

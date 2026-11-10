@@ -2808,6 +2808,172 @@
         ]
       }
     },
+    "/api/v1/comment-threads/by-target": {
+      "get": {
+        "description": "Comment threads anchored on one target, the requirement query by target: ?target= the whole quoted text of the entry a thread is anchored on, within ?project= or ?issue= (exactly one; 400 PROJECT_OR_ISSUE_REQUIRED for neither, 400 PROJECT_OR_ISSUE_CONFLICT for both), narrowed by ?artifact= to one document the threads are anchored in. A thread is a root comment - one that replies to nothing and answers no ask - with its reply count and the time anything was last written in it. Pages with limit (1-200, default 50) and offset (0 or more), oldest first by created_at then id, as GET /api/v1/issues/{key}/comments lists; the answer is {threads, total, limit, offset}, total counting every thread the filter matches, and 0 on a page past the last one. It replaces a GET /api/v1/search stand-in that answered a near question by meaning (dispatch://INFRA-988).",
+        "operationId": "getApiV1CommentThreadsByTarget",
+        "parameters": [
+          {
+            "name": "target",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "artifact",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentThreadPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/comment-threads/by-thread-state": {
+      "get": {
+        "description": "Comment threads in one state, the requirement query by the state of the line's thread: ?state= open or resolved (400 THREAD_STATE_REQUIRED for none, 400 INVALID_THREAD_STATE for any other), within ?project= or ?issue= (exactly one; 400 PROJECT_OR_ISSUE_REQUIRED for neither, 400 PROJECT_OR_ISSUE_CONFLICT for both), narrowed by ?artifact= to one document the threads are anchored in. A thread's state is its root's, open or resolved: a resolve sets it and a later reply reopens it. This is the thread's own state and not the requirement status of the Verified Linux spec loop's lines, which is a word with a revision behind it written in the text of the posts, whose record stays in git (dispatch://LINUX-1239) and where it will live in Dispatch is open. Its rows and its answer are GET /api/v1/comment-threads/by-target's, and it pages the same way, with limit (1-200, default 50) and offset (0 or more). It replaces a GET /api/v1/search stand-in that answered a near question by meaning (dispatch://INFRA-988).",
+        "operationId": "getApiV1CommentThreadsByThreadState",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "open",
+                "resolved"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "artifact",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentThreadPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/comments/{id}": {
       "get": {
         "description": "Read one comment with its thread.",
@@ -4417,7 +4583,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -14089,6 +14255,55 @@
         },
         "required": [
           "attempt"
+        ],
+        "type": "object"
+      },
+      "CommentThreadPage": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/CommentThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "threads",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "CommentThreadRow": {
+        "properties": {
+          "last_activity_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "replies": {
+            "type": "integer"
+          },
+          "root": {
+            "$ref": "#/components/schemas/Comment"
+          }
+        },
+        "required": [
+          "root",
+          "replies",
+          "last_activity_at"
         ],
         "type": "object"
       },

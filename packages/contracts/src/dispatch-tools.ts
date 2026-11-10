@@ -458,6 +458,30 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  */
 export const SEARCH_KIND_DEPTH = 100;
 
+/**
+ * The largest page `dispatch threads-by-target` and `dispatch threads-by-thread-state` serve.
+ * Generated into Go as `contracts.CommentThreadPageMax`, where the two routes enforce it, so
+ * the tool's refusal and the server's bound cannot drift apart.
+ */
+export const COMMENT_THREAD_PAGE_MAX = 200;
+
+/** The page size those two routes serve a caller that names no limit; generated into Go as
+ *  `contracts.CommentThreadPageDefault`. */
+export const COMMENT_THREAD_PAGE_DEFAULT = 50;
+
+/** What both comment-thread listings take for their scope, in the words their refusals use. */
+const THREAD_SCOPE_RULE =
+  "Exactly one of project and issue is required: a project key such as CORE reads every issue of that project and its unlinked documents, and an issue reads that issue alone.";
+
+/** Exactly one of project and issue, which both comment-thread listings require. */
+const threadScopeValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const input = value as { readonly issue?: unknown; readonly project?: unknown };
+    return (typeof input.issue === "string") !== (typeof input.project === "string");
+  },
+  message: THREAD_SCOPE_RULE,
+};
+
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
 export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
@@ -1627,6 +1651,84 @@ export const dispatchToolSpecs = [
       },
       message: `project is not a project key: ${PROJECT_KEY_RULE}`,
     },
+  },
+  {
+    name: "dispatch_threads_by_target",
+    example: { project: "CORE", target: "sys_open holds." },
+    description:
+      "List the comment threads anchored on one target, within one project or one issue, without a meaning search. " +
+      'The target is the whole quoted text of the entry a thread is anchored on - a function, a model file, or a heading such as "Other targets" - matched exactly, so a target names one entry and not every entry whose text holds those words. ' +
+      "Each row is a thread: its root comment's id, author, time, anchor quote and opening words, how many replies the thread holds, and when anything was last written in it; a reply is part of its root's thread and never a row of its own. " +
+      "Rows come oldest first and page with limit and offset; the answer says how many threads match. " +
+      THREAD_SCOPE_RULE,
+    arguments: (z) => ({
+      target: z
+        .string({ min: 1 })
+        .describe(
+          "The whole quoted text of the entry the threads are anchored on; matched exactly."
+        ),
+      project: z
+        .string()
+        .describe("Project key whose issues and unlinked documents to read.")
+        .optional(),
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      artifact: z
+        .string()
+        .describe(
+          "Optional document id, slug or filename; lists only the threads anchored in that document."
+        )
+        .optional(),
+      limit: z
+        .number({ int: true, min: 1, max: COMMENT_THREAD_PAGE_MAX })
+        .describe(
+          `Threads per page, 1-${COMMENT_THREAD_PAGE_MAX}; default ${COMMENT_THREAD_PAGE_DEFAULT}.`
+        )
+        .optional(),
+      offset: z
+        .number({ int: true, min: 0 })
+        .describe("Threads to skip before the page; nonnegative integer; default 0.")
+        .optional(),
+    }),
+    validation: threadScopeValidation,
+  },
+  {
+    name: "dispatch_threads_by_thread_state",
+    example: { project: "CORE", state: "open" },
+    description:
+      "List the comment threads that are open or resolved, within one project or one issue, without a meaning search. " +
+      "A thread's state is its root's: resolving it sets the state, and a later reply in it opens the thread again. " +
+      "This is the thread's own state and not the requirement status of the Verified Linux spec loop's lines, which is a word with a revision behind it written in the text of the posts; git stays the record of that status (dispatch://LINUX-1239) and where it will live in Dispatch is open, so no state but open and resolved is taken here. " +
+      "Each row, the order and the paging are dispatch threads-by-target's. " +
+      THREAD_SCOPE_RULE,
+    arguments: (z) => ({
+      state: z
+        .enum(["open", "resolved"])
+        .describe(
+          "The thread state to list: open or resolved. The thread's own state, never a requirement status."
+        ),
+      project: z
+        .string()
+        .describe("Project key whose issues and unlinked documents to read.")
+        .optional(),
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      artifact: z
+        .string()
+        .describe(
+          "Optional document id, slug or filename; lists only the threads anchored in that document."
+        )
+        .optional(),
+      limit: z
+        .number({ int: true, min: 1, max: COMMENT_THREAD_PAGE_MAX })
+        .describe(
+          `Threads per page, 1-${COMMENT_THREAD_PAGE_MAX}; default ${COMMENT_THREAD_PAGE_DEFAULT}.`
+        )
+        .optional(),
+      offset: z
+        .number({ int: true, min: 0 })
+        .describe("Threads to skip before the page; nonnegative integer; default 0.")
+        .optional(),
+    }),
+    validation: threadScopeValidation,
   },
   {
     name: "dispatch_related",

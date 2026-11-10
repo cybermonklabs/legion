@@ -18,6 +18,7 @@ import type {
   ClaimedIssue,
   Comment,
   CommentRead,
+  CommentThreadPage,
   CommentWriteResponse,
   CreateAgentMessageInput,
   CreateArtifactInput,
@@ -280,6 +281,27 @@ export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
   readonly offset?: number;
+}
+
+/** The scope and page both comment-thread listings take: exactly one of `project` and `issue`,
+ *  with `artifact` narrowing to the threads anchored in one document. */
+export interface CommentThreadScopeQuery {
+  readonly project?: string;
+  readonly issue?: string;
+  readonly artifact?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+/** `GET /api/v1/comment-threads/by-target`'s query: the entry a thread is anchored on, whole. */
+export interface CommentThreadsByTargetQuery extends CommentThreadScopeQuery {
+  readonly target: string;
+}
+
+/** `GET /api/v1/comment-threads/by-thread-state`'s query: the thread's own state, which is not
+ *  the requirement status of the spec loop's lines. */
+export interface CommentThreadsByThreadStateQuery extends CommentThreadScopeQuery {
+  readonly state: "open" | "resolved";
 }
 
 /** One node's edges: `to` reads what points at it, `from` what it points to; exactly one. */
@@ -921,6 +943,22 @@ export class DispatchClient {
       ? ["api", "v1", "search"]
       : ["api", "v1", "search", "results"];
     return this.#json("GET", path, undefined, request);
+  }
+
+  /** `GET /api/v1/comment-threads/by-target`: the comment threads anchored on one target,
+   *  within one project or one issue. The target is the whole quoted text of the entry a thread
+   *  is anchored on, matched exactly. */
+  async commentThreadsByTarget(query: CommentThreadsByTargetQuery): Promise<CommentThreadPage> {
+    return this.#json("GET", ["api", "v1", "comment-threads", "by-target"], undefined, query);
+  }
+
+  /** `GET /api/v1/comment-threads/by-thread-state`: the comment threads that are open or
+   *  resolved, within one project or one issue. The state is the thread's own, never the
+   *  requirement status of the Verified Linux spec loop's lines. */
+  async commentThreadsByThreadState(
+    query: CommentThreadsByThreadStateQuery
+  ): Promise<CommentThreadPage> {
+    return this.#json("GET", ["api", "v1", "comment-threads", "by-thread-state"], undefined, query);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
