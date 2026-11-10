@@ -22,7 +22,8 @@ request: <request>`, because triage reads it to tell your filing from anyone els
   id: write `direct message to session <your session id>`, for the person by the name they gave,
   else `the person who messaged this session`.
 
-For a clear defect no running tree owns, the line is `Filed for Legion from <role> on <issue>:
+For a clear defect no running tree owns, and for a test a role re-ran green ([A test a role re-ran
+green](#a-test-a-role-re-ran-green)), the line is `Filed for Legion from <role> on <issue>:
 <evidence>` ([Hand over a clear defect](#hand-over-a-clear-defect)).
 
 ## Hand over a clear defect
@@ -75,6 +76,56 @@ The work goes to whoever already owns that code. You file an issue only when nob
    (`--reply-to-ask '<ask id>'`, on the ask's issue), its first line exactly
    `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`. A later session reads that reply at
    triage and at every start.
+
+## A test a role re-ran green
+
+The role that holds a phase re-runs a red check once at the head of its pull request
+(`skill://legion-worker/references/red-at-the-head.md`). A green re-run means the round goes on,
+and the failure is one occurrence of a test that fails at random. The role posts that occurrence
+as a `dispatch comment` on the issue that tracks the test, whatever that issue's status, and tells
+you on the controller topic. Its message names the test, the job, the head and both results, the
+failing run and the green re-run. You act on that message when the role found no issue for the
+test, or found one that reads `done`.
+
+You file this one, and no person asks you for it. It is a named exception to the rule in the
+skill's "Findings, and the issues you file": a test that fails for a cause outside the change
+belongs to no tree's work, and the evidence is already measured, so a person has nothing to
+decide here. The census is one issue per test with its occurrences counted on it, never one issue
+per occurrence. An issue per test has an owner and a fix, and the count of its occurrences is what
+ranks it.
+
+1. Search first (`skill://dispatch-first`): `dispatch search --query '<the test's full name>'`.
+2. An open issue tracks that test: comment the occurrence there, with the test, the job, the head,
+   the date and both results. File nothing.
+
+   ```text
+   dispatch comment --issue <that KEY> --body-file -
+   ```
+
+3. No issue tracks that test: file one against it.
+
+   ```text
+   dispatch issue --project <KEY> --repo <owner/name> --title '<the test's full name> fails at random in CI' --label legion --spec-file -
+   ```
+
+   The spec holds the test's full name, the job, the head, the failing run and the green re-run.
+   It says in one line that the test was re-run green and the round went on, so that no reader
+   takes the filing for a blocked merge. It ends with the `Filed for Legion from <role> on
+   <issue>:` line ([The `Filed for` line](#the-filed-for-line)), its evidence the role's
+   occurrence comment or its message. It opens in `triage` with the label, and triage admits it
+   (`skill://legion-controller/references/triage.md`).
+4. The issue that tracks the test reads `done`: read it, and take the branch that fits. You decide
+   this and the role does not, because a session inside a red run cannot read whether the old fix
+   is still in the code.
+   - Its fix is still in place and the same test failed again: reopen it with `set_status` to
+     `todo`, which admits a labelled root again, and comment the occurrence there.
+   - It shipped a different fix, or this failure is another mechanism in the same test: file a new
+     issue as step 3 says, and cite the closed one in its spec as `dispatch://<that KEY>`.
+
+   dispatch://INFRA-1137 and dispatch://INFRA-1260 are the first two issues of this census, and
+   both read `Status: done` today. A new occurrence of one of their tests takes this step.
+
+Name in your summary the issue the occurrence went to.
 
 ## Follow it
 

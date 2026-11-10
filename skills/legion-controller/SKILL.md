@@ -79,6 +79,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
+| A test a role re-ran green | `skill://legion-controller/references/finding-asks.md#a-test-a-role-re-ran-green` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
 | READY, a scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A GitHub mention | Answer it, or route it to the owning architect |
@@ -151,6 +152,8 @@ move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
+- a test's issue you reopen for the re-run census, once you have read that its fix is still in
+  place ([Findings](#findings-and-the-issues-you-file));
 - an issue a person asks you to start;
 - a tree you re-admit after its architect failed or after a hold, once you checked its cause is
   gone, or because a person asks;
@@ -169,6 +172,18 @@ Every other problem is a finding: one you find, or one a role sends you as text.
 and file nothing until a person answers, because a person decides whether it needs an issue and
 where. Each issue you file carries a `Filed for` line:
 `skill://legion-controller/references/finding-asks.md`.
+
+One filing more is yours, and no person asks you for it: the census of the tests a Legion role
+re-ran green. A role that re-runs a red check at the head of its pull request
+(`skill://legion-worker/references/red-at-the-head.md`) posts the occurrence on the issue that
+tracks the failing test, and tells you when it found no such issue, or one that reads `done`. You
+file one issue per test, with its occurrences counted on it, never one issue per occurrence, and
+you reopen or replace a closed one:
+`skill://legion-controller/references/finding-asks.md#a-test-a-role-re-ran-green`. That filing is
+a named exception to the rule above, because a test that fails for a cause outside the change
+belongs to no tree's work, and the evidence is already measured: the role wrote down the job, the
+head and both results before it pressed the re-run. The issue carries the same `Filed for Legion
+from <role> on <issue>:` line as every issue you file.
 
 ## Daily report
 
