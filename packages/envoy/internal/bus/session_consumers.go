@@ -39,7 +39,7 @@ const (
 	//
 	// One hour is the floor of the threshold and the value every consumer carries until a
 	// listener opens its connection with the one its own windows derive (InactiveThresholdFor,
-	// WithInactiveThreshold). It is the first term of that derivation's inequality: the server
+	// ConnectSessionConsumers). It is the first term of that derivation's inequality: the server
 	// must not remove a consumer before the sweep that records its resume floor can delete it,
 	// and the sweep waits at least until the session's record leaves the envoy_sessions bucket,
 	// which is session.GoneHorizon (internal/session), one hour, after that session's last
@@ -60,7 +60,7 @@ const (
 const inactiveThresholdMargin = 15 * time.Minute
 
 // InactiveThresholdFor is the inactive threshold a listener running these windows gives every
-// session consumer it creates, passing it at the connection (WithInactiveThreshold), in place of
+// session consumer it creates, passing it at the connection (ConnectSessionConsumers), in place of
 // SessionConsumerInactiveThreshold: the threshold that stands above the sweep's worst bound, so
 // the server never removes a consumer the sweep would have deleted itself.
 //
@@ -143,8 +143,8 @@ type SessionConsumers struct {
 	// ackWait is SessionConsumerAckWait, shortened by a test that waits out a redelivery.
 	ackWait time.Duration
 	// inactiveThreshold is the threshold the connection was opened with
-	// (WithInactiveThreshold), SessionConsumerInactiveThreshold where it named none, and is
-	// shortened by a test that waits out the server's own removal of an idle consumer.
+	// (ConnectSessionConsumers), SessionConsumerInactiveThreshold where that was zero or negative,
+	// and is shortened by a test that waits out the server's own removal of an idle consumer.
 	inactiveThreshold time.Duration
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.

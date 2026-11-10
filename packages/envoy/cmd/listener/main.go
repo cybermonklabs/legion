@@ -837,7 +837,8 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 // inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
 // this deployment's own windows derive it (bus.InactiveThresholdFor): main reads it before it
 // opens the session-consumer connection and gives it to that connection, so every consumer the
-// listener creates carries it (connectSessionDelivery, bus.WithInactiveThreshold).
+// listener creates carries it (connectSessionDelivery, bus.ConnectSessionConsumers's
+// inactiveThreshold).
 //
 // It must stand above the sweep's worst bound - the session's record leaves the bucket, the
 // sweep's next pass deletes the consumer - because a consumer the server removes first takes
@@ -1274,7 +1275,7 @@ func main() {
 	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
 	// records for longer than the default windows would otherwise have the server remove a
 	// consumer the listener's own delete had not reached, and with it the only record of where
-	// that session's delivery stopped (inactiveThresholdFor, bus.WithInactiveThreshold).
+	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
 	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
 	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once

@@ -989,9 +989,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				"cannot publish to "+bus.LegionWakeTopic+"; the listener alone reports a Legion pod wake", "topic")
 			return
 		}
-		// A lane of the listener's own is refused by the one test that covers every one of them
-		// (bus.ListenerOwnLane), and named in the refusal as the stream itself spells it
-		// (bus.ListenerOwnLaneOf), so a lane the stream gains is refused and named here with
+		// A lane of the listener's own is refused, and named in the refusal as the stream itself
+		// spells it, by the one call that covers every one of them (bus.ListenerOwnLaneOf), so a
+		// lane the stream gains is refused and named here with
 		// nothing written out a second time. What each holds says why: the kept lane holds the
 		// copies the listener keeps for a role's next holder and the cursors of its drains, so
 		// a bearer publishing there could rewind a role's drain or put a copy of its own on the

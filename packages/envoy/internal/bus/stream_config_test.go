@@ -933,13 +933,13 @@ func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
 	}
 }
 
-// ListenerOwnLane answers for every lane the stream carries for the listener itself, over the
+// ListenerOwnLaneOf answers for every lane the stream carries for the listener itself, over the
 // exported list of them rather than over the lanes a caller happens to remember: a lane added to
 // listenerOwnStreamLanes is on ListenerOwnLanes, and so covered here and wherever a caller asks
 // (the publish route's refusal, cmd/listener/api.go). The lane a topic lies under is named as
-// every topic of that lane begins (ListenerOwnLaneOf), which is what a refusal puts in front of
-// its reader, and the two agree: a topic under no lane is named "". A notification topic, and a
-// wildcard wider than any lane, are no lane of the listener's.
+// every topic of that lane begins, which is what a refusal puts in front of its reader, and a
+// topic under no lane is named "". A notification topic, and a wildcard wider than any lane, are
+// no lane of the listener's.
 func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
 	lanes := ListenerOwnLanes()
 	if len(lanes) != len(listenerOwnStreamLanes) {

@@ -696,8 +696,8 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 //
 // That the arithmetic above the three windows is right is bus.InactiveThresholdFor's own row
 // (internal/bus), and that a connection hands its threshold to every consumer is
-// bus.WithInactiveThreshold's; what this row is about is the listener handing it its own
-// windows.
+// bus.ConnectSessionConsumers's own row; what this row is about is the listener handing it its
+// own windows.
 func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
 	// A bucket that keeps a record for well past the horizon, as a deployment that raised
 	// ENVOY_SESSION_MAX_AGE has.

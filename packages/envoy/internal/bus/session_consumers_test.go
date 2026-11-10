@@ -1395,9 +1395,9 @@ func TestInactiveThresholdForIsNeverBelowItsFloor(t *testing.T) {
 }
 
 // A consumer carries the inactive threshold its connection was opened with
-// (WithInactiveThreshold), which is how a listener gives every consumer the one its own windows
-// derive (InactiveThresholdFor), and the constant where the connection named none or named one
-// that is zero or negative, so no configuration turns the server's backstop off. The threshold
+// (ConnectSessionConsumers's inactiveThreshold), which is how a listener gives every consumer
+// the one its own windows derive (InactiveThresholdFor), and the constant where that threshold
+// is zero or negative, so no configuration turns the server's backstop off. The threshold
 // is given at the connection and never set after it, so no consumer is created before the
 // deployment's threshold is in hand.
 func TestAConsumerCarriesTheInactiveThresholdItsHandleWasOpenedWith(t *testing.T) {

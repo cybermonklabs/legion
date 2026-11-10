@@ -171,7 +171,7 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 // its record of where a deleted session consumer stopped, which is where that session's
 // consumer is created again (bus.SessionResumeSubject). A publish to either through the route
 // would let any bearer rewind a role's drain or choose where another session's delivery
-// resumes, so the route refuses every topic under one (bus.ListenerOwnLane) and stores nothing.
+// resumes, so the route refuses every topic under one (bus.ListenerOwnLaneOf) and stores nothing.
 // The rows are the listener's own lanes themselves (bus.ListenerOwnLanes), so a lane the stream
 // gains is covered here rather than waiting for somebody to name it.
 func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
@@ -300,9 +300,9 @@ func TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt(t *testing.T
 
 // laggingFollowerBucket is the session bucket as a copy that has not caught up answers a direct
 // get: a key whose record the stream's leader holds reads nats.ErrKeyNotFound, and every such
-// read is counted. The leader's read of a key does not come through here - it is a stream
-// message get sent on the bucket's own jetstream context (bus.KeyValue.GetFromLeader), not a
-// call on this handle - so the count is the direct gets alone.
+// read is counted. The leader's read of a key does not come through here - it is nats.go's
+// stream message get on the bucket's connection (bus.KeyValue.GetFromLeader), not a call on
+// this handle - so the count is the direct gets alone.
 type laggingFollowerBucket struct {
 	natsgo.KeyValue
 	gets *atomic.Int64

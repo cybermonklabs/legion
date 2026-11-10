@@ -164,8 +164,8 @@ type sessionDelivery struct {
 
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
-// here, at the connection, because the threshold must
-// be in hand before the first consumer is created, and this is the one place every one of them
+// here, at the connection, because the threshold must be in hand before the first consumer is
+// created, and this is the one place every one of them
 // comes from. main derives it from the deployment's own windows (inactiveThresholdFor). A
 // connection that fails is logged once and leaves the listener serving every registration on
 // the core path, as a listener of an earlier release does.

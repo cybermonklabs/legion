@@ -207,8 +207,8 @@ var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjec
 // shape a caller names a lane in and builds a topic of one with: the publish route's refusal
 // names the lane it refused, and the row that tests that refusal is the lanes themselves
 // (cmd/listener), so a lane the stream gains is named and covered with nothing written out a
-// second time. A caller judging one topic asks ListenerOwnLane or ListenerOwnLaneOf instead,
-// which read the same list.
+// second time. A caller judging one topic asks ListenerOwnLaneOf instead, which reads the same
+// list.
 func ListenerOwnLanes() []string {
 	lanes := make([]string, len(listenerOwnStreamLanes))
 	for i, lane := range listenerOwnStreamLanes {

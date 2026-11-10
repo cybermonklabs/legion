@@ -27,8 +27,9 @@ import (
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
 // (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) sends its
-// own request on that jetstream context's connection. nats.go v1.50.0's legacy KV watcher, which
+// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) makes
+// nats.go's legacy GetLastMsg call on that jetstream context's connection. nats.go v1.50.0's
+// legacy KV watcher, which
 // its legacy Watch, History and Keys all run, arms an init timer while its scan is pending whose
 // callback can send on the channels the subscription's end has just closed, a "send on closed
 // channel" panic in a goroutine nats.go owns (kv.go:1145-1172, unfixed through v1.55.0), while
@@ -52,7 +53,8 @@ type KeyValue struct {
 	// goes through.
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
-	// goes through (ReadStreamState, GetFromLeader): each read fetches the stream afresh. The
+	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
+	// each read fetches the stream afresh. The
 	// jetstream handle's own Status stores the info it read in the handle's shared stream value
 	// with no lock (nats.go v1.50.0 jetstream/stream.go:460, from kv.go:1556), so two reads of one
 	// handle at once -- a watcher's stream probe beside its completion check -- race on it.
