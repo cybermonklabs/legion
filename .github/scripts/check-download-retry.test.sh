@@ -2531,4 +2531,59 @@ check "names the file, the line and the step" \
   "$(contains "$out" 'file=.github/workflows/case.yaml,line=10::.curl. in step .Install changie. is not the last command of its pipeline')"
 check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
 
+echo "case: a job that compiles Go with no retried module download of its own"
+# Rule 11's own fixture, driven both ways: a go command fetches this module's dependencies when
+# the cache misses, and that fetch is in none of THE VERBS, so every other rule of this check
+# passes the job. Two real jobs stood like this - the browser suite's embedder and the nightly
+# re-record - each found by a person reading the job rather than by this check.
+root=$(fixture go-build-no-download)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Build the server
+        run: go build -o ./server ./cmd/server
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job, the step and the file" \
+  "$(contains "$out" "file=.github/workflows/case.yaml,line=9::job .build. compiles Go in step .Build the server. and holds no retried")"
+check "names the step to write" "$(contains "$out" 'mod download')"
+# The same job with the download step the browser suite's jobs carry.
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download the Go modules this job builds
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a module's Go modules" 180 -- go -C packages/envoy mod download
+      - name: Build the server
+        run: go build -o ./server ./cmd/server
+YAML
+run_check "$root"
+check "passes once the job downloads its modules in a step of its own" "$(is "$status" 0)"
+# And a `go test` is read as readily as a `go build`, since both fetch on a cache miss.
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test ./...
+YAML
+run_check "$root"
+check "reads a go test too" \
+  "$(contains "$out" "job .unit. compiles Go in step")"
+
 summary "check-download-retry.sh"

@@ -2654,6 +2654,70 @@ for site in sites:
     else:
         problem(site.path, site.line, refusal)
 
+# Rule 11: a job that compiles Go after a cache restore downloads its modules in a step of its
+# own, retried. A `go build`, `go test`, `go vet` or `go run` fetches this module's dependencies
+# itself when the cache misses, and that fetch is in none of THE VERBS above, because it sits
+# inside a command whose purpose is something else: the rules above read it as no site at all.
+# Twice this was a real defect that every other rule passed — .github/workflows/dispatch-browser
+# .yaml's embedder job and dispatch-browser-nightly.yaml's re-record job, each caught by a person
+# reading the job rather than by this check — so the reading a person made is written here.
+#
+# The one job this rule reads and must not refuse carries its reason in GO_BUILD_EXEMPT: a job
+# that compiles a package importing the standard library alone downloads nothing, and its own
+# comment says so. An entry matching no job fails this check, as every other list here does.
+GO_BUILD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+(?:build|test|vet|run)\b")
+GO_MOD_DOWNLOAD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+mod\s+download\b")
+GO_BUILD_EXEMPT = {
+    (".github/workflows/ci.yaml", "airlock-lean"):
+        "the airlock package imports the standard library alone, so this job downloads no module "
+        "and compiles no third-party code, as its own comment says",
+}
+
+go_build_jobs: dict[tuple[str, str], tuple[int, str]] = {}
+go_download_jobs: set[tuple[str, str]] = set()
+workflow_jobs: set[tuple[str, str]] = set()
+for path in workflows:
+    try:
+        document = yaml.load(Path(path).read_text(), Loader=LineLoader)
+    except yaml.YAMLError:
+        continue
+    if not isinstance(document, Mapping):
+        continue
+    for job, name, step, _shell, _holder in steps_of(path, document):
+        body = step.get("run")
+        if not isinstance(body, str) or job is None:
+            continue
+        workflow_jobs.add((path, job))
+        if GO_MOD_DOWNLOAD.search(body):
+            go_download_jobs.add((path, job))
+        elif GO_BUILD.search(body) and (path, job) not in go_build_jobs:
+            go_build_jobs[(path, job)] = (step.lines.get("run", 0), name)
+
+for (path, job), (line, name) in sorted(go_build_jobs.items()):
+    if (path, job) in go_download_jobs or (path, job) in GO_BUILD_EXEMPT:
+        continue
+    problem(path, line,
+            f"job '{job}' compiles Go in step '{name}' and holds no retried `go mod download` of "
+            "its own. A go command fetches this module's dependencies itself when the cache "
+            "misses, and that fetch is inside a command whose purpose is something else, so no "
+            "other rule here reads it: the job downloads from proxy.golang.org with no retry and "
+            "nothing says so. Write the step the browser suite's jobs carry, between the cache "
+            "restore and the first Go command: `retry_fetch \"<module>'s Go modules\" 180 -- go "
+            "-C <module> mod download`, under a `timeout-minutes` above its 5 x 180 + 150 = "
+            "1050 s.")
+
+for (path, job), why in sorted(GO_BUILD_EXEMPT.items()):
+    # Only where the tree being read holds that job at all: this check runs over a scratch tree
+    # of its own harness as readily as over this repository, and an exception naming a job that
+    # tree does not have is an exception about another tree rather than a stale one. What it
+    # catches is the live staleness: the job is still there and compiles Go no longer, so the
+    # reason the entry gives is no longer the reason anything holds.
+    if (path, job) in workflow_jobs and (path, job) not in go_build_jobs:
+        problem(path, 1,
+                f"GO_BUILD_EXEMPT holds '{job}' of this file, and this check finds no job of that "
+                "name compiling Go here. An exception that matches nothing hides nothing and "
+                f"rots: delete it, or correct the name. Its reason was: {why}")
+
 # Rule 2: a loop that holds a fetch is a copy of the one helper. Not in a Dockerfile, whose
 # canonical definition is itself a loop and which carries no helper file to copy.
 seen_loops: set[tuple[str, int]] = set()

@@ -95,7 +95,8 @@ jobs:
   #
   # That 26 is the measured half. The budget is it plus the arithmetic of this job's slowest
   # retried step, which is the Chromium install's one `retry_fetch` call, 5 x 300 + 150 =
-  # 1650 s, above the setup-bun step's 2 x 741 = 1482 s and the workspace install's 1050 s:
+  # 1650 s, above the setup-bun step's 2 x 741 = 1482 s and the module download's and the
+  # workspace install's 1050 s each:
   # 1560 + 1650 = 3210 s -> 54 min. A job whose ceiling sat under that step's own 28 minutes
   # would cut it before it could name the download that failed.
   re-record:
@@ -135,6 +136,17 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+      # The browser suite's step of this name, at the same bound: the build below, and
+      # run-server.sh's own build inside the harness, fetch this module's dependencies
+      # themselves on a cache miss, where a go command reaches proxy.golang.org with no retry
+      # and no rule of .github/scripts/check-download-retry.sh can see it, because the fetch is
+      # inside a command whose purpose is something else.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # Built here rather than left to run-server.sh, which would build it inside the harness's
       # own boot wait, as the multiprocess job does for the same reason.
       - name: Build the Dispatch server

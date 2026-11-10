@@ -7,8 +7,8 @@ The comments that had grown it there were the background ones:
 the rules every budget is written to, the histories behind them, and the measurement campaigns they came from.
 Each step's and each job's own arithmetic stays beside the step in that file, where a reader judging that budget sees it, and each run of prose that moved left a line there naming the section of this note that now holds it.
 
-In these notes `this file`, `this workflow` and a bare `below` or `above` mean `.github/workflows/ci.yaml`, where this text was written and where all but five of these pointers still point.
-The five that mean a paragraph of this note name it instead of pointing: the section this head's own last sentence names, the Budgets note, the figure rule 8 prices, the bypass the `env:` paragraph clears, and the 244 s the recovering floor quotes.
+In these notes `this file` and `this workflow` mean `.github/workflows/ci.yaml`, where this text was written, and so does a bare `below` or `above` wherever the thing it points at is a step, a job or a comment of that workflow.
+A pointer that means a passage of this note says so in its own words - `of this note`, `this section`, `further down` - rather than relying on this paragraph, because a legend read by a hundred pointers is only as true as its least checked one, and this one has been wrong in both directions already.
 
 ## The router
 
@@ -80,7 +80,7 @@ That last bound is the tightest of the four against its measurement, and it is t
 an attempt its bound kills leaves what it fetched in the module cache and the next attempt resumes from there, so a `go mod download` heals itself across a retry where a tarball fetch starts its bytes over.
 Every other bound is derived from its own step's measured maximum and names it beside the call.
 A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a bound:
-each is a sum of them, and the Budgets note of this file says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families above, carries the same rule at every download of its own.
+each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families this note's Caches section lists, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
 Two jobs below prove all of it against the fault it answers, rather than by reading:
 download-retry runs each of those sites — a curl of a release asset, `mise install`, `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
@@ -429,7 +429,7 @@ It is permanent because a reintroduced remote dependency necessarily moves bun.l
 the refusal count goes above zero and the verdict step fails, printing every refused line.
 
 github.com itself is not faulted, and that is measured rather than assumed.
-A cold runner install makes one request to github.com and one to release-assets.githubusercontent.com, and none to any of the three hosts above (job 128647167946's own tally).
+A cold runner install makes one request to github.com and one to release-assets.githubusercontent.com, and none to any of the three hosts this section names further up (job 128647167946's own tally).
 That pair is a release asset, which is how a dependency's install script fetches a prebuilt binary;
 it is not this route, and faulting github.com turned the job red on it (job 128643900648).
 The host this route has to use is api.github.com, which the merge-base drive showed, failing on https://api.github.com/repos/sjawhar/proof-sdk/tarball/dc6a852 with six refusals on that host and none on the others.
