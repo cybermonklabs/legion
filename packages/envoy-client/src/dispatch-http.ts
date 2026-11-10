@@ -82,6 +82,7 @@ import {
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
+import { withoutTrailingSlashes } from "./dispatch-config";
 
 export type {
   CredentialPendingResponse,
@@ -757,18 +758,6 @@ function excerpt(text: string, token: string): string {
       )
       .replace(/(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
   );
-}
-
-/**
- * `base` without the trailing slashes a caller wrote, so one join of a path to it never doubles a
- * separator. It counts the slashes off the end and slices once, where `/\/+$/` would be a regular
- * expression run over a string this library's caller chose (CodeQL's `js/polynomial-redos`); a
- * base of nothing but slashes is left empty, as that pattern left it.
- */
-function withoutTrailingSlashes(base: string): string {
-  let end = base.length;
-  while (end > 0 && base[end - 1] === "/") end -= 1;
-  return end === base.length ? base : base.slice(0, end);
 }
 
 /**

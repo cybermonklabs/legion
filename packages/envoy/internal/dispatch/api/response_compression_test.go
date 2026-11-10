@@ -154,6 +154,74 @@ func TestAnAnswerIsGzippedForACallerThatTakesGzip(t *testing.T) {
 	}
 }
 
+// Every answer this layer writes carries X-Content-Type-Options: nosniff and a media type, for
+// the caller that takes gzip and the caller that does not alike: the two paths through
+// compressAnswers are different writers, so a rule that holds on one of them is no evidence
+// about the other. A handler that names no type is the case the table exists for - no route of
+// the table answers that way today, and this says what the layer does when one does.
+func TestEveryAnswerCarriesNosniffAndAMediaType(t *testing.T) {
+	answers := []struct {
+		name  string
+		serve http.HandlerFunc
+		code  int
+		// mediaType is the type the answer must carry, and empty for an answer with no body for
+		// a type to describe.
+		mediaType string
+	}{
+		{
+			name: "a handler that names its own type",
+			serve: func(w http.ResponseWriter, _ *http.Request) {
+				WriteJSON(w, http.StatusOK, map[string]any{"body": strings.Repeat("a stored text. ", 200)})
+			},
+			code:      http.StatusOK,
+			mediaType: "application/json",
+		},
+		{
+			name: "a handler that names none",
+			serve: func(w http.ResponseWriter, _ *http.Request) {
+				// A body opening with `<` is what net/http would sniff as text/html.
+				_, _ = w.Write([]byte("<" + strings.Repeat("markup a person wrote. ", 200)))
+			},
+			code:      http.StatusOK,
+			mediaType: "application/octet-stream",
+		},
+		{
+			name: "an answer with no body",
+			serve: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			},
+			code: http.StatusNoContent,
+		},
+	}
+	for _, answer := range answers {
+		for _, encoding := range []string{"", "gzip"} {
+			caller := "a caller that takes gzip"
+			if encoding == "" {
+				caller = "a caller that takes none"
+			}
+			t.Run(answer.name+", "+caller, func(t *testing.T) {
+				response := answerUnder(t, compressAnswers(answer.serve), "/", encoding)
+				if response.Code != answer.code {
+					t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), answer.code)
+				}
+				if got := response.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+					t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+				}
+				got := response.Header().Get("Content-Type")
+				if answer.mediaType == "" {
+					if got != "" {
+						t.Errorf("Content-Type = %q, want none on an answer with no body", got)
+					}
+					return
+				}
+				if !strings.HasPrefix(got, answer.mediaType) {
+					t.Errorf("Content-Type = %q, want %s", got, answer.mediaType)
+				}
+			})
+		}
+	}
+}
+
 // Only an Accept-Encoding that takes gzip is answered with gzip: a caller that sends none, one
 // that names other encodings, and one that refuses gzip outright are each written the bytes they
 // were written before this layer existed.

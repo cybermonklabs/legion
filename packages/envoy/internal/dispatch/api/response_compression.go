@@ -54,8 +54,12 @@ func compressAnswers(handler http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
 			// A caller that sends no Accept-Encoding, or none that names gzip, is written the
-			// bytes it was written before this existed, through its own writer.
-			handler(w, r)
+			// bytes it was written before this existed, through a writer that adds one thing:
+			// the media type its handler may not have named. Without it the type would be
+			// whatever net/http sniffs from the answer's first bytes, which for a body opening
+			// with `<` is text/html, and nosniff holds a browser to a type the server set
+			// rather than to none at all.
+			handler(&typedWriter{ResponseWriter: w}, r)
 			return
 		}
 		answer := &compressingWriter{ResponseWriter: w}
@@ -201,12 +205,7 @@ func (w *compressingWriter) pass(body []byte, compress bool) (int, error) {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		// A 204 and a 304 carry no body for a type to describe; every other answer names its
-		// media type here if its handler named none.
-		if status != http.StatusNoContent && status != http.StatusNotModified &&
-			w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "application/octet-stream")
-		}
+		nameMediaType(w.Header(), status)
 		w.ResponseWriter.WriteHeader(status)
 		if len(w.held) > 0 {
 			held = len(w.held)
@@ -232,6 +231,85 @@ func (w *compressingWriter) pass(body []byte, compress bool) (int, error) {
 	}
 	return max(written-held, 0), err
 }
+
+// nameMediaType names an answer's media type when its handler named none, so no answer of the
+// table reaches a browser with its type sniffed from its first bytes (a body opening with `<`
+// sniffs as text/html, and nosniff holds a browser to a type the server set rather than to none).
+// A 204 and a 304 carry no body for a type to describe. No route of the table answers without a
+// type today, so this fires for a handler that forgets one, and both of the layer's two paths
+// read it rather than each stating the rule for itself.
+func nameMediaType(header http.Header, status int) {
+	if status == http.StatusNoContent || status == http.StatusNotModified {
+		return
+	}
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "application/octet-stream")
+	}
+}
+
+// typedWriter is the answer's writer for a caller that takes no gzip: net/http's own, with the
+// media type named at the moment the status is written, which is the last point before a browser
+// could be handed a sniffed one. It holds nothing and copies nothing, so a caller that takes no
+// gzip is written the bytes it was written before this layer existed.
+type typedWriter struct {
+	http.ResponseWriter
+	// wrote is true once a status has gone out, after which the headers are no longer this
+	// writer's to change.
+	wrote bool
+}
+
+func (w *typedWriter) WriteHeader(status int) {
+	if !w.wrote && status >= http.StatusOK {
+		w.wrote = true
+		nameMediaType(w.Header(), status)
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// Write names the type for a handler that writes a body without a status of its own, which
+// net/http answers 200 for.
+func (w *typedWriter) Write(body []byte) (int, error) {
+	if !w.wrote {
+		w.wrote = true
+		nameMediaType(w.Header(), http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+// ReadFrom, Flush and Hijack are forwarded so wrapping costs a handler none of the interfaces
+// net/http's own writer offers it: the event stream flushes, an upgrade hijacks, and a file's
+// bytes are copied with ReadFrom. Each names the media type first, since each can be the moment
+// the answer's head goes out.
+func (w *typedWriter) ReadFrom(body io.Reader) (int64, error) {
+	if !w.wrote {
+		w.wrote = true
+		nameMediaType(w.Header(), http.StatusOK)
+	}
+	if from, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return from.ReadFrom(body)
+	}
+	return io.Copy(w.ResponseWriter, body)
+}
+
+func (w *typedWriter) Flush() {
+	if !w.wrote {
+		w.wrote = true
+		nameMediaType(w.Header(), http.StatusOK)
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *typedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	// Past the upgrade the connection's bytes are the handler's frames, not an answer's body.
+	w.wrote = true
+	return hijacker.Hijack()
+}
+
+func (w *typedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *compressingWriter) WriteHeader(status int) {
 	if w.settled || status < http.StatusOK {
