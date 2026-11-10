@@ -1869,4 +1869,30 @@ PY
 check "the guide's list and the label's gates are the same set" \
   "$(is "$mismatch" "")"
 
+echo "case: every workflow file is small enough for GitHub to start a run"
+# A workflow file over GitHub's documented limit starts NO run, and the failure is silent exactly
+# where a reader looks for it: the run is created, it holds zero jobs, every required check is
+# ABSENT rather than red, and the only words GitHub gives are "This run likely failed because of a
+# workflow file issue". https://docs.github.com/actions/reference/limits, "Workflow file size":
+# "Each workflow file in the .github/workflows directory must be 500 KB or smaller to trigger a
+# run."
+#
+# Measured on this branch, which grew .github/workflows/ci.yaml by about 150 KB of budget
+# comments: at 0ddb1151db30 that file was 501,500 bytes and run 42710088044 ran the whole lane,
+# ci-ok included; at e6d27187f974, the forward merge of main's 909a79b8cb9e, it was 525,100 bytes
+# and run 42739729814 reported that message with zero jobs and no check of ci.yaml at all. So the
+# threshold this repository has met lies between those two sizes, and 500,000 bytes is the figure
+# the documentation states and the only one a reader can cite. A file that passes this case by a
+# few hundred bytes is one forward merge from stopping CI again, so the margin is the point.
+limit=500000
+oversized=""
+for workflow in "$script_dir"/../workflows/*.yaml; do
+  size=$(wc -c < "$workflow")
+  if [ "$size" -gt "$limit" ]; then
+    oversized="$oversized${workflow##*/} is $size bytes, over $limit; "
+  fi
+done
+check "no workflow file is over the 500 KB that starts no run at all" \
+  "$(is "$oversized" "")"
+
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"
