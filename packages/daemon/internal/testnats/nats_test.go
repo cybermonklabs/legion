@@ -388,9 +388,10 @@ func TestTheCheckRefusesToArmWhenItCannotSeeItsOwnClient(t *testing.T) {
 	}
 }
 
-// Every client this fixture hands a test is listed on the server under that test's name, read
-// from the server rather than from the client: that name is what a leak report, a drain failure
-// and an operator's own read of /connz have to name the test by.
+// A client this fixture hands a test is listed on the server under that test's name, unless its
+// caller passed a name of its own, which Connect lets it do. The name is read from the server
+// rather than from the client: that name is what a leak report, a drain failure and an operator's
+// own read of /connz have to name the test by.
 // packages/envoy/internal/bus/name_test.go holds the same for Envoy's clients.
 func TestTheFixtureNamesItsClientAfterTheTest(t *testing.T) {
 	Connect(t, URL(t))
