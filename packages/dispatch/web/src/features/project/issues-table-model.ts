@@ -22,6 +22,9 @@ export interface Item {
     readonly label: string;
     readonly order: number;
   };
+  /** The issue's hours by Legion phase, from the board's own `phase_hours`; absent for an
+   *  issue with no phase work and for every issue of a project with no daemon. */
+  readonly phaseHours?: Readonly<Record<string, number>>;
   readonly queue?: number;
   readonly epic: string;
   readonly epicKey?: string;
@@ -91,6 +94,7 @@ export type ColumnId =
   | "slot"
   | "roles"
   | "ci"
+  | "phase_hours"
   | "epic"
   | "assignee"
   | "author"
@@ -337,6 +341,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 164,
     filter: one((item) => item.legion?.card.checks_verdict ?? "No verdict", { groups: false }),
   },
+  // Sorted by the hours it draws and filtered by nothing: a bar is read, not picked from.
+  { id: "phase_hours", size: 220, min: 160 },
   { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
   {
     id: "assignee",
@@ -499,6 +505,7 @@ export function buildItems(
     return {
       issue,
       legion: legion.get(issue.key),
+      phaseHours: board?.phase_hours?.[issue.key],
       queue: positions.get(issue.key),
       epic: epicName,
       epicKey: epic?.key,

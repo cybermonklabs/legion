@@ -63,6 +63,7 @@ import {
 } from "./issues-table-model";
 import { GroupRow, IssueRow, TableHeaderCell } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
+import { phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
@@ -160,7 +161,16 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion);
+  // One scale for the Time per phase bars: the largest total among the rows the table lists.
+  const phaseHoursMax = useMemo(
+    () =>
+      items.reduce(
+        (most, item) => Math.max(most, item.phaseHours ? phaseHoursTotal(item.phaseHours) : 0),
+        0
+      ) || undefined,
+    [items]
+  );
+  const columns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion, phaseHoursMax);
 
   const table = useReactTable({
     data: items,

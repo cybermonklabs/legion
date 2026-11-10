@@ -41,12 +41,12 @@ export interface TableAction {
  *  discarded in Pending changes. */
 export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-/** Phase is shown where a Legion daemon serves the project; Slot, Roles and CI wait in the
- *  column picker, as Updated does. */
+/** Phase is shown where a Legion daemon serves the project; Slot, Roles, CI and Time per phase
+ *  wait in the column picker, as Updated does. */
 const EMPTY_LAYOUT: TableLayout = {
   sizing: {},
   order: [],
-  visibility: { updated: false, slot: false, roles: false, ci: false },
+  visibility: { updated: false, slot: false, roles: false, ci: false, phase_hours: false },
 };
 
 function readStore(project: string): Record<string, unknown> {

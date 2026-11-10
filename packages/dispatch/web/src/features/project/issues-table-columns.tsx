@@ -1,5 +1,5 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
@@ -7,6 +7,7 @@ import { InfoHint } from "../../components/InfoHint";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
+  borderDefault,
   checkboxAccent,
   linkHoverText,
   linkText,
@@ -32,12 +33,12 @@ import {
   formatPhaseTime,
   type Item,
   legionPhaseLabel,
-  legionRolesText,
   legionSlotText,
   legionSlotValue,
   matchesFilters,
   NO_PHASE,
 } from "./issues-table-model";
+import { PhaseHoursBar, phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {
@@ -80,6 +81,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   assignee: "Assignee",
   author: "Created by",
   ci: "CI",
+  phase_hours: "Time per phase",
   claim: "Claimed by",
   created: "Created",
   epic: "Epic",
@@ -105,7 +107,10 @@ export const columnLabel = (column: { id: string; columnDef: ColumnDef<Item> }):
  *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
  *  never disagree. */
 const renderings = (
-  userState: UserState | undefined
+  userState: UserState | undefined,
+  phaseMode: "hours" | "share",
+  setPhaseMode: (mode: "hours" | "share") => void,
+  phaseHoursMax: number | undefined
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -289,6 +294,37 @@ const renderings = (
     meta: { control: true },
     cell: ({ getValue }) => <span data-legion-fact="checks">{getValue<string>()}</span>,
   },
+  phase_hours: {
+    header: () => (
+      <span className="flex items-center gap-1">
+        Time per phase
+        <InfoHint label="About time per phase">
+          The hours Legion spent on the issue, by phase. Hours draws every bar against the longest
+          on the page. Share draws every bar full length, each block its own share.
+        </InfoHint>
+        <button
+          aria-label={`Show ${phaseMode === "hours" ? "shares" : "hours"}`}
+          className={`rounded border px-1 text-[0.625rem] ${borderDefault}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setPhaseMode(phaseMode === "hours" ? "share" : "hours");
+          }}
+          type="button"
+        >
+          {phaseMode === "hours" ? "Hours" : "Share"}
+        </button>
+      </span>
+    ),
+    accessorFn: (item) => (item.phaseHours ? phaseHoursTotal(item.phaseHours) : undefined),
+    sortUndefined: "last",
+    sortDescFirst: true,
+    enableColumnFilter: false,
+    meta: { control: true },
+    cell: ({ row }) =>
+      row.original.phaseHours === undefined ? null : (
+        <PhaseHoursBar hours={row.original.phaseHours} max={phaseHoursMax} mode={phaseMode} />
+      ),
+  },
   epic: {
     header: "Epic",
     accessorFn: (item) => item.epic,
@@ -368,10 +404,14 @@ export const LEGION_COLUMNS: readonly ColumnId[] = ["phase", "slot", "roles", "c
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
-  hasLegion = false
+  hasLegion = false,
+  /** The largest total of the rows on the page, so every bar of the Time per phase column is
+   *  drawn against one scale. */
+  phaseHoursMax?: number
 ): ColumnDef<Item>[] {
+  const [phaseMode, setPhaseMode] = useState<"hours" | "share">("hours");
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState);
+    const rendering = renderings(userState, phaseMode, setPhaseMode, phaseHoursMax);
     const shown = hasLegion ? COLUMNS : COLUMNS.filter((c) => !LEGION_COLUMNS.includes(c.id));
     return shown.map((column) => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
@@ -396,7 +436,7 @@ export function useIssueTableColumns(
         },
       };
     });
-  }, [userState, compact, hasLegion]);
+  }, [userState, compact, hasLegion, phaseMode, phaseHoursMax]);
 }
 
 /** A Legion phase as the issues table writes it: the board column's label, the time in phase,
