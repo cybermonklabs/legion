@@ -247,18 +247,22 @@ def start(path: str, state_path: str) -> int:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    write_state(
-        state_path,
-        {
-            "path": path,
-            "before_kb": before,
-            # The before reading is itself the least seen so far, and it was seen now: every
-            # number the report names a time for carries that time beside it from the start.
-            "least_kb": before,
-            "least_kb_at": now_utc(),
-            "sampler_pid": sampler.pid,
-        },
-    )
+    # The first tick is this step's own, because the sampler sleeps a second before its first
+    # read: without it the series would begin a second after the step being measured began, and
+    # the first boundary a reader wants to line up would fall outside it.
+    when = now_utc()
+    memory = available_memory_kb()
+    load = one_minute_load()
+    append_series(state_path, series_line(when, before, memory, load))
+    state = {"path": path, "before_kb": before, "sampler_pid": sampler.pid}
+    # Every reading this step made is the worst there has been so far, and it was read now, so
+    # the report names a time beside each number from the start.
+    keep_worst(state, "least_kb", before, when, greater=False)
+    if memory is not None:
+        keep_worst(state, "least_memory_kb", memory, when, greater=False)
+    if load is not None:
+        keep_worst(state, "greatest_load", load, when, greater=True)
+    write_state(state_path, state)
     print(f"disk: watching {path}, free {before} kB, sampler pid {sampler.pid}")
     return 0
 

@@ -88,6 +88,18 @@ pid=$(field "$state" sampler_pid)
 check "the state carries a sampler pid" "$(contains "$pid" '^[0-9][0-9]*$')"
 check "the state carries the watched path" "$(is "$(field "$state" path)" "$watched")"
 
+echo "case: the series begins with the start step's own tick, not a second later"
+# The sampler sleeps a second before its first read, so without this tick the series would
+# begin after the step being measured began, and the first boundary a reader lines up against
+# would fall outside it.
+first_tick_file="$state.series"
+check "start left a series file behind it" "$([ -f "$first_tick_file" ] && echo true || echo false)"
+check "it holds one tick already" "$(is "$(grep -c '' "$first_tick_file")" 1)"
+check "that tick is a reading of the machine" "$(contains "$(cat "$first_tick_file")" "$tick_shape")"
+check "the state carries all three worst readings from that one tick" \
+  "$([ -n "$(field "$state" least_kb_at)" ] && [ -n "$(field "$state" least_memory_kb_at)" ] &&
+     [ -n "$(field "$state" greatest_load_at)" ] && echo true || echo false)"
+
 echo "case: the detached sampler outlives the process that started it"
 check "the sampler is alive after start returned" "$(alive "$pid")"
 
