@@ -410,3 +410,41 @@ test("a phase's parked hours read 'parked' in grey hatch, and an unknown stretch
     "hatched grey: parked"
   );
 });
+
+test("the drill-down counts each send-back by its cause and writes nothing as 'none'", async () => {
+  const at = (hour: number) => `2026-11-09T${String(hour).padStart(2, "0")}:00:00Z`;
+  const span = (name: string, from: number) => ({
+    from: at(from),
+    hours: 1,
+    name,
+    source: "status_history" as const,
+    to: at(from + 1),
+  });
+  await renderTab("ACME-2", {
+    ...TIMELINE,
+    phases: [
+      span("implementing", 1),
+      span("testing", 2),
+      span("implementing", 3),
+      span("reviewing", 4),
+      span("implementing", 5),
+      span("testing", 6),
+      span("reviewing", 7),
+    ],
+    review_rounds: 2,
+    source: "status_history",
+  });
+
+  const timeline = await screen.findByRole("region", { name: "ACME-2 timeline" });
+  await waitFor(() =>
+    expect(timeline.querySelector("[data-legion-timeline-story]")?.textContent).toContain(
+      "Sent back to implementing 2 times: 1 by a review, 1 by tests or CI."
+    )
+  );
+  expect(timeline.querySelector('[data-legion-timeline-figure="Parked"]')?.textContent).toBe(
+    "none"
+  );
+  expect(timeline.querySelector('[data-legion-timeline-figure="Queued"]')?.textContent).toBe(
+    "none"
+  );
+});

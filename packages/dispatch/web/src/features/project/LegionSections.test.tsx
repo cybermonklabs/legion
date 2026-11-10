@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type {
@@ -242,9 +243,16 @@ function mapping(project: string, repo: string): RepoProject {
 
 /** The panel for `project`, with the Legion settings, the repository mappings and the deploy
  *  repository given. */
+/** Writes the address the router holds, so a test reads what a shared link would carry. */
+function Location(): null {
+  const location = useLocation();
+  document.body.dataset.search = location.search;
+  return null;
+}
+
 async function renderSections(
   answer: (query: { project: string; scope: string }) => LegionMetricsResponse,
-  options: { repos?: RepoProject[]; deployRepo?: string | null } = {}
+  options: { repos?: RepoProject[]; deployRepo?: string | null; path?: string } = {}
 ) {
   const metrics = spyOn(api, "getLegionMetrics").mockImplementation((query) =>
     Promise.resolve(answer(query))
@@ -261,9 +269,12 @@ async function renderSections(
   const opened: string[] = [];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <QueryClientProvider client={queryClient}>
-      <LegionSections onOpenIssue={(key) => opened.push(key)} project="ACME" />
-    </QueryClientProvider>
+    <MemoryRouter initialEntries={[options.path ?? "/projects/ACME/legion"]}>
+      <QueryClientProvider client={queryClient}>
+        <LegionSections onOpenIssue={(key) => opened.push(key)} project="ACME" />
+        <Location />
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   await screen.findByRole("region", { name: "Where the finished issues' time went" });
   return { measures, metrics, opened, pipeline };
@@ -464,9 +475,22 @@ test("when one tree holds a large share of the finished issues, a note under wor
   await waitFor(() =>
     expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }))
   );
+  // The choice is in the address, so a shared link keeps it.
+  expect(document.body.dataset.search).toBe("?exclude_tree=ACME-6");
   await waitFor(() =>
     expect(document.querySelector("[data-legion-tree-note]")?.textContent).toContain(
       "Every number on this page leaves out ACME-6's tree."
     )
   );
+  expect(screen.getByRole("button", { name: "Count ACME-6's tree again" })).toBeDefined();
+});
+
+test("a shared link with exclude_tree leaves that tree out from the first read", async () => {
+  const { metrics } = await renderSections(
+    () => report({ excluded_trees: ["ACME-6"], finished: 1 }),
+    { path: "/projects/ACME/legion?exclude_tree=ACME-6" }
+  );
+
+  expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }));
+  await screen.findByRole("button", { name: "Count ACME-6's tree again" });
 });
