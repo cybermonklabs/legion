@@ -152,11 +152,12 @@ def measure(dispatch, case, query, limit):
     against one are what they always were; what the parameter adds is that the measurement is the
     keyword path by request rather than by the absence of a model service.
 
-    The request goes to /api/v1/search/results, as the bar's does, because keywords_only is a
-    member a build released before it drops: that build would answer /api/v1/search by meaning
-    too, and the run would report the hybrid path's numbers as the keyword path's. On the
-    results route such a build answers 404 no route, so the run fails rather than measuring the
-    wrong thing.
+    The request goes to /api/v1/search/results, as the command bar's does, because a Dispatch
+    released before keywords_only answers /api/v1/search by meaning too, and the run would then
+    report the hybrid path's numbers as the keyword path's. That route refuses the request
+    instead, 404 no route. A server built from this checkout, which is what the README has you
+    measure, serves both paths, so this only bites a run pointed at an older deployment, which
+    is exactly the run whose numbers would otherwise be wrong.
     """
     path = "/api/v1/search/results?" + urllib.parse.urlencode(
         {"q": query, "limit": limit, "keywords_only": "true"})

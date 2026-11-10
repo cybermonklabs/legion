@@ -114,11 +114,6 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 agent_token=''
 
 # call METHOD PATH [BODY] prints what the server on $target_url answers an agent bearer, and

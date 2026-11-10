@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -23,38 +20,19 @@ import (
 // filters a person chose.
 var searchNarrowingMembers = []string{"number_project", "status", "author", "updated_since", "keywords_only"}
 
-// searchResultsRequest is searchRequest's twin (search_test.go) on the path the five members are
-// declared on: the same caller, the same query, the other path.
-func searchResultsRequest(t *testing.T, handler http.Handler, query string) *httptest.ResponseRecorder {
-	t.Helper()
-	return dispatchRequest(t, handler, http.MethodGet, "/api/v1/search/results?"+query, nil, "alice")
-}
+// The two paths one handler serves (routes_table.go).
+const (
+	searchPath        = "/api/v1/search"
+	searchResultsPath = "/api/v1/search/results"
+)
 
 // searchBothPaths answers one query on both paths: first GET /api/v1/search/results, where a
 // member is declared, then GET /api/v1/search, where the handler still reads it for a page
 // served by a release before this one. Each must be 200.
 func searchBothPaths(t *testing.T, handler http.Handler, query string) (results, old model.SearchResponse) {
 	t.Helper()
-	return searchPathResponse(t, searchResultsRequest(t, handler, query), "/api/v1/search/results", query),
-		searchPathResponse(t, searchRequest(t, handler, query), "/api/v1/search", query)
-}
-
-func searchPathResponse(t *testing.T, response *httptest.ResponseRecorder, path, query string) model.SearchResponse {
-	t.Helper()
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET %s?%s: status=%d body=%s", path, query, response.Code, response.Body.String())
-	}
-	return decodeBody[model.SearchResponse](t, response)
-}
-
-// searchRows is a page as the comparison below reads it: each row as `kind:id`, in the order the
-// answer put them.
-func searchRows(body model.SearchResponse) []string {
-	rows := make([]string, 0, len(body.Results))
-	for _, result := range body.Results {
-		rows = append(rows, result.Kind+":"+result.ID)
-	}
-	return rows
+	return searchResponseOn(t, handler, searchResultsPath, query),
+		searchResponseOn(t, handler, searchPath, query)
 }
 
 // requireTheSameAnswer holds the old path to what the new one answered. It is the half of every
@@ -63,7 +41,7 @@ func searchRows(body model.SearchResponse) []string {
 // sends ?status= to GET /api/v1/search is still answered narrowed.
 func requireTheSameAnswer(t *testing.T, query string, results, old model.SearchResponse) {
 	t.Helper()
-	if got, want := searchRows(old), searchRows(results); !slices.Equal(got, want) {
+	if got, want := searchRowsOf(old), searchRowsOf(results); !slices.Equal(got, want) {
 		t.Fatalf("GET /api/v1/search?%s answered %v, want %v, the rows GET /api/v1/search/results answered",
 			query, got, want)
 	}
@@ -242,44 +220,33 @@ func TestSearchResultsRouteAppliesEveryMemberAndTheOldPathAnswersTheSame(t *test
 		// it: the keyword leg alone makes no embedding call, and the same query without it
 		// makes exactly one. Both paths are counted, since both must apply it.
 		query := url.Values{"q": {"astrolabe"}, "keywords_only": {"true"}}.Encode()
-		for path, request := range map[string]func() *httptest.ResponseRecorder{
-			"/api/v1/search/results": func() *httptest.ResponseRecorder { return searchResultsRequest(t, handler, query) },
-			"/api/v1/search":         func() *httptest.ResponseRecorder { return searchRequest(t, handler, query) },
-		} {
+		answers := map[string]model.SearchResponse{}
+		for _, path := range []string{searchResultsPath, searchPath} {
 			before := embedderCalls(embedder)
-			searchPathResponse(t, request(), path, query)
+			answers[path] = searchResponseOn(t, handler, path, query)
 			if made := embedderCalls(embedder) - before; made != 0 {
 				t.Fatalf("a keywords_only search of %s made %d embedding calls, want 0", path, made)
 			}
 		}
 		hybrid := url.Values{"q": {"astrolabe"}}.Encode()
-		for path, request := range map[string]func() *httptest.ResponseRecorder{
-			"/api/v1/search/results": func() *httptest.ResponseRecorder { return searchResultsRequest(t, handler, hybrid) },
-			"/api/v1/search":         func() *httptest.ResponseRecorder { return searchRequest(t, handler, hybrid) },
-		} {
+		for _, path := range []string{searchResultsPath, searchPath} {
 			before := embedderCalls(embedder)
-			searchPathResponse(t, request(), path, hybrid)
+			searchResponseOn(t, handler, path, hybrid)
 			if made := embedderCalls(embedder) - before; made != 1 {
 				t.Fatalf("a search of %s without keywords_only made %d embedding calls, want exactly 1", path, made)
 			}
 		}
-		results, old := searchBothPaths(t, handler, query)
-		requireTheSameAnswer(t, query, results, old)
+		// The two answers the counting above already read, rather than the same pair again.
+		requireTheSameAnswer(t, query, answers[searchResultsPath], answers[searchPath])
 	})
 }
 
-// The committed document is what every generated client is written from, so it is read here from
-// the package the way TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads it
-// (openapi_test.go). The five members are offered on GET /api/v1/search/results and on no other
-// search operation: this fails if anyone puts one back on the old route's declared contract,
-// where an older build would drop it and answer unnarrowed rows 200.
+// The committed document is what every generated client is written from, so this reads it rather
+// than the emitted bytes (committedOpenAPI, openapi_test.go). The five members are offered on
+// GET /api/v1/search/results and on no other search operation: this fails if anyone puts one
+// back on the old route's declared contract, where an older build would drop it and answer
+// unnarrowed rows 200.
 func TestTheCommittedDocumentOffersTheFiveMembersOnTheResultsRouteAlone(t *testing.T) {
-	// From this package to the repository root, which OpenAPIDocumentPath is written from.
-	path := filepath.Join("..", "..", "..", "..", "..", filepath.FromSlash(OpenAPIDocumentPath))
-	committed, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read the committed document: %v", err)
-	}
 	var document struct {
 		Paths map[string]map[string]struct {
 			Parameters []struct {
@@ -287,7 +254,7 @@ func TestTheCommittedDocumentOffersTheFiveMembersOnTheResultsRouteAlone(t *testi
 			} `json:"parameters"`
 		} `json:"paths"`
 	}
-	if err := json.Unmarshal(committed, &document); err != nil {
+	if err := json.Unmarshal(committedOpenAPI(t), &document); err != nil {
 		t.Fatalf("read the committed document: %v", err)
 	}
 
@@ -302,7 +269,7 @@ func TestTheCommittedDocumentOffersTheFiveMembersOnTheResultsRouteAlone(t *testi
 			for _, parameter := range operation.Parameters {
 				offered = append(offered, parameter.Name)
 			}
-			onTheResultsRoute := route == "/api/v1/search/results" && method == "get"
+			onTheResultsRoute := route == searchResultsPath && method == "get"
 			for _, member := range searchNarrowingMembers {
 				switch {
 				case onTheResultsRoute && !slices.Contains(offered, member):

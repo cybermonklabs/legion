@@ -1407,14 +1407,19 @@ test("a Kubernetes service subject renders as namespace/name, and anything else 
   expect(serviceSubjectLabel("kubernetes-admin")).toBe("kubernetes-admin");
 });
 
-test("a search of the four members every build reads stays on GET /api/v1/search", () => {
-  expect(SEARCH_MEMBERS_EVERY_BUILD_READS).toEqual(["q", "project", "limit", "offset"]);
+test("a search of the members every build reads stays on GET /api/v1/search", () => {
+  expect(SEARCH_MEMBERS_EVERY_BUILD_READS).toEqual(["q", "project", "limit", "offset", "session"]);
 
   expect(everyBuildReadsSearch({})).toBe(true);
   expect(everyBuildReadsSearch({ q: "astrolabe" })).toBe(true);
   expect(everyBuildReadsSearch({ q: "astrolabe", project: "LEGION", limit: 20, offset: 40 })).toBe(
     true
   );
+
+  // `session` is declared on every operation of every build and read by `actingPerson` on every
+  // route, so an older build serves a request carrying it correctly; sending that request to a
+  // path the build refuses would be the inversion of what this rule is for.
+  expect(everyBuildReadsSearch({ q: "astrolabe", session: "session-1" })).toBe(true);
 
   // Both clients build a request out of optional filters, so a filter nobody set is a key whose
   // value is `undefined`. It narrows nothing and an older build drops nothing, so it is not
@@ -1425,7 +1430,7 @@ test("a search of the four members every build reads stays on GET /api/v1/search
   ).toBe(true);
 });
 
-test("a search carrying anything beyond those four goes to GET /api/v1/search/results", () => {
+test("a search carrying anything beyond them goes to GET /api/v1/search/results", () => {
   const beyond: Record<string, unknown> = {
     number_project: "INFRA",
     status: "in_progress",
