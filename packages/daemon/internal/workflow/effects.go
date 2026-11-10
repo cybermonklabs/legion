@@ -290,8 +290,8 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // says to carry the work on rather than beginning it. It is exported for admission's repair of a
 // slot whose worker has no task (admit's resumeSlottedWorkers), which is the one caller: every
 // other way back into a phase is a transition with a task of its own. The task is
-// ResumePhaseTask rather than ResumeTask: the merger reads the head it merges on GitHub, so no
-// task of the daemon's names one.
+// ResumePhaseTask says to carry the work on and names no head: the merger reads the head it
+// merges on GitHub, so no task of the daemon's names one.
 func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue), false)
 }
@@ -440,11 +440,6 @@ func handoffWord(role claim.Role) string {
 // the work on, which is what a resumed session needs to tell this phase from its last.
 func ResumePhaseTask(issue record.Issue) string {
 	return continueLine(issue) + " Resume the existing phase work."
-}
-
-// ResumeTask is the task admission gives role when it resumes issue's phase at promotion.
-func ResumeTask(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (string, error) {
-	return ResumePhaseTask(issue), nil
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

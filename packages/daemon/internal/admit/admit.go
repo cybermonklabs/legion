@@ -1858,18 +1858,18 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
 // has just opened, and gives the one role whose phase the member stands in the task that carries
 // that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
-// role needs the same resume start ordinary mid-phase children receive (workflow.ResumeTask,
-// which tells a carried merger its carried approved head). A root promoted held, which only a
+// role needs the same resume start ordinary mid-phase children receive
+// (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
+// merger reads the head it merges on GitHub). A root promoted held, which only a
 // hand-over leaves (every other re-admission starts its root at admitted), starts no worker, and
 // the hold's notice went to the architect of the tree it was handed over from, so its own
 // architect is told of the hold (workflow.HeldNotice), whether or not it carried a gate.
 // Promotion already queued the root's branch; each other member queues its own before starting.
 // No member's phase is rewritten on the way back: the phase its record carries is the phase it
-// stands in, since the merge is what ends merging and no phase of this workflow is a wait for one
-// (the awaiting_merge phase is gone). A child of a
-// re-admitted tree, and a root a hand-over created, left awaiting its merge resume in merging,
-// since the old tree's linger disarmed the pull request (beginLinger) and only a new READY,
-// whose merge the daemon submits, arms it again.
+// stands in, since the merge is what ends merging and no phase of this workflow is a wait for
+// one. A child of a re-admitted tree, and a root a hand-over created, come back in merging where
+// they stood in it, and the merge their new tree's merger makes is what ends that phase: the old
+// tree's linger stopped the merge its own merger had not made (beginLinger).
 //
 // It brings back a member's other roles beside the phase's own, because the admission cap counts
 // the issues the daemon has started now: the one start that waits for a slot is the phase
@@ -1919,9 +1919,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		owner claim.Role
 		roles []roleToken
 	}
-	// The first pass resumes each member's phase and names every role run the second pass judges;
-	// the one read of them stands between the two, so no row is written on a reading of the claims
-	// half of it made.
+	// The first pass reads each member where its record leaves it and names every role run the
+	// second pass judges; the one read of them stands between the two, so no row is written on a
+	// reading of the claims half of it made.
 	var members []midPhaseMember
 	var keys []record.RoleRunKey
 	for _, member := range issues {
@@ -2015,12 +2015,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			task, err := workflow.ResumeTask(ctx, a.store, tx, member, held.role)
-			if err != nil {
-				return err
-			}
 			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
+				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: workflow.ResumePhaseTask(member),
+				ResumeTask: true}, now); err != nil {
 				return err
 			}
 		}

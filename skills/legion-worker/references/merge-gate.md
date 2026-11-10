@@ -93,7 +93,7 @@ as the fingerprint decides (*The reviewer*, below, and
   so its record of a review can name a head the review never saw.
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
-  architect is told the reason, so the reviewer submits again at the head it read.
+  architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the

@@ -361,9 +361,9 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 // workspace here with the rest of the tree. Its workspace comes back when the merger start of
 // its new generation reaches one of those retired claims: the outbox's start row provisions the
 // workspace in its supervise.StateRetired branch and then relaunches the claim
-// (internal/daemon/outbox.go). The phase it comes back in is ResumePhase's, and a member carried
-// in merging is merged by its own merger under its new tree, since the park stopped the merge
-// that tree's merger had not made. A member
+// (internal/daemon/outbox.go). The phase it comes back in is the phase its record carries, and a
+// member carried in merging is merged by its own merger under its new tree, since the park
+// stopped the merge that tree's merger had not made. A member
 // added to the handed set also takes the decisions parked on it with it:
 // warnKeptDecisionsOfAClosedTree logs those as carried to the child's own architect rather than
 // warning that this close left them behind.

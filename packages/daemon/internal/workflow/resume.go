@@ -124,12 +124,8 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 			!StartFor(run, root, issue.Generation, issue.Phase) {
 			continue
 		}
-		task, err := ResumeTask(ctx, e.store, tx, issue, role)
-		if err != nil {
-			return intake.Result{}, err
-		}
 		if err := StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true}, e.now()); err != nil {
+			Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(issue), ResumeTask: true, RuleResume: true}, e.now()); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

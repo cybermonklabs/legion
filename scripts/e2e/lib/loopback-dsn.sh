@@ -22,9 +22,9 @@
 # dispatch-two-builds.sh, verification-results.sh, dispatch-claimant-delivery.sh,
 # clean-session-stop-tmux.sh, envoy-session-states.sh, envoy-session-delivery.sh and
 # dispatch-session-settings.sh. The ninth is lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each of the six proofs that make that run: child-adoption.sh,
-# ci-red-no-takeover.sh, claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh and
-# provider-error-retry.sh. Seven of the nine call this function.
+# reads LEGION_TEST_PG_DSN for each of the five proofs that make that run: child-adoption.sh,
+# claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh and provider-error-retry.sh.
+# Seven of the nine call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.

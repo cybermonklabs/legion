@@ -23,23 +23,13 @@
       "jj": true
     },
     {
-      "script": "ci-red-no-takeover.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "CI_RED_NO_TAKEOVER_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/ci-red-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
-      "jj": true
-    },
-    {
       "script": "conflict-no-takeover.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
       "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
       "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
     {
