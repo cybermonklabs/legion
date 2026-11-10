@@ -127,11 +127,15 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 		// no citation.
 		{"www.github.com is a subdomain too", "See https://www.github.com/acme/widgets/issues/77 for context.", ""},
 		// The same string standing inside another URL is no citation either, wherever it sits:
-		// another host's path, its query, its fragment, or the userinfo before its own host.
+		// another host's path, its query or its fragment.
 		{"github.com in another host's path", "See https://example.test/github.com/acme/widgets/issues/77 for context.", ""},
 		{"github.com in another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/77 for context.", ""},
 		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", ""},
-		{"github.com after userinfo", "See https://user@github.com/acme/widgets/issues/77 for context.", ""},
+		// Userinfo before the host is a citation, because the host after it is github.com and
+		// that is where the reader goes; the host of `github.com@evil.test` is evil.test, which
+		// citation_boundary_test.go holds. This row expected no citation while a boundary class
+		// decided these cases, and the parse corrected it (review round two, finding 1).
+		{"userinfo before github.com", "See https://user@github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
 		{"first linked citation in body order", "Unlinked #12, then #88, then https://github.com/acme/other/issues/5.", "ATTR-113"},
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {

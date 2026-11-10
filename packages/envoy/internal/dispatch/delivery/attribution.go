@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -97,26 +98,74 @@ type attributionFacts struct {
 // A citation is `github.com/<owner>/<repo>/issues/<n>` as the host of its own URL, with a scheme
 // or without, and in whatever case the writer spelled either: a URL scheme and a host are both
 // case-insensitive (RFC 3986) and github.com answers `HTTPS://GITHUB.COM/…`, so a body cites the
-// same issue however it writes them. The expression takes the scheme itself, so the `/` that ends
-// it is no boundary character of its own, and reads scheme and host without regard to case.
+// same issue however it writes them.
 //
-// Everything else that can carry those bytes is not a citation, in either case, and the class
-// refuses each. The tail of another host's name (`evilgithub.com`, `pages.github.com`,
-// `www.github.com`) is refused after a word character, `.` or `-`, and `github.com.evil.test` is
-// no citation because the `/` must follow the host. The same string standing inside another URL
-// — its path, query, fragment or userinfo, as in
-// `https://example.test/github.com/acme/widgets/issues/7`, `?u=github.com/…`, `#github.com/…`,
-// `%2Fgithub.com/…` or `user@github.com/…` — is refused after `/`, `?`, `=`, `&`, `#`, `%`, `@`
-// or `:`. citedIssues would otherwise rebuild each of them as a citation of the real github.com
-// issue of that number, which is wrong about what the body says. It is no way past a permission:
-// whoever writes the body may cite the real URL outright.
+// Whether the host is the URL's own is not a question a boundary character can answer, and three
+// rounds of trying one got it wrong in both directions: a class wide enough to refuse
+// `example.test/github.com/…` also refused `Refs:https://github.com/…`, and one narrow enough to
+// credit that credited `example.test/~github.com/…`. So githubIssuePath finds the bytes alone and
+// citesGitHubIssue parses the URL they sit in, crediting it only where net/url reads github.com
+// as the host. The two capture groups and the number stay where citedIssues reads them.
 //
 // A # after a word character, `&` (an HTML character reference), `/` (a URL fragment) or another
 // # (a heading) is not a reference.
 var (
-	githubIssueURL      = regexp.MustCompile(`(?:^|[^\w.\-/?=&#%@:])(?:(?i:https?)://)?(?i:github\.com)/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
+	githubIssuePath     = regexp.MustCompile(`(?i:github\.com)/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
 	githubBareReference = regexp.MustCompile(`(?:^|[^\w&/#])#([1-9][0-9]{1,5})\b`)
 )
+
+// citesGitHubIssue says whether the `github.com/…` running from hostAt to end is the host and
+// path of its own URL, rather than bytes inside another host's URL or the tail of another host's
+// name. It reads the whitespace-delimited token the match sits in, since no URL holds a space,
+// cuts that token to end where the issue number does, and parses what is left:
+//
+//   - a token carrying a scheme is the URL that scheme opens, so `Refs:https://github.com/…`,
+//     `[1]:https://…` and `<a href=https://…>` are each a citation, while
+//     `https://example.test/github.com/…` is example.test's URL with github.com in its path;
+//   - a token with no scheme is a host and a path, so `//` is prefixed to make net/url read it as
+//     one, which is what tells `github.com/acme/widgets/issues/7` from `my-github.com/…`.
+//
+// The host decides, so userinfo before it (`https://user:p@github.com/…`) is a citation and
+// `https://github.com@evil.test/…` is not, and a subdomain is another host: www.github.com and
+// pages.github.com are credited to nobody, as this issue's review settled.
+func citesGitHubIssue(body string, hostAt, end int) bool {
+	start := strings.LastIndexAny(body[:hostAt], " \t\r\n") + 1
+	token := body[start:end]
+	at := hostAt - start
+	switch scheme := strings.LastIndex(token[:at], "://"); {
+	case scheme >= 0:
+		token = token[schemeStart(token[:scheme]):]
+	case strings.HasPrefix(token, "//"):
+		token = "https:" + token
+	default:
+		token = "//" + token
+	}
+	parsed, err := url.Parse(token)
+	return err == nil && strings.EqualFold(parsed.Hostname(), "github.com")
+}
+
+// schemeStart is where the scheme ending text begins: a letter, then letters, digits, `+`, `-`
+// and `.` (RFC 3986). Text ending in no scheme answers its own length, so the caller parses from
+// the `://` itself and reads no host, which is what `1]:` or `href=` before a second scheme
+// leaves behind.
+func schemeStart(text string) int {
+	at := len(text)
+	for at > 0 && isSchemeByte(text[at-1]) {
+		at--
+	}
+	if at == len(text) || !isSchemeLetter(text[at]) {
+		return len(text)
+	}
+	return at
+}
+
+func isSchemeByte(b byte) bool {
+	return isSchemeLetter(b) || b >= '0' && b <= '9' || b == '+' || b == '-' || b == '.'
+}
+
+func isSchemeLetter(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
 
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
@@ -148,7 +197,10 @@ func citedIssues(repo, body string) []string {
 		url string
 	}
 	citations := []citation{}
-	for _, match := range githubIssueURL.FindAllStringSubmatchIndex(body, -1) {
+	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
+		if !citesGitHubIssue(body, match[0], match[1]) {
+			continue
+		}
 		citations = append(citations, citation{match[0], "https://github.com/" + body[match[2]:match[3]] + "/" + body[match[4]:match[5]] + "/issues/" + body[match[6]:match[7]]})
 	}
 	for _, match := range githubBareReference.FindAllStringSubmatchIndex(body, -1) {
