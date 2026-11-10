@@ -169,7 +169,7 @@ export const realStackReasons: Record<string, string> = {
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
   "parse-count.e2e.ts":
-    "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and the control row needs the server to serve the same page with every tree stripped",
+    "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",
   "paste-recovery.e2e.ts": "pastes into the live document",
   "phone-conversation.e2e.ts":
     "sends held, refused and retried, and read marks written from a thread",

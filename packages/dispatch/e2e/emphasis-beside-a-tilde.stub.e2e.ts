@@ -1,5 +1,6 @@
-/** An asterisk beside a tilde, read in a past version of the spec: the engine's own parse of what
- *  the server stored, which the page draws from one fixed answer, so it runs against a recording
+/** An asterisk beside a tilde, read in a past version of the spec: the tree the server read that
+ *  version's markdown into, which the page draws from one fixed answer, so it runs against a
+ *  recording
  *  (packages/dispatch/AGENTS.md, "The stubbed layer").
  */
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";

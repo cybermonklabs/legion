@@ -1,5 +1,6 @@
-/** The marks a leaf block keeps, read in a past version of the spec: the engine's parse of what
- *  the server stored, drawn from one fixed answer, so it runs against a recording
+/** The marks a leaf block keeps, read in a past version of the spec: the tree the server read that
+ *  version's markdown into, drawn by the engine from one fixed answer, so it runs against a
+ *  recording
  *  (packages/dispatch/AGENTS.md, "The stubbed layer").
  */
 import { expect, type Locator } from "@playwright/test";

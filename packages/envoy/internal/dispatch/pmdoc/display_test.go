@@ -215,7 +215,7 @@ func TestReadForDisplayShowsARefusedBlockAsItsTextAndKeepsTheOthers(t *testing.T
 // TestReadForDisplayEndsAnUnknownBlocksLinesAtEveryLineEnding holds the unknown-directive rule
 // to the line endings a stored text actually carries. A message is stored as it was sent, and a
 // person or an agent writing through a Windows client sends CRLF, while a lone CR reaches the
-// store the same way (e2e/unknown-directive.e2e.ts). The fence lines of an unknown directive
+// store the same way (e2e/unknown-directive.stub.e2e.ts). The fence lines of an unknown directive
 // read as paragraph text line by line, so each of its lines is its own paragraph whichever
 // ending the text uses: with LF the read already does this, and the two others must agree with
 // it, since a reader is shown one body and not three readings of it. A line ending left inside

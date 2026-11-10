@@ -3,7 +3,9 @@ import type { SearchResponse } from "./dispatch-api.generated";
 /**
  * Search and the related-item check. Every body `GET /api/v1/search` and the related-check
  * routes answer is generated from the Go route table; what stays here is the closed list the
- * table widens to a plain string and the paging fields a caller reads a page by.
+ * table widens to a plain string, the paging fields a caller reads a page by, and the rule that
+ * picks a search's path (`everyBuildReadsSearch`), which the table cannot carry because it is
+ * about what a Dispatch released before `GET /api/v1/search/results` does with a request.
  */
 
 /** The kinds a search result and a write suggestion are one of. The route table carries `kind`

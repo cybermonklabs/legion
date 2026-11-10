@@ -569,6 +569,12 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	if fmt.Sprint(questions) != "[Which store? Which name?]" {
 		t.Fatalf("open_questions = %v, want the spec's two asks oldest first", questions)
 	}
+	// Each question is the ask row the ask list answers, and that row declares a question tree,
+	// so this view answers one too: a caller that asked for the trees is given the same row by
+	// both routes, and a client that reads either draws what the server read rather than its own
+	// reading of the markdown.
+	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions",
+		"open_questions.0.question", "open_questions.0.question_tree")
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a

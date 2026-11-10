@@ -81,6 +81,10 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
+	// One reader for the whole answer: the open questions are the same ask rows the ask list
+	// answers, so a caller that asked for the trees is given each question's here too. The
+	// reader is nil for a caller that did not ask, and every call on it then does nothing.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
 	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
 	if err != nil {
@@ -88,7 +92,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if specFound {
-		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID); err != nil {
+		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -99,6 +103,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
+		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
 		return
 	}
@@ -112,6 +117,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
 }
 
@@ -171,8 +177,13 @@ func artifactMissing(err error) bool {
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row).
-func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]issueAskRow, error) {
+// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
+// answer's own, and each row registers its texts with it once the slice has stopped growing: a
+// shaping registers a pointer into the row, and an append that moved the backing array would
+// leave the reader filling trees into memory the answer no longer holds.
+func (s *server) specOpenQuestions(
+	ctx context.Context, key, specID string, reader *displayTreeReader,
+) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
 		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
@@ -203,6 +214,9 @@ func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]i
 	}
 	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, asks); err != nil {
 		return nil, err
+	}
+	for index := range questions {
+		questions[index].shape(reader)
 	}
 	return questions, nil
 }
