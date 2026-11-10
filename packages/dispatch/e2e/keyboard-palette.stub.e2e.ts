@@ -167,6 +167,7 @@ test("g d opens the route's project Documents, from an issue key or a project pa
   // than whatever Enter would highlight.
   await input.fill("operations");
   const projects = dialog.getByRole("group", { name: "Projects" });
+  await expect(projects).toBeVisible();
   await expect(projects.getByRole("option")).toHaveCount(1);
   await projects.getByRole("option").click();
   await expect(page).toHaveURL(/\/projects\/OPS\/issues/);

@@ -11,6 +11,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
+
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
 
@@ -44,3 +46,25 @@ test(
   },
   generationTimeout
 );
+
+/** A row the map says is unchanged is a row no reviewer looks at, so a row whose assertions
+ *  did move must carry its own note and not that sentence. The generation writes one or the
+ *  other; this holds the committed map to it, which is the half a reader of k2 depends on. */
+test("a row with a note carries it in the map, and is not called unchanged", () => {
+  const map = readFileSync(mapPath, "utf8");
+  const lines = map.split("\n").filter((line) => line.startsWith("| `e2e/"));
+  expect(lines.length, "the map's moved table is empty").toBeGreaterThan(0);
+  for (const [key, note] of Object.entries(movedRowNotes)) {
+    const [file, title] = key.split(" › ");
+    const row = lines.find(
+      (line) => line.startsWith(`| \`e2e/${file}\` | ${title} |`) && !line.includes(" | --- |")
+    );
+    expect(row, `the map holds no moved row for ${key}`).toBeDefined();
+    expect(row, `${key}: the map does not carry this row's note`).toContain(note);
+    expect(
+      row?.includes(unchangedByTheMove),
+      `${key}: the map calls this row unchanged while e2e/stub/moved-row-notes.ts says its ` +
+        "assertions moved"
+    ).toBe(false);
+  }
+});

@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listing } from "../__tests__/playwright-listing";
 import { rowsOfListing, stubProjectNames } from "../configurations";
+import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
 import { realStackReasons } from "../stub/real-stack-reasons";
 import {
   committedRecordings,
@@ -80,21 +81,40 @@ const real = rows.filter((row) => !stubProjectNames.includes(row.project));
 // One entry per moved row and not one per project it runs in: `stub` runs every stubbed row
 // and `stub-phone` runs the `@phone` ones again at a phone's width, so each of those rows is
 // listed twice by the listing and once here. What the map says of a row - the file it lives
-// in, that it kept every assertion, and why a recording can answer it - is true of the row
-// rather than of the viewport it ran at.
+// in, what the move did to what it asserts, and why a recording can answer it - is true of the
+// row rather than of the viewport it ran at.
+//
+// The usual sentence is that the move touched no line of what the row asserts, which is what
+// k2 is read from. A row where that is false carries its own note instead
+// (`e2e/stub/moved-row-notes.ts`), because a reviewer reads this map rather than the diff and
+// a row the usual sentence covers is a row nobody looks at.
+const noteKey = (row: { file: string; title: string }): string => `${row.file} › ${row.title}`;
 const movedLines = [
   ...new Map(
     moved.map((row) => [
-      `${row.file}\u0000${row.title}`,
+      noteKey(row),
       [
         `\`e2e/${row.file}\``,
         row.title,
-        "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts",
+        movedRowNotes[noteKey(row)] ?? unchangedByTheMove,
         stubReason(row.file),
       ],
     ])
   ).values(),
 ].sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+
+// A note for a row the listing does not name reads as a current account of a row that is gone
+// or renamed, which is the same fault the map itself exists to prevent. The other direction
+// cannot be checked here: nothing in this checkout holds a row's assertions before the move,
+// so whether a row needs a note is a person's reading.
+const named = new Set(moved.map(noteKey));
+const strayNotes = Object.keys(movedRowNotes).filter((key) => !named.has(key));
+if (strayNotes.length > 0) {
+  throw new Error(
+    "e2e/stub/moved-row-notes.ts holds a note for these rows, and the listing names no moved " +
+      `row of that file and title: delete each entry, or correct its key.\n  ${strayNotes.join("\n  ")}`
+  );
+}
 
 // Every committed recording belongs to a row the listing still names. Nothing else checks
 // this: record mode writes the path of the row it is running and deletes nothing, so a row

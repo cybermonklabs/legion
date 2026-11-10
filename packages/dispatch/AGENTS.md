@@ -2596,6 +2596,19 @@ still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, 
 generation refuses to write a map without one - and refuses a reason there for a file the
 listing does not name.
 
+What the map says of a moved row is that the move touched no line of what it asserts, and that
+sentence is the whole of what a reviewer reads for it, so a row where it is false must say so
+instead. `e2e/stub/moved-row-notes.ts` holds those rows, keyed by the spec file and the title
+joined by ` › `, with the note the map writes in that sentence's place; it owns the sentence
+too, so one file holds both halves. The usual cause is a forward merge: `main` changes a row
+this layer has already moved and the change cannot be copied across as it stands, because the
+stubbed row runs against a recording and a scene its file shares. Whether a row needs a note is
+a person's reading - nothing in a merged tree holds the row's assertions before the move, since
+the real-stack copy is the one this change deleted. What the generation does hold is the other
+direction: a note for a row the listing does not name fails it, and
+`e2e/__tests__/row-map.test.ts` fails a map that carries the unchanged sentence for a row with
+a note.
+
 ## Accessibility and visual review
 
 Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
