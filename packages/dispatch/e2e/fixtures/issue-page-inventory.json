@@ -1,7 +1,7 @@
 {
-  "commit": "7567aeb606f309f40d4145f3d6a49c19fd452558",
-  "recordedAtHead": "7567aeb606f309f40d4145f3d6a49c19fd452558",
-  "recordedAt": "2026-11-06T12:24:29.090Z",
+  "commit": "5f86d6c949f92ebc9ffe51f5c618d3b2af25e202",
+  "recordedAtHead": "5f86d6c949f92ebc9ffe51f5c618d3b2af25e202",
+  "recordedAt": "2026-11-10T12:22:57.114Z",
   "open-1440": [
     {
       "name": "1 references on block",
@@ -320,7 +320,7 @@
       "role": "link"
     },
     {
-      "name": "Inbox Needs you 1",
+      "name": "Inbox 1",
       "role": "link"
     },
     {
@@ -401,10 +401,6 @@
     },
     {
       "name": "Put every remaining property in one panel",
-      "role": "link"
-    },
-    {
-      "name": "Replies",
       "role": "link"
     },
     {
@@ -644,6 +640,14 @@
       "role": "region"
     },
     {
+      "name": "Other agents",
+      "role": "region"
+    },
+    {
+      "name": "People",
+      "role": "region"
+    },
+    {
       "name": "Recipients",
       "role": "region"
     },
@@ -672,11 +676,15 @@
       "role": "tab"
     },
     {
-      "name": "Artifacts (7)",
+      "name": "Artifacts 7",
       "role": "tab"
     },
     {
       "name": "Children",
+      "role": "tab"
+    },
+    {
+      "name": "Collaborators",
       "role": "tab"
     },
     {
@@ -830,15 +838,15 @@
       "role": "button"
     },
     {
-      "name": "Open inbox, needs you 1",
-      "role": "button"
-    },
-    {
       "name": "Open navigation",
       "role": "button"
     },
     {
       "name": "Open review panel (1 open ask)",
+      "role": "button"
+    },
+    {
+      "name": "Peek at the inbox without leaving this page",
       "role": "button"
     },
     {
@@ -1006,6 +1014,10 @@
       "role": "link"
     },
     {
+      "name": "Inbox 1",
+      "role": "link"
+    },
+    {
       "name": "LAY-1",
       "role": "link"
     },
@@ -1282,6 +1294,14 @@
       "role": "region"
     },
     {
+      "name": "Other agents",
+      "role": "region"
+    },
+    {
+      "name": "People",
+      "role": "region"
+    },
+    {
       "name": "Recipients",
       "role": "region"
     },
@@ -1306,11 +1326,15 @@
       "role": "tab"
     },
     {
-      "name": "Artifacts (7)",
+      "name": "Artifacts 7",
       "role": "tab"
     },
     {
       "name": "Children",
+      "role": "tab"
+    },
+    {
+      "name": "Collaborators",
       "role": "tab"
     },
     {
@@ -1472,7 +1496,15 @@
       "role": "button"
     },
     {
+      "name": "Reply",
+      "role": "button"
+    },
+    {
       "name": "Search Ctrl K",
+      "role": "button"
+    },
+    {
+      "name": "Send",
       "role": "button"
     },
     {
@@ -1550,6 +1582,10 @@
     {
       "name": "Review margin",
       "role": "complementary"
+    },
+    {
+      "name": "Comment composer",
+      "role": "form"
     },
     {
       "name": "— The fold budget counts no question.",
@@ -1701,10 +1737,6 @@
     },
     {
       "name": "Put every remaining property in one panel",
-      "role": "link"
-    },
-    {
-      "name": "Replies",
       "role": "link"
     },
     {
@@ -1932,6 +1964,14 @@
       "role": "region"
     },
     {
+      "name": "Other agents",
+      "role": "region"
+    },
+    {
+      "name": "People",
+      "role": "region"
+    },
+    {
       "name": "Replaced",
       "role": "region"
     },
@@ -1952,11 +1992,15 @@
       "role": "tab"
     },
     {
-      "name": "Artifacts (7)",
+      "name": "Artifacts 7",
       "role": "tab"
     },
     {
       "name": "Children",
+      "role": "tab"
+    },
+    {
+      "name": "Collaborators",
       "role": "tab"
     },
     {
@@ -1986,6 +2030,10 @@
     {
       "name": "Verification",
       "role": "tab"
+    },
+    {
+      "name": "Comment",
+      "role": "textbox"
     },
     {
       "name": "Document editor",
@@ -2090,15 +2138,15 @@
       "role": "button"
     },
     {
-      "name": "Open inbox",
-      "role": "button"
-    },
-    {
       "name": "Open navigation",
       "role": "button"
     },
     {
       "name": "Open review panel (0 open asks)",
+      "role": "button"
+    },
+    {
+      "name": "Peek at the inbox without leaving this page",
       "role": "button"
     },
     {
@@ -2119,6 +2167,14 @@
     },
     {
       "name": "Reopen issue",
+      "role": "button"
+    },
+    {
+      "name": "Reply",
+      "role": "button"
+    },
+    {
+      "name": "Send",
       "role": "button"
     },
     {
@@ -2190,6 +2246,10 @@
       "role": "complementary"
     },
     {
+      "name": "Comment composer",
+      "role": "form"
+    },
+    {
       "name": "— The fold budget counts no question.",
       "role": "link"
     },
@@ -2243,6 +2303,10 @@
     },
     {
       "name": "Every property of the issue that carries a value is visible …",
+      "role": "link"
+    },
+    {
+      "name": "Inbox",
       "role": "link"
     },
     {
@@ -2506,6 +2570,14 @@
       "role": "region"
     },
     {
+      "name": "Other agents",
+      "role": "region"
+    },
+    {
+      "name": "People",
+      "role": "region"
+    },
+    {
       "name": "Replaced",
       "role": "region"
     },
@@ -2526,11 +2598,15 @@
       "role": "tab"
     },
     {
-      "name": "Artifacts (7)",
+      "name": "Artifacts 7",
       "role": "tab"
     },
     {
       "name": "Children",
+      "role": "tab"
+    },
+    {
+      "name": "Collaborators",
       "role": "tab"
     },
     {
@@ -2554,16 +2630,25 @@
       "role": "tab"
     },
     {
+      "name": "Comment",
+      "role": "textbox"
+    },
+    {
       "name": "Document editor",
       "role": "textbox"
     }
   ],
   "renames": {
+    "tab \"Spec\"": "tab \"Spec\" | menuitem \"Spec\"",
     "tab \"Verification\"": "tab \"Checks\" | menuitem \"Checks\"",
-    "tab \"Children\"": "button \"Children\"",
+    "tab \"Plan\"": "tab \"Plan\" | menuitem \"Plan\"",
     "tab \"Conversation\"": "region \"Conversation\"",
+    "tab \"Children\"": "button \"Children\"",
+    "tab \"Artifacts 7\"": "button \"Files and documents\"",
     "tab \"Activity\"": "region \"Activity\"",
-    "tab \"Artifacts (7)\"": "button \"Files and documents\"",
+    "tab \"Decisions\"": "tab \"Decisions\" | menuitem \"Decisions\"",
+    "tab \"Collaborators\"": "button \"Collaborators\"",
+    "button \"Reopen issue\"": "button \"Reopen into Backlog\"",
     "button \"Upload\"": "menuitem \"Upload\"",
     "button \"Upload artifact\"": "button \"Upload a file\"",
     "searchbox \"Filter artifacts\"": "searchbox \"Filter\"",
@@ -2579,14 +2664,6 @@
     "region \"Waiting for your review\"": "region \"Decisions\"",
     "region \"Your decisions\"": "region \"Decisions\"",
     "region \"Replaced\"": "region \"Decisions\"",
-    "tab \"Spec\"": "tab \"Spec\" | menuitem \"Spec\"",
-    "tab \"Plan\"": "tab \"Plan\" | menuitem \"Plan\"",
-    "tab \"Decisions\"": "tab \"Decisions\" | menuitem \"Decisions\"",
-    "tab \"Tree\"": "tab \"Tree\" | menuitem \"Tree\"",
-    "link \"Inbox Needs you 1\"": "link \"Inbox 1\"",
-    "link \"Replies\"": "link \"Inbox 1\" | link \"Inbox\"",
-    "button \"Open inbox, needs you 1\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox 1\"",
-    "button \"Open inbox\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox\"",
     "link \"#11 acme/issue-layout\"": "link \"#11 acme/issue-layout\" | link \"#11 acme/issue-layout (GitHub details are unavailable for this repository)\""
   }
 }

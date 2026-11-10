@@ -1667,14 +1667,14 @@ async function closeOpenControls(page: Page): Promise<void> {
 
 // c-nothing-lost.
 test("the new page carries every element of the old one @phone", async ({ browser }) => {
-  // Four states, each read through the page's own views - its five presets, the two addresses
-  // beside them, the five views behind a control or a width, one per row of the tree, and,
-  // where the narrow tree is the way in, the presets and the zooms walked again. Each walk
-  // loads the page once and moves through it from there, which is how a reader moves through
-  // it: 15 loads of the issue page per 390 px state and 9 per 1440 px one, naming 124 and 36
-  // views, each settled over two readings of its accessibility tree, and the write walk below
-  // after them. A view over a row the tree does not draw answers that it is not there and is
-  // not read, so a state pays for the views it has.
+  // Four states, each read through the page's own views - its five presets, the three
+  // addresses beside them, the five views behind a control or a width, one per row of the
+  // tree, and, where the narrow tree is the way in, the presets and the zooms walked again.
+  // Each walk loads the page once and moves through it from there, which is how a reader moves
+  // through it: 16 loads of the issue page per 390 px state and 10 per 1440 px one, naming 125
+  // and 37 views, each settled over two readings of its accessibility tree, and the write walk
+  // below after them. A view over a row the tree does not draw answers that it is not there
+  // and is not read, so a state pays for the views it has.
   //
   // Measured on an issue pod's two CPUs, the whole row in the desktop project, before the
   // walks shared their loads: 8.2 minutes, of which the four states' walks were 424 s - 173 s
@@ -1692,12 +1692,13 @@ test("the new page carries every element of the old one @phone", async ({ browse
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // The inventory first: what the old page offered is this check's own subject, and the page
     // root below it says whether the page carrying it is the redesigned one. The fixture is the
-    // merge of the old page's eight tab panels, one view at a time, so the new page is read the
-    // same way: its five presets and the two addresses beside them, the conversation and the
-    // activity (R3, R12). Three more views are the page's own, because what they hold sits
-    // behind a control rather than behind an address: the node menu, where a document no block
-    // cites lives (R16); the identity block's actions menu, where Close and the parent editor
-    // live (R11); and each document's own node, whose body is what a document opens (R2).
+    // merge of the old page's nine tab panels, one view at a time, so the new page is read the
+    // same way: its five presets and the three addresses beside them, the conversation, the
+    // activity and the collaborators (R3, R12, R19). Three more views are the page's own,
+    // because what they hold sits behind a control rather than behind an address: the node
+    // menu, where a document no block cites lives (R16); the identity block's actions menu,
+    // where Close and the parent editor live (R11); and each document's own node, whose body
+    // is what a document opens (R2).
     // How far a walk over the tree reaches. The seeded issue draws fewer rows than this at
     // either width, and a view over a row the tree does not draw answers that it is not there
     // rather than reading the page the view before it left (`e2e/page-inventory.ts`), so the
@@ -1718,6 +1719,15 @@ test("the new page carries every element of the old one @phone", async ({ browse
       },
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}/activity`);
+        return true;
+      },
+      // `/issues/<key>/collaborators`, the address the Collaborators tab answered: it is the
+      // one address that opens the panel's list of everyone who worked the issue (R19,
+      // `IssuePage.tsx`'s `opensCollaborators`), and the list's own People and Other agents
+      // sections (`IssueCollaboratorList.tsx`) are drawn at no other address, so a walk
+      // without this view reads that tab's landmarks as lost.
+      async () => {
+        await gotoIssue(page, `/issues/${seeded.key}/collaborators`);
         return true;
       },
       // The five views a control opens are all of the issue's own address, so they are one

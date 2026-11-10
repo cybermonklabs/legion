@@ -25,10 +25,12 @@ import { asUser } from "./users";
  * the fixture is the ground truth and has to be recorded against the page as it stood.
  *
  * **It is a recorder and no check of the page it runs against.** It reads the page through the
- * eight tabs that page had (`#issue-<tab>-tab`), which the redesign replaced with five presets
+ * nine tabs that page had (`#issue-<tab>-tab`), which the redesign replaced with five presets
  * over one tree, so it runs in a worktree at the commit before the change - that is where those
  * tabs are - and `test.skip` leaves it alone everywhere else. Re-run it whenever the branch
- * takes its base again, because the base moves and the fixture describes the base's page.
+ * takes its base again, because the base moves and the fixture describes the base's page: a
+ * tab the base grew since the last recording is one this file's list has to grow too, which
+ * `recordState` asserts against the tablist the base draws rather than trusting the list.
  *
  * Two things it deliberately is not, so neither is decided again:
  *
@@ -52,14 +54,17 @@ import { asUser } from "./users";
  * page as the old ground truth.
  *
  * That page renders only the active tab's panel - every other panel is `hidden`, which the
- * accessibility snapshot leaves out - so a state's inventory is the merge of the eight tabs'
+ * accessibility snapshot leaves out - so a state's inventory is the merge of the nine tabs'
  * panels, visited in turn at each width, and each panel is asserted to offer a control of its
  * own.
  */
 
-/** The eight tabs of the issue page, in the order `web/src/features/issue/IssueTabs.tsx` lists
- *  them. A tab's button and panel carry the DOM ids `Tabs.tsx`'s `tabButtonId` and
- *  `IssuePage.tsx` give them, which is how a tab is selected and its panel scoped here. */
+/** The nine tabs of the issue page, in the order `web/src/features/issue/issue-tab-list.ts`'s
+ *  `issueTabs` lists them (`IssueTabs.tsx` renders that list). A tab's button and panel carry
+ *  the DOM ids `Tabs.tsx`'s `tabButtonId` and `IssuePage.tsx` give them, which is how a tab is
+ *  selected and its panel scoped here. `recordState` holds this list to the tablist the page
+ *  draws, so a tab added to the page and not to this list fails the recording instead of
+ *  leaving its controls out of the fixture. */
 const ISSUE_TABS = [
   "spec",
   "verification",
@@ -69,6 +74,7 @@ const ISSUE_TABS = [
   "artifacts",
   "activity",
   "decisions",
+  "collaborators",
 ] as const;
 
 interface RecordedState {
@@ -141,11 +147,14 @@ function named(entry: InventoryEntry): string {
 
 /**
  * One state's inventory: the page at that width, in that open or closed state, with every tab
- * visited in turn and what each offers merged into one list. Each panel is asserted to offer a
- * control of its own, so a tab whose panel never rendered fails here rather than being counted as
- * covered. A recording run also prints, for each panel, a control no other panel of that state
- * offers - the evidence that the state covers all eight - falling back on its first control when
- * every one of them is offered elsewhere too.
+ * visited in turn and what each offers merged into one list. The tablist the page draws is read
+ * first and held to `ISSUE_TABS`, so a tab the base has and this file does not - the way
+ * `collaborators` was left out of the recording before dispatch://INFRA-1196's base moved -
+ * fails the recording rather than leaving that panel's controls out of the fixture. Each panel
+ * is then asserted to offer a control of its own, so a tab whose panel never rendered fails here
+ * rather than being counted as covered. A recording run also prints, for each panel, a control
+ * no other panel of that state offers - the evidence that the state covers all nine - falling
+ * back on its first control when every one of them is offered elsewhere too.
  */
 async function recordState(
   page: Page,
@@ -156,6 +165,14 @@ async function recordState(
   await page.setViewportSize(state.viewport);
   await page.goto(`/issues/${issueKey}/spec`);
   await expect(page.getByTestId("issue-header")).toBeVisible();
+  const drawn = await page
+    .getByTestId("issue-tabs")
+    .getByRole("tab")
+    .evaluateAll((nodes) => nodes.map((node) => node.id.slice("issue-".length, -"-tab".length)));
+  expect(
+    drawn,
+    `the page at ${state.key} draws other tabs than this recorder reads, so the fixture would miss a panel`
+  ).toEqual([...ISSUE_TABS]);
   const found: InventoryEntry[] = [];
   const panels = new Map<string, readonly InventoryEntry[]>();
   for (const tab of ISSUE_TABS) {
@@ -194,7 +211,7 @@ test.beforeEach(async () => {
 test("the issue page's landmarks and controls, open and closed, at 1440 and at 390", async ({
   browser,
 }) => {
-  // A recorder, not a check: it reads the page through the eight tabs the commit before the
+  // A recorder, not a check: it reads the page through the nine tabs the commit before the
   // redesign had, so it runs only when a person asks it to record (the header above).
   test.skip(!recording(), "set RECORD_PAGE_INVENTORY=1, in a worktree at the branch's base");
   test.setTimeout(600_000);

@@ -229,7 +229,7 @@ export interface CarriedOptions {
   readonly state: string;
   /**
    * The page's own views, each a call that puts the page in one of them and answers whether
-   * that view is there. The recording is the merge of the views the old page had - its eight
+   * that view is there. The recording is the merge of the views the old page had - its nine
    * tab panels, one at a time, because a page renders one and hides the rest
    * (`record-page-inventory.e2e.ts`) - so the page it is read against is merged the same way,
    * or a page that still offers everything would be read as having lost whatever its first
