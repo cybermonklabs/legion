@@ -64,10 +64,9 @@ var errTooManyPages = fmt.Errorf("the listing did not end within %d pages", maxP
 // kept, each conditional on that page's ETag, and then, while the last page read came back full,
 // the page after it, which no pass has an ETag for. It stops at the first page that is not full.
 //
-// It counts each request against the pass's own total and against the REST reads among them,
-// which the pace is left between, and against tally, the count the pass's log line reports
-// this listing under; a page GitHub answers 304 is counted again among the REST reads that
-// cost the budget nothing.
+// It counts each request among the REST reads of the pass, which the pace is left between, and
+// against tally, the count the pass's log line reports this listing under; a page GitHub
+// answers 304 is counted again among the REST reads that cost the budget nothing.
 func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int, kept []pageOf[T], read func(ctx context.Context, page int, etag string) (conditionalPage[T], error)) ([]pageOf[T], error) {
 	var pages []pageOf[T]
 	for number := 1; number <= maxPages; number++ {
@@ -76,7 +75,6 @@ func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int,
 			before = kept[number-1]
 		}
 		r.pace(ctx, c)
-		c.requests++
 		c.restRequests++
 		*tally++
 		answer, err := read(ctx, number, before.etag)
@@ -138,6 +136,11 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 	remember(&r.heads, head.key(), headState{
 		runs:   withoutItems(runs),
 		suites: withoutItems(suites),
+		// A head read over REST holds no fingerprint: these ETags are what the next pass reads
+		// it conditionally on, and a hash of a query's answer is no use to a head one query
+		// could not hold whole in the first place. A head a query answers again later is
+		// fingerprinted again with it (visitHead).
+		//
 		// Once a head's answer has held something to record, it holds it in every later answer
 		// too, so the record it was written to is worth asking after at every pass.
 		observed: kept.observed || wanted > 0,
@@ -148,9 +151,11 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 	return nil
 }
 
-// kept is what the pass remembers of one head, and an empty state when its ETags must not be
-// used: the record they stand for is gone (the bucket's seven-day TTL, or a delete), so a
-// conditional read would answer 304 and leave the head with no record at all.
+// kept is what the pass remembers of one head -- the ETags of a head read over REST, the
+// fingerprint of one a query answered whole -- and an empty state when neither may be used:
+// the record they stand for is gone (the bucket's seven-day TTL, or a delete), so a conditional
+// read would answer 304, and a fingerprint that matched would write nothing, either of which
+// leaves the head with no record at all.
 func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 	state, ok := r.heads[head.key()]
 	if !ok {
@@ -184,7 +189,7 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 // Every other failure is the head's own. It drops what the pass kept of that head, so the next
 // pass reads it in full, and leaves the pass to the head after it.
 func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c *counts) *stop {
-	if r.over(ctx, c) {
+	if r.cutShort(ctx, c) {
 		return nil
 	}
 	if at := stopAt(err, head.scope); at != nil {

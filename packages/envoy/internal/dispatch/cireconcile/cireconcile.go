@@ -32,6 +32,16 @@
 // cistore writer, which binds the listener's bucket and creates none (cistore.OpenWriter), so
 // one record per head is shared by both processes.
 //
+// A query's answer carries no ETag of its own -- it is one answer for twenty heads, which
+// GitHub's conditional reads do not cover -- so what an ETag does for a REST read a fingerprint
+// does for a query: the pass keeps a hash of the objects it mapped for each head a query
+// answered whole (fingerprintOf), and a head whose next answer fingerprints the same is written
+// nothing at all. Without it every completed run and every completed suite of every head is
+// recorded again at every pass, each one a read of that head's record from NATS, an unmarshal
+// of it and a hash: some 30,000 of them for 833 heads of about 39 checks each, where the REST
+// pass this one replaced wrote nothing for the 752 heads of the 833 whose listings answered
+// 304.
+//
 // GitHub budgets the App, not a process, so the pass reads as GitHub asks a poller to: serially,
 // one request after another and never two at once. A query is paced by GitHub's secondary limit
 // on GraphQL processing time (graphQLPace); a REST request is paced by the gap the pass sets
@@ -244,11 +254,24 @@ type rowState struct {
 	id       int64
 }
 
-// headState is what a pass kept of one head: the pages of its two listings, each with the ETag
-// the next pass reads it conditionally on and no items of its own (withoutItems).
+// headState is what a pass kept of one head: for a head read over REST, the pages of its two
+// listings, each with the ETag the next pass reads it conditionally on and no items of its own
+// (withoutItems); for a head a query answered whole, the fingerprint of what that query
+// answered.
 type headState struct {
 	runs   []pageOf[object]
 	suites []pageOf[object]
+	// fingerprint is the hash of the mapped check runs and check suites the last query answered
+	// for this head (fingerprintOf), and zero for a head no query has answered whole -- a head
+	// read over REST, whose ETags do this work instead. A query answers no ETag, so without it
+	// the pass writes every observation of every head it read at every pass; with it, a head
+	// GitHub answers the same objects for costs the one existence read kept makes and no write.
+	//
+	// It follows the ETags' own rules: it is kept only when every observation of the head was
+	// recorded, it is dropped when a write of the head failed, when the head's record has gone
+	// and when a cycle no longer lists the head (visitHead, kept, closeCycle), and a head a
+	// deadline or a rate limit cut short keeps the one it had, since a cut is not a failed read.
+	fingerprint uint64
 	// observed says the last full answer for this head held at least one observation the rules say
 	// to record. Such a head is worth reading again in full when its record has gone (the bucket's
 	// TTL, or a delete), so the next pass asks HasRecord before it trusts these ETags. A head whose
@@ -270,12 +293,11 @@ type stop struct {
 
 // counts is what one pass did, as its one log line reports it.
 type counts struct {
-	// requests counts every request the pass sent GitHub, queries and REST reads together.
-	requests int
-	// queries counts the GraphQL queries among them, points what GitHub charged them against
-	// the App's GraphQL budget (the answers' own rateLimit.cost), and restRequests the REST
-	// reads: a line's three numbers say how much of the pass GraphQL answered and how much it
-	// could not.
+	// queries counts the GraphQL queries the pass asked, points what GitHub charged them
+	// against the App's GraphQL budget (the answers' own rateLimit.cost), and restRequests the
+	// REST reads: a line's three numbers say how much of the pass GraphQL answered and how much
+	// it could not, and the two of them together are every request the pass sent, which is what
+	// the line reports as requests (report).
 	queries      int
 	points       int
 	restRequests int
@@ -293,6 +315,10 @@ type counts struct {
 	headRequests int
 	// notModified counts the heads every page of whose two listings answered 304.
 	notModified int
+	// unchanged counts the heads a query answered the very objects the pass had already
+	// recorded for, which are written nothing at all: the counterpart for a head read in a
+	// query of notModified for a head read over REST (visitHead).
+	unchanged int
 	// records counts the records the pass changed, one for each head a write of the pass changed
 	// the record of: a head's runs and suites all write the one record cistore.Key names, so a
 	// head whose run and whose suite the pass both recorded counts once. An observation the
@@ -312,17 +338,36 @@ type counts struct {
 	// the start of it.
 	deadline bool
 	cycle    bool
-	// firstHead and lastHead name the first and the last head the pass read whole, each as
-	// `owner/repo#number`, which is the slice of the one order this pass took.
-	firstHead string
-	lastHead  string
+	// firstHead and lastHead are the first and the last head the pass read whole, which is the
+	// slice of the one order this pass took. They are kept as the head's own parts and spelled
+	// `owner/repo#number` for the line alone (report): the pass marks every head it reads, and
+	// building that name for each of them would be a string a head thrown away at once.
+	firstHead headName
+	lastHead  headName
+}
+
+// headName is one head as the pass's line names it: the repository in the casing GitHub itself
+// gives it, and the pull request's number.
+type headName struct {
+	owner  string
+	repo   string
+	number string
+}
+
+// String is the name the line carries, and "" for a head the pass never marked, which is what
+// a pass that read no head at all reports.
+func (n headName) String() string {
+	if n.number == "" {
+		return ""
+	}
+	return n.owner + "/" + n.repo + "#" + n.number
 }
 
 // mark records one head the pass read whole, which the line names when it is the first or the
 // last of them: two passes' lines side by side then say how far round the order each got.
 func (c *counts) mark(head pullHead) {
-	name := head.repository() + "#" + head.number
-	if c.firstHead == "" {
+	name := headName{owner: head.owner, repo: head.repo, number: head.number}
+	if c.firstHead.number == "" {
 		c.firstHead = name
 	}
 	c.lastHead = name
@@ -359,8 +404,8 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	// out below. at is the rate limit that ended the pass, read by the deferred close beside the
 	// caller's context: a pass that ends at a limit records that, one its caller cancelled
 	// records the cancellation, and a pass whose own bound or whose process's shutdown cut it
-	// short records its end all the same, because endPass writes on a context of its own
-	// (endWrite).
+	// short records its end all the same, because endPass writes on a context detached from
+	// the pass's own (duty.LeaseCall).
 	var at *stop
 	record := r.beginPass(ctx)
 	defer func() { r.endPass(record, &c, at, caller.Err() != nil) }()
@@ -419,30 +464,30 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	// whole of it saw. read is this pass's own, the repositories it has already read the heads
 	// of, which two rows naming one repository share.
 	read := make(map[int64]struct{}, len(rows))
-	for _, visit := range order(rows, r.resume) {
+	for _, from := range order(rows, r.resume) {
 		// The pass's bound is checked between repositories as well as between pages and heads,
 		// so a pass whose time is up ends where it stands rather than reading on through the
 		// repositories after this one. What it leaves behind is the next pass's to read, from
 		// this cursor.
-		if r.over(ctx, c) {
-			r.resume = visit.cursor()
+		if r.cutShort(ctx, c) {
+			r.resume = from
 			return nil
 		}
 		// Another process may have met a limit since this pass started, so the shared limits are
 		// read again before each repository.
 		if at := r.limited(ctx, githubapp.AppScope, githubapp.GraphQLScope); at != nil {
-			r.resume = visit.cursor()
+			r.resume = from
 			return at
 		}
-		repository, at := r.resolve(ctx, visit.row, c, read)
+		repository, at := r.resolve(ctx, from.repository, c, read)
 		if at != nil {
-			r.resume = visit.cursor()
+			r.resume = from
 			return at
 		}
-		if r.over(ctx, c) {
+		if r.cutShort(ctx, c) {
 			// The bound fell while this repository was being resolved, which is no fault of the
 			// mapping's and no head of it read: the next pass reads it from the top.
-			r.resume = visit.cursor()
+			r.resume = from
 			return nil
 		}
 		if !repository.reconcile {
@@ -450,7 +495,7 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 			// another row naming the same repository was read under. resolve has said so once.
 			continue
 		}
-		at, cut := r.sweep(ctx, writer, repository, visit, c)
+		at, cut := r.sweep(ctx, writer, repository, from, c)
 		if cut {
 			// sweep left the cursor at the page or the head it was cut short at.
 			return at
@@ -462,40 +507,40 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	return nil
 }
 
-// sweep reads one repository from the page the visit names to its last, and the heads of each
-// page. cut says the pass ended inside the repository -- on its own bound or at a rate limit --
-// in which case the cursor is already at the page or the head the next pass is to take up, and
-// the stop beside it is the limit that ended the pass, nil for the bound.
+// sweep reads one repository from the page the cursor it is given names to its last, and the
+// heads of each of them. cut says the pass ended inside the repository -- on its own bound or
+// at a rate limit -- in which case the cursor is already at the page or the head the next pass
+// is to take up, and the stop beside it is the limit that ended the pass, nil for the bound.
 //
 // The pages are GitHub's own: a query answers twenty open pull requests and the cursor the page
 // after them begins at, so the pass asks for one page, reads its heads, and asks for the next
 // with that cursor until GitHub says there is no next page.
-func (r *Reconciler) sweep(ctx context.Context, writer Writer, repository reconciled, at visit, c *counts) (*stop, bool) {
-	if _, held := r.listed[repository.id]; at.page == 0 || !held {
+func (r *Reconciler) sweep(ctx context.Context, writer Writer, repository reconciled, from cursor, c *counts) (*stop, bool) {
+	if _, held := r.listed[repository.id]; from.page == 0 || !held {
 		// The pass begins this repository at its first page, so what the passes before it
 		// counted of the repository's heads is this cycle's and is counted again here.
 		remember(&r.listed, repository.id, 0)
 	}
-	here := cursor{repository: at.row, after: at.after, page: at.page, number: at.number}
+	here := from
 	for {
-		if r.over(ctx, c) {
+		if r.cutShort(ctx, c) {
 			r.resume = here
 			return nil, true
 		}
-		if stopped := r.limited(ctx, append(repository.headScopes, githubapp.GraphQLScope)...); stopped != nil {
+		if at := r.limited(ctx, repository.queryScopes...); at != nil {
 			r.resume = here
-			return stopped, true
+			return at, true
 		}
 		page, err := r.query(ctx, repository, here.after, c)
-		if stopped := stopAt(err, githubapp.GraphQLScope); stopped != nil {
+		if at := stopAt(err, githubapp.GraphQLScope); at != nil {
 			// A rate limit is the pass ending, never a page to read another way: reading this
 			// page's heads over REST would be exactly the requests GitHub has just asked this
 			// App to stop sending.
 			r.resume = here
-			return stopped, true
+			return at, true
 		}
 		if err != nil {
-			if r.over(ctx, c) {
+			if r.cutShort(ctx, c) {
 				// The pass's own ending killed the query, which says nothing about the page.
 				r.resume = here
 				return nil, true
@@ -517,56 +562,89 @@ func (r *Reconciler) sweep(ctx context.Context, writer Writer, repository reconc
 				continue
 			}
 			here.number = head.number
-			stopped, cut := r.visitHead(ctx, writer, repository, head, here, c)
+			at, cut := r.visitHead(ctx, writer, repository, head, here, c)
 			if cut {
-				return stopped, true
+				return at, true
 			}
 		}
 		if !page.hasNextPage {
 			return nil, false
 		}
-		here = cursor{repository: at.row, after: page.endCursor, page: here.page + 1}
+		here = cursor{repository: from.repository, after: page.endCursor, page: here.page + 1}
 	}
 }
 
 // visitHead reads and records one head of a page: from the query's own answer where it could
 // answer the head whole, and over REST where it could not. cut says the pass ended at this
 // head, in which case the cursor names it and the next pass reads it again from the start.
+//
+// A head the query answered the objects the pass already recorded for is written nothing: the
+// fingerprint of a query's answer is what the ETag of a listing is to a REST read, and a pass
+// that wrote every head again would be 30,000 reads, unmarshals and hashes of records nothing
+// had changed. The rules it is kept and dropped by are the ETags' (headState.fingerprint).
 func (r *Reconciler) visitHead(ctx context.Context, writer Writer, repository reconciled, head queryHead, here cursor, c *counts) (*stop, bool) {
-	pull := pullHead{
-		token:  repository.token,
-		scope:  repository.scope,
-		owner:  repository.owner,
-		repo:   repository.repo,
-		number: strconv.FormatInt(head.number, 10),
-		sha:    head.sha,
+	pull := repository.head(head.number, head.sha)
+	if head.overflow {
+		return r.visitHeadOverREST(ctx, writer, repository, pull, head.why, here, c)
 	}
-	if !head.overflow {
-		// The query answered this head whole, so there is nothing to ask GitHub and nothing
-		// the pass's bound can cut short: the writes alone are left.
-		c.heads++
-		_, changed, _ := r.record(ctx, writer, pull, pagesOf(head.runs), pagesOf(head.suites))
-		if changed {
-			c.records++
-		}
+	// The query answered this head whole, so there is nothing to ask GitHub and nothing
+	// the pass's bound can cut short: the writes alone are left.
+	c.heads++
+	// This cycle has reached the head, which is what keeps its fingerprint when the cycle
+	// closes. A head read in a query is marked here and one read over REST in visitHeadOverREST,
+	// so every head of the cycle is in the set whichever way it was read (closeCycle).
+	see(&r.seenHeads, pull.key())
+	// kept is what the pass holds of the head, and nothing at all when the record those writes
+	// went to has gone: the fingerprint then stands for observations no record holds any more,
+	// and the head is written again.
+	kept := r.kept(writer, pull)
+	mark := fingerprintOf(head.runs, head.suites)
+	if kept.fingerprint == mark {
+		c.unchanged++
 		c.mark(pull)
 		return nil, false
 	}
-	// The query could not answer this head whole, so it is read over REST, paged and
-	// conditional on the ETags the pass kept of it. Its reads are budgeted under the
-	// installation rather than under GraphQL, so the shared limits are read again for them.
-	if stopped := r.limited(ctx, repository.headScopes...); stopped != nil {
+	wanted, changed, ok := r.record(ctx, writer, pull, pagesOf(head.runs), pagesOf(head.suites))
+	if changed {
+		c.records++
+	}
+	if !ok {
+		// A write that did not land must not be hidden behind a fingerprint, exactly as it must
+		// not be hidden behind an ETag (readHead): the next pass writes this head again.
+		delete(r.heads, pull.key())
+		c.mark(pull)
+		return nil, false
+	}
+	remember(&r.heads, pull.key(), headState{
+		fingerprint: mark,
+		// Once a head's answer has held something to record, it holds it in every later answer
+		// too, so the record it was written to is worth asking after at every pass.
+		observed: kept.observed || wanted > 0,
+	})
+	c.mark(pull)
+	return nil, false
+}
+
+// visitHeadOverREST reads and records one head over REST, which is how every head was read
+// before this change: paged, and conditional on the ETags the pass kept of it. Both the heads
+// one query could not answer whole (visitHead) and every head of a page GitHub would not answer
+// the query for at all (restOfRepository) are read here, and why names which of the two the
+// head's own line reports. cut says the pass ended at this head, as visitHead's does.
+func (r *Reconciler) visitHeadOverREST(ctx context.Context, writer Writer, repository reconciled, pull pullHead, why string, here cursor, c *counts) (*stop, bool) {
+	// These reads are budgeted under the installation rather than under GraphQL, so the shared
+	// limits are read again for them.
+	if at := r.limited(ctx, repository.headScopes...); at != nil {
 		r.resume = here
-		return stopped, true
+		return at, true
 	}
 	r.Logger.Info("ci reconcile reads a head over REST",
-		"repository", pull.repository(), "pr", pull.number, "sha", pull.sha, "why", head.why)
+		"repository", pull.repository(), "pr", pull.number, "sha", pull.sha, "why", why)
 	see(&r.seenHeads, pull.key())
-	if stopped := r.readHead(ctx, writer, pull, c); stopped != nil {
+	if at := r.readHead(ctx, writer, pull, c); at != nil {
 		r.resume = here
-		return stopped, true
+		return at, true
 	}
-	if r.over(ctx, c) {
+	if r.cutShort(ctx, c) {
 		// The bound fell while this head was being read, so it was not read whole and the next
 		// pass takes the cycle up at it. A head that was read whole just as the bound fell is
 		// read again by that pass, which costs it the head's two conditional requests and
@@ -598,7 +676,7 @@ func (r *Reconciler) restOfRepository(ctx context.Context, writer Writer, reposi
 		return at, true
 	}
 	if err != nil {
-		if r.over(ctx, c) {
+		if r.cutShort(ctx, c) {
 			r.resume = from
 			return nil, true
 		}
@@ -607,20 +685,17 @@ func (r *Reconciler) restOfRepository(ctx context.Context, writer Writer, reposi
 			"repository", repository.owner+"/"+repository.repo, "error", err)
 		return nil, false
 	}
-	window := from.page * pullsPerQuery
-	if window > len(pulls) {
-		window = len(pulls)
-	}
+	window := min(from.page*pullsPerQuery, len(pulls))
 	pulls = pulls[window:]
-	r.listed[repository.id] += len(pulls)
+	r.listed[repository.id] += countPullHeads(pulls)
 	here := from
 	for _, pull := range pulls {
 		if pull.HeadSHA == "" || pull.Number < here.number {
 			continue
 		}
 		here.number = pull.Number
-		head := queryHead{number: pull.Number, sha: pull.HeadSHA, overflow: true, why: "GitHub did not answer the query for the head's page"}
-		stopped, cut := r.visitHead(ctx, writer, repository, head, here, c)
+		stopped, cut := r.visitHeadOverREST(ctx, writer, repository, repository.head(pull.Number, pull.HeadSHA),
+			"GitHub did not answer the query for the head's page", here, c)
 		if cut {
 			return stopped, true
 		}
@@ -634,6 +709,19 @@ func countHeads(heads []queryHead) int {
 	known := 0
 	for _, head := range heads {
 		if head.sha != "" {
+			known++
+		}
+	}
+	return known
+}
+
+// countPullHeads is countHeads for the REST listing's own shape: the open pull requests of it
+// that have a head commit to read. The two listings are counted by the one rule, so the heads
+// the pass says it knows there are mean the same thing whichever way the page was read.
+func countPullHeads(pulls []githubapp.PullRequestHead) int {
+	known := 0
+	for _, pull := range pulls {
+		if pull.HeadSHA != "" {
 			known++
 		}
 	}
@@ -665,7 +753,7 @@ func (r *Reconciler) closeCycle(c *counts) {
 	r.resume = cursor{}
 }
 
-// over reports whether the pass's time is up: its own bound (PassTimeout) has passed, or the
+// cutShort reports whether the pass's time is up: its own bound (PassTimeout) has passed, or the
 // caller whose loop runs it cancelled it. The pass ends where it stands on either, and logs the
 // one line every pass logs.
 //
@@ -673,7 +761,7 @@ func (r *Reconciler) closeCycle(c *counts) {
 // repository's or the head's own fault: a request the ending killed is named at no WARN, since
 // one for every repository and head the ending cut off would be a storm of them, and it costs
 // what the pass kept of that head nothing.
-func (r *Reconciler) over(ctx context.Context, c *counts) bool {
+func (r *Reconciler) cutShort(ctx context.Context, c *counts) bool {
 	if ctx.Err() == nil {
 		return false
 	}
@@ -686,34 +774,20 @@ func (r *Reconciler) over(ctx context.Context, c *counts) bool {
 	return true
 }
 
-// visit is one repository a pass reads and where in it this visit begins: the page of its open
-// pull requests the cursor named, and the first head of that page the cursor left unfinished.
-// The zero page and the zero number are the whole of the repository, which is every repository
-// of a pass but the one it takes up in the middle of.
-type visit struct {
-	row    string
-	after  string
-	page   int
-	number int64
-}
-
-// cursor is where a pass that ends at this visit, before it has read anything of it, leaves the
-// next pass to start.
-func (v visit) cursor() cursor {
-	return cursor{repository: v.row, after: v.after, page: v.page, number: v.number}
-}
-
-// order is the repositories a pass reads, in the order it reads them: mapped()'s own order from
-// the cursor onwards and no further. A pass ends at the last repository rather than beginning
-// the order again, so the order holds each repository once and the pass that reaches the end of
-// it closes the cycle.
+// order is the repositories a pass reads, in the order it reads them and each as the cursor the
+// pass begins it at: mapped()'s own order from the cursor onwards and no further. A pass ends at
+// the last repository rather than beginning the order again, so the order holds each repository
+// once and the pass that reaches the end of it closes the cycle.
+//
+// Every repository of a pass but the one it takes up in the middle of begins at the whole of
+// that repository, which is the zero page and the zero number of its cursor.
 //
 // A cursor naming something the order no longer holds strands no pass: a repository that has
 // dropped out of the mapping leaves the pass starting at the first repository after it, and a
 // cursor every mapped repository sorts before -- the repository it named was the last and has
 // gone -- is a cursor into a cycle that cannot be finished, so the pass begins a fresh one at
 // the first repository rather than reading nothing at all.
-func order(rows []string, at cursor) []visit {
+func order(rows []string, at cursor) []cursor {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -724,9 +798,9 @@ func order(rows []string, at cursor) []visit {
 	if start == len(rows) {
 		start = 0
 	}
-	visits := make([]visit, 0, len(rows)-start)
+	visits := make([]cursor, 0, len(rows)-start)
 	for _, row := range rows[start:] {
-		visits = append(visits, visit{row: row})
+		visits = append(visits, cursor{repository: row})
 	}
 	if rows[start] == at.repository {
 		visits[0].after, visits[0].page, visits[0].number = at.after, at.page, at.number
@@ -746,7 +820,25 @@ type reconciled struct {
 	token      string
 	scope      string
 	headScopes []string
-	reconcile  bool
+	// queryScopes is headScopes with GraphQL's own scope beside them, which is what the limits
+	// before a query are read under. It is built once with the repository rather than appended
+	// to headScopes at each page, which allocated a slice for every query the pass asked.
+	queryScopes []string
+	reconcile   bool
+}
+
+// head is one of this repository's open pull request heads as the pass reads it: the token its
+// reads are made with and the scope they are budgeted under, the owner and name GitHub itself
+// gives the repository, and the pull request's own number and head commit.
+func (repository reconciled) head(number int64, sha string) pullHead {
+	return pullHead{
+		token:  repository.token,
+		scope:  repository.scope,
+		owner:  repository.owner,
+		repo:   repository.repo,
+		number: strconv.FormatInt(number, 10),
+		sha:    sha,
+	}
 }
 
 // resolve reads one mapped row: the installation token it is read with, and the name and id
@@ -771,7 +863,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 		return reconciled{}, at
 	}
 	if err != nil {
-		if r.over(ctx, c) {
+		if r.cutShort(ctx, c) {
 			// The pass's own ending killed this read, which says nothing about the repository.
 			return reconciled{}, nil
 		}
@@ -790,7 +882,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 		return reconciled{}, at
 	}
 	if err != nil {
-		if r.over(ctx, c) {
+		if r.cutShort(ctx, c) {
 			return reconciled{}, nil
 		}
 		c.mappingsSkipped++
@@ -816,14 +908,16 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 		r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", state.fullName)
 		return reconciled{}, nil
 	}
+	headScopes := scopes(scope)
 	return reconciled{
-		owner:      ownerOf,
-		repo:       nameOf,
-		id:         state.id,
-		token:      token,
-		scope:      scope,
-		headScopes: scopes(scope),
-		reconcile:  true,
+		owner:       ownerOf,
+		repo:        nameOf,
+		id:          state.id,
+		token:       token,
+		scope:       scope,
+		headScopes:  headScopes,
+		queryScopes: withGraphQL(headScopes),
+		reconcile:   true,
 	}, nil
 }
 
@@ -868,7 +962,6 @@ func (r *Reconciler) mapped(ctx context.Context) ([]string, error) {
 func (r *Reconciler) identify(ctx context.Context, row, owner, name, token, scope string, c *counts) (rowState, *stop, error) {
 	kept := r.rows[row]
 	r.pace(ctx, c)
-	c.requests++
 	c.restRequests++
 	answer, err := r.GitHub.RepositoryIdentity(ctx, token, owner, name, kept.etag)
 	if at := stopAt(err, scope); at != nil {
@@ -968,6 +1061,15 @@ func scopes(tokenScope string) []string {
 	return []string{githubapp.AppScope, tokenScope}
 }
 
+// withGraphQL is those scopes with GitHub's GraphQL budget beside them, which is what a query
+// is held by: GitHub budgets GraphQL apart from REST, so a query is stopped by a limit on
+// either.
+func withGraphQL(headScopes []string) []string {
+	held := make([]string, 0, len(headScopes)+1)
+	held = append(held, headScopes...)
+	return append(held, githubapp.GraphQLScope)
+}
+
 // splitRepo is the owner and the name of an `owner/name`, and false for anything that is not
 // one: no slash, or a side of it empty.
 func splitRepo(full string) (owner, name string, ok bool) {
@@ -1012,6 +1114,15 @@ func (r *Reconciler) gap(rows int) time.Duration {
 		return FastestRequestPace
 	}
 	expected := work + rows
+	if expected == 0 {
+		// A cycle whose heads the queries all answered whole leaves no REST work behind, while
+		// the heads it listed are still counted, so the guard above does not fire; a mapping
+		// that has since been emptied leaves no repository to read either, and there is nothing
+		// at all for this pass to spread over its bound. The floor is the answer to no expected
+		// work, as it is above, and the arithmetic below would divide by zero: nothing recovers
+		// a panic of the pass's goroutine, so it would take the process down.
+		return FastestRequestPace
+	}
 	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
 }
 
@@ -1028,12 +1139,17 @@ func (r *Reconciler) known() int {
 
 // restWork is the REST requests the last pass learned this one will make: every head a query
 // could not answer whole is read again over REST, one request for each page of each of its two
-// listings, and a head whose pages the pass no longer holds is one request for each listing,
-// which is the least a read of it can take.
+// listings.
+//
+// A head a query answered whole is no REST work at all, and the Reconciler holds it with no
+// page of either listing and a fingerprint instead (headState), so it adds nothing here. The
+// pass that then cannot read such a head in a query reads it over REST with no ETag to send,
+// which is two requests this did not expect: the gap is what the last pass learned, and a head
+// that has just overflowed is news.
 func (r *Reconciler) restWork() int {
 	requests := 0
 	for _, state := range r.heads {
-		requests += max(len(state.runs), 1) + max(len(state.suites), 1)
+		requests += len(state.runs) + len(state.suites)
 	}
 	return requests
 }
@@ -1064,12 +1180,9 @@ func remember[K comparable, V any](held *map[K]V, key K, value V) {
 }
 
 // see adds one key to a set the Reconciler keeps across the passes of one cycle, making the set
-// on the first key there is.
+// on the first key there is: remember for a set, whose value is the empty struct.
 func see[K comparable](held *map[K]struct{}, key K) {
-	if *held == nil {
-		*held = make(map[K]struct{}, 1)
-	}
-	(*held)[key] = struct{}{}
+	remember(held, key, struct{}{})
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the
@@ -1091,12 +1204,14 @@ func forget[K comparable, V any](held map[K]V, seen map[K]struct{}) {
 // request it sent (requests) and how those split between the queries it asked and the points
 // they cost (graphql_queries, graphql_points) and the REST reads it made (rest_requests), how
 // many of those REST reads GitHub answered 304 (rest_not_modified) and how many heads took one
-// at all (heads_over_rest), the gap it left between its REST requests (pace), whether its own
-// bound ended it (deadline_reached) and whether it reached the end of the order and left the
-// cursor at the start of it (cycle_complete). One line is then enough to see a pass that no
-// longer fits its interval, a pass whose queries have stopped answering, and where the pass
-// after it will take up. Each new field is written after the fields that were there before it,
-// which keeps those in the order they have always been logged in.
+// at all (heads_over_rest), how many heads a query answered the objects the pass had already
+// recorded for and so wrote nothing of (heads_unchanged), the gap it left between its REST
+// requests (pace), whether its own bound ended it (deadline_reached) and whether it reached the
+// end of the order and left the cursor at the start of it (cycle_complete). One line is then
+// enough to see a pass that no longer fits its interval, a pass whose queries have stopped
+// answering, and where the pass after it will take up. Each new field is written after the
+// fields that were there before it, which keeps those in the order they have always been
+// logged in.
 func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 	attrs := []any{
 		"list_pages", c.listPages,
@@ -1113,10 +1228,10 @@ func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 	}
 	attrs = append(attrs,
 		"heads_known", r.known(),
-		"requests", c.requests,
+		"requests", c.queries+c.restRequests,
 		"pace", c.pace.String(),
-		"first_head", c.firstHead,
-		"last_head", c.lastHead,
+		"first_head", c.firstHead.String(),
+		"last_head", c.lastHead.String(),
 		"cycle_complete", c.cycle,
 		"deadline_reached", c.deadline,
 		"graphql_queries", c.queries,
@@ -1124,6 +1239,7 @@ func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 		"rest_requests", c.restRequests,
 		"rest_not_modified", c.restNotModified,
 		"heads_over_rest", c.restHeads,
+		"heads_unchanged", c.unchanged,
 		"duration", took.String())
 	r.Logger.Info("ci reconcile pass", attrs...)
 }

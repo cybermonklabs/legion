@@ -292,6 +292,40 @@ func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
 	}
 }
 
+// A pass with no work expected of it at all paces itself at the floor rather than dividing the
+// bound by it. A cycle whose heads the queries answered whole leaves the Reconciler no REST
+// work to expect and the heads it listed still counted, so the answer for a process that knows
+// of nothing yet is not the one that applies; a mapping emptied after such a cycle leaves no
+// repository to read either, and the arithmetic that spreads the expected work over the bound
+// then divides by zero. A pass panics into nothing -- its loop recovers none of it -- so the
+// process would go down with it.
+func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHead()
+	h.reconciler.Pace = RequestPace
+	h.reconciler.PassTimeout = Interval
+
+	// A cycle the query answered whole: the head is counted among the heads the pass knows
+	// there are, and no head of it was read over REST, so the pass leaves no REST work behind.
+	h.pass()
+	if got := number(t, h.passLine(), "heads_known"); got != 1 {
+		t.Fatalf("the first pass knows of %d heads, want the one the query answered: %v", got, h.passLine())
+	}
+
+	// The last mapping is taken away, as unmapping the one repository Dispatch reads does.
+	if _, err := h.pool.Exec(h.ctx, `delete from repo_projects`); err != nil {
+		t.Fatalf("unmap every repository: %v", err)
+	}
+
+	h.pass()
+
+	line := h.passLine()
+	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
+		t.Errorf("the pass paced itself at %s, want the floor %s: it expects no work at all: %v", got, want, line)
+	}
+}
+
 // The pass's queries go one at a time and leave GitHub the processing time its secondary limit
 // asks for: no two queries of a pass overlap, each is followed by a wait of a third of what the
 // query before it took, and the query time the pass sustains is three quarters of the clock,

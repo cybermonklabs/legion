@@ -61,10 +61,14 @@ const (
 // `rateLimit` costs nothing and is charged nothing, and is read in the same answer rather than
 // in a query of its own: the pass's line reports the points its queries spent, and a point count
 // read a query later would be a different query's.
-const headsQuery = `query($owner: String!, $name: String!, $after: String) {
+//
+// The three page sizes are the constants above, written into the document once each by
+// Sprintf: a GraphQL document takes its `first` as a literal, and a literal spelled out here
+// beside the constant the pass reads its own answers by is a literal that can disagree with it.
+var headsQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $after: String) {
   rateLimit { cost remaining resetAt }
   repository(owner: $owner, name: $name) {
-    pullRequests(states: OPEN, first: ` + pullsPerQueryText + `, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
+    pullRequests(states: OPEN, first: %d, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number
@@ -72,7 +76,7 @@ const headsQuery = `query($owner: String!, $name: String!, $after: String) {
           nodes {
             commit {
               oid
-              checkSuites(first: ` + suitesPerQueryText + `) {
+              checkSuites(first: %d) {
                 pageInfo { hasNextPage }
                 nodes {
                   databaseId
@@ -80,7 +84,7 @@ const headsQuery = `query($owner: String!, $name: String!, $after: String) {
                   status
                   conclusion
                   updatedAt
-                  checkRuns(first: ` + runsPerQueryText + `, filterBy: {checkType: ALL}) {
+                  checkRuns(first: %d, filterBy: {checkType: ALL}) {
                     pageInfo { hasNextPage }
                     nodes {
                       databaseId
@@ -100,16 +104,7 @@ const headsQuery = `query($owner: String!, $name: String!, $after: String) {
       }
     }
   }
-}`
-
-// The page sizes as the query spells them. A GraphQL document takes its `first` as a literal, and
-// a literal written twice is a literal that can disagree with itself, so each is the constant
-// above written once.
-const (
-	pullsPerQueryText  = "20"
-	suitesPerQueryText = "30"
-	runsPerQueryText   = "60"
-)
+}`, pullsPerQuery, suitesPerQuery, runsPerQuery)
 
 // queryPage is one answer to headsQuery as the pass reads it: the heads of one page of open pull
 // requests, in the order the pass takes them, and where the page after it begins.
@@ -234,7 +229,6 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	started := time.Now()
 	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, headsQuery, variables)
 	c.graphQLTook = time.Since(started)
-	c.requests++
 	c.queries++
 	if err != nil {
 		return queryPage{}, err
@@ -290,6 +284,7 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 		head.overflow, head.why = true, fmt.Sprintf("the head has more than %d check suites", suitesPerQuery)
 		return head
 	}
+	runs := 0
 	for _, suite := range commit.CheckSuites.Nodes {
 		if suite.CheckRuns == nil {
 			head.overflow, head.why = true, "GitHub answered a check suite's runs null"
@@ -299,6 +294,19 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 			head.overflow, head.why = true, fmt.Sprintf("a check suite of the head has more than %d check runs", runsPerQuery)
 			return head
 		}
+		runs += len(suite.CheckRuns.Nodes)
+	}
+	if len(commit.CheckSuites.Nodes) == 0 {
+		// A head with no suite has no run either, and both slices stay as they are: nil, which
+		// is what a head GitHub answered no object for has always carried.
+		return head
+	}
+	// The loop above walks every suite and every run of the head to validate it, so what the
+	// two slices come to is known before either is built: a head of 7 suites and 32 runs grew
+	// them through a dozen allocations and as many copies, once for every head of every page.
+	head.suites = make([]object, 0, len(commit.CheckSuites.Nodes))
+	if runs > 0 {
+		head.runs = make([]object, 0, runs)
 	}
 	for _, suite := range commit.CheckSuites.Nodes {
 		head.suites = append(head.suites, checkSuiteObject(suite, commit.OID))
@@ -368,6 +376,100 @@ func checkSuiteObject(suite graphQLSuite, oid string) object {
 	return item
 }
 
+// FNV-1a's two constants, the 64-bit pair hash/fnv sums with. They are written out here rather
+// than taken from fnv.New64a because that answers a hash.Hash64, which is an interface, a heap
+// allocation and a method call for every byte: a pass fingerprints some 39 objects of each of
+// 833 heads, and this way the whole of it is arithmetic on a register.
+const (
+	fnvOffset uint64 = 14695981039346656037
+	fnvPrime  uint64 = 1099511628211
+)
+
+// fingerprintOf is the hash of the check runs and check suites one query answered for a head:
+// what the ETag of a listing is to a REST read, and the one thing that tells a head GitHub has
+// nothing new for from a head it has. A pass holding it writes nothing at all for the head
+// whose next answer fingerprints the same (visitHead).
+//
+// It hashes what would be written rather than what GitHub sent. These objects are the ones
+// checkRunObject and checkSuiteObject build, which is the shape the webhook's own body carries
+// and the shape contracts.GithubCIObservation maps, so two answers GitHub spelled differently
+// and this package maps to the same observations are the same work and fingerprint the same,
+// and an answer holding one observation more, or one field of one observation different,
+// fingerprints differently and is written. Hashing GitHub's raw JSON instead would write every
+// head again for a field this package never reads.
+//
+// The order the hash is taken in is fixed, which is what two passes must agree on: the two
+// counts, then the suites and the runs in the order headOf built them, and within one object
+// the fields combined by a sum, since a Go map has no order of its own and sorting the names of
+// every object of every head would be an allocation and a sort for each of them. Two distinct
+// fields of one object can only cancel in that sum if their name-and-value hashes collide,
+// which is the hash's business rather than the sum's.
+//
+// Zero is no fingerprint -- what the Reconciler holds for a head no query has answered yet --
+// so a hash that comes out zero is answered one instead. That costs one answer in 2^64 a write
+// it did not need and can hide nothing: the two values stand for the same work either way.
+func fingerprintOf(runs, suites []object) uint64 {
+	sum := hashUint(hashUint(fnvOffset, uint64(len(suites))), uint64(len(runs)))
+	for _, item := range suites {
+		sum = hashUint(sum, hashObject(item))
+	}
+	for _, item := range runs {
+		sum = hashUint(sum, hashObject(item))
+	}
+	if sum == 0 {
+		return 1
+	}
+	return sum
+}
+
+// hashObject is one mapped object's own hash: each field hashed from its name through its
+// value, and the fields' hashes added.
+func hashObject(item object) uint64 {
+	var sum uint64
+	for name, value := range item {
+		sum += hashValue(hashString(fnvOffset, name), value)
+	}
+	return sum
+}
+
+// hashValue folds one field's value into the sum. The three cases are every type the two
+// builders above put in an object: the text of a status, a name or a timestamp, the int64 of a
+// databaseId, and the one nested object, an app and its id.
+func hashValue(sum uint64, value any) uint64 {
+	switch held := value.(type) {
+	case string:
+		return hashString(sum, held)
+	case int64:
+		return hashUint(sum, uint64(held))
+	case object:
+		return hashUint(sum, hashObject(held))
+	default:
+		// Nothing reaches here today. A field of another type added to either builder hashes
+		// its rendering rather than nothing at all: a value this passed over would hold the
+		// fingerprint still while the observation under it changed, and the change would never
+		// be written. The allocation Sprint makes is the price of that, in a branch that does
+		// not run.
+		return hashString(sum, fmt.Sprint(value))
+	}
+}
+
+// hashString folds the bytes of one string into the sum, and hashUint the eight bytes of one
+// number, each as FNV-1a does: exclusive-or the byte in, then multiply by the prime.
+func hashString(sum uint64, text string) uint64 {
+	for i := range len(text) {
+		sum = (sum ^ uint64(text[i])) * fnvPrime
+	}
+	return sum
+}
+
+func hashUint(sum, value uint64) uint64 {
+	for range 8 {
+		sum = (sum ^ (value & 0xff)) * fnvPrime
+		value >>= 8
+	}
+	return sum
+}
+
 // refusedPulls reads GitHub's errors array: the indexes of the pull request nodes an entry is
 // about, and whether any entry is about more than one of them.
 //
@@ -378,6 +480,11 @@ func checkSuiteObject(suite graphQLSuite, oid string) object {
 // path names no pull request node -- the repository itself, or the query -- is the whole page
 // refused, and every head of that page is read over REST.
 func refusedPulls(errors []graphQLError) (map[int]struct{}, bool) {
+	if len(errors) == 0 {
+		// Almost every answer GitHub gives carries no error at all, and a nil map answers the
+		// caller's lookups false, so the map is made for the answers that hold an entry alone.
+		return nil, false
+	}
 	refused := make(map[int]struct{})
 	whole := false
 	for _, entry := range errors {

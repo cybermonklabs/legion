@@ -261,3 +261,28 @@ func TestTheSecondPassReadsEveryOverflowHeadConditionally(t *testing.T) {
 		t.Errorf("the second pass changed %d records, want none: nothing changed on GitHub: %v", got, line)
 	}
 }
+
+// The heads the pass reports knowing of are counted by one rule whichever way the page was
+// read. A repository whose query GitHub refuses is listed over REST instead, and that listing
+// answers every open pull request of it, head commit or none, exactly as a query's own page
+// does; a pull request with no head commit is no head to read either way, and the pass passes
+// over it. Counting it here would leave the line reporting a head that nothing will ever read,
+// and a cycle whose heads were all read would still look short of one.
+func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), fakePull{number: 8, sha: ""})
+	// GitHub refuses the query for the repository's one page, so its heads are listed and read
+	// over REST.
+	h.github.refusePage(gitHubRepository, 0)
+
+	h.pass()
+
+	line := h.passLine()
+	if got := number(t, line, "heads_known"); got != 1 {
+		t.Errorf("the pass reports %d heads known, want the one open pull request that has a head commit: %v", got, line)
+	}
+	if got := number(t, line, "heads"); got != 1 {
+		t.Errorf("the pass read %d heads, want the one it could read: %v", got, line)
+	}
+}

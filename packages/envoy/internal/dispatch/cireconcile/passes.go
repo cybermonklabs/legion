@@ -31,26 +31,6 @@ const (
 	PassRetention = 48 * time.Hour
 )
 
-// endWriteTimeout bounds the write that ends a pass's row and the prune beside it. It is the five
-// seconds duty.leaseCallTimeout gives a statement that may not run on its caller's context, and
-// for the same two reasons: a statement with no deadline at all wedges the loop's goroutine on a
-// half-open connection, where a send draws neither an answer nor an error, and an update of one
-// row by its primary key answers at once on a connection that works.
-const endWriteTimeout = 5 * time.Second
-
-// endWrite is the context a pass's end is recorded on: detached from the pass's own and bounded,
-// exactly as duty.LeaseCall is for the statements a lease makes on its own connection.
-//
-// Detached, because the pass's own context is the one thing that is reliably dead at this moment.
-// A pass is bound at its loop's interval, and a pass that ran out of that bound is precisely the
-// pass whose row must say so: recording its end on a context whose deadline has passed would
-// write nothing at all and leave a row that reads as a pass that vanished, which is the one state
-// this record exists to tell apart from a deadline. The same holds for a shutdown that cancelled
-// the pass.
-func endWrite() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), endWriteTimeout)
-}
-
 // How a pass ended, as its row records it and the route answers it. These four are the whole
 // set, and the table's own check holds the column to them.
 const (
@@ -151,7 +131,21 @@ func (r *Reconciler) endPass(id int64, c *counts, at *stop, cancelled bool) {
 	if id == 0 {
 		return
 	}
-	ctx, done := endWrite()
+	// The end is recorded on a context detached from the pass's own and bounded at five
+	// seconds, which is duty.LeaseCall, the context a lease's own statements run on, taken here
+	// for the same two reasons.
+	//
+	// Detached, because the pass's own context is the one thing that is reliably dead at this
+	// moment. A pass is bound at its loop's interval, and a pass that ran out of that bound is
+	// precisely the pass whose row must say so: recording its end on a context whose deadline
+	// has passed would write nothing at all and leave a row that reads as a pass that vanished,
+	// which is the one state this record exists to tell apart from a deadline. The same holds
+	// for a shutdown that cancelled the pass.
+	//
+	// Bounded, because a statement with no deadline at all wedges the loop's goroutine on a
+	// half-open connection, where a send draws neither an answer nor an error, while an update
+	// of one row by its primary key answers at once on a connection that works.
+	ctx, done := duty.LeaseCall()
 	defer done()
 	cursor := r.resume
 	if _, err := r.Pool.Exec(ctx, updatePass, id, passOutcome(c, at, cancelled),
@@ -239,9 +233,10 @@ type PassCursor struct {
 // that wrote it is still live by the registry's own clock.
 const recentPasses = `
 	select p.id, p.instance::text, p.started_at, p.ended_at, p.outcome,
-	       p.graphql_queries, p.graphql_points, p.rest_requests, p.rest_not_modified,
-	       p.heads_over_rest, p.records, p.heads, p.heads_known,
-	       p.cursor_repository, p.cursor_page, p.cursor_number,
+	       coalesce(p.graphql_queries, 0), coalesce(p.graphql_points, 0), coalesce(p.rest_requests, 0),
+	       coalesce(p.rest_not_modified, 0), coalesce(p.heads_over_rest, 0), coalesce(p.records, 0),
+	       coalesce(p.heads, 0), coalesce(p.heads_known, 0),
+	       coalesce(p.cursor_repository, ''), coalesce(p.cursor_page, 0), coalesce(p.cursor_number, 0),
 	       coalesce(s.heartbeat_at > now() - make_interval(secs => $1), false)
 	from ci_reconcile_passes p
 	left join server_processes s on s.instance = p.instance
@@ -315,43 +310,23 @@ func passState(pass PassRecord, running bool) string {
 
 // scanPass reads one row, with whether its process is live. The counts and the cursor are null
 // exactly while the pass has not ended, which the table's own check holds to the end time, so
-// they are read through one nullable scan each and left nil together.
+// the statement reads each of them through a coalesce to its own zero and the outcome, the one
+// column that says which kind of row this is, is the one nullable scan: a row with no outcome
+// is a pass that has not ended, whose counts and cursor the answer leaves null together.
 func scanPass(row pgx.Row) (pass PassRecord, live bool, err error) {
-	var outcome, repository *string
+	var outcome *string
 	var counts PassCounts
-	var queries, points, restRequests, restNotModified, restHeads, records, heads, known *int
-	var page *int
-	var number *int64
+	var cursor PassCursor
 	if err := row.Scan(&pass.ID, &pass.Instance, &pass.StartedAt, &pass.EndedAt, &outcome,
-		&queries, &points, &restRequests, &restNotModified, &restHeads, &records, &heads, &known,
-		&repository, &page, &number, &live); err != nil {
+		&counts.GraphQLQueries, &counts.GraphQLPoints, &counts.RESTRequests, &counts.RESTNotModified,
+		&counts.HeadsOverREST, &counts.Records, &counts.Heads, &counts.HeadsKnown,
+		&cursor.Repository, &cursor.Page, &cursor.Number, &live); err != nil {
 		return PassRecord{}, false, fmt.Errorf("read the CI reconcile passes: %w", err)
 	}
 	if outcome != nil {
 		pass.State = *outcome
-		counts = PassCounts{
-			GraphQLQueries:  value(queries),
-			GraphQLPoints:   value(points),
-			RESTRequests:    value(restRequests),
-			RESTNotModified: value(restNotModified),
-			HeadsOverREST:   value(restHeads),
-			Records:         value(records),
-			Heads:           value(heads),
-			HeadsKnown:      value(known),
-		}
 		pass.Counts = &counts
-		pass.Cursor = &PassCursor{Repository: value(repository), Page: value(page), Number: value(number)}
+		pass.Cursor = &cursor
 	}
 	return pass, live, nil
-}
-
-// value is a nullable column's value, and its type's zero for null. Every column it is used on is
-// written by the same update that writes the outcome, so a null here is a row of a pass that has
-// not ended rather than a count the pass failed to take.
-func value[T any](held *T) T {
-	if held == nil {
-		var zero T
-		return zero
-	}
-	return *held
 }

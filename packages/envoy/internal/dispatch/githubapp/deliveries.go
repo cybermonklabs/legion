@@ -163,7 +163,7 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 		return nil
 	}
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
-	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !bytes.Contains(bytes.ToLower(body), []byte("rate limit")) {
+	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !containsFold(body, rateLimitPhrase) {
 		return nil
 	}
 	return &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
@@ -203,7 +203,16 @@ func GraphQLRateLimit(status int, header http.Header, body []byte) *RateLimitErr
 // spent GraphQL budget with. A body that is not the envelope at all -- which cannot be a 200
 // from GitHub's GraphQL endpoint -- holds no such entry and is no limit: the caller's own decode
 // then reports it as the malformed answer it is.
+//
+// The bytes are searched for the type before the body is parsed at all. Every good answer comes
+// through here, and a good answer is a page of up to the megabyte this client reads: parsing
+// each of them whole to look for an entry almost none of them carries was the cost of the one
+// that does. RATE_LIMITED is GitHub's own enum, which JSON carries verbatim, so a body those
+// bytes are not in holds no such entry.
 func graphQLRateLimited(body []byte) bool {
+	if !bytes.Contains(body, graphQLRateLimitedType) {
+		return false
+	}
 	var answer struct {
 		Errors []struct {
 			Type string `json:"type"`
@@ -225,7 +234,37 @@ func graphQLRateLimited(body []byte) bool {
 // no error type: "You have exceeded a secondary rate limit". The message is matched on the
 // phrase alone, since GitHub has worded the rest of the sentence more than one way.
 func secondaryRateLimited(body []byte) bool {
-	return bytes.Contains(bytes.ToLower(body), []byte("secondary rate limit"))
+	return containsFold(body, secondaryRateLimitPhrase)
+}
+
+// What the three readers above look for: the two phrases GitHub writes in a sentence of its own
+// wording, each lower case and each matched in whatever case the body spells it, and the enum
+// an errors entry carries verbatim.
+var (
+	rateLimitPhrase          = []byte("rate limit")
+	secondaryRateLimitPhrase = []byte("secondary rate limit")
+	graphQLRateLimitedType   = []byte("RATE_LIMITED")
+)
+
+// containsFold reports whether body holds phrase, which must be lower-case ASCII, in whatever
+// case it is written, and copies nothing. Every answer a limit is read from runs through it,
+// most of them good ones of up to this client's megabyte, and bytes.ToLower over such a body
+// allocated and copied the whole of it to find a phrase that is almost never there. The body is
+// scanned for the phrase's first byte in either case instead and only those windows compared,
+// which on a megabyte of answer measured about half the time the copy alone took.
+func containsFold(body, phrase []byte) bool {
+	first := string([]byte{phrase[0], phrase[0] - 'a' + 'A'})
+	for from := 0; from+len(phrase) <= len(body); from++ {
+		at := bytes.IndexAny(body[from:len(body)-len(phrase)+1], first)
+		if at < 0 {
+			return false
+		}
+		from += at
+		if bytes.EqualFold(body[from:from+len(phrase)], phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // rateLimitWait is how long GitHub asks for before the next request under a limit it answered
