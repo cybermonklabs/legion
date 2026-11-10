@@ -73,9 +73,10 @@ const fakeCodegraph = `#!/bin/sh
 printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 `
 
-// issueVolume is one issue's volume and what a pod's two init containers run against it: a PATH
-// whose git clones a local bare remote in place of github.com/acme/widgets, the provisioning token
-// file `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
+// issueVolume is one issue's volume and what a pod's two init containers run against it (the third
+// a `skills_repository` adds, `skills-fetch`, mounts nothing of this volume): a PATH whose git
+// clones a local bare remote in place of github.com/acme/widgets, the provisioning token file
+// `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
 // fetching container's own filesystem, and, as in a pod, a jj config home that starts empty and no
 // user configuration. defaultBranch is the remote's default branch, which `provision` is told.
 type issueVolume struct {

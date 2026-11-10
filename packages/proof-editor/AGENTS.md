@@ -54,7 +54,7 @@ the glob `packages/proof-editor/proof-sdk-*.tgz`, so a new name needs no edit in
 
 | File | What it is |
 | --- | --- |
-| `src/lib.ts` | The library entry: builds the Milkdown editor and its plugin stack, binds collab, exposes the handle |
+| `src/lib.ts` | The library entry: builds the Milkdown editor and its plugin stack, binds collab, exposes the handle. `destroy` is idempotent and destroys the ProseMirror view before the editor: `Editor.destroy()` runs every plugin's cleanup, which removes each `$ctx` slice, before it destroys the view, and a mark's `toDOM` reads its slice as it draws, so a view that outlived the ctx throws `Context "inlineCodeAttr" not found` out of whatever redrew it (INFRA-2409). It answers with the editor's own teardown, which runs after the view's, so a caller that must know it finished - a test closing the DOM the plugins read as they go - awaits it. **Every write on the handle answers a destroyed view by doing nothing and says it did nothing**: the decoration writes (`setReferences`, `setActiveMarks`, `setActiveBlocks`, `setBlockMarks`, `setChangeDecorations`, `focusMark`, `focusBlock`) draw nothing, `setAccess`, `setMarkdown`, `applyRemoteMarks` and `removeMark` change nothing, `commentOnSelection`, `insertTypedBlock`, `retypeBlock` and `setBlockAttributes` answer `false`, `blockMenuItems` answers none and a menu item read before the teardown runs to nothing, and `retypeMark` and `remarkMark` refuse `"missing"` and `"gone"`. A write arrives there because a host writes from effects and React runs a child's cleanup after the parent's. The reads are the exception, and `getMarkdown` is the one that throws after teardown, since its serializer lives in the ctx that `destroy` empties |
 | `src/lib-headless.ts` | The DOM-free engine: parse and serialize markdown, used by the SPA's reference bodies and by the pmdoc fixture generator |
 | `src/dispatch-*.ts` | Dispatch's host contract: the selection action bar, mark events, `dispatch://` links, soft breaks, the popover hook |
 | `src/lib-remark-*.ts` | The remark plugins the entry installs (container directives, frontmatter) |
@@ -310,6 +310,69 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 | `micromark-core-commonmark@2.0.3` | `lib/label-end.js`. The scan for an opening `[` resumes where the scan of the previous `]` stopped and then goes on below the label start that `]` balanced, rather than walking every event again on each `]`; and the definition lookup is skipped outright where the document defines nothing, and otherwise bails, without serializing the label, once the label holds more characters that are not markdown whitespace than the longest defined identifier. `lib/list.js` takes a list item's blank-line continuation without asking `blankLine` whether the line is blank: that continuation opens with `effects.check(blankLine, …)`, and where the line is already over - the code is a line ending or the end of the document, which is what a line of only spaces and tabs is once the continuations above have taken their indentation - the answer is yes and the check's store and restore are work for nothing. Every open list item runs it once per blank line, so a body of D nested items and N blank lines runs D*N of them: on 50 nested items and 32 KB of blank lines, about two fifths of what micromark spent |
 | `micromark-extension-gfm-footnote@2.1.0` | `lib/syntax.js`'s call scan, the same backwards walk. Footnote definitions are flow constructs, so they are all known before text is tokenized: with none defined the walk is skipped, and otherwise it resumes where the previous `]`'s walk stopped |
 | `mdast-util-from-markdown@2.0.3` | `lib/index.js`'s `prepareList`, which spliced each list item's enter and its exit into the whole event array and so moved everything after them once per item. It now records where each one goes and `compile` rebuilds the events once, the sort being stable so an inner item's exit stays before an outer item's |
+
+`tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` are what holds two of these four
+patches in place, `micromark@4.0.2` and `micromark-core-commonmark@2.0.3`, each on the shapes
+named below. Each row reads its shape at two sizes, the longest body a caller may write and an
+eighth of its growing dimension, and asserts three things: the document the parse returns, or,
+where the mode refuses the shape, the refusal at both sizes; that the full size costs less than
+`parseCpuBudgetMs` of CPU time; and that the full size's cost grew no faster than that dimension
+did. Each size is read twice and the least reading kept, unless the first reading is already over
+the budget, and one reading repeats the parse until its window lasts `windowSteps` clock steps, so
+a cheap shape is parsed many times over at each size and only a shape whose one parse outlasts a
+window is parsed once a reading. The constants and the measurement itself are in
+`tests/cpu-time.ts`.
+
+The rows read CPU time rather than wall time, because wall time counts every moment the scheduler
+leaves the process off a core. On the two-CPU pod these were measured on, the read-only parse of
+`49 items nested by indentation then blank lines` cost 2,649 ms of wall time and 2,630 ms of CPU
+time at rest, and 16,201 ms of wall time and 1,800 ms of CPU time under 12 busy loops: the wall
+time grew about 6 times. The two CPU readings were taken differently, one unrepeated parse against
+a windowed least of two, so what they say about each other is not read here. The rows before
+INFRA-1629 asserted wall time against a constant, and one run of the two files under 12 busy loops
+failed six of them where the same run at rest failed none.
+
+Each constant rests on measurements taken on that pod on 2026-11-07 and 2026-11-09, under bun
+1.4.4, where `process.cpuUsage()` moves in 10 ms steps. The figures each constant rests on stand
+beside it in `tests/cpu-time.ts` rather than here: what the worst healthy parse costs and what the
+nearest break costs against `parseCpuBudgetMs`, the healthy ratio and a quadratic's against the
+bound `linearSlack` and `growthStep` make, the clock error the slack pays for, and the slowest rows
+under load against each ceiling. The figures of each break stand below. The two per-test
+ceilings there, `measuredRowCeilingMs` and `plainRowCeilingMs`, are wall-clock ceilings set far
+above any healthy row, not hang guards: a row that runs past one fails on it once its body
+returns, and what ends a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in
+`.github/workflows/ci.yaml`.
+
+Six things these rows do not catch. A parse 3 times slower than today and still linear passes both
+the budget and the growth check, since 3 times the worst healthy reading is still inside the
+budget. A quadratic parse of a shape no row holds is caught by nothing
+here. The growth check reads two measurements, each wrong by a few per cent from the clock before
+the machine's own noise, so the slack is the room a healthy ratio needs rather than a tight bound.
+Of the four patches, `mdast-util-from-markdown@2.0.3` is held by nothing here: reverted, it turns
+no instance red, and the shape it costs most on, `a plain list of 8,000 items`, costs 1,830 ms of
+CPU time read-only against 1,630 ms with the patch. Nor is
+`micromark-extension-gfm-footnote@2.1.0`: neither file has a footnote shape, so no row reads that
+patch at all. And six instances are kept by `parseCpuBudgetMs` alone, reddened by no break at a
+cost assertion: `a plain list of 8,000 items`, `49 items nested by indentation then blank lines`
+and `100 items nested by indentation then blank lines`, each in both modes, whose worst available
+break costs 1,350 ms to 4,620 ms of CPU time over two rounds of control measurements, inside the
+budget. Nor does the growth check see a cost that grows with the square of the whole body in the
+two nested shapes: their small body keeps the whole nesting, so the full body is only 5.14 and 2.46
+times as long as the small one, and such a cost would read about 26 and 6 against the bound of 32.
+
+To check that a row still catches the defect it guards, break the thing its shape rests on. The
+figures below are CPU time measured in this pod, over both modes of each shape.
+`patches/micromark@4.0.2.patch` holds the two lazy shapes, `a quote then lines carrying no marker`
+and `a list item then lines carrying no marker`: reverted, their four instances cost 35,030 ms to
+55,440 ms, against 500 ms to 840 ms with it. `patches/micromark-core-commonmark@2.0.3.patch` holds
+the two bracket shapes, `a run of 15,000 brackets and as many closers` and `a typed fence whose
+label opens a run of brackets`: reverted, their four instances cost 18,230 ms to 37,460 ms,
+against 150 ms to 380 ms with it. The nesting bound in `src/block-nesting.ts` holds the marker
+chain: raised past the shape, `a chain of 15,999 list markers on one line` costs 235,560 ms
+read-only and 268,830 ms in the default mode, while `100 items nested by indentation then blank
+lines` goes red at its value assertion rather than at a cost one. `maxDirectiveNesting` raised
+turns the four instances of `tests/nested-directive.test.ts` red at their value and refusal
+assertions.
 
 ## The upstream boundary
 
