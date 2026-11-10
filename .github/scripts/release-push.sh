@@ -273,9 +273,6 @@
 #            and why it prints no more, and how the engine is pinned, fetched
 #            and stood in for.
 set -euo pipefail
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=.github/scripts/ci-retry.sh
-. "$script_dir/ci-retry.sh"
 
 command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
 
@@ -394,6 +391,11 @@ leak_guard() {
       # arithmetic of the floor it would have to meet, once per call site: 6522 s on 46 steps,
       # 13044 on five and 26088 on one, which no `timeout-minutes` can hold under GitHub's
       # 360-minute job ceiling (review round 17 of dispatch://INFRA-1545).
+      # Sourced here rather than at the top of this file: the helper is what the fetch needs,
+      # and a copy of this script that never fetches - the engine seam below, which every case
+      # of release-push.test.sh fills - needs no copy of the helper beside it.
+      # shellcheck source=.github/scripts/ci-retry.sh
+      . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-retry.sh"
       retry_fetch "the leak engine" 60 -- \
         curl --fail --silent --show-error --location \
         --output "$dir/gitleaks.tar.gz" "$leak_engine_url" ||
