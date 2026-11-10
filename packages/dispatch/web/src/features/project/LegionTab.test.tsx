@@ -219,7 +219,7 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
   expect(state(1)).toBe("held for children only");
   expect(state(2)).toBe("idle");
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toContain(
-    "3 of 4 in use"
+    "3 of 4 slots in use"
   );
   // The phase is the issues table's own cell.
   expect(
@@ -235,7 +235,7 @@ test("the waiting line names each root ready or held by its dependency", async (
   expect(line.textContent).toContain("held by ACME-1");
   expect(line.textContent).toContain("ready");
   expect(document.querySelector("[data-legion-waiting-summary]")?.textContent).toContain(
-    "2 waiting · 1 ready · 1 held by a dependency"
+    "2 roots waiting for a slot · 1 ready · 1 held by a dependency"
   );
 });
 

@@ -1,86 +1,30 @@
-// The four Legion metrics of one project (INFRA-1077's spec, R3 and R4; dispatch://INFRA-979 puts
-// them on the project's issues page, in LegionHealthPanel): the work time to merge, the time by
-// worker type, rework, and splitting and follow-ups of the issues that finished in a range.
-//
-// Every number comes from `GET /api/v1/legion/metrics` and nothing is computed here: the server
-// holds the rules, and this draws what it answers. Each metric goes through `Chart`
-// (`delivery/Chart.tsx`), so each has the graph-or-table toggle and the compare range. A card's
-// table rows, its numbers and its headline counts name the issues behind them through
-// `onSelectIssues`, which the issues table filters itself by.
-import { type ReactNode, useMemo } from "react";
-
+// What the Legion tab plots from `GET /api/v1/legion/metrics` (dispatch://INFRA-979): per-day
+// trends of the finished issues' work time, rework and filings, and one row per issue for the
+// work-time and rework tables. The server holds every rule; this only turns its answer into the
+// series `Chart` draws, each with the unit its value axis is in.
 import type {
-  LegionBarRole,
   LegionFilingClass,
   LegionMetricsResponse,
-  LegionReworkIssue,
-  LegionSegments,
   LegionWorkTimeIssue,
 } from "../../api/types";
-import {
-  borderDefault,
-  surfaceBg,
-  textMutedOnSurface,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
-import {
-  Chart,
-  type ChartCompareSource,
-  type ChartRange,
-  type ChartRows,
-  type ChartSeries,
-  chartCompare,
-  PENDING,
-} from "../delivery/Chart";
+import type { ChartRange, ChartSeries } from "../delivery/Chart";
 import { formatDuration, pct } from "../delivery/lib/format";
 import { DAY_MS, liveWindow, type WindowChoice } from "../delivery/lib/window";
 
-const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
+/** Hours as the page writes them ("3.2h"; minutes under an hour). */
+export const formatHours = (value: number): string =>
+  value >= 100 ? `${Math.round(value).toLocaleString("en-US")}h` : formatDuration(value * 60);
 
-/** The five segments of a bar, in the precedence the server books an hour by (the spec's "Rule
- *  details — Precedence"), each a run of bars over the seven worker types. */
-const SEGMENTS: readonly { readonly key: keyof LegionSegments; readonly label: string }[] = [
-  { key: "waiting_on_person", label: "Waiting on a person" },
-  { key: "in_a_turn", label: "In a turn" },
-  { key: "ci_wait", label: "CI wait" },
-  { key: "waiting_on_children", label: "Waiting on children" },
-  { key: "idle", label: "Idle" },
-  { key: "unknown", label: "Unknown (not observed)" },
-];
-
-/** The four classes of filing, in the order the card lists them (`metrics.classes`). */
+/** The four classes of filing, in the order the splitting chart lists them. */
 const CLASSES: readonly { readonly key: LegionFilingClass; readonly label: string }[] = [
-  { key: "in_tree_at_design", label: "In the tree, at design" },
-  { key: "in_tree_later", label: "In the tree, later" },
-  { key: "out_of_tree", label: "Out of the tree" },
+  { key: "in_tree_at_design", label: "In the filer's tree, while designing it" },
+  { key: "in_tree_later", label: "In the filer's tree, later" },
+  { key: "out_of_tree", label: "Outside the filer's tree" },
   { key: "by_the_controller", label: "By the controller" },
 ];
 
-/** What each bar of metric 2 is called: the worker type, and "no role" for the seventh bar,
- *  which holds the phases no role works. */
-const ROLES: Readonly<Record<LegionBarRole, string>> = {
-  architect: "architect",
-  planner: "planner",
-  implementer: "implementer",
-  tester: "tester",
-  reviewer: "reviewer",
-  merger: "merger",
-  no_role: "no role",
-};
-
-/** Hours as the page's other durations read ("3.2h"), which `formatDuration` writes in minutes. */
-const hours = (value: number): string => formatDuration(value * 60);
-
-const asCount = (value: number): string => `${value}`;
-
-/** The top of a run of bars: the largest value it draws, and 1 for a run of nothing, since a
- *  scale whose top is zero draws no bar at all. */
-const topOf = (values: readonly number[]): number => Math.max(1, ...values);
-
-/** The range the metrics route reads for a window choice: a custom range as the reader named it,
- *  and a preset as its own days ending at `nowMs`. The route takes two instants, so a preset is
- *  resolved once per choice rather than on every render, which would read the route again every
- *  time anything else on the page moved. */
+/** The range the metrics route reads for a window choice: a custom range as named, and a preset
+ *  as its own days ending at `nowMs`. */
 export function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
   const live = liveWindow(choice);
   if (!("preset" in live)) return { kind: "custom", from: live.from, to: live.to };
@@ -91,29 +35,12 @@ export function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
   };
 }
 
-/** Metric 1's chart: each finished issue's work time, and the hours taken out of it — the time it
- *  sat parked and the time it sat back in the queue. One row per issue, in the answer's own order
- *  (the server reads its issues by key). */
-export function workTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const issues = report.work_time.issues;
-  const max = topOf(issues.map((issue) => issue.hours));
-  const run = (label: string, value: (issue: LegionWorkTimeIssue) => number): ChartSeries => ({
-    kind: "spark",
-    format: hours,
-    label,
-    max,
-    points: issues.map((issue) => ({ label: issue.key, partial: false, value: value(issue) })),
-  });
-  return [
-    run("Work time", (issue) => issue.hours),
-    run("Parked", (issue) => issue.parked_hours),
-    run("Queued", (issue) => issue.queued_hours),
-  ];
-}
-
 /** The UTC days a report's window covers, oldest first, each partial where the window covers only
  *  part of it. */
-function daysOf(report: LegionMetricsResponse): { day: string; partial: boolean }[] {
+export function daysOf(report: Pick<LegionMetricsResponse, "from" | "to">): {
+  day: string;
+  partial: boolean;
+}[] {
   const from = Date.parse(report.from);
   const to = Date.parse(report.to);
   const days: { day: string; partial: boolean }[] = [];
@@ -136,456 +63,170 @@ function quantile(values: readonly number[], q: number): number | null {
   return (sorted[low] ?? 0) + ((sorted[high] ?? 0) - (sorted[low] ?? 0)) * (at - low);
 }
 
-/** A per-day trend: one point a UTC day of the window, from the issues that closed that day. */
-function trend(
+/** A per-day series: one value a UTC day of the window, null for a day nothing counted. */
+function perDay(
   report: LegionMetricsResponse,
   label: string,
+  unit: string,
   format: (value: number) => string,
-  value: (closed: readonly LegionWorkTimeIssue[]) => number | null
+  value: (day: string) => number | null
 ): ChartSeries {
+  const points = daysOf(report).map(({ day, partial }) => ({
+    label: day,
+    partial,
+    value: value(day),
+  }));
+  return {
+    kind: "spark",
+    format,
+    label,
+    unit,
+    max: Math.max(1, ...points.map((point) => point.value ?? 0)),
+    points,
+  };
+}
+
+/** The finished issues by the UTC day they closed. */
+function closedByDay(report: LegionMetricsResponse): Map<string, LegionWorkTimeIssue[]> {
   const byDay = new Map<string, LegionWorkTimeIssue[]>();
   for (const issue of report.work_time.issues) {
     const day = issue.closed_at.slice(0, 10);
     byDay.set(day, [...(byDay.get(day) ?? []), issue]);
   }
-  const points = daysOf(report).map(({ day, partial }) => {
-    const closed = byDay.get(day) ?? [];
-    return { label: day, partial, value: closed.length === 0 ? null : value(closed) };
-  });
-  return {
-    kind: "spark",
-    format,
-    label,
-    max: topOf(points.map((point) => point.value ?? 0)),
-    points,
-  };
+  return byDay;
 }
 
-/** Metric 1's graph: each UTC day's median and p90 work time of the issues that closed that day. */
+/** Work time's graph: each UTC day's median and p90 work time of the issues that closed that day. */
 export function workTimeTrendSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const median = trend(report, "Median work time", hours, (closed) =>
+  const byDay = closedByDay(report);
+  const of = (q: number) => (day: string) =>
     quantile(
-      closed.map((issue) => issue.hours),
-      0.5
-    )
-  );
-  const p90 = trend(report, "p90 work time", hours, (closed) =>
-    quantile(
-      closed.map((issue) => issue.hours),
-      0.9
-    )
-  );
-  const max = Math.max(
-    median.kind === "spark" ? median.max : 1,
-    p90.kind === "spark" ? p90.max : 1
-  );
-  return [median, p90].map((one) => (one.kind === "spark" ? { ...one, max } : one));
+      (byDay.get(day) ?? []).map((issue) => issue.hours),
+      q
+    );
+  return [
+    perDay(report, "Median work time", "hours", formatHours, of(0.5)),
+    perDay(report, "p90 work time", "hours", formatHours, of(0.9)),
+  ];
 }
 
-/** Metric 3's graph: each UTC day's median review rounds and share sent back, of the issues that
- *  closed that day. */
+/** Rework's graph: each UTC day's median review rounds and share sent back, of the issues that
+ *  closed that day, each on its own value axis. */
 export function reworkTrendSeries(report: LegionMetricsResponse): ChartSeries[] {
+  const byDay = closedByDay(report);
   const rework = new Map(report.rework.issues.map((issue) => [issue.key, issue]));
-  const rows = (closed: readonly LegionWorkTimeIssue[]) =>
-    closed.flatMap((issue) => {
+  const rows = (day: string) =>
+    (byDay.get(day) ?? []).flatMap((issue) => {
       const row = rework.get(issue.key);
       return row === undefined ? [] : [row];
     });
   return [
-    trend(
+    perDay(
       report,
       "Median review rounds",
+      "review rounds",
       (v) => v.toFixed(1),
-      (closed) =>
+      (day) =>
         quantile(
-          rows(closed).map((row) => row.review_rounds),
+          rows(day).map((row) => row.review_rounds),
           0.5
         )
     ),
-    {
-      ...trend(
-        report,
-        "Sent back",
-        (v) => pct(v),
-        (closed) => {
-          const reworked = rows(closed);
-          return reworked.length === 0
-            ? null
-            : reworked.filter((row) => row.sent_back).length / reworked.length;
-        }
-      ),
-      max: 1,
-    } as ChartSeries,
-  ];
-}
-
-/** Metric 2's chart: each worker type's bar, split into its five segments, and the median hours
- *  per issue beside them. One row per worker type; a bar's whole time is its five segments, so
- *  the table holds every hour the card counts. */
-export function phaseTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const bars = report.phase_time.bars;
-  const max = topOf(bars.map((bar) => bar.hours));
-  const points = (value: (bar: (typeof bars)[number]) => number) =>
-    bars.map((bar) => ({
-      label: ROLES[bar.role],
-      partial: false,
-      value: value(bar),
-    }));
-  return [
-    ...SEGMENTS.map(
-      (segment): ChartSeries => ({
-        kind: "spark",
-        format: hours,
-        label: segment.label,
-        max,
-        points: points((bar) => bar.segments[segment.key]),
-      })
+    perDay(
+      report,
+      "Share sent back to implementing",
+      "share of issues",
+      (v) => pct(v, 0),
+      (day) => {
+        const closed = rows(day);
+        return closed.length === 0
+          ? null
+          : closed.filter((row) => row.sent_back).length / closed.length;
+      }
     ),
-    {
-      kind: "spark",
-      format: hours,
-      label: "Median per issue",
-      max: topOf(bars.map((bar) => bar.median_hours_per_issue)),
-      points: points((bar) => bar.median_hours_per_issue),
-    },
   ];
 }
 
-/** Metric 3's chart: each finished issue's review rounds, and the implementing and testing hours
- *  it spent after its first review. One row per issue. */
-export function reworkSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const issues = report.rework.issues;
-  const after = topOf(
-    issues.flatMap((issue) => [
-      issue.implementing_hours_after_first_review,
-      issue.testing_hours_after_first_review,
-    ])
-  );
+/** Splitting's graph: each UTC day's issues Legion sessions filed against the issues that
+ *  finished; whether filing outruns finishing is what it answers. */
+export function splittingDaySeries(report: LegionMetricsResponse): ChartSeries[] {
+  const byDay = closedByDay(report);
+  const filed = new Map<string, number>();
+  for (const one of report.splitting.filed) {
+    const day = one.at.slice(0, 10);
+    filed.set(day, (filed.get(day) ?? 0) + 1);
+  }
+  const count = (value: number) => `${value}`;
+  return [
+    perDay(
+      report,
+      "Issues filed by Legion sessions",
+      "issues a day",
+      count,
+      (day) => filed.get(day) ?? 0
+    ),
+    perDay(report, "Issues finished", "issues a day", count, (day) => byDay.get(day)?.length ?? 0),
+  ];
+}
+
+/** The window's filings by class, each with its count and share, in the order they are listed. */
+export function filingClasses(
+  report: LegionMetricsResponse
+): { key: LegionFilingClass; label: string; count: number; share: number }[] {
+  const total = report.splitting.filed.length;
+  return CLASSES.map((filing) => {
+    const count = report.splitting.filed.filter((one) => one.class === filing.key).length;
+    return { ...filing, count, share: total === 0 ? 0 : count / total };
+  });
+}
+
+/** Work time's table: one row per finished issue, its work time and the hours taken out of it. */
+export function workTimeIssueSeries(report: LegionMetricsResponse): ChartSeries[] {
+  const issues = [...report.work_time.issues].sort((a, b) => b.hours - a.hours);
+  const run = (label: string, value: (issue: LegionWorkTimeIssue) => number): ChartSeries => ({
+    kind: "spark",
+    format: formatHours,
+    label,
+    max: 1,
+    points: issues.map((issue) => ({ label: issue.key, partial: false, value: value(issue) })),
+  });
+  return [
+    run("Work time", (issue) => issue.hours),
+    run("Parked", (issue) => issue.parked_hours),
+    run("Queued", (issue) => issue.queued_hours),
+  ];
+}
+
+/** Rework's table: one row per finished issue, its review rounds and its hours after the first
+ *  review. */
+export function reworkIssueSeries(report: LegionMetricsResponse): ChartSeries[] {
+  const issues = [...report.rework.issues].sort((a, b) => b.review_rounds - a.review_rounds);
   const run = (
     label: string,
     format: (value: number) => string,
-    max: number,
-    value: (issue: LegionReworkIssue) => number
+    value: (issue: (typeof issues)[number]) => number
   ): ChartSeries => ({
     kind: "spark",
     format,
     label,
-    max,
+    max: 1,
     points: issues.map((issue) => ({ label: issue.key, partial: false, value: value(issue) })),
   });
-  const rounds = topOf(issues.map((issue) => issue.review_rounds));
   return [
-    run("Review rounds", asCount, rounds, (issue) => issue.review_rounds),
-    run("Implementing after the first review", hours, after, (issue) => {
-      return issue.implementing_hours_after_first_review;
-    }),
-    run("Testing after the first review", hours, after, (issue) => {
-      return issue.testing_hours_after_first_review;
-    }),
+    run(
+      "Review rounds",
+      (v) => `${v}`,
+      (issue) => issue.review_rounds
+    ),
+    run(
+      "Implementing after the first review",
+      formatHours,
+      (issue) => issue.implementing_hours_after_first_review
+    ),
+    run(
+      "Testing after the first review",
+      formatHours,
+      (issue) => issue.testing_hours_after_first_review
+    ),
   ];
-}
-
-/** Metric 4's chart: what Legion sessions filed each week, by class, against the issues that
- *  finished that week. One row per UTC week, named by the Monday it begins on. */
-export function splittingSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const weeks = report.splitting.weeks;
-  const max = topOf(weeks.flatMap((week) => [week.finished, ...Object.values(week.filed)]));
-  const run = (label: string, value: (week: (typeof weeks)[number]) => number): ChartSeries => ({
-    kind: "spark",
-    format: asCount,
-    label,
-    max,
-    points: weeks.map((week) => ({
-      label: week.week.slice(0, 10),
-      partial: false,
-      value: value(week),
-    })),
-  });
-  return [
-    ...CLASSES.map((filing) => run(filing.label, (week) => week.filed[filing.key])),
-    run("Issues finished", (week) => week.finished),
-  ];
-}
-
-/** Which of the four Legion cards. */
-export type LegionMetricKey = "work_time" | "phase_time" | "rework" | "splitting";
-
-/** One of the four Legion cards for one answer of the route, opened in full: its headline numbers
- *  and its chart. `compare` is the panel's comparison; `onSelectIssues`, when given, makes the
- *  numbers and table rows name the issues behind them. */
-export function LegionCard({
-  compare,
-  metric,
-  onOpenIssue,
-  onSelectIssues,
-  report,
-}: {
-  compare?: ChartCompareSource<LegionMetricsResponse>;
-  metric: LegionMetricKey;
-  /** Where given, a row that is one issue opens its timeline rather than filtering to it. */
-  onOpenIssue?: (key: string) => void;
-  onSelectIssues?: (keys: string[], label: string) => void;
-  report: LegionMetricsResponse;
-}): ReactNode {
-  const series = useMemo(() => SERIES[metric](report), [metric, report]);
-  const comparedData = compare?.data;
-  const compared = useMemo(
-    () => (comparedData === undefined ? undefined : SERIES[metric](comparedData)),
-    [comparedData, metric]
-  );
-  // Work time and rework draw a trend per day, and their table keeps one row per issue.
-  const trendOf = TREND[metric];
-  const trendSeries = useMemo(() => trendOf?.(report), [trendOf, report]);
-  const comparedTrend = useMemo(
-    () => (comparedData === undefined ? undefined : trendOf?.(comparedData)),
-    [comparedData, trendOf]
-  );
-  const range: ChartRange = { kind: "custom", from: report.from, to: report.to };
-  const select = useMemo(() => selectors(report), [report]);
-  const on = (pick: (row: string, column: string | null) => [string[], string]) =>
-    onSelectIssues === undefined
-      ? undefined
-      : (row: string, column: string | null) => onSelectIssues(...pick(row, column));
-  const figureKeys = (keys: string[], label: string) =>
-    onSelectIssues === undefined ? undefined : () => onSelectIssues(keys, label);
-  const { rework, splitting, phase_time: phase } = report;
-  const chart = (
-    label: string,
-    rows: ChartRows,
-    pick: Parameters<typeof on>[0],
-    oneIssue = false
-  ) => (
-    <Chart
-      compare={chartCompare(compare, trendSeries === undefined ? compared : comparedTrend)}
-      label={label}
-      onSelect={
-        oneIssue && onOpenIssue !== undefined ? (row: string) => onOpenIssue(row) : on(pick)
-      }
-      range={range}
-      rows={trendSeries === undefined ? rows : undefined}
-      series={trendSeries ?? series}
-      table={trendSeries === undefined ? undefined : { compare: compared, rows, series }}
-    />
-  );
-  const byIssue: ChartRows = { header: "Issue", over: "issue", pair: "name" };
-  switch (metric) {
-    case "work_time":
-      return (
-        <MetricCard
-          figures={[
-            { label: "Median", value: hours(report.work_time.median_hours) },
-            { label: "p90", value: hours(report.work_time.p90_hours) },
-            {
-              label: "Issues finished",
-              value: `${report.finished}`,
-              onSelect: figureKeys(select.finished, "Finished in the range"),
-            },
-          ]}
-          metric="work_time"
-          title="Work time to merge"
-        >
-          {chart("Work time to merge", byIssue, (row) => [[row], `Work time: ${row}`], true)}
-        </MetricCard>
-      );
-    case "phase_time":
-      return (
-        <MetricCard
-          figures={[
-            {
-              label: "Idle share",
-              value: phase.idle_share === null ? "not observed yet" : pct(phase.idle_share),
-            },
-            { label: "Observed hours", value: hours(phase.observed_hours) },
-            { label: "Unknown hours", value: hours(phase.unknown_hours) },
-          ]}
-          metric="phase_time"
-          title="Time per worker type"
-        >
-          <p className={`text-xs ${textMutedOnSurface}`} data-legion-unknown-note>
-            {phase.observed_hours === 0
-              ? `The daemon reported nothing of these issues in this range, so in a turn, CI wait and idle are unknown: the ${hours(phase.unknown_hours)} neither waiting on a person nor on children are booked as unknown, not as idle.`
-              : `${hours(phase.unknown_hours)} fall before the daemon reported on their issue, so whether a role was in a turn, CI was running or nothing happened is unknown; they are booked as unknown, not as idle.`}
-          </p>
-          {chart(
-            "Time per worker type",
-            { header: "Worker type", over: "worker type", pair: "name" },
-            select.phase
-          )}
-        </MetricCard>
-      );
-    case "rework":
-      return (
-        <MetricCard
-          figures={[
-            { label: "Median review rounds", value: rework.median_review_rounds.toFixed(1) },
-            { label: "Sent back at least once", value: pct(rework.sent_back_share) },
-            {
-              label: "Median hours after the first review",
-              value: hours(rework.median_hours_after_first_review),
-            },
-          ]}
-          metric="rework"
-          title="Rework"
-        >
-          {chart("Rework", byIssue, (row) => [[row], `Rework: ${row}`], true)}
-        </MetricCard>
-      );
-    case "splitting":
-      return (
-        <MetricCard
-          figures={[
-            {
-              label: "Issues filed",
-              value: `${splitting.filed.length}`,
-              onSelect: figureKeys(select.filed, "Filed by Legion in the range"),
-            },
-            {
-              label: "Roots finished",
-              value: `${splitting.finished_roots}`,
-              onSelect: figureKeys(select.roots, "Roots finished in the range"),
-            },
-            { label: "Children per root", value: splitting.children_per_root.toFixed(1) },
-            {
-              label: "Median work time, roots with children",
-              value: hours(splitting.median_hours_roots_with_children),
-            },
-            {
-              label: "Median work time, roots without children",
-              value: hours(splitting.median_hours_roots_without_children),
-            },
-          ]}
-          metric="splitting"
-          title="Splitting and follow-ups"
-        >
-          {chart(
-            "Splitting and follow-ups",
-            { header: "Week", over: "UTC week", pair: "position" },
-            select.week
-          )}
-        </MetricCard>
-      );
-  }
-}
-
-/** The per-day trend a card's graph draws in place of its per-issue series, where it has one. */
-const TREND: Partial<Record<LegionMetricKey, (report: LegionMetricsResponse) => ChartSeries[]>> = {
-  rework: reworkTrendSeries,
-  work_time: workTimeTrendSeries,
-};
-
-/** Each card's series builder. */
-const SERIES: Record<LegionMetricKey, (report: LegionMetricsResponse) => ChartSeries[]> = {
-  phase_time: phaseTimeSeries,
-  rework: reworkSeries,
-  splitting: splittingSeries,
-  work_time: workTimeSeries,
-};
-
-/** The worker types' names, in the route's bar order, for the panel's stacked bar. */
-export const roleName = (role: LegionBarRole): string => ROLES[role];
-
-/** Hours as the cards write them. */
-export const formatHours = hours;
-
-/** One metric: its headline numbers and its chart. */
-function MetricCard({
-  children,
-  figures,
-  metric,
-  title,
-}: {
-  children: ReactNode;
-  figures: readonly {
-    readonly label: string;
-    readonly value: string;
-    readonly onSelect?: (() => void) | undefined;
-  }[];
-  metric: string;
-  title: string;
-}): ReactNode {
-  return (
-    <div className={CARD} data-legion-metric={metric}>
-      <h3 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>{title}</h3>
-      <dl className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        {figures.map((figure) => (
-          <div className="flex items-baseline gap-1.5" key={figure.label}>
-            <dt className={`text-xs ${textMutedOnSurface}`}>{figure.label}</dt>
-            <dd
-              className={`text-base font-semibold ${textPrimaryOnCanvas}`}
-              data-legion-figure={figure.label}
-            >
-              {figure.onSelect === undefined ? (
-                figure.value === "" ? (
-                  PENDING
-                ) : (
-                  figure.value
-                )
-              ) : (
-                <button
-                  aria-label={`Show the issues: ${figure.label}`}
-                  className="underline decoration-dotted underline-offset-2 hover:decoration-solid"
-                  onClick={figure.onSelect}
-                  type="button"
-                >
-                  {figure.value}
-                </button>
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      {children}
-    </div>
-  );
-}
-
-/** The Monday 00:00 UTC that begins `iso`'s UTC week, as `YYYY-MM-DD`: the name of a splitting
- *  card's row. */
-function weekOf(iso: string): string {
-  const at = new Date(iso);
-  const day = (at.getUTCDay() + 6) % 7;
-  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() - day))
-    .toISOString()
-    .slice(0, 10);
-}
-
-/** The issues behind each number of the four cards, for one answer. */
-function selectors(report: LegionMetricsResponse) {
-  const finished = report.work_time.issues.map((issue) => issue.key);
-  const filed = report.splitting.filed;
-  return {
-    finished,
-    filed: filed.map((one) => one.key),
-    roots: report.work_time.issues.filter((issue) => issue.root).map((issue) => issue.key),
-    /** A worker type's row: every issue on its bar, or those of one segment of it. */
-    phase: (row: string, column: string | null): [string[], string] => {
-      const bar = report.phase_time.bars.find((one) => ROLES[one.role] === row);
-      const segment = SEGMENTS.find((one) => one.label === column);
-      if (bar === undefined) return [[], row];
-      if (segment === undefined) return [[...bar.issue_keys], `Time on the ${row} bar`];
-      return [[...(bar.segment_issues[segment.key] ?? [])], `${segment.label} on the ${row} bar`];
-    },
-    /** A UTC week's row: the issues filed that week, of one class, or the ones that finished. */
-    week: (row: string, column: string | null): [string[], string] => {
-      if (column === "Issues finished") {
-        return [
-          report.work_time.issues
-            .filter((issue) => weekOf(issue.closed_at) === row)
-            .map((issue) => issue.key),
-          `Finished in the week of ${row}`,
-        ];
-      }
-      const filing = CLASSES.find((one) => one.label === column);
-      return [
-        filed
-          .filter(
-            (one) => weekOf(one.at) === row && (filing === undefined || one.class === filing.key)
-          )
-          .map((one) => one.key),
-        filing === undefined
-          ? `Filed in the week of ${row}`
-          : `Filed in the week of ${row}: ${filing.label}`,
-      ];
-    },
-  };
 }

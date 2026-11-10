@@ -1,29 +1,27 @@
-// The one component every chart that draws a measure over a range goes through (INFRA-1077): the
-// measures panel's KPI cards and the Pipeline cards. It wraps `Sparkbars` and `SpreadBars` rather
-// than replacing them, so `lib/barScale.ts` stays the one scale and `theme/classes.ts`'s
-// `chartBar.*` the one palette, and adds the two controls the spec gives every such chart:
+// The one component every chart that draws a measure over a range goes through (INFRA-1077,
+// dispatch://INFRA-979): plots with a value axis in the series' unit, a time axis of the range's
+// days, a legend naming every series, and the series with nothing in the range left out and named
+// once. Series of one unit share a plot. It has the two controls the spec gives every such chart:
 //
-//   - Graph or table. The table holds every number its graph draws: a run of bars is one column,
-//     a median-and-p90 spread is three (the median, the p90 and the results they came from), a
-//     target line is named in the caption, and a day with nothing measured is a dash, never a
-//     zero.
+//   - Graph or table. The table holds every number its graph draws: a run of numbers is one
+//     column, a median-and-p90 spread is three (the median, the p90 and the results they came
+//     from), a target line is named in the caption, and a day with nothing measured is a dash,
+//     never a zero.
 //   - Compare. The reader picks a second range, whose default is the range immediately before
-//     the window, of the same length (`precedingRange`). The graph draws it under the window's
-//     own bars and the table puts the two side by side, each pair with the change between them.
+//     the window, of the same length (`precedingRange`). The graph draws its series dashed beside
+//     the window's, each named in the legend with its range, and the table puts the two side by
+//     side, each pair with the change between them.
 //
 // The compare range belongs to the page, not to the chart: the chart names it and the page reads
-// it as a second request, one for the window and one for the comparison, each inside the server's
-// 84-day cap, which `customRange` holds a reader's own range to. A page that reads no second
-// range passes no `compare` and the chart shows the graph-or-table control alone.
-//
-// `Timeline.tsx` is not one of these charts: it draws individual pull requests as points, keeps
-// its own `ModeToggle` (Timeline <-> PRList) and its brush, and two overlaid ranges of a scatter
-// is not a comparison a reader can read (the plan's departure S-4).
-import { Fragment, type ReactNode, useId, useMemo, useState } from "react";
+// it as a second request, each inside the server's 84-day cap, which `customRange` holds a
+// reader's own range to.
+import { Fragment, type ReactNode, useCallback, useId, useMemo, useState } from "react";
 
 import {
   borderDefault,
   borderStrong,
+  chartAxis,
+  chartSeries,
   dangerText,
   surfaceBg,
   surfaceMutedBg,
@@ -33,8 +31,6 @@ import {
 } from "../../theme/classes";
 import { customRange, DAY_MS, lastUtcDate, utcDate, type WindowChoice } from "./lib/window";
 import { type SegmentedOption, SegmentedToggle } from "./SegmentedToggle";
-import { type SparkbarPoint, Sparkbars } from "./Sparkbars";
-import { type SpreadBarDay, SpreadBars } from "./SpreadBars";
 import { UtcRangeFields } from "./UtcRangeFields";
 
 /** A chart's range: the custom member of the page's own `WindowChoice` (`lib/window.ts`), since
@@ -42,7 +38,24 @@ import { UtcRangeFields } from "./UtcRangeFields";
  *  rolling preset. `liveWindow` turns one into the window a page reads it with. */
 export type ChartRange = Extract<WindowChoice, { kind: "custom" }>;
 
-/** A run of per-day numbers, as `Sparkbars` takes them; `label` heads its table column. */
+/** One row of a run of numbers: its name (a UTC day, or an issue), its value, null where nothing
+ *  was measured, and whether the range covers only part of it. */
+export interface SparkbarPoint {
+  label: string;
+  value: number | null;
+  partial: boolean;
+}
+
+/** One day of a median-and-p90 spread, and how many results it came from. */
+export interface SpreadBarDay {
+  day: string;
+  n: number;
+  median_minutes: number | null;
+  p90_minutes: number | null;
+  partial: boolean;
+}
+
+/** A run of numbers; `label` heads its table column and names it in the legend. */
 interface ChartSparkSeries {
   readonly kind: "spark";
   readonly label: string;
@@ -51,6 +64,9 @@ interface ChartSparkSeries {
   readonly max: number;
   readonly met?: (value: number) => boolean;
   readonly format: (value: number) => string;
+  /** What the values count, in words ("hours", "share of issues"): series of one unit share a
+   *  plot and its value axis; a series with none plots alone, titled by its label. */
+  readonly unit?: string;
 }
 
 /** A run of per-day medians and p90s, as `SpreadBars` takes them; `label` heads its two duration
@@ -62,6 +78,7 @@ interface ChartSpreadSeries {
   readonly target?: number;
   readonly noun: string;
   readonly format: (minutes: number) => string;
+  readonly unit?: string;
 }
 
 /** One run of numbers a chart draws. */
@@ -159,6 +176,8 @@ export interface ChartProps {
   readonly onSelect?: (row: string, column: string | null) => void;
   /** What the table view holds where it is not the graph's numbers: a graph drawn per day over
    *  a table of one row per issue. `compare` is the compare range's table series. */
+  /** Which view opens first: a run of fewer than three rows reads better as its table. */
+  readonly defaultMode?: "graph" | "table";
   readonly table?: {
     readonly series: readonly ChartSeries[];
     readonly rows: ChartRows;
@@ -382,104 +401,397 @@ interface Comparison {
   readonly series: readonly ChartSeries[] | undefined;
 }
 
-/** One range's bars for one series; `series` is undefined while its read is out. `labelBars`
- *  writes each bar's row name under it, for a run of a few named rows (worker types). */
-function RangeBars({
-  labelBars,
-  series,
-}: {
-  labelBars: boolean;
-  series: ChartSeries | undefined;
-}): ReactNode {
-  if (series === undefined) return <p className={noteClass}>{PENDING}</p>;
-  if (series.kind === "spread") {
-    return (
-      <SpreadBars
-        days={series.days}
-        format={series.format}
-        noun={series.noun}
-        target={series.target}
-      />
-    );
+/** One line of a plot: its name, its values by position, its format, and whether it is the
+ *  compare range's. */
+interface PlotLine {
+  readonly label: string;
+  readonly values: readonly (number | null)[];
+  readonly partial: readonly boolean[];
+  readonly format: (value: number) => string;
+  readonly compare: boolean;
+  readonly color: number;
+}
+
+/** A series as the lines it plots: a run of numbers is one line, a median-and-p90 spread two. */
+function linesOf(series: ChartSeries, color: number, compare: boolean): PlotLine[] {
+  if (series.kind === "spark") {
+    return [
+      {
+        label: series.label,
+        values: series.points.map((point) => point.value),
+        partial: series.points.map((point) => point.partial),
+        format: series.format,
+        compare,
+        color,
+      },
+    ];
   }
+  return [
+    {
+      label: `${series.label} median`,
+      values: series.days.map((day) => day.median_minutes),
+      partial: series.days.map((day) => day.partial),
+      format: series.format,
+      compare,
+      color,
+    },
+    {
+      label: `${series.label} p90`,
+      values: series.days.map((day) => day.p90_minutes),
+      partial: series.days.map((day) => day.partial),
+      format: series.format,
+      compare,
+      color: color + 1,
+    },
+  ];
+}
+
+/** The rows a series runs over, by position: its days or its points' names. */
+function rowLabels(series: ChartSeries): string[] {
+  return series.kind === "spark"
+    ? series.points.map((point) => point.label)
+    : series.days.map((day) => day.day);
+}
+
+/** Whether a series has anything to draw: a value that is neither missing nor zero. */
+function hasData(series: ChartSeries): boolean {
+  return series.kind === "spark"
+    ? series.points.some((point) => point.value !== null && point.value !== 0)
+    : series.days.some((day) => day.median_minutes !== null);
+}
+
+/** A row's value in a series: a number, or null where nothing was measured. */
+function rowValue(series: ChartSeries, index: number): number | null {
+  return series.kind === "spark"
+    ? (series.points[index]?.value ?? null)
+    : (series.days[index]?.median_minutes ?? null);
+}
+
+/** The rows a plot draws: the range less its leading and trailing days on which no series
+ *  measured anything, so a window reaching past the data does not draw an empty third, and a note
+ *  naming the days left out. */
+function filledSpan(series: readonly ChartSeries[]): { from: number; to: number; note: string } {
+  const first = series[0];
+  if (first === undefined) return { from: 0, to: 0, note: "" };
+  const rows = rowLabels(first);
+  const filled = (index: number) =>
+    series.some((one) => {
+      const value = rowValue(one, index);
+      return value !== null && value !== 0;
+    });
+  let from = 0;
+  while (from < rows.length && !filled(from)) from++;
+  let to = rows.length;
+  while (to > from && !filled(to - 1)) to--;
+  if (from >= to) return { from: 0, to: rows.length, note: "" };
+  const parts: string[] = [];
+  if (from > 0) parts.push(`${tickLabel(rows[0] ?? "")} to ${tickLabel(rows[from - 1] ?? "")}`);
+  if (to < rows.length)
+    parts.push(`${tickLabel(rows[to] ?? "")} to ${tickLabel(rows[rows.length - 1] ?? "")}`);
+  return {
+    from,
+    to,
+    note:
+      parts.length === 0 ? "" : `Nothing measured ${parts.join(" or ")}; those days are not drawn.`,
+  };
+}
+
+/** A series cut to its rows from `from` to `to`. */
+function sliceSeries(series: ChartSeries, from: number, to: number): ChartSeries {
+  return series.kind === "spark"
+    ? { ...series, points: series.points.slice(from, to) }
+    : { ...series, days: series.days.slice(from, to) };
+}
+
+/** A round top for a value axis over `max`, and its step, so ticks read 0, 5, 10, 15, 20. */
+function niceScale(max: number): { top: number; step: number } {
+  if (!(max > 0)) return { top: 1, step: 0.25 };
+  const raw = max / 4;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = ([1, 2, 2.5, 5, 10].find((m) => m * power >= raw) ?? 10) * power;
+  return { top: step * Math.ceil(max / step), step };
+}
+
+/** A row's name on the time axis: a UTC day as "Nov 3", anything else as it is. */
+function tickLabel(label: string): string {
+  const day = label.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (day === null) return label;
+  const month = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ][Number(day[2]) - 1];
+  return `${month} ${Number(day[3])}`;
+}
+
+/** The plot's measured width, which its text is drawn at: a fixed viewBox would scale its labels
+ *  with the page. */
+function useWidth(): [(node: HTMLDivElement | null) => void, number] {
+  const [width, setWidth] = useState(720);
+  const ref = useCallback((node: HTMLDivElement | null) => {
+    if (node === null || typeof ResizeObserver === "undefined") return;
+    setWidth(node.clientWidth || 720);
+    const observer = new ResizeObserver(() => setWidth(node.clientWidth || 720));
+    observer.observe(node);
+  }, []);
+  return [ref, width];
+}
+
+const PLOT_HEIGHT = 170;
+const MARGIN = { top: 8, right: 12, bottom: 26, left: 62 };
+
+/** One plot: the lines of one unit over the rows, with a value axis of numbers in that unit, a
+ *  time axis of the rows' days, and a dashed target where a series has one. */
+function Plot({
+  label,
+  lines,
+  rows,
+  target,
+  unit,
+}: {
+  label: string;
+  lines: readonly PlotLine[];
+  rows: readonly string[];
+  target: number | undefined;
+  unit: string;
+}): ReactNode {
+  const [ref, width] = useWidth();
+  const format = lines[0]?.format ?? String;
+  const all = lines.flatMap((line) =>
+    line.values.filter((value): value is number => value !== null)
+  );
+  const { top, step } = niceScale(Math.max(...all, target ?? 0, 0));
+  const inner = {
+    w: Math.max(width - MARGIN.left - MARGIN.right, 40),
+    h: PLOT_HEIGHT - MARGIN.top - MARGIN.bottom,
+  };
+  const n = Math.max(rows.length, 1);
+  const x = (index: number) => MARGIN.left + ((index + 0.5) * inner.w) / n;
+  const y = (value: number) => MARGIN.top + inner.h - (value / top) * inner.h;
+  const ticks: number[] = [];
+  for (let at = 0; at <= top + step / 2; at += step) ticks.push(at);
+  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(inner.w / 64))));
   return (
-    <div>
-      <Sparkbars
-        format={series.format}
-        max={series.max}
-        met={series.met}
-        points={series.points}
-        target={series.target}
-      />
-      {labelBars ? (
-        <div className="flex" data-chart-bar-labels>
-          {series.points.map((point) => (
-            <span
-              className={`min-w-0 flex-1 truncate text-center ${noteClass}`}
-              key={point.label}
-              title={point.label}
+    <div className="min-w-0" ref={ref}>
+      <div className={`text-[11px] ${textMutedOnSurface}`} data-chart-unit>
+        {unit}
+      </div>
+      <svg
+        aria-label={`${label}: ${unit} by ${rows.length > 0 && /^\d{4}-/.test(rows[0] ?? "") ? "day" : "row"}`}
+        className="block"
+        data-chart-plot={unit}
+        height={PLOT_HEIGHT}
+        role="img"
+        width={width}
+      >
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line
+              className={chartAxis.grid}
+              x1={MARGIN.left}
+              x2={MARGIN.left + inner.w}
+              y1={y(tick)}
+              y2={y(tick)}
+            />
+            <text
+              className={`${chartAxis.text} text-[11px]`}
+              dominantBaseline="middle"
+              textAnchor="end"
+              x={MARGIN.left - 6}
+              y={y(tick)}
             >
-              {point.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
+              {format(Math.round(tick * 100) / 100).replace(/\.0(?=\D*$)/, "")}
+            </text>
+          </g>
+        ))}
+        <line
+          className={chartAxis.base}
+          x1={MARGIN.left}
+          x2={MARGIN.left + inner.w}
+          y1={y(0)}
+          y2={y(0)}
+        />
+        {rows.map((row, index) =>
+          (index % every === 0 && rows.length - 1 - index > every / 2) ||
+          index === rows.length - 1 ? (
+            <text
+              className={`${chartAxis.text} text-[11px]`}
+              data-chart-tick={row}
+              key={row}
+              textAnchor="middle"
+              x={x(index)}
+              y={PLOT_HEIGHT - 8}
+            >
+              {tickLabel(row)}
+            </text>
+          ) : null
+        )}
+        {target === undefined ? null : (
+          <line
+            className={chartAxis.base}
+            strokeDasharray="4 3"
+            x1={MARGIN.left}
+            x2={MARGIN.left + inner.w}
+            y1={y(target)}
+            y2={y(target)}
+          />
+        )}
+        {lines.map((line) => {
+          const palette = chartSeries[line.color % chartSeries.length] ?? chartSeries[0];
+          // A day with no value breaks the line rather than drawing it to zero.
+          const runs: string[][] = [[]];
+          line.values.forEach((value, index) => {
+            if (value === null) runs.push([]);
+            else runs[runs.length - 1]?.push(`${x(index)},${y(value)}`);
+          });
+          return (
+            <g
+              data-chart-line={line.compare ? "compare" : "window"}
+              data-chart-series={line.label}
+              key={`${line.label}-${line.compare}`}
+            >
+              {runs.map((run) =>
+                run.length > 1 ? (
+                  <polyline
+                    className={palette.stroke}
+                    fill="none"
+                    key={run[0]}
+                    strokeDasharray={line.compare ? "5 4" : undefined}
+                    strokeWidth={2}
+                    points={run.join(" ")}
+                  />
+                ) : null
+              )}
+              {line.values.map((value, index) =>
+                value === null ? null : (
+                  <circle
+                    className={palette.fill}
+                    cx={x(index)}
+                    cy={y(value)}
+                    key={`${rows[index] ?? index}`}
+                    opacity={line.partial[index] || line.compare ? 0.45 : 1}
+                    r={3}
+                  >
+                    <title>{`${line.label}, ${rows[index] ?? ""}${line.partial[index] ? " (partial)" : ""}: ${line.format(value)}`}</title>
+                  </circle>
+                )
+              )}
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }
 
-/** The most rows whose names fit under their bars; a longer run (one bar per issue) names each in
- *  its tooltip and its table row instead. */
-const LABELLED_BARS = 12;
-
-/** The chart itself: one header naming each range once, then one row per series, its name in
- *  the legend column and its bars under each range, a compared range beside the window's. */
+/** The chart itself: one plot per unit, each with its axes, its series in a legend below, a
+ *  compared range's series drawn dashed beside the window's and named in the legend, and the
+ *  series with nothing in the range left out and named once. */
 function Graph({
   against,
+  label,
   range,
-  rows,
   series,
 }: {
   against: Comparison | null;
+  label: string;
   range: ChartRange;
-  rows: ChartRows;
   series: readonly ChartSeries[];
 }): ReactNode {
-  const named = rows !== UTC_DAYS;
-  // The rows' names go once, under the last series, as one axis for every series above it.
-  const last = (index: number) => index === series.length - 1;
-  const labelBars = (one: ChartSeries | undefined) =>
-    named && one?.kind === "spark" && one.points.length <= LABELLED_BARS;
-  const columns =
-    against === null
-      ? "grid-cols-[minmax(6rem,9rem)_1fr]"
-      : "grid-cols-[minmax(6rem,9rem)_1fr_1fr]";
+  const span = filledSpan(series);
+  const trimmedSeries = series.map((one) => sliceSeries(one, span.from, span.to));
+  const trimmedCompare =
+    against?.series === undefined
+      ? undefined
+      : against.series.map((one) => sliceSeries(one, span.from, span.to));
+  const drawn = trimmedSeries.flatMap((one, index) => (hasData(one) ? [{ one, index }] : []));
+  const empty = trimmedSeries.filter((one) => !hasData(one)).map((one) => one.label);
+  const units = [...new Set(drawn.map(({ one }) => one.unit ?? one.label))];
+  let color = 0;
+  const colorOf = new Map<number, number>();
+  for (const { one, index } of drawn) {
+    colorOf.set(index, color);
+    color += one.kind === "spread" ? 2 : 1;
+  }
+  const comparedRange = against === null ? null : rangeLabel(against.range);
+  const legend = drawn.flatMap(({ one, index }) => {
+    const own = linesOf(one, colorOf.get(index) ?? 0, false);
+    const theirs =
+      trimmedCompare?.[index] === undefined
+        ? []
+        : linesOf(trimmedCompare[index] as ChartSeries, colorOf.get(index) ?? 0, true);
+    return [...own, ...theirs];
+  });
   return (
-    <div className={`grid items-center gap-x-3 gap-y-1 ${columns}`} data-chart-graph>
-      <span className={noteClass}>{named ? rows.header : ""}</span>
-      <div data-chart-range="window">
-        <span className={noteClass}>{rangeLabel(range)}</span>
-      </div>
-      {against === null ? null : (
-        <div data-chart-range="compare">
-          <span className={noteClass}>{`Compare ${rangeLabel(against.range)}`}</span>
-        </div>
+    <div className="flex min-w-0 flex-col gap-1" data-chart-graph>
+      {drawn.length === 0 ? (
+        <p className={noteClass}>Nothing measured in this range.</p>
+      ) : (
+        units.map((unit) => {
+          const members = drawn.filter(({ one }) => (one.unit ?? one.label) === unit);
+          const lines = members.flatMap(({ one, index }) => [
+            ...linesOf(one, colorOf.get(index) ?? 0, false),
+            ...(trimmedCompare?.[index] === undefined
+              ? []
+              : linesOf(trimmedCompare[index] as ChartSeries, colorOf.get(index) ?? 0, true)),
+          ]);
+          const first = members[0]?.one;
+          return (
+            <Plot
+              key={unit}
+              label={label}
+              lines={lines}
+              rows={first === undefined ? [] : rowLabels(first)}
+              target={members.find(({ one }) => one.target !== undefined)?.one.target}
+              unit={unit}
+            />
+          );
+        })
       )}
-      {series.map((one, index) => (
-        <Fragment key={one.label}>
-          <span
-            className={`truncate text-xs ${textMutedOnSurface}`}
-            data-chart-legend
-            title={one.label}
-          >
-            {one.label}
-          </span>
-          <RangeBars labelBars={last(index) && labelBars(one)} series={one} />
-          {against === null ? null : (
-            <RangeBars labelBars={last(index) && labelBars(one)} series={against.series?.[index]} />
-          )}
-        </Fragment>
-      ))}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" data-chart-legend-row>
+        {legend.map((line) => {
+          const palette = chartSeries[line.color % chartSeries.length] ?? chartSeries[0];
+          return (
+            <span
+              className="flex items-center gap-1.5"
+              data-chart-legend={line.compare ? "compare" : "window"}
+              key={`${line.label}-${line.compare}`}
+            >
+              <span
+                aria-hidden
+                className={`inline-block h-0.5 w-4 ${palette.swatch} ${line.compare ? "opacity-50" : ""}`}
+              />
+              <span className={textMutedOnSurface}>
+                {line.label}
+                {line.compare ? `, ${comparedRange}` : ""}
+              </span>
+            </span>
+          );
+        })}
+      </div>
+      <div className={`flex flex-wrap gap-x-3 ${noteClass}`}>
+        <div data-chart-range="window">
+          <span>{rangeLabel(range)}</span>
+        </div>
+        {against === null ? null : (
+          <div data-chart-range="compare">
+            <span>{`Compare ${rangeLabel(against.range)}`}</span>
+          </div>
+        )}
+        {span.note === "" ? null : <span data-chart-trimmed>{span.note}</span>}
+        {empty.length === 0 ? null : (
+          <span data-chart-empty>{`Nothing in this range: ${empty.join(", ")}.`}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -713,8 +1025,9 @@ export function Chart({
   rows = UTC_DAYS,
   series,
   table,
+  defaultMode = "graph",
 }: ChartProps): ReactNode {
-  const [mode, setMode] = useState<ChartMode>("graph");
+  const [mode, setMode] = useState<ChartMode>(defaultMode);
   const against: Comparison | null =
     compare === undefined || compare.range === null
       ? null
@@ -722,7 +1035,7 @@ export function Chart({
   return (
     <div className="flex min-w-0 flex-col gap-1" data-chart={label}>
       {mode === "graph" ? (
-        <Graph against={against} range={range} rows={rows} series={series} />
+        <Graph against={against} label={label} range={range} series={series} />
       ) : (
         <NumberTable
           against={

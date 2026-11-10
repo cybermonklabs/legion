@@ -145,7 +145,7 @@ const BroadcastPage = lazy(() =>
 );
 
 /** `/delivery` and `/pipeline` were Dispatch's deployment-wide Delivery and Pipeline pages until
- *  dispatch://INFRA-979 put each project's own numbers on its issues page (LegionHealthPanel); a
+ *  dispatch://INFRA-979 put each project's own numbers on its Legion tab; a
  *  bookmarked address lands on the default project's issues page. Named, as every other row's
  *  element is, because the router's rows are a roster (`e2e/two-builds-routes.ts`). */
 const HealthRedirect = lazy(() =>

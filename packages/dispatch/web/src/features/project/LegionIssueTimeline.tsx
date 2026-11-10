@@ -31,10 +31,10 @@ const SEGMENT_LABEL: Record<string, string> = {
   unknown: "Unknown (not observed)",
 };
 const SEGMENT_FILL: Record<string, string> = {
-  waiting_on_person: chartParts[3],
+  waiting_on_person: legionPhaseScale.awaiting_person ?? "",
   in_a_turn: chartParts[2],
   ci_wait: chartParts[1],
-  waiting_on_children: chartParts[5],
+  waiting_on_children: legionPhaseScale.waiting_on_children ?? "",
   idle: chartParts[6],
   unknown: surfaceMutedBg,
 };
@@ -131,7 +131,10 @@ function TimelineBody({
         spans: timeline.turns.filter((span) => span.name === role).map(plain(chartParts[2])),
       })),
       { name: "CI wait", spans: timeline.ci_waits.map(plain(chartParts[1])) },
-      { name: "Asks to a person", spans: timeline.asks.map(plain(chartParts[3])) },
+      {
+        name: "Asks to a person",
+        spans: timeline.asks.map(plain(legionPhaseScale.awaiting_person ?? "")),
+      },
       { name: "Parked", spans: timeline.parked.map(plain(chartParts[6])) },
       ...timeline.children.map((child) => ({
         name: `Child ${child.key}`,
@@ -139,7 +142,10 @@ function TimelineBody({
       })),
     ];
   }, [timeline]);
-  const all = lanes.flatMap((lane) => lane.spans.map((one) => one.span));
+  // A lane with nothing recorded is left out and named once under the axis.
+  const empty = lanes.filter((lane) => lane.spans.length === 0).map((lane) => lane.name);
+  const shown = lanes.filter((lane) => lane.spans.length > 0);
+  const all = shown.flatMap((lane) => lane.spans.map((one) => one.span));
   const start = Math.min(
     ...all.map((span) => Date.parse(span.from)),
     timeline.started_at === null ? Number.POSITIVE_INFINITY : Date.parse(timeline.started_at)
@@ -201,10 +207,15 @@ function TimelineBody({
           <span>{when(new Date(start + length / 2).toISOString())}</span>
           <span>{when(new Date(end).toISOString())}</span>
         </div>
-        {lanes.map((lane) => (
+        {shown.map((lane) => (
           <LaneRow at={at} key={lane.name} lane={lane} onOpenIssue={onOpenIssue} />
         ))}
       </div>
+      {empty.length === 0 ? null : (
+        <p className={`text-xs ${textMutedOnSurface}`} data-legion-timeline-empty>
+          Nothing recorded: {empty.join(", ")}.
+        </p>
+      )}
       <details>
         <summary className={`cursor-pointer text-xs ${textSecondaryOnCanvas}`}>
           Every stretch, with its hours and its source
@@ -222,7 +233,7 @@ function TimelineBody({
               </tr>
             </thead>
             <tbody>
-              {lanes.flatMap((lane) =>
+              {shown.flatMap((lane) =>
                 lane.spans.map(({ span, label }) => (
                   <tr
                     className={`border-t ${borderDefault}`}

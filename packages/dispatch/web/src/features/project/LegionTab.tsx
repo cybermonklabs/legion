@@ -1,12 +1,11 @@
 // The project's Legion efficiency dashboard, /projects/<KEY>/legion (dispatch://INFRA-979): one
-// page per project in place of the deployment-wide Delivery and Pipeline pages. From the top:
-// the headline tiles and every card of LegionHealthPanel (the four Legion metrics, the project's
-// PR CI and its deploys, each with graph or table and the range compare); the live slots and the
-// waiting line from the board route over /ws/live; and any issue opened in its timeline
-// (LegionIssueTimeline) at /projects/<KEY>/legion/<ISSUE>. A number's issues open in a list
-// here, each key opening that issue's timeline.
+// page per project in place of the deployment-wide Delivery and Pipeline pages, one column. From
+// the top: where the finished issues' time went and each issue's own bar, work time to merge,
+// rework, splitting, CI and deploys (LegionSections); then the live slots and the waiting line
+// from the board route over /ws/live. Any issue opens in its timeline (LegionIssueTimeline) at
+// /projects/<KEY>/legion/<ISSUE>, above the rest.
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { legionBoardQuery, legionSettingsQuery } from "../../api/queries";
@@ -23,10 +22,10 @@ import {
 import { buildProjectPath } from "../refs/routes";
 import { LegionPhaseCell } from "./issues-table-columns";
 import { legionPhases, legionRolesText } from "./issues-table-model";
-import { LegionHealthPanel } from "./LegionHealthPanel";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
+import { LegionSections } from "./LegionSections";
 
-const CARD = `flex min-w-0 flex-col gap-2 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
+const CARD = `flex min-w-0 flex-col gap-2 rounded border px-4 py-3 ${surfaceBg} ${borderDefault}`;
 const KEY_BUTTON = "font-mono text-xs underline decoration-dotted underline-offset-2";
 
 /** The phases that hold a slot for its tree's children alone, and the work under a root that
@@ -50,7 +49,6 @@ export function LegionTab({
   const navigate = useNavigate();
   const settings = useQuery(legionSettingsQuery());
   const hasLegion = (settings.data ?? []).some((setting) => setting.project === project);
-  const [selection, setSelection] = useState<{ keys: string[]; label: string } | null>(null);
   const open = (key: string) => navigate(buildProjectPath({ kind: "legion", project, issue: key }));
   const close = () => navigate(buildProjectPath({ kind: "legion", project }));
   const board = useQuery({ ...legionBoardQuery({ kind: "legion", project }), enabled: hasLegion });
@@ -75,20 +73,7 @@ export function LegionTab({
       {issue === undefined ? null : (
         <LegionIssueTimeline issueKey={issue} onClose={close} onOpenIssue={open} />
       )}
-      <LegionHealthPanel
-        layout="dashboard"
-        onOpenIssue={open}
-        onSelectIssues={(keys, label) => setSelection({ keys, label })}
-        project={project}
-      />
-      {selection === null ? null : (
-        <SelectedIssues
-          board={board.data}
-          onClear={() => setSelection(null)}
-          onOpenIssue={open}
-          selection={selection}
-        />
-      )}
+      <LegionSections onOpenIssue={open} project={project} />
       {board.isError ? (
         <QueryError
           message="Couldn't load the slots and the waiting line."
@@ -98,55 +83,12 @@ export function LegionTab({
       ) : board.data === undefined ? (
         <p className={textMutedOnCanvas}>Loading the slots and the waiting line…</p>
       ) : (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+        <>
           <Slots board={board.data} onOpenIssue={open} />
           <WaitingLine board={board.data} onOpenIssue={open} />
-        </div>
+        </>
       )}
     </div>
-  );
-}
-
-/** The issues behind a number the reader clicked, each opening its timeline. */
-function SelectedIssues({
-  board,
-  onClear,
-  onOpenIssue,
-  selection,
-}: {
-  board: LegionBoardResponse | undefined;
-  onClear: () => void;
-  onOpenIssue: (key: string) => void;
-  selection: { keys: string[]; label: string };
-}): ReactNode {
-  const titles = useMemo(() => {
-    const byKey = new Map<string, string>();
-    for (const column of board?.columns ?? []) {
-      for (const card of column.cards) byKey.set(card.key, card.title);
-    }
-    return byKey;
-  }, [board]);
-  return (
-    <section aria-label="Selected issues" className={CARD} data-legion-selection>
-      <header className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>
-          {selection.label}: {selection.keys.length} issues
-        </h2>
-        <button className={`text-xs ${textSecondaryOnCanvas}`} onClick={onClear} type="button">
-          Clear
-        </button>
-      </header>
-      <ul className="flex max-h-48 flex-col gap-0.5 overflow-auto">
-        {selection.keys.map((key) => (
-          <li className="flex items-baseline gap-2 text-sm" key={key}>
-            <button className={KEY_BUTTON} onClick={() => onOpenIssue(key)} type="button">
-              {key}
-            </button>
-            <span className={`truncate ${textSecondaryOnCanvas}`}>{titles.get(key) ?? ""}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
@@ -177,19 +119,18 @@ function Slots({
   const { header } = board;
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>Slots</h2>
-        <span className={`text-xs ${textSecondaryOnCanvas}`} data-legion-slot-summary>
-          {header.slots_in_use} of {header.slot_cap ?? "?"} in use · {held.length} held for children
-          only · {idle.length} idle
-        </span>
-      </header>
+      <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>Slots, now</h2>
+      <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-slot-summary>
+        {header.slots_in_use} of {header.slot_cap ?? "?"} slots in use · {held.length} held for
+        children only · {idle.length} of those idle, with nothing under their root implementing,
+        testing or reviewing
+      </p>
       <p className={`text-xs ${textMutedOnSurface}`}>
         A slot is held for children only while its root is accepting, awaiting merge or awaiting a
         person; it is idle when, besides, nothing under the root is implementing, testing or
         reviewing.
       </p>
-      <div className="max-h-96 overflow-auto">
+      <div className="max-h-[28rem] overflow-auto">
         <table className="w-full text-left text-xs">
           <thead className={textMutedOnSurface}>
             <tr>
@@ -199,7 +140,7 @@ function Slots({
               <th className="px-1 py-1 font-normal">Roles in a turn</th>
               <th className="px-1 py-1 font-normal">Children not started</th>
               <th className="px-1 py-1 font-normal">CI</th>
-              <th className="px-1 py-1 font-normal">Slot use</th>
+              <th className="px-1 py-1 font-normal whitespace-nowrap">Slot use</th>
             </tr>
           </thead>
           <tbody>
@@ -221,7 +162,7 @@ function Slots({
                       {card.key}
                     </button>
                     <div
-                      className={`max-w-44 truncate ${textSecondaryOnCanvas}`}
+                      className={`max-w-[13rem] truncate md:max-w-md ${textSecondaryOnCanvas}`}
                       title={card.title}
                     >
                       {card.title}
@@ -239,7 +180,7 @@ function Slots({
                   >
                     {CI_SHORT[card.checks_verdict ?? ""] ?? card.checks_verdict ?? "—"}
                   </td>
-                  <td className="px-1 py-1" data-legion-slot-state={state(card)}>
+                  <td className="px-1 py-1 whitespace-nowrap" data-legion-slot-state={state(card)}>
                     {state(card)}
                   </td>
                 </tr>
@@ -273,14 +214,12 @@ function WaitingLine({
   const blocked = queue.filter((card) => card.blocked_by.length > 0).length;
   return (
     <section aria-label="Waiting line" className={CARD} data-legion-waiting-line>
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>Waiting line</h2>
-        <span className={`text-xs ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
-          {queue.length} waiting · {ready} ready · {blocked} held by a dependency ·{" "}
-          {awaiting.length} awaiting a person
-        </span>
-      </header>
-      <div className="max-h-96 overflow-auto">
+      <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>Waiting line, now</h2>
+      <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
+        {queue.length} roots waiting for a slot · {ready} ready · {blocked} held by a dependency ·{" "}
+        {awaiting.length} awaiting a person
+      </p>
+      <div className="max-h-[28rem] overflow-auto">
         <table className="w-full text-left text-xs">
           <thead className={textMutedOnSurface}>
             <tr>
@@ -304,7 +243,10 @@ function WaitingLine({
                   >
                     {card.key}
                   </button>
-                  <div className={`max-w-72 truncate ${textSecondaryOnCanvas}`} title={card.title}>
+                  <div
+                    className={`max-w-[15rem] truncate md:max-w-xl ${textSecondaryOnCanvas}`}
+                    title={card.title}
+                  >
                     {card.title}
                   </div>
                 </td>

@@ -311,9 +311,9 @@ test("a live push moves an issue's phase without reloading the table @legion @ph
 });
 
 // dispatch://INFRA-979: the Delivery and Pipeline pages are gone, and their old addresses land on
-// the default project's issues page — here the one project naming a Legion daemon.
+// the default project's Legion tab — here the one project naming a Legion daemon.
 for (const path of ["/delivery", "/pipeline"]) {
-  test(`${path} lands on the default project's issues page @legion`, async ({ browser }) => {
+  test(`${path} lands on the default project's Legion tab @legion`, async ({ browser }) => {
     const daemon = await startFakeLegionDaemon({});
     await seedLegionFixture(daemon.url);
     const context = await asUser(browser, "alice");
@@ -321,8 +321,8 @@ for (const path of ["/delivery", "/pipeline"]) {
 
     try {
       await page.goto(path);
-      await expect(page).toHaveURL(new RegExp(`/projects/${LEGION_PROJECT}/issues$`));
-      await expect(page.locator(`[data-legion-health="${LEGION_PROJECT}"]`)).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`/projects/${LEGION_PROJECT}/legion$`));
+      await expect(page.locator("[data-legion-sections]")).toBeVisible();
     } finally {
       await context.close();
       await daemon.close();
@@ -330,7 +330,7 @@ for (const path of ["/delivery", "/pipeline"]) {
   });
 }
 
-test("the issues page's health panel draws the four Legion metrics @legion", async ({
+test("the Legion tab says where the finished issues' time went, then each metric @legion", async ({
   browser,
 }) => {
   const daemon = await startFakeLegionDaemon({});
@@ -340,48 +340,38 @@ test("the issues page's health panel draws the four Legion metrics @legion", asy
   const page = await context.newPage();
 
   try {
-    await page.goto(`/projects/${LEGION_PROJECT}/issues`);
-    const section = page.locator(`[data-legion-health="${LEGION_PROJECT}"]`);
-    await expect(section).toBeVisible();
-
-    // One card per metric, each drawing its numbers through `Chart`, so each has the
-    // graph-or-table toggle and the compare control every chart of a measure over a range has.
-    for (const [metric, label] of [
-      ["work_time", "Work time to merge"],
-      ["phase_time", "Phase time by worker type"],
-      ["rework", "Rework"],
-      ["splitting", "Splitting and follow-ups"],
-    ]) {
-      const card = section.locator(`[data-legion-metric="${metric}"]`);
-      await expect(card).toBeVisible();
-      await expect(card.locator(`[data-chart="${label}"]`)).toBeVisible();
-      await expect(card.getByRole("group", { name: `${label} view` })).toBeVisible();
-      await expect(card.locator(`select[data-chart-compare="${label}"]`)).toBeVisible();
-    }
-    await expect(section.locator("[data-legion-metric]")).toHaveCount(4);
-
-    // The headline numbers of the two issues that finished: both are counted, the child's
-    // review round and send-back are on the rework card, and the child the architect filed
-    // while designing the root is on the splitting card.
-    const figure = (metric: string, label: string) =>
-      section.locator(`[data-legion-metric="${metric}"] [data-legion-figure="${label}"]`);
-    await expect(figure("work_time", "Issues finished")).toHaveText("2");
+    await page.goto(`/projects/${LEGION_PROJECT}/legion`);
+    // One column, in the order a reader asks, each section with its headline line.
+    await expect(page.locator("[data-legion-section]")).toHaveCount(4);
+    const headline = (id: string) =>
+      page.locator(`[data-legion-section="${id}"] [data-legion-headline]`);
+    await expect(headline("phase_breakdown")).toContainText("2 issues finished");
+    await expect(headline("work_time")).toContainText("2 issues finished");
     // Two issues finished: the root with no review round, the child with one.
-    await expect(figure("rework", "Median review rounds")).toHaveText("0.5");
-    await expect(figure("rework", "Sent back at least once")).toHaveText("50.0%");
-    await expect(figure("splitting", "Issues filed")).toHaveText("1");
-    await expect(figure("splitting", "Roots finished")).toHaveText("1");
+    await expect(headline("rework")).toContainText("median 0.5 review rounds");
+    await expect(headline("rework")).toContainText("50% sent back");
+    await expect(headline("splitting")).toContainText("1 issues filed");
 
-    // The worker types the child's work was shared out over, on the phase-time card's table.
-    const phaseTime = section.locator('[data-legion-metric="phase_time"]');
-    await phaseTime.getByRole("button", { name: "Table" }).click();
-    const table = phaseTime.locator('[data-chart-table="Phase time by worker type"]');
-    await expect(table.locator("td", { hasText: "implementer" }).first()).toBeVisible();
-    await expect(table.locator("th", { hasText: "Worker type" }).first()).toBeVisible();
+    // The finished issues' phase bar and each issue's own bar, each key opening its timeline.
+    await expect(
+      page.locator("[data-legion-phase-bar] [data-legion-phase-part]").first()
+    ).toBeVisible();
+    await expect(page.locator("[data-legion-breakdown-issue]")).toHaveCount(2);
+    await page.locator("[data-legion-breakdown-issue] button").first().click();
+    await expect(page).toHaveURL(
+      new RegExp(`/projects/${LEGION_PROJECT}/legion/${LEGION_PROJECT}-\\d+$`)
+    );
+    await expect(page.locator("[data-legion-timeline] [data-legion-timeline-axis]")).toBeVisible();
+
+    // Each chart has its axes, its legend and the two controls.
+    const work = page.locator('[data-legion-section="work_time"]');
+    await expect(work.locator("[data-chart-unit]").first()).toHaveText("hours");
+    await expect(work.getByRole("group", { name: "Work time to merge view" })).toBeVisible();
+    await expect(work.locator('select[data-chart-compare="Work time to merge"]')).toBeVisible();
 
     // The toggle reads the metrics again for the roots alone: one of the two finished.
-    await section.getByRole("button", { name: "Roots" }).click();
-    await expect(figure("work_time", "Issues finished")).toHaveText("1");
+    await page.getByRole("button", { name: "Roots" }).click();
+    await expect(headline("work_time")).toContainText("1 issues finished");
   } finally {
     await context.close();
     await daemon.close();

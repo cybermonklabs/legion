@@ -81,6 +81,8 @@ type Report struct {
 	PhaseTime PhaseTime `json:"phase_time"`
 	Rework    Rework    `json:"rework"`
 	Splitting Splitting `json:"splitting"`
+	// PhaseBreakdown is where the finished issues' bar hours went, by phase.
+	PhaseBreakdown PhaseBreakdown `json:"phase_breakdown"`
 }
 
 // WorkTime is metric 1: hours from an issue's first worker event to its close, less its parked
@@ -206,16 +208,17 @@ func Compute(population *Population, scope Scope, now time.Time) Report {
 	}
 	finished := computed.finished()
 	return Report{
-		Project:    population.Project,
-		From:       population.From,
-		To:         population.To,
-		Scope:      scope,
-		ComputedAt: now,
-		Finished:   len(finished),
-		WorkTime:   computed.workTime(finished),
-		PhaseTime:  computed.phaseTime(finished),
-		Rework:     computed.rework(finished),
-		Splitting:  computed.splitting(finished),
+		Project:        population.Project,
+		From:           population.From,
+		To:             population.To,
+		Scope:          scope,
+		ComputedAt:     now,
+		Finished:       len(finished),
+		WorkTime:       computed.workTime(finished),
+		PhaseTime:      computed.phaseTime(finished),
+		Rework:         computed.rework(finished),
+		Splitting:      computed.splitting(finished),
+		PhaseBreakdown: computed.phaseBreakdown(finished),
 	}
 }
 
