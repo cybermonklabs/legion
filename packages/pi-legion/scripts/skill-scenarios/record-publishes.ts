@@ -33,8 +33,8 @@
  * summary when the payload is empty, which is how the listener carries a message of one line),
  * `sender` the session Envoy recorded and `subject` the NATS subject the copy arrived on. An
  * envelope that is not one of this run's role messages is passed over, and one that reaches a
- * role topic of this run without the fields an envelope carries is a defect of the listener or of
- * this reader, never an act an agent did not do: it is logged and written as
+ * role topic of this run that this cannot read, or cannot attribute to a session, is never an act
+ * an agent did not do: it is logged and written as
  * `{"at","unreadable","subject"}`, which makes every run of the record a rig error.
  */
 import { appendFileSync } from "node:fs";
@@ -61,7 +61,11 @@ if (url === undefined || url === "") {
  * (score.ts's `unscored`), because a message this cannot read is this reader's limit and never an
  * act an agent did not do. `source_session` is read alone and never `source`: the two are
  * different kinds — `source` is `agent` for every agent's publish — so a message with no session
- * would otherwise carry a sender that belongs to no half. */
+ * would otherwise carry a sender that belongs to no half. Such a publish is one Envoy accepts
+ * (`SourceSession` carries no `omitempty`, and `packages/envoy/AGENTS.md` says a message without
+ * it acts as no session and is not refused), so it is no defect of the listener: it is a message
+ * this rig cannot attribute, and every message a scenario scores must be attributable, which is
+ * why it is written as `unreadable` rather than scored. */
 const Envelope = z.looseObject({
   event_id: z.string().min(1),
   topic: z.string().min(1),

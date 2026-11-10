@@ -1007,39 +1007,51 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // (review-threads.md step 1). The round ends on both halves, so an accepted completion can
   // land before the review's webhook, and a push in that gap voids the approval — the
   // reviewer's own round-1 finding, which `workflow/review.go` makes load-bearing. So the
-  // ordering the run must show is: the review is submitted, the reviewer reads the record, that
-  // read answers `accepting`, and the publish follows both.
+  // ordering the run must show is: the verdict is submitted, the reviewer reads the record after
+  // it, that read answers `accepting`, and the publish follows that answer.
   //
-  // The submission's own time is read because the stand-in cannot carry it: it moves to
-  // `accepting` on any accepted completion of `reviewing` (daemon-standin.ts), while the daemon
-  // needs the review as well, so a run that completed, read `accepting`, published and only then
-  // submitted its approval would pass on the read alone — and that window is the one the rule
-  // exists to close. The submission is the gh stand-in's own recorded call (`reviewOf`), and the
-  // read is the reviewer's own call and its own answer, both read from the tool's result: the
+  // The read must come after the submission and not merely before the publish. The stand-in
+  // moves to `accepting` on any accepted completion of `reviewing` (daemon-standin.ts), while
+  // the daemon needs the review as well, so a read taken before the approval cannot have shown
+  // the round ending whatever it answered — measured by the deep pass of 2026-11-10, which moved
+  // a recorded run's own submission after its read and the run still passed. The submission read
+  // is the verdict's own (`review`, the last submission the stand-in recorded), not the first
+  // APPROVE of the round.
+  //
+  // The read is the reviewer's own call and its own answer, both from the tool's result: the
   // result's timestamp is written when the tool returned, so it orders the publish without any
   // help from the server's log, where the call's own timestamp, written with the assistant
   // message, would not. Other callers read the same route — `handoff_complete` reads the state
   // before it posts (`pi-shared/src/legion-phase-ops.ts`), the phase reminder reads it to check
-  // the record — so a reviewer that completed again after its acceptance and published would pass
-  // on any reading taken from that route rather than from this call.
+  // the record — so a reviewer that completed again after its acceptance and published would
+  // pass on any reading taken from that route rather than from this call.
   const entries = session(runDir);
   const sender = ownSession(entries);
   const results = outcomes(entries);
-  const readAfter = steps(entries)
-    .filter((step) => namesReadRecord(step))
-    .map((step) => results.get(step.id))
-    .find((result) => acceptingRead(result) === true)?.at;
-  const approvedAt = reviews.find((submitted) => submitted.event === "APPROVE")?.at;
-  const toldImplementer =
-    readAfter !== undefined &&
-    approvedAt !== undefined &&
-    publishedTo(
-      runDir,
-      sender,
-      "implementer",
-      [world.head],
-      readAfter > approvedAt ? readAfter : approvedAt
+  // Every read of the record this run made, with the phases its answer carried: a call the tool
+  // refused is no answer of its own and is left out, as `read_record requires issue` is, which an
+  // agent then makes again with the issue.
+  const reads = steps(entries)
+    .map((step) => ({ step, answer: results.get(step.id) }))
+    .filter(({ answer }) => answer !== undefined && answer.failed !== true)
+    .filter(({ step, answer }) => readsTheRecord(step, answer))
+    .map(({ step, answer }) => ({
+      at: answer?.at ?? "",
+      phases: readPhases(step.tool, answer),
+    }));
+  const approvedAt = review?.event === "APPROVE" ? review.at : undefined;
+  const afterApproval =
+    approvedAt === undefined ? [] : reads.filter((read) => read.at > approvedAt);
+  const readAfter = afterApproval.find((read) => read.phases.includes("accepting"))?.at;
+  // A read after the approval whose answer holds no record at all leaves what the reviewer was
+  // shown unknown, so the run says nothing about the step either way: that is this reader's limit
+  // and a rig error, which `scoreRuns` makes of a throw, rather than a round that read no record.
+  if (readAfter === undefined && afterApproval.some((read) => read.phases.length === 0))
+    throw new Error(
+      "a read_record after the approval was answered with no record this can read, so what the reviewer was shown is unknown"
     );
+  const toldImplementer =
+    readAfter !== undefined && publishedTo(runDir, sender, "implementer", [world.head], readAfter);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1122,19 +1134,16 @@ function transcriptText(entries: SessionEntry[]): string {
  * run_project). The words are the role names themselves, not the `by` constants above, which
  * name the roles of the gh calls the stand-in recorded. */
 type Role = "implementer" | "reviewer" | "architect";
-/** A `read_record` answer that showed the issue in `accepting`: the record as the `legion` tool
- * returns it, read through one schema whatever carried the call. */
-const AcceptingRecord = z.looseObject({
-  record: z.looseObject({ phase: z.literal("accepting") }),
-});
-/** The same record in any phase: an answer this read, which is no step taken and no rig error. */
-const RecordOfAnyPhase = z.looseObject({ record: z.looseObject({ phase: z.string() }) });
+/** A record the `legion` tool answered a `read_record` with, read through one schema whatever
+ * route carried the call. The phase is read as a string rather than matched against one word, so
+ * the caller decides what each phase means and "unreadable" stays one thing: no record at all. */
+const RecordAnswer = z.looseObject({ record: z.looseObject({ phase: z.string() }) });
 /** The result of a tool call that reached the device as an `xd://` one: the tool's own result
- * sits one level down. */
+ * sits one level down (an object, as Oh My Pi writes it). */
 const XdevResult = z.looseObject({ xdev: z.looseObject({ inner: z.unknown() }) });
-/** Every JSON object `text` holds, parsed: each `{`-to-matching-`}` run `JSON.parse` accepts. A
- * cell prints its result among its own words, so the object is parsed out of the text and nothing
- * about the words around it is read. */
+/** Every JSON object `text` holds, parsed: each `{`-to-matching-`}` run `JSON.parse` accepts. An
+ * `eval` cell prints its result among its own words, so the record is parsed out of the text and
+ * nothing about the words around it is read. */
 function jsonObjectsIn(text: string): unknown[] {
   const found: unknown[] = [];
   for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
@@ -1156,43 +1165,64 @@ function jsonObjectsIn(text: string): unknown[] {
   }
   return found;
 }
-/** Whether a `read_record` was answered with the issue in `accepting`, `false` when it was
- * answered with another phase, and undefined when the answer cannot be read at all.
+/** Every phase a `read_record` was answered with, which is empty when its answer holds no record
+ * this can read.
  *
- * The record is parsed and never matched, on every route a session can reach the tool by: the
- * native call carries it as `details`, a `write` to `xd://legion` carries the tool's own result
- * as `details.xdev.inner`, and an `eval` cell carries whatever it printed, so the record is taken
- * from a JSON object of that text. One schema decides all three. An answer this cannot read is
- * the reader's limit and never a step the agent did not take, so it is undefined, which makes the
- * run a rig error (`unscored`) rather than a run that read no record. */
-function acceptingRead(
+ * Where the answer lives is decided by the tool that carried the call, in the one place that
+ * knows the routes: the native `legion` call answers in `details`, a `write` to `xd://legion`
+ * answers in `details.xdev.inner`, and an `eval` cell answers in the text it printed. One schema
+ * reads all three, and the record is parsed and never matched, so a cell that prints the word
+ * `accepting` without a record is no answer. An empty list is the reader's limit and never a step
+ * the agent did not take, which is why the caller makes such a read a rig error rather than a
+ * failure. */
+function readPhases(
+  tool: string,
   result: { text: string; details: unknown } | undefined
-): boolean | undefined {
-  if (result === undefined) return undefined;
-  const wrapped = XdevResult.safeParse(result.details);
-  const inner = wrapped.success ? wrapped.data.xdev.inner : undefined;
-  const answers: unknown[] = [
-    result.details,
-    ...(inner === undefined ? [] : [inner]),
-    ...jsonObjectsIn(typeof inner === "string" ? inner : ""),
-    ...jsonObjectsIn(result.text),
-  ];
-  if (answers.some((answer) => AcceptingRecord.safeParse(answer).success)) return true;
-  if (answers.some((answer) => RecordOfAnyPhase.safeParse(answer).success)) return false;
-  return undefined;
+): string[] {
+  if (result === undefined) return [];
+  const answers =
+    tool === "write"
+      ? [XdevResult.safeParse(result.details).data?.xdev.inner]
+      : tool === "eval"
+        ? jsonObjectsIn(result.text)
+        : [result.details];
+  return answers.flatMap((answer) => {
+    const read = RecordAnswer.safeParse(answer);
+    return read.success ? [read.data.record.phase] : [];
+  });
 }
-/** Whether a call is a `read_record` of the `legion` tool, whichever tool carried it: the native
- * call, a `write` to `xd://legion`, or a call made from an `eval` cell, which is how a session
- * may reach any tool of its own. What the call asked for is the rule's step; which tool carried
- * it is no part of it, as on the publish side. A `write` counts only when it names that device,
- * never when any write mentions the word. */
-function namesReadRecord(step: { tool: string; args: Record<string, unknown> }): boolean {
-  if (step.tool === "write")
-    return step.args.path === "xd://legion" && /read_record/.test(strings(step.args).join("\n"));
-  if (step.tool === "legion" || step.tool === "eval")
-    return strings(step.args).some((text) => /read_record/.test(text));
+/** Whether a call asked the `legion` tool to read the record, on any route a session can reach it
+ * by. The op is read, never the word: the native call and a `write` to `xd://legion` name it in
+ * their arguments, where it is parsed out, and an `eval` cell holds it inside code, so a cell
+ * counts as the call whose answer carries a record. A `handoff_complete` summary that mentions
+ * `read_record` is no read — the deep pass of 2026-11-10 added that sentence to a passing run's
+ * summary and the run scored a rig error. */
+function readsTheRecord(
+  step: { tool: string; args: Record<string, unknown> },
+  result: { text: string; details: unknown } | undefined
+): boolean {
+  if (step.tool === "legion") return step.args.op === "read_record";
+  if (step.tool === "write") {
+    if (step.args.path !== "xd://legion") return false;
+    const content = typeof step.args.content === "string" ? step.args.content : "";
+    return jsonObjectsIn(content).some(
+      (named) => z.looseObject({ op: z.literal("read_record") }).safeParse(named).success
+    );
+  }
+  // A cell holds the op inside its code, so the op is read there: `op` given the value
+  // `read_record`, in any of the shapes a language writes that pair in. A cell that built its
+  // arguments elsewhere is read by its answer instead, which carries the record itself. The bare
+  // word is never enough, which is what keeps a `handoff_complete` summary that mentions
+  // `read_record` out of this.
+  if (step.tool === "eval")
+    return (
+      READ_RECORD_OP.test(strings(step.args).join("\n")) || readPhases("eval", result).length > 0
+    );
   return false;
 }
+/** The `read_record` op as a cell's own code names it: the key `op` and that value, however the
+ * language spells the pair. */
+const READ_RECORD_OP = /\bop\b\s*["']?\s*[:=]\s*["']read_record["']/;
 /** One line of `<run>/published.jsonl`. The file is the recorder's own record of its run as much
  * as of the run's messages (record-publishes.ts): it opens with `recording`, written once the
  * subscription is registered with the server, ends with `closed`, written when the rig stops it,
@@ -1258,7 +1288,7 @@ function ownSession(entries: SessionEntry[]): string {
  * record, so one writer decides one fact. The caller passes that id, since every caller already
  * holds the transcript it means — a second rule for finding a half's transcript here would be a
  * second answer to one question, and a missing one would read as another half's messages. A run
- * of a scored scenario whose transcript names no session is a rig error (`unscored`). */
+ * whose transcript names no session is a rig error, which `ownSession`'s throw makes of it. */
 function publishes(runDir: string, sender: string): Publish[] {
   const sent: Publish[] = [];
   for (const line of parsed(path.join(runDir, "published.jsonl"), PublishedLine)) {
@@ -1496,8 +1526,8 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   // Each half's own session id, which is what the sender Envoy recorded is read against; a
-  // transcript naming none makes the run a rig error (`unscored`), so no message is attributed
-  // to a half this cannot name.
+  // transcript naming none makes the run a rig error, which `ownSession` throws, so no message
+  // is attributed to a half this cannot name.
   const fixSender = ownSession(fixSession);
   const reviewSender = ownSession(reviewSession);
   const told =
@@ -3698,8 +3728,7 @@ function specRow(
       `check ${check.tasks} (${check.via}) for spec write ${check.write + 1} counts, but ${check.problem}`
     );
 
-  const id = sessionId(entries);
-  if (id === undefined) throw new Error("the transcript has no session header");
+  const id = ownSession(entries);
   const refused = refusalBlocks(runDir, entries, ops, id);
   details.push(...refused);
 
@@ -3876,8 +3905,9 @@ function median(values: number[]): number {
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
- * scenario's function, as is a transcript that names no session (`ownSession`) and a
- * `read_record` whose answer this cannot read at all (`acceptingRead`). */
+ * scenario's function, as is a transcript that names no session (`ownSession`) and, in the one
+ * scenario that reads the record, a `read_record` after the approval whose answer holds no record
+ * this can read (`reviewerTextFindings`). */
 function unscored(
   runDir: string,
   scenario: string,
@@ -3922,23 +3952,6 @@ function unscored(
     const refused = CONTRACT_REFUSED.exec(transcriptText(booted));
     if (refused !== null)
       return `${role === "" ? "the run's own agent" : `the ${role} half`} had a daemon answer refused by its own checkout's contract: ${refused[1]} ${refused[2]}`;
-  }
-  // A `read_record` the tool answered and this cannot read at all: the agent made the call the
-  // rule names and what it was answered with is unknown, so the run says nothing about the step
-  // either way (`acceptingRead`). It is the reader's limit, as an unreadable message of the
-  // record is, and a rig error rather than a round that read no record. A call the tool refused
-  // — `read_record requires issue`, which an agent then makes again with the issue — is the
-  // agent's own act and not this reader's limit, so it is passed over, and a half that read the
-  // record once readably has shown the step whatever else it called.
-  for (const [role, booted] of halves) {
-    const answers = outcomes(booted);
-    const reads = steps(booted)
-      .filter((step) => namesReadRecord(step))
-      .map((step) => ({ step, answer: answers.get(step.id) }))
-      .filter(({ answer }) => answer !== undefined && !answer.failed);
-    const unreadable = reads.find(({ answer }) => acceptingRead(answer) === undefined);
-    if (reads.length > 0 && reads.every(({ answer }) => acceptingRead(answer) === undefined))
-      return `${role === "" ? "the run's own agent" : `the ${role} half`} made a read_record this cannot read the answer of (${unreadable?.step.tool} call ${unreadable?.step.id}), so what the record said is unknown`;
   }
   // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
   // only when the recorder said both that it had subscribed and that it was stopped. A recorder
@@ -4407,8 +4420,21 @@ if (import.meta.main) {
     // whether the message the rule names was among them. Two readers of one fact disagreed
     // before this (2026-11-09): a publish made from `eval` scored `toldReviewer` while the
     // reviewer half booted with an empty prompt.
+    // A run whose first agent left no session header is a rig error the score reports, and the
+    // harness must not die of it first: `rig.sh`'s reviewer_wake runs under `set -e`, so a throw
+    // here would end the run with "the reviewer half never started" and hide the real reason.
+    // Printing an empty list leaves the next half with no wake, which is what a run that
+    // published nothing leaves, and `scoreRuns` then names the missing session itself.
     const runDir = rest[0] ?? "";
-    console.log(JSON.stringify(publishesTo(runDir, rest[1] ?? "")));
+    const role = rest[1] ?? "";
+    try {
+      console.log(JSON.stringify(publishesTo(runDir, role)));
+    } catch (error) {
+      console.error(
+        `score.ts published: ${error instanceof Error ? error.message : String(error)}`
+      );
+      console.log("[]");
+    }
   } else {
     console.error(
       "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | published <run dir> <role>"

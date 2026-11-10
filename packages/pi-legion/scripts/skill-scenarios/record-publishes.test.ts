@@ -218,3 +218,33 @@ test.skipIf(skip)(
   },
   120_000
 );
+
+// Catches: a recorder that records a message Envoy accepted but nobody can attribute. A publish
+// with no `source_session` is one Envoy takes (`packages/envoy/AGENTS.md`: it acts as no session
+// and is not refused), so it is no defect of the listener — but the score reads who sent a
+// message by that session against each half's own transcript, so a message without one cannot be
+// read as any half's. It is written as `unreadable`, which makes its run a rig error, rather than
+// recorded with a blank sender that a transcript without a header would match.
+test.skipIf(skip)(
+  "a message with no session of its own is unreadable, not a blank sender",
+  async () => {
+    const run = await recording("no-session", "legion-void-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-void-lweval-1-reviewer";
+      const { source_session, ...sessionless } = envelope(topic, "a wake from no session");
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(sessionless));
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the fixes are pushed");
+      expect((await run.written()).some((line) => line.unreadable === topic)).toBe(true);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ sender: "01a0f2cc" });
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);

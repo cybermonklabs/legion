@@ -3267,43 +3267,60 @@ const readRecordVia = (
   at = "2026-09-30T17:40:30.000Z"
 ) => {
   const record = { key: "LWEVAL-1", phase: "accepting", status: "needs_review" };
-  const call =
-    route === "xd"
-      ? {
-          type: "toolCall",
-          id: `call-read-${route}`,
-          name: "write",
-          arguments: { path: "xd://legion", content: JSON.stringify({ op: "read_record" }) },
-        }
-      : {
-          type: "toolCall",
-          id: `call-read-${route}`,
-          name: "eval",
-          arguments: {
-            language: "py",
-            code: 'print(tool.legion({"op": "read_record", "issue": "LWEVAL-1"}))',
-          },
-        };
-  const result =
-    route === "xd"
-      ? { text: "wrote xd://legion", details: { xdev: { inner: { record } } } }
-      : route === "eval"
-        ? {
-            text: `the cell printed ${JSON.stringify({ record })}`,
-            details: { cells: [{ language: "py" }], language: "py" },
-          }
-        : {
-            text: "the cell printed <Record object at 0x7f>",
-            details: { cells: [{ language: "py" }], language: "py" },
-          };
+  const id = `call-read-${route}`;
+  // One entry per route: the call the session made and the answer the tool returned, so a new
+  // route is one entry rather than a branch in two chains.
+  const routes = {
+    xd: {
+      call: {
+        name: "write",
+        arguments: { path: "xd://legion", content: JSON.stringify({ op: "read_record" }) },
+      },
+      result: { text: "wrote xd://legion", details: { xdev: { inner: { record } } } },
+    },
+    eval: {
+      call: {
+        name: "eval",
+        arguments: {
+          language: "py",
+          code: 'print(tool.legion({"op": "read_record", "issue": "LWEVAL-1"}))',
+        },
+      },
+      result: {
+        text: `the cell printed ${JSON.stringify({ record })}`,
+        details: { cells: [{ language: "py" }], language: "py" },
+      },
+    },
+    "eval-unreadable": {
+      call: {
+        name: "eval",
+        arguments: {
+          language: "py",
+          code: 'print(tool.legion({"op": "read_record", "issue": "LWEVAL-1"}))',
+        },
+      },
+      result: {
+        text: "the cell printed <Record object at 0x7f>",
+        details: { cells: [{ language: "py" }], language: "py" },
+      },
+    },
+  } as const;
+  const { call, result } = routes[route];
   return [
-    { type: "message", timestamp: at, message: { role: "assistant", content: [call] } },
+    {
+      type: "message",
+      timestamp: at,
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id, name: call.name, arguments: call.arguments }],
+      },
+    },
     {
       type: "message",
       timestamp: at,
       message: {
         role: "toolResult",
-        toolCallId: `call-read-${route}`,
+        toolCallId: id,
         content: [{ type: "text", text: result.text }],
         details: result.details,
       },
@@ -3427,6 +3444,80 @@ reviewRun(
 // the daemon needs the review as well, so the read alone cannot see that window — and that window
 // is the one the rule exists to close. The passing order is every other text-only head run:
 // submission, then the read, then the publish.
+// head-42: the reviewer completed, read `accepting`, then submitted its approval and published.
+// The read cannot have shown the round ending — the stand-in moves to `accepting` on the
+// completion alone, while the daemon needs the review too — so the step is not shown however
+// late the publish is. The deep pass of 2026-11-10 built this order out of a recorded run and it
+// passed on the read alone.
+reviewRun(
+  "reviewer-text-findings-text-only-head-42",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([{ ...submission(approval()), at: "2026-09-30T17:41:00.000Z" }]),
+  },
+  [...header, ...turn, ...readRecord("2026-09-30T17:40:30.000Z")]
+);
+// head-43: an earlier read answered `reviewing`, and the only read after the approval holds no
+// record this can parse. What the reviewer was shown is unknown, so the run is a rig error; a
+// reader that asked whether *any* read was readable would score it a failure, which is the
+// outcome the rig error exists to rule out.
+reviewRun(
+  "reviewer-text-findings-text-only-head-43",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [
+    ...header,
+    ...turn,
+    ...readRecord("2026-09-30T17:29:00.000Z", "reviewing"),
+    ...readRecordVia("eval-unreadable", "2026-09-30T17:40:30.000Z"),
+  ]
+);
+// head-44: a `handoff_complete` whose summary mentions `read_record`, beside the reviewer's own
+// native read. The op is what makes a call a read of the record, not the word, so the summary is
+// no read and the run passes — the deep pass added exactly that sentence to a passing run and it
+// scored a rig error.
+reviewRun(
+  "reviewer-text-findings-text-only-head-44",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [
+    ...header,
+    ...turn,
+    {
+      type: "message",
+      timestamp: "2026-09-30T17:40:00.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-complete",
+            name: "legion",
+            arguments: {
+              op: "handoff_complete",
+              summary: "Approved the head. Will read_record before waking anyone.",
+            },
+          },
+        ],
+      },
+    },
+    {
+      type: "message",
+      timestamp: "2026-09-30T17:40:01.000Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-complete",
+        content: [{ type: "text", text: "{}" }],
+        details: {},
+      },
+    },
+    ...readRecord(),
+  ]
+);
 reviewRun("reviewer-text-findings-text-only-head-41", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([{ ...submission(approval()), at: "2026-09-30T17:45:00.000Z" }]),
@@ -4457,7 +4548,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t5/16\t0/16\t2\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t6/18\t0/18\t3\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4764,6 +4855,10 @@ test("reviewer-text-findings, text-only: a wake sent before the record was read,
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-41\tpass=false\t.*event=APPROVE .*toldImplementer=false /
   );
+  // And the read itself came before the approval, so it cannot have shown the round ending.
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-42\tpass=false\t.*event=APPROVE .*toldImplementer=false /
+  );
   // And the right order still passes: submission, read, publish (head-1, head-2, head-4 …).
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-1\tpass=true\t.*event=APPROVE .*toldImplementer=true /
@@ -4782,9 +4877,19 @@ test("reviewer-text-findings, text-only: the record is read on every route, and 
     /reviewer-text-findings-text-only-head-39\tpass=true\t.*toldImplementer=true /
   );
   expect(out).toContain(
-    "reviewer-text-findings-text-only-head-40\trig error: the run's own agent made a read_record this cannot read the answer of"
+    "reviewer-text-findings-text-only-head-40\trig error: a read_record after the approval was answered with no record this can read"
   );
   expect(out).not.toContain("reviewer-text-findings-text-only-head-40\tpass=");
+  // An earlier read answered `reviewing` and the only read after the approval holds no record:
+  // the run is a rig error and not the failure a "was any read readable" test would score.
+  expect(out).toContain(
+    "reviewer-text-findings-text-only-head-43\trig error: a read_record after the approval was answered with no record this can read"
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-43\tpass=");
+  // And a call that only mentions the word is no read: the op decides.
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-44\tpass=true\t.*toldImplementer=true /
+  );
 });
 // Catches: a scorer that reads a run whose agent could not read the daemon at all as a row of
 // its own. Each label's agents load the plugin of their own checkout, so a stand-in body one
