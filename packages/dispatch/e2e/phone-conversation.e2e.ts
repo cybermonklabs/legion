@@ -127,7 +127,8 @@ test.beforeEach(async () => {
 // A send's composer is the one that shows its outcome, and the one on screen: a thread opened over
 // it while the message is on its way leaves it where it was, holding the draft until the answer,
 // and then it takes the next message.
-test("on a phone, a docked send keeps its composer through a thread and back, which then takes typing @phone", async ({
+// @pr: A write on the wire on a phone: a thread opened over a send leaves its composer, its draft and the answer where the reader finds them.
+test("on a phone, a docked send keeps its composer through a thread and back, which then takes typing @phone @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
