@@ -241,6 +241,30 @@ function rowOf(rows: readonly DrawnRow[], id: string): DrawnRow | undefined {
   return rows.find((row) => row.id === id);
 }
 
+/**
+ * Where the page's one right-hand panel is drawn, having first failed unless there is exactly
+ * one of it. The shell's margin draws it while it keeps a column for it; wherever it keeps none
+ * - at the width it is a sheet, and while the reader has collapsed it to its rail - the page
+ * draws the same panel in its own column instead, so a collapse moves the panel rather than
+ * taking the properties off the page (dispatch://INFRA-1196 R11, R12,
+ * `web/src/features/margin/margin-slot.tsx`'s `useMarginDrawsSlot`). Two panels at once, or
+ * none, fails here whichever state the margin is in.
+ */
+async function panelPlacement(page: Page, where: string): Promise<"column" | "margin"> {
+  expect(await marginSlot(page).count(), `${where}: the page draws no one panel`).toBe(1);
+  expect(
+    await panelsRightOfMain(page),
+    `${where}: the panel's sections are drawn in more than one place`
+  ).toHaveLength(1);
+  const inTheMargin = await marginShell(page).getByTestId("issue-margin").count();
+  const inTheColumn = await page.locator("main").getByTestId("issue-margin").count();
+  expect(
+    inTheMargin + inTheColumn,
+    `${where}: the panel is drawn neither in the shell's margin nor in the page's own column`
+  ).toBe(1);
+  return inTheMargin === 1 ? "margin" : "column";
+}
+
 function idsOf(rows: readonly DrawnRow[]): string[] {
   return rows.map((row) => row.id ?? "<no id>");
 }
@@ -1211,10 +1235,34 @@ test("one right-hand panel, and the document page keeps its margin", async ({ br
       (await marginShell(page).boundingBox())?.width ?? 0,
       "the panel did not keep the width the reader gave it"
     ).toBeCloseTo(resized, 0);
+    // The collapse moves the panel, it does not take it away: the margin draws no column for
+    // it, so the page draws it in its own, and the reader keeps every property under either
+    // preference and at every width (R11). One panel in either state, never two.
+    expect(await panelPlacement(page, "the margin open"), "the margin draws no panel").toBe(
+      "margin"
+    );
     await marginHideControl(page).click();
-    expect(await marginSlot(page).count(), "the collapse left the panel open").toBe(0);
+    expect(
+      await panelPlacement(page, "the margin collapsed to its rail"),
+      "the collapse left the panel in the margin instead of the page's column"
+    ).toBe("column");
     await marginShowControl(page).click();
-    expect(await marginSlot(page).count(), "the panel did not come back").toBe(1);
+    expect(
+      await panelPlacement(page, "the margin opened again"),
+      "the panel did not come back to the margin"
+    ).toBe("margin");
+    for (const width of [1280, 1024, PHONE.width]) {
+      await page.setViewportSize({ height: DESKTOP.height, width });
+      await expectIssuePageDrawn(page);
+      // From 1280 px the margin keeps a column; below it the margin is a sheet, so the page's
+      // own column draws the panel.
+      expect(
+        await panelPlacement(page, `${width} px`),
+        `the panel is drawn in the wrong place at ${width} px`
+      ).toBe(width >= 1280 ? "margin" : "column");
+    }
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await expectIssuePageDrawn(page);
 
     // A project document page draws its margin as before.
     const document = await createProjectDocument("LAY", {

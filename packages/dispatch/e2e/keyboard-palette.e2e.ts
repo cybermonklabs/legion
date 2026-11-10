@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { expect, type Page, test } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import {
   createAsk,
@@ -626,11 +627,15 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     // Close sits behind the identity block's one actions control (dispatch://INFRA-1196 R11),
     // and running an action closes that control: the disabled state is read where the control
     // draws it, which is the group opened again while the write is still out.
-    const actionsControl = page.getByRole("button", { name: "Issue actions" });
+    const actionsControl = page.getByRole("button", { name: CONTROL_LABELS.issue_actions });
     await actionsControl.click();
-    await page.getByRole("button", { name: "Close issue" }).click();
+    await page.getByRole("button", { name: CONTROL_LABELS.close_issue }).click();
     await actionsControl.click();
-    await expect(page.getByRole("button", { name: "Close issue" })).toBeDisabled();
+    // The action answers to the words it draws, and while the write is out those words are the
+    // in-flight ones: it reads "Closing…" and takes no second press. Under the name it carried
+    // before the press there is now no control at all (WCAG 2.5.3, `IssueHeader.tsx`).
+    await expect(page.getByRole("button", { name: CONTROL_LABELS.saving_close })).toBeDisabled();
+    await expect(page.getByRole("button", { name: CONTROL_LABELS.close_issue })).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeDisabled();
 

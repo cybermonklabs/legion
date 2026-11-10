@@ -316,7 +316,11 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribedAgents).toContainText("e2e-session-title");
     await expect(subscribedAgents.getByText("e2e-session", { exact: true })).toHaveCount(0);
-    await expect(subscribedAgents.locator("[title='e2e-session']")).toHaveCount(1);
+    // The chip says which session it stands for by the mark the name carries
+    // (`AgentName`'s `data-agent-name`), not by a tooltip: the issue page draws this section
+    // inside `NoTooltips`, because a tooltip reaches no reader on a phone or on the keyboard
+    // (dispatch://INFRA-1196 R21).
+    await expect(subscribedAgents.locator("[data-agent-name='e2e-session']")).toHaveCount(1);
     // Without GitHub App credentials the link still reads as the reference, never the raw
     // address, and says why it can say no more in words beside it rather than in a tooltip
     // (dispatch://INFRA-1196 R21).
@@ -380,7 +384,7 @@ test("a subscriber no longer live shows its last heartbeat, not its subscription
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     const row = subscribedAgents
       .locator("li")
-      .filter({ has: page.locator("[title='e2e-departed-session']") });
+      .filter({ has: page.locator("[data-agent-name='e2e-departed-session']") });
     await expect(row.locator("time")).toHaveAttribute(
       "dateTime",
       new Date(lastHeartbeat).toISOString()

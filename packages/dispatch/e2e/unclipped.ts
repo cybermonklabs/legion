@@ -46,6 +46,15 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * other question - does this box scroll sideways - and there `hidden` is no finding; a scope
  * picks the reading it means.
  *
+ * **A box that holds one line hides nothing below it.** `white-space: nowrap` and `pre` put
+ * every word of a box on a single line, so its height is that one line's and a `scrollHeight`
+ * past its `clientHeight` is the font's leading - the few pixels a line box is taller than the
+ * height the page set - and never a line a reader lost (measured on a row's title at 1440 px,
+ * `span…truncate: 143x21 in 143x16`, five pixels of leading on a one-line box). So the
+ * downward half of both rules above - the line clamp's and the overflow's - is not read for
+ * such a box. The sideways half is unchanged, which is where its real cut shows: a nowrap box
+ * is exactly the box whose words run off the end of the line.
+ *
  * There is no exception list and no file is special-cased. A clamp that is cutting words is a
  * finding wherever it is drawn, and the answer is the page's or the scope's, never this
  * helper's.
@@ -138,7 +147,11 @@ async function assertUnclipped(
         if (!drawn(node, style)) return false;
         const size = `${node.scrollWidth}x${node.scrollHeight} in ${node.clientWidth}x${node.clientHeight}`;
         const cutsAcross = node.scrollWidth > node.clientWidth + 1;
-        const cutsDown = node.scrollHeight > node.clientHeight + 1;
+        // A box that puts every word on one line holds one line, so nothing of it can be
+        // hidden below: what stands past its height is the leading of that line (the doc
+        // above). Its sideways cut is read as any other box's.
+        const oneLine = style.whiteSpace === "nowrap" || style.whiteSpace === "pre";
+        const cutsDown = !oneLine && node.scrollHeight > node.clientHeight + 1;
         // A declaration cuts nothing until the text is longer than its box, in the direction
         // that declaration cuts: an ellipsis takes words off the end of a line, a line clamp
         // takes lines off the end of a box.

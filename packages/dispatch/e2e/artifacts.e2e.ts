@@ -343,44 +343,55 @@ test("an uploaded document is linked from the Activity list and the presets fit 
       (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
     );
   };
-  // Each tab is a touch target of its own at 1440 px too, and no taller than the row it shares:
-  // the floor is the 44 px a finger needs and the ceiling is what keeps five of them one row
-  // (`web/src/styles.css`). The nine-tab page was held to the same pair of numbers, and this
-  // is the reading that carries them over.
-  const isATouchTarget = async (tab: Locator, label: string) => {
+  // What the row promises at 1440 px, which is a pointer's width: a tab of the page's own
+  // pointer height and no taller than the row it shares. The presets declare
+  // `min-h-11 md:min-h-9` (`web/src/features/issue/IssuePresets.tsx`), the idiom the whole app
+  // writes for a control - 44 px where a finger reaches it, 36 px from `md` where a pointer
+  // does (`web/src/components/Tabs.tsx`, `CopyButton.tsx`) - so 36 px is what it is held to
+  // here. The 44 px floor is a touch rule and is read below at the width a finger is what
+  // reaches the presets: these five tabs are not drawn there at all, because at 1024 px and
+  // below the row is one control instead (`ZOOMED_TREE_QUERY`), and that control carries the
+  // floor.
+  const fitsTheRow = async (tab: Locator, label: string) => {
     const height = (await tab.boundingBox())?.height ?? 0;
     expect(
       height,
-      `the ${label} tab is ${height} px tall, under the 44 px a touch needs`
-    ).toBeGreaterThanOrEqual(44);
+      `the ${label} tab is ${height} px tall, under the 36 px a pointer control is drawn at`
+    ).toBeGreaterThanOrEqual(36);
     expect(
       height,
       `the ${label} tab is ${height} px tall, taller than the row of five`
     ).toBeLessThanOrEqual(48);
   };
   // Every preset is reachable from the keyboard, each is inside the row as it takes focus, and
-  // each keeps its 44 px touch target.
+  // each is drawn at the height the row gives it.
   await page.getByRole("tab", { exact: true, name: "Tree" }).focus();
   for (const label of ["Decisions", "Checks", "Spec", "Plan"] as const) {
     await page.keyboard.press("ArrowRight");
     const tab = page.getByRole("tab", { exact: true, name: label });
     await expect(tab).toBeFocused();
     await insideTablist(tab);
-    await isATouchTarget(tab, label);
+    await fitsTheRow(tab, label);
   }
   await page.keyboard.press("Home");
   const treeTab = page.getByRole("tab", { exact: true, name: "Tree" });
   await expect(treeTab).toBeFocused();
   await insideTablist(treeTab);
-  await isATouchTarget(treeTab, "Tree");
+  await fitsTheRow(treeTab, "Tree");
 
-  // At 390 px the row is one control naming the preset the page is on, which opens the five,
-  // and that control keeps a 44 px touch target - the width where a touch is what reaches it.
+  // At 390 px the row is one control naming the preset the page is on, which opens the five.
+  // This is the width a finger is what reaches the presets, so this is where the 44 px touch
+  // target is read: the one control a reader presses there carries it, and the row fails if it
+  // ever loses it.
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveCount(0);
   const chooser = presetChooser(page);
   await expect(chooser).toBeVisible();
-  expect((await chooser.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  const chooserHeight = (await chooser.boundingBox())?.height ?? 0;
+  expect(
+    chooserHeight,
+    `the preset control is ${chooserHeight} px tall at 390 px, under the 44 px a touch needs`
+  ).toBeGreaterThanOrEqual(44);
   await chooser.click();
   await expect(page.getByRole("menu").getByRole("menuitem")).toHaveCount(5);
   await page.keyboard.press("Escape");
