@@ -80,16 +80,33 @@ export const EMERALD_800 = swatch("emerald-800", 0.432, 0.095, 166.913);
 export const EMERALD_900 = swatch("emerald-900", 0.378, 0.077, 168.94);
 export const EMERALD_950 = swatch("emerald-950", 0.262, 0.051, 172.552);
 
-// The Legion phase scale's hues (dispatch://INFRA-979): one clearly different colour per phase.
-export const VIOLET_300 = swatch("violet-300", 0.811, 0.111, 293.571);
-export const VIOLET_950 = swatch("violet-950", 0.283, 0.141, 291.089);
-export const INDIGO_700 = swatch("indigo-700", 0.457, 0.24, 277.023);
-export const TEAL_300 = swatch("teal-300", 0.855, 0.138, 181.071);
-export const TEAL_950 = swatch("teal-950", 0.277, 0.046, 192.524);
-export const LIME_300 = swatch("lime-300", 0.897, 0.196, 126.665);
-export const LIME_950 = swatch("lime-950", 0.274, 0.072, 132.109);
-export const FUCHSIA_700 = swatch("fuchsia-700", 0.518, 0.253, 323.949);
-export const STONE_400 = swatch("stone-400", 0.709, 0.01, 56.259);
-export const STONE_950 = swatch("stone-950", 0.147, 0.004, 49.25);
-export const ORANGE_200 = swatch("orange-200", 0.901, 0.076, 70.697);
-export const ORANGE_950 = swatch("orange-950", 0.266, 0.079, 36.259);
+// IBM Carbon's data-visualization colours (https://carbondesignsystem.com/data-visualization/color-palettes/):
+// its categorical palette's hues and its gray ramp, which the Legion phase scale and the issue
+// status scale use (dispatch://INFRA-979). OKLCH converted from Carbon's published hex values.
+export const CARBON_PURPLE_70 = swatch("carbon-purple-70", 0.468, 0.219, 295.08); // #6929c4
+export const CARBON_PURPLE_50 = swatch("carbon-purple-50", 0.663, 0.208, 298.001); // #a56eff
+export const CARBON_PURPLE_60 = swatch("carbon-purple-60", 0.574, 0.258, 294.891); // #8a3ffc
+export const CARBON_PURPLE_30 = swatch("carbon-purple-30", 0.836, 0.097, 301.177); // #d4bbff
+export const CARBON_CYAN_50 = swatch("carbon-cyan-50", 0.641, 0.162, 246.51); // #1192e8
+export const CARBON_CYAN_40 = swatch("carbon-cyan-40", 0.729, 0.155, 241.664); // #33b1ff
+export const CARBON_TEAL_70 = swatch("carbon-teal-70", 0.433, 0.074, 194.769); // #005d5d
+export const CARBON_TEAL_50 = swatch("carbon-teal-50", 0.629, 0.108, 192.369); // #009d9a
+export const CARBON_TEAL_60 = swatch("carbon-teal-60", 0.532, 0.092, 190.843); // #007d79
+export const CARBON_TEAL_40 = swatch("carbon-teal-40", 0.722, 0.123, 192.748); // #08bdba
+export const CARBON_MAGENTA_70 = swatch("carbon-magenta-70", 0.465, 0.172, 1.339); // #9f1853
+export const CARBON_MAGENTA_40 = swatch("carbon-magenta-40", 0.756, 0.167, 354.525); // #ff7eb6
+export const CARBON_BLUE_80 = swatch("carbon-blue-80", 0.363, 0.184, 263.056); // #002d9c
+export const CARBON_BLUE_50 = swatch("carbon-blue-50", 0.647, 0.189, 260.581); // #4589ff
+export const CARBON_YELLOW_50 = swatch("carbon-yellow-50", 0.645, 0.132, 85.25); // #b28600
+export const CARBON_YELLOW_40 = swatch("carbon-yellow-40", 0.734, 0.149, 86.457); // #d2a106
+export const CARBON_GREEN_60 = swatch("carbon-green-60", 0.527, 0.141, 148.295); // #198038
+export const CARBON_GREEN_30 = swatch("carbon-green-30", 0.81, 0.152, 150.442); // #6fdc8c
+export const CARBON_GRAY_10 = swatch("carbon-gray-10", 0.967, 0.0, 89.876); // #f4f4f4
+export const CARBON_GRAY_20 = swatch("carbon-gray-20", 0.907, 0.0, 89.876); // #e0e0e0
+export const CARBON_GRAY_30 = swatch("carbon-gray-30", 0.827, 0.0, 89.876); // #c6c6c6
+export const CARBON_GRAY_40 = swatch("carbon-gray-40", 0.732, 0.0, 89.876); // #a8a8a8
+export const CARBON_GRAY_50 = swatch("carbon-gray-50", 0.643, 0.0, 89.876); // #8d8d8d
+export const CARBON_GRAY_60 = swatch("carbon-gray-60", 0.542, 0.0, 89.876); // #6f6f6f
+export const CARBON_GRAY_70 = swatch("carbon-gray-70", 0.439, 0.0, 89.876); // #525252
+export const CARBON_GRAY_80 = swatch("carbon-gray-80", 0.345, 0.0, 89.876); // #393939
+export const CARBON_GRAY_100 = swatch("carbon-gray-100", 0.2, 0.0, 89.876); // #161616
