@@ -386,8 +386,13 @@ function LargestTree({
     return null;
   }
   return (
-    <div className="flex items-center gap-1.5" data-legion-tree-note>
-      <button className={button} onClick={() => onExclude([tree.root])} type="button">
+    <div className="flex min-w-0 items-center gap-1.5" data-legion-tree-note>
+      <button
+        className={`${button} min-w-0 max-w-xl truncate text-left`}
+        onClick={() => onExclude([tree.root])}
+        title={tree.title}
+        type="button"
+      >
         Leave out {tree.root}'s tree ({count(tree.finished)} of {issues(report.finished)}):{" "}
         {tree.title}
       </button>
