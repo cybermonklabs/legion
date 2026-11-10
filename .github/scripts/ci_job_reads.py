@@ -809,10 +809,12 @@ TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before th
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
 TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
 TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
+TOOL_WATCH_STEP = "Start the machine watch over every faulted install"
 # The step of the tool-fallback-arm job the reads below cite, beside the fault step that job
 # shares with the one above: the reading of the Bun this runner holds, which the rig makes
 # against the bun-linux-aarch64 row.
 TOOL_ARM_READ_STEP = "Read the Bun the release asset served"
+TOOL_ARM_WATCH_STEP = "Start the machine watch over both halves"
 
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
 # so its on.push.paths stands in for the docs filter on main.
@@ -1517,8 +1519,6 @@ GATES = [
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
-        # TEMPORARY, with the step that calls it: dispatch://INFRA-2605's task T5.
-        (".github/actions/step-bound-probe/**", at("tool-fallback", "./.github/actions/step-bound-probe")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
                                                ".github/actions/install-jj reads that same ARG, while the mise row "
@@ -1526,6 +1526,8 @@ GATES = [
                                                "ARG MISE_VERSION and ARG MISE_SHA256 by .github/scripts/check-ci-tools.sh"),
         (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
                          ".github/actions/setup-bun installs the Bun it pins"),
+        (".github/scripts/disk_watch.py", f"{at('tool-fallback', TOOL_WATCH_STEP)} runs it, and the report step "
+                                          "after the last faulted install runs it again"),
     ) + CI_SELF),
 
     # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
@@ -1550,6 +1552,8 @@ GATES = [
                                               "and probe steps of this job do"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback-arm', TOOL_FAULT_STEP)}: the rig starts it in "
                                               "front of GitHub's release assets"),
+        (".github/scripts/disk_watch.py", f"{at('tool-fallback-arm', TOOL_ARM_WATCH_STEP)} runs it, and the "
+                                          "report step after the npm half runs it again"),
     ) + CI_SELF),
 ]
 

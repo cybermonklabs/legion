@@ -2030,6 +2030,8 @@ jobs:
               - '.github/scripts/check-ci-tools.sh'
               - '.github/scripts/ci-tools-proof.sh'
               - '.github/scripts/ci-fault-proxy.py'
+              # The two jobs read the machine they run on with it.
+              - '.github/scripts/disk_watch.py'
               - '.github/actions/install-crane/**'
               - '.github/actions/install-changie/**'
               - '.github/actions/install-jj/**'
@@ -2038,8 +2040,6 @@ jobs:
               - '.github/actions/install-uv/**'
               - '.github/actions/install-pulumi/**'
               - '.github/actions/install-docker-plugin/**'
-              # TEMPORARY, with the step that calls it: dispatch://INFRA-2605's task T5.
-              - '.github/actions/step-bound-probe/**'
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
               - '.github/workflows/ci.yaml'
@@ -2371,30 +2371,68 @@ jobs:
   # The removals the cases do make are about this job's own state: a case that must read the
   # second source takes ~/.bun/bin/bun and the bunx beside it away before its install, so what
   # it reads is not the bun an earlier case left.
+  #
+  # READING THIS JOB WHEN IT IS RED AND HAS NO LOG AT ALL.
+  # A job whose log GitHub answers `HTTP 404` with `<Code>BlobNotFound</Code>` for did not hang
+  # and was not cancelled: it lost its runner. The log is written when the runner finalises it,
+  # and a runner the service stops hearing from never finalises, while a job that was cancelled
+  # keeps its log. What outlives the log is the check run's annotation, which the service
+  # writes:
+  #   gh api repos/<owner>/<repo>/check-runs/<job id>/annotations
+  # On 2026-11-10 that answered, for this job: "The hosted runner lost communication with the
+  # server. Anything in your workflow that terminates the runner process, starves it for
+  # CPU/Memory, or blocks its network access can cause this error."
+  # Read the job record beside it: a lost runner leaves one step `in_progress` and every step
+  # after it `pending`, and the job ends before its own `timeout-minutes` would have fired.
+  # Three wrong causes were offered for that one job before anyone ran that command
+  # (dispatch://INFRA-2605). `docs/testing.md` says the same for any job of this repository.
   tool-fallback:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The budget, added up from the slowest run this job can have, the way the tool-fallback-arm
-    # job below adds up its own, and not derived any more from the four installs this job began
-    # with: the two checkouts and the runner's download of the actions (2), the two steps that
-    # read the package and the manifest (1), `stage`, which now moves about 165 MB more over
-    # the network than it did — the CLI's 119816773-byte archive, the plugin's 24184600, uv's
-    # 16682639-byte archive, fetched once, with the 37597160-byte binary taken out of that
-    # staged archive rather than fetched, and elan's 4996571 — and packs a 37 MB zip beside
-    # the 107 MB Bun tarball (6), a count neither that 16 MB nor the second fetch of it this
-    # rig once made ever decided, the jj-primary case before the fault (1), the fault and
-    # its probe, whose two requests are bounded at 15 s each (1), the 21 steps whose primary is
-    # the faulted host — seven of the eight installs with nowhere to go, seven of the head's
-    # installs, and the seven second-source cases — each costing about 126 s before its second
-    # source is read, which is this issue's measurement of the retry ladder at the manifest's
-    # `max_time` of 60 (45), the two steps whose primary is a dead port rather than the faulted
-    # host, the merge base's pulumi install and the pulumi-cli second-source case, each one
-    # ladder bounded at a minute (2), the bytes the installs and the sixteen cases then move
-    # over loopback and over npm, PyPI and get.pulumi.com (5), and the readings, the stop-fault
-    # step and the report (2).
-    # That is 65, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so
-    # the limit carries ten minutes over it.
+    # The budget, added up from the slowest this job has been rather than from the ladder
+    # arithmetic it was once derived from. Every figure is the greatest that step reached over
+    # the 56 green runs of this job between 2026-11-09T19:38Z and 2026-11-10T10:51Z, read with
+    # `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs?filter=all` over the 250 most recent
+    # ci.yaml runs (dispatch://INFRA-2605). The seconds are the items and the minutes are their
+    # sum, so a reader reproduces the total by adding the left column:
+    #     45 s  the two checkouts, the two steps that read the package and the manifest, and
+    #           `stage`, which moves about 341 MB of payloads over the network
+    #    867 s  the merge base's seven installs, each with nowhere to go: a ladder of
+    #           `--retry-max-time 60` against each of its two sources, which is this issue's
+    #           126 s at the manifest's `max_time` of 60, with its Bun at 104 s
+    #    255 s  the head's docker plugin, the eighth install with nowhere to go
+    #   1141 s  the head's own eight installs, each reading the origin after one ladder; the
+    #           Pulumi CLI is one of them, at 131 s
+    #   1142 s  the sixteen corrupted cases' installs
+    #     49 s  the fault and its probe, whose two requests are bounded at 15 s each, the
+    #           sixteen readings, the corrupt steps, the stop-fault step and the ci-ok report
+    #     60 s  the machine watch's start and its report
+    # That is 3559 s, so 60 minutes, and a job its own limit cuts off reports `cancelled`,
+    # which ci-ok fails, so the limit carries fifteen minutes over it.
+    # THREE STEPS, NOT TWO, run a ladder against a dead port rather than against the faulted
+    # host: the `pulumi-cli` row is the one row whose primary is get.pulumi.com, and the rig
+    # points that seam at a port nothing listens on. They are the merge base's Pulumi install
+    # at 127 s, the head's own at 131 s — the step that was running when this job lost its
+    # runner on 2026-11-10, and which no line item of this comment named until now — and the
+    # pulumi-cli second-source case at 128 s. The fourth step of that row, the pulumi-cli
+    # primary case, is served by the origin in a second and runs no ladder.
+    #
+    # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`.
+    # 2422 install steps ran on the green runs of those two jobs in that window: median 64 s,
+    # 99th percentile 128 s, maximum 326 s, which is `install-jj` on five slow runs. Eleven
+    # minutes is twice that maximum, rounded up to the minute the key takes, so no step that
+    # would have finished is ended by it. One step held to its bound costs this job about six
+    # minutes over the budget above, which the declared limit carries.
+    # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
+    # the runner enforces needs a runner that is alive. It is here for the other failure: a
+    # command that hangs while the runner answers, where today the job's own ceiling is the
+    # only thing that ends it, and the ceiling costs the merge queue the pull request it holds.
+    # That the runner does enforce it on a `uses:` step of a composite action is measured and
+    # not assumed: on this change's own first run, an action sleeping 180 s under
+    # `timeout-minutes: 1` was ended after 72.5 s with `The action has timed out.`, and the
+    # steps after it ran (job 129786363688, step 3). The runner is about twelve seconds late,
+    # so a bound is a ceiling and not a stopwatch.
     timeout-minutes: 75
     # contents: read is the two checkouts'; actions: read and checks: write are the
     # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
@@ -2407,19 +2445,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # TEMPORARY, and deleted in this same pull request: the measurement task T5 of
-      # dispatch://INFRA-2605 asks for before twenty step bounds are written. No step of this
-      # file carries a bound today, every `timeout-minutes` of it being a job's, so whether the
-      # runner holds a `uses:` step of a composite action to one is a thing this repository has
-      # never measured. The action does nothing but sleep 180 s against the minute declared
-      # here, so the step's own wall time in the job record answers it: about 60 s and the
-      # runner holds a composite step to its bound, about 180 s and it does not.
-      # `continue-on-error` is what keeps the reading from failing the job either way.
-      - name: Measure whether the runner holds a composite step to its own bound
-        continue-on-error: true
-        timeout-minutes: 1
-        uses: ./.github/actions/step-bound-probe
 
       # The merge base, for the negative control below: a second tree of this same repository,
       # whose seven installs that control drives with nowhere left to go. The comment on those
@@ -2499,6 +2524,23 @@ jobs:
         name: Start the origin that stands in for all four sources
         run: .github/scripts/ci-tools-proof.sh origin-start
 
+      # What the machine had, every second from here to the report below: free disk, free
+      # memory and the one-minute load, one line per second, then the worst each of them
+      # reached (.github/scripts/disk_watch.py, which envoy-smoke drives for the disk alone).
+      # The job record times every step boundary, so a reader lines any step of this job up
+      # against the second it ran in. That is what this job could not answer on 2026-11-10,
+      # when one of its runs lost its hosted runner and GitHub's annotation named starvation of
+      # CPU or memory as one of three causes (dispatch://INFRA-2605).
+      # WHAT IT DOES NOT SHOW is the loss itself: a runner that stops answering stores no log at
+      # all, so the series ends where the log ends and says nothing about the second after it.
+      # It is the headroom of every run that does store a log, and the reading for a command
+      # that hangs while the runner is alive.
+      # It starts before the fault, so the two tools `start` asks to name a directory are not
+      # routed through a proxy that refuses them. The report prints and never fails the job:
+      # this is the measurement, not a new gate.
+      - name: Start the machine watch over every faulted install
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/machine-watch.json"
+
       # Case 5 of 16 of the corrupted payloads, and the one that runs here rather than with the
       # other seven: the jj binary in mise's install directory is one byte changed.
       # That directory is where .github/actions/install-jj reads an installed jj from, so a
@@ -2528,6 +2570,7 @@ jobs:
 
       - id: jj-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
@@ -2601,6 +2644,7 @@ jobs:
       # it.
       - id: base-crane
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/install-crane
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
@@ -2608,6 +2652,7 @@ jobs:
 
       - id: base-changie
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/install-changie
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
@@ -2615,6 +2660,7 @@ jobs:
 
       - id: base-jj
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/install-jj
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
@@ -2622,6 +2668,7 @@ jobs:
 
       - id: base-bun
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/setup-bun
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
@@ -2637,6 +2684,7 @@ jobs:
 
       - id: base-elan
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/install-elan
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
@@ -2647,6 +2695,7 @@ jobs:
       # sends to a dead port.
       - id: base-uv
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/install-uv
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
@@ -2660,6 +2709,7 @@ jobs:
       # second source cannot be reached fails — is a property of the head itself.
       - id: nowhere-pulumi-docker
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
@@ -2677,6 +2727,7 @@ jobs:
       # why the rig writes the four spellings of the fault through $GITHUB_ENV.
       - id: base-pulumi
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./base/.github/actions/install-pulumi
         env:
           http_proxy: http://127.0.0.1:1
@@ -2714,13 +2765,17 @@ jobs:
       # fault: its `mise install` must reach the release asset mise fetches jj from, which the
       # fault holds, so that install fails and the action reads the copy. This step is therefore
       # the proof of jj's second source itself, rather than a warm directory answering for it.
-      - uses: ./.github/actions/install-crane
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-crane
 
-      - uses: ./.github/actions/install-changie
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-changie
 
-      - uses: ./.github/actions/install-jj
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-jj
 
-      - uses: ./.github/actions/setup-bun
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
 
       # elan's release asset is behind the fault, so this install must read the copy its row
       # names. The removal before it is the one every elan step carries, for the reason the
@@ -2728,17 +2783,20 @@ jobs:
       - name: Take elan away, so the faulted install must read the copy
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      - uses: ./.github/actions/install-elan
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-elan
 
       # uv's release tarball is behind the fault, so this install must read the wheel PyPI
       # serves, which packages the same binary. Another provider and not another GitHub host is
       # the whole reason that row's second source is PyPI.
-      - uses: ./.github/actions/install-uv
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-uv
 
       # The docker provider plugin's release asset is behind the fault, so this install must
       # read get.pulumi.com, which serves that tarball byte for byte. The step carries an id
       # because the reading below is of the tarball it hands back.
       - id: docker-plugin
+        timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
 
       # The Pulumi CLI's own fallback, which is a case rather than a plain install: its primary
@@ -2750,7 +2808,8 @@ jobs:
       # every step after the fault started: inside this job the origin is what can serve a
       # `github-release` second source at all, and what it serves is that release's own bytes,
       # staged and verified.
-      - uses: ./.github/actions/install-pulumi
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
@@ -2816,6 +2875,7 @@ jobs:
 
       - id: crane-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-crane
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
@@ -2831,6 +2891,7 @@ jobs:
 
       - id: crane-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-crane
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
@@ -2844,6 +2905,7 @@ jobs:
 
       - id: changie-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
@@ -2858,6 +2920,7 @@ jobs:
 
       - id: changie-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
@@ -2884,6 +2947,7 @@ jobs:
 
       - id: jj-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
@@ -2917,6 +2981,7 @@ jobs:
 
       - id: bun-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/setup-bun
 
       - name: Read the bun-primary case
@@ -2936,6 +3001,7 @@ jobs:
 
       - id: bun-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/setup-bun
         env:
           CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
@@ -2952,6 +3018,7 @@ jobs:
 
       - id: elan-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-elan
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
@@ -2970,6 +3037,7 @@ jobs:
 
       - id: elan-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-elan
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
@@ -2987,6 +3055,7 @@ jobs:
 
       - id: uv-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-uv
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
@@ -3017,6 +3086,7 @@ jobs:
 
       - id: uv-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-uv
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
@@ -3031,6 +3101,7 @@ jobs:
 
       - id: pulumi-docker-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
@@ -3048,6 +3119,7 @@ jobs:
 
       - id: pulumi-docker-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
@@ -3067,6 +3139,7 @@ jobs:
 
       - id: pulumi-cli-primary
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-pulumi
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
@@ -3085,6 +3158,7 @@ jobs:
 
       - id: pulumi-cli-second-source
         continue-on-error: true
+        timeout-minutes: 11
         uses: ./.github/actions/install-pulumi
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
@@ -3131,6 +3205,11 @@ jobs:
             exit 1
           fi
           echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the sixteen corrupted payloads was installed"
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/machine-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
@@ -3190,10 +3269,17 @@ jobs:
     # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, which
     # `--retry-max-time 60` bounds at a minute of new attempts plus one last attempt of the
     # row's `max_time` 60 s, so two minutes at worst (4) — the 107 MB npm tarball, its gunzip
-    # and the write (3), the two readings, each a sha256 of that binary (2), and the report step
-    # (1). That is 14, and a job its own limit cuts off reports `cancelled`, which ci-ok fails,
-    # so the limit is the next minute up.
-    timeout-minutes: 15
+    # and the write (3), the two readings, each a sha256 of that binary (2), the report step
+    # (1), and the machine watch's start and its report (1). That is 15, and a job its own
+    # limit cuts off reports `cancelled`, which ci-ok fails, so the limit is the next minute
+    # up.
+    # What this job really costs is far less: over its 107 green runs in the window the
+    # tool-fallback job's comment names, the greatest each of its steps reached adds up to
+    # 68 s. The budget stays a worst case all the same, because a slow day on the 107 MB
+    # tarball is what it is there for.
+    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason and
+    # with the caveat the tool-fallback job's comment gives.
+    timeout-minutes: 16
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other
     # scope.
@@ -3206,9 +3292,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # The same reading as the tool-fallback job's, over both halves of this one, and for the
+      # same reason: this is the only job of this repository that installs a tool on arm64, so
+      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
+      # that job's own pair says what the series shows and what it cannot.
+      - name: Start the machine watch over both halves
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/machine-watch.json"
+
       # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
       # fourth step holds what it installed to the row its third step read out of `uname -m`.
-      - uses: ./.github/actions/setup-bun
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
 
       - name: Read the Bun the release asset served
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
@@ -3230,13 +3324,19 @@ jobs:
 
       # The npm path on arm64: the release asset answers nothing behind the fault, so the
       # action's third step reads the @oven/bun-linux-aarch64 package the row names.
-      - uses: ./.github/actions/setup-bun
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
 
       # --expect-refused is this half's own reading of the source: the proxy's 504 for
       # github.com after the probe is the refusal that sent this install to npm, and the
       # version and the digest cannot say it, since both sources serve one binary.
       - name: Read the Bun npm served
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/machine-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
