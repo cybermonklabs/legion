@@ -359,3 +359,54 @@ test("a narrow page stacks each slot into a card with every field the table has"
     "In the order the daemon starts them"
   );
 });
+
+test("a phase's parked hours read 'parked' in grey hatch, and an unknown stretch carries no text", async () => {
+  await renderTab("ACME-2", {
+    ...TIMELINE,
+    parked: [
+      {
+        from: "2026-11-09T17:00:00Z",
+        hours: 2,
+        name: "parked",
+        source: "observed",
+        to: "2026-11-09T19:00:00Z",
+      },
+    ],
+    segments: [
+      {
+        bar: "reviewer",
+        from: "2026-11-09T10:00:00Z",
+        hours: 6,
+        name: "in_a_turn",
+        source: "observed",
+        to: "2026-11-09T16:00:00Z",
+      },
+      {
+        bar: "reviewer",
+        from: "2026-11-09T16:00:00Z",
+        hours: 4,
+        name: "unknown",
+        source: "observed",
+        to: "2026-11-09T20:00:00Z",
+      },
+    ],
+  });
+
+  const timeline = await screen.findByRole("region", { name: "ACME-2 timeline" });
+  await waitFor(() =>
+    expect(timeline.querySelector('[data-legion-hatched="parked"]')).not.toBeNull()
+  );
+  const phase = timeline.querySelector('[data-legion-lane="Phase"]') as HTMLElement;
+  expect(
+    [...phase.querySelectorAll("[data-legion-span]")].map(
+      (one) => one.getAttribute("title")?.split(":")[0]
+    )
+  ).toEqual(["Implementing", "Reviewing", "parked", "Reviewing"]);
+  expect(
+    timeline.querySelector('[data-legion-lane="Where the hours went"] [data-legion-span="unknown"]')
+      ?.textContent
+  ).toBe("");
+  expect(timeline.querySelector("[data-legion-timeline-key]")?.textContent).toContain(
+    "hatched grey: parked"
+  );
+});

@@ -53,12 +53,12 @@ const SOURCE_LABEL: Record<LegionTimelineSpan["source"], string> = {
 const SENT_BACK_FROM = new Set(["testing", "reviewing", "accepting", "retro", "merging"]);
 
 /** One stretch of a lane: its label and fill, hatched where a root's phase overlaps the hours it
- *  waited on its children. */
+ *  waited on its children, or grey and hatched where the issue was parked. */
 interface LaneSpan {
   readonly span: LegionTimelineSpan;
   readonly label: string;
   readonly fill: string;
-  readonly hatched?: boolean;
+  readonly hatch?: "children" | "parked";
 }
 
 /** One lane of the axis: its name and its stretches. */
@@ -73,11 +73,13 @@ const HATCH = {
     "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.6) 0 3px, transparent 3px 7px)",
 };
 
-/** Splits each phase stretch where it overlaps a waiting-on-children stretch, so the Phase lane
- *  tells the same story as the lane under it: those hours are "planning · waiting on children". */
-function splitByChildWait(
+/** Splits each phase stretch where it overlaps one of `waits`, so the Phase lane tells the same
+ *  story as the lanes under it: a root's hours waiting on its children read "planning · waiting
+ *  on children", and an issue's parked hours read "parked", in grey. */
+function splitBy(
   spans: readonly LaneSpan[],
-  waits: readonly LegionTimelineSpan[]
+  waits: readonly LegionTimelineSpan[],
+  hatch: "children" | "parked"
 ): LaneSpan[] {
   const cuts = waits.map((wait) => [Date.parse(wait.from), Date.parse(wait.to)] as const);
   return spans.flatMap((one) => {
@@ -92,7 +94,7 @@ function splitByChildWait(
       const end = bounds[index + 1] as number;
       const hatched = cuts.some(([a, b]) => a <= start && end <= b);
       const previous = pieces.at(-1);
-      if (previous !== undefined && Boolean(previous.hatched) === hatched) {
+      if (previous !== undefined && (previous.hatch === hatch) === hatched) {
         pieces[pieces.length - 1] = {
           ...previous,
           span: {
@@ -105,8 +107,11 @@ function splitByChildWait(
       }
       pieces.push({
         ...one,
-        hatched,
-        label: hatched ? `${one.label.toLowerCase()} · waiting on children` : one.label,
+        ...(hatched
+          ? hatch === "children"
+            ? { hatch, label: `${one.label.toLowerCase()} · waiting on children` }
+            : { hatch, label: "parked", fill: chartParts[6] }
+          : {}),
         span: {
           ...one.span,
           from: new Date(start).toISOString(),
@@ -193,9 +198,14 @@ function TimelineBody({
     return [
       {
         name: "Phase",
-        spans: splitByChildWait(
-          timeline.phases.map(phase),
-          timeline.segments.filter((span) => span.name === "waiting_on_children")
+        spans: splitBy(
+          splitBy(
+            timeline.phases.map(phase),
+            timeline.segments.filter((span) => span.name === "waiting_on_children"),
+            "children"
+          ),
+          timeline.parked,
+          "parked"
         ),
       },
       {
@@ -244,7 +254,7 @@ function TimelineBody({
     ...new Map([
       ...shown
         .filter((lane) => lane.name === "Phase" || lane.name.startsWith("Child "))
-        .flatMap((lane) => lane.spans.filter((one) => !one.hatched))
+        .flatMap((lane) => lane.spans.filter((one) => one.hatch === undefined))
         // The key names the phase; "(retro)" stays on the retro blocks themselves.
         .map((one) => [one.label.replace(/ \(retro\)$/, ""), one.fill] as const),
       ...Object.entries(SEGMENT_LABEL)
@@ -258,7 +268,8 @@ function TimelineBody({
       ...(has("Parked") ? [["Parked", chartParts[6]] as const] : []),
     ]),
   ];
-  const hatchedAny = shown.some((lane) => lane.spans.some((one) => one.hatched));
+  const hatchedAny = shown.some((lane) => lane.spans.some((one) => one.hatch === "children"));
+  const parkedAny = shown.some((lane) => lane.spans.some((one) => one.hatch === "parked"));
   const start = Math.min(
     ...all.map((span) => Date.parse(span.from)),
     timeline.started_at === null ? Number.POSITIVE_INFINITY : Date.parse(timeline.started_at)
@@ -359,6 +370,16 @@ function TimelineBody({
             <span className={textSecondaryOnCanvas}>hatched: the root waiting on its children</span>
           </li>
         ) : null}
+        {parkedAny ? (
+          <li className="flex items-center gap-1">
+            <span
+              aria-hidden
+              className={`inline-block h-3 w-3 rounded-sm ${chartParts[6]}`}
+              style={HATCH}
+            />
+            <span className={textSecondaryOnCanvas}>hatched grey: parked</span>
+          </li>
+        ) : null}
       </ul>
       {empty.length === 0 ? null : (
         <p className={`text-xs ${textMutedOnSurface}`} data-legion-timeline-empty>
@@ -431,19 +452,30 @@ function LaneRow({
         )}
       </span>
       <div className={`relative h-5 rounded-sm ${surfaceMutedBg}`} data-legion-lane={lane.name}>
-        {lane.spans.map(({ span, label, fill, hatched }) => {
+        {lane.spans.map(({ span, label, fill, hatch }) => {
           const left = at(span.from);
           const width = Math.max(at(span.to) - left, 0.3);
           return (
             <span
               className={`absolute top-0 h-5 overflow-hidden rounded-sm px-0.5 text-[10px] leading-5 whitespace-nowrap ${fill}`}
-              data-legion-hatched={hatched ? "" : undefined}
+              data-legion-hatched={hatch}
               data-legion-span={span.name}
               key={`${span.from}-${label}`}
-              style={{ left: `${left}%`, width: `${width}%`, ...(hatched ? HATCH : {}) }}
+              style={{
+                left: `${left}%`,
+                width: `${width}%`,
+                ...(hatch === undefined ? {} : HATCH),
+              }}
               title={`${label}: ${when(span.from)} to ${when(span.to)}, ${formatHours(span.hours)}, from ${SOURCE_LABEL[span.source]}`}
             >
-              {width > 12 ? label : width > 6 ? (label.split(" · ")[0] ?? "") : ""}
+              {/* An unknown stretch carries no text: the key names it. */}
+              {span.name === "unknown"
+                ? ""
+                : width > 12
+                  ? label
+                  : width > 6
+                    ? (label.split(" · ")[0] ?? "")
+                    : ""}
             </span>
           );
         })}
