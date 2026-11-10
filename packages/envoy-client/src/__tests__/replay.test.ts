@@ -1530,6 +1530,9 @@ describe("failed frames", () => {
     expect(host.failureNotices).toEqual([]);
     expect(host.writes).toEqual([]);
     expect(engine.delivered(frame)).toBe(false);
+    expect(host.logs).toEqual([
+      "replay: a failed frame was not reported here; the session it names is closed",
+    ]);
 
     // The host is back on the session the frame named: its failure is told there.
     host.session = SESSION;

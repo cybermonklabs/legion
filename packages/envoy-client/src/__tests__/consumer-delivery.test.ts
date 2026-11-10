@@ -277,7 +277,7 @@ describe("replies", () => {
   });
 
   test("a frame the host throws on comes again, until its third delivery gives up", async () => {
-    const { delivery, replies, failed, state, settled } = setup();
+    const { delivery, logs, replies, failed, state, settled } = setup();
     state.deliver = () => Promise.reject(new Error("render failed"));
 
     delivery.receive(relay({ seq: 1, reply: "_INBOX.a" }));
@@ -290,6 +290,11 @@ describe("replies", () => {
     // The notice is the relay's own session's, whichever one the host has open by then.
     expect(failed).toEqual([
       { session: SESSION, subject: AGENT, eventID: "evt-1", receivedAt: T0 },
+    ]);
+    // Both failures are logged: the one that comes again, and the one that gives up on it.
+    expect(logs).toEqual([
+      "consumer delivery: frame 1 failed; it comes again",
+      "consumer delivery: frame 1 failed and does not come again; its session gets the notice",
     ]);
   });
 

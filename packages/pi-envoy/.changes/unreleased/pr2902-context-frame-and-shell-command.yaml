@@ -37,5 +37,8 @@ body: |-
   in the log rather than dropped without a word, as is the entry for an attempt it handled, which
   only the conversation the host is on can be written to.
   A card for a session the host has left - one whose turn Dispatch did not accept, a late BTW, a
-  replayed card or a failure notice - is shown to no other conversation: it goes back to the
-  listener, or is logged, rather than being handed to the conversation the host moved to.
+  replayed card, or the failure notice of a frame that named a session - is shown to no other
+  conversation: it goes back to the listener, or is logged, rather than being handed to the
+  conversation the host moved to. The failure notice of a frame that named none - one on a role
+  topic or an ad-hoc topic - reaches the conversation the host has open instead, since there is
+  no session to hold it to and that conversation is the one that took the frame.

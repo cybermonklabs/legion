@@ -468,6 +468,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     }
     // The session gets the notice a failed live frame gets, under its own name: the relay serves
     // one session, and a notice of its frame belongs to it wherever the host went meanwhile.
+    log(
+      `frame ${entry.frame.streamSeq} failed and does not come again; its session gets the notice`,
+      error
+    );
     safely("failure notice", () => {
       const { subject, data } = entry.frame;
       const { envelope } = renderInbound(data, sessionID, subject);

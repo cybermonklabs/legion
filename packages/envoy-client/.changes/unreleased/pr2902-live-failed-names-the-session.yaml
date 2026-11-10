@@ -3,4 +3,6 @@ body: |-
   `ReplayEngine.liveFailed` takes the session the failed frame was addressed to as its first
   argument, and shows the notice and writes its record only while the host still serves that
   session: a host that has moved to another conversation is shown nothing and records nothing
-  for it. Every caller passes the session now; one that passed none no longer typechecks.
+  for it, and the line the engine logs there says so. Every caller passes the session now; one
+  that passed none no longer typechecks. The relay logs the delivery that gives up on a frame
+  and asks for its notice too, where before only the deliveries that come again were logged.

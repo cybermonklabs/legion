@@ -13668,7 +13668,7 @@ console.log(JSON.stringify(args));
           // this machine no longer runs, and that refusal would otherwise read as a plain reply
           // failure (`postDispatchReply`).
           expect(warnings).toContain(
-            "envoy: a reply is signed as the session its message named, which is closed"
+            "envoy: a reply is signed as the session its message reached, which is closed"
           );
         } finally {
           stopSink();
@@ -14159,6 +14159,88 @@ console.log(JSON.stringify(args));
           restore();
           // A token this process traded is held under its session for the life of the process.
           forgetBrokerClients();
+        }
+      }, 20_000);
+
+      // The same credential, on an accept Dispatch answers twice. The row above moves the host
+      // after its one accept attempt has gone out, so that attempt traded before the move
+      // whatever resolves its session; this one moves the host while Dispatch answers the first
+      // attempt with a 503. A write with no definitive answer asks again under its key and
+      // presents the credential afresh for every attempt (`#send`, in
+      // `packages/envoy-client/src/dispatch-http.ts`), so the retry resolves its session after
+      // the move, and it is still the session the person wrote to. A credential resolved for
+      // the session open now (`currentSessionID`) would sign that retry
+      // `token-for-ses_after_shell`, and Dispatch would record one person's message as taken by
+      // a conversation they never wrote to.
+      //
+      // The command runs nowhere: the session it was addressed to is open nowhere by the time
+      // Dispatch accepts it, so the person gets the refusal, answered as that session and
+      // signed as it.
+      test("signs the accept's retry as the addressed session when the host left while the first attempt was answered", async () => {
+        const broker = stubBroker("shell-accept-retry");
+        const other = otherSessionDirectory();
+        const move: { fire?: () => Promise<void> } = {};
+        try {
+          const { accepts, agent, fixture, replied, replies } = await bootShellSession(
+            "shell-command-broker-accept-retry",
+            {
+              accept: async (count) => {
+                if (count > 1) return { accepted: true, body: "!printf hi" };
+                // The host leaves as Dispatch fails the first attempt, which is no answer the
+                // write can settle on: it asks again under its key.
+                await move.fire?.();
+                return { status: 503 };
+              },
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+            }
+          );
+          move.fire = () => moveHost(fixture, other);
+          broker.watch();
+
+          // This row waits in real time, unlike the accept retries above: the pause before the
+          // retry is a second of the write's own, and the broker's trade makes a key pair,
+          // which settles on the event loop rather than on a microtask, so under the test clock
+          // (`onTestClock`) nothing is traded and no attempt is made at all.
+          agent.push(directDispatchEnvelope("steer", "shell-command-broker-accept-retry"));
+          await replied(1);
+
+          // Two attempts of the one accept, under one key, and the retry - the one resolved
+          // after the move - presents the token the broker minted for the session the person
+          // wrote to.
+          expect(accepts.map((accept) => accept.path)).toEqual([
+            `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
+            `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
+          ]);
+          expect(accepts[1]?.key).toBe(accepts[0]?.key as string);
+          expect(accepts.map((accept) => accept.authorization)).toEqual([
+            "DPoP token-for-ses_delivery",
+            "DPoP token-for-ses_delivery",
+          ]);
+          // The person's own message is answered as the session they wrote to, and that answer
+          // is signed as it too.
+          expect(replies).toEqual([
+            {
+              body: {
+                actor: { id: "ses_delivery", kind: "session" },
+                attempt: 1,
+                body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
+              },
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          expect(broker.presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
+            {
+              authorization: "DPoP token-for-ses_delivery",
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          // Two trades, both under the session the person wrote to: the first attempt's, and
+          // the retry's, since leaving a session drops the key pair and token this process held
+          // for it (`forgetBrokerSession`); the refusal goes out on what the retry traded.
+          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+        } finally {
+          broker.stop();
         }
       }, 20_000);
 
@@ -14684,7 +14766,7 @@ console.log(JSON.stringify(args));
           // one it landed in, and the person's own message is answered as the session they
           // wrote to.
           expect(warnings).toContain(
-            "envoy: a reply is signed as the session its message named, which is closed"
+            "envoy: a reply is signed as the session its message reached, which is closed"
           );
           expect(replies).toEqual([
             { body: { actor, attempt: 1, body: notSent }, path: replyPath },
@@ -14861,7 +14943,7 @@ console.log(JSON.stringify(args));
           // The move was made inside the side turn, so the reply went out after it.
           expect(moved).toBe(true);
           expect(warnings).toContain(
-            "envoy: a reply is signed as the session its message named, which is closed"
+            "envoy: a reply is signed as the session its message reached, which is closed"
           );
           expect(replies).toEqual([
             { body: { actor, attempt: 1, body: "This session's answer." }, path: replyPath },
@@ -19716,6 +19798,38 @@ describe("messages missed while the subscription was down", () => {
     });
   }
 
+  /**
+   * A person's comment on the followed issue, with a picture in its body, as Dispatch publishes
+   * it on the issue's own topic: a frame that names no session, whose card the session reads its
+   * picture for before it hands it (`withDeliveredPictures`).
+   */
+  function commentWithPicture(eventID: string, slug: string): string {
+    return JSON.stringify({
+      event_id: eventID,
+      source: "dispatch",
+      source_event_id: eventID,
+      topic: dispatchIssueSubject(ISSUE, "comment.created"),
+      dedupe_key: eventID,
+      issued_at: 1,
+      payload_summary: `${ISSUE} commented`,
+      trace_id: `trace-${eventID}`,
+      payload: JSON.stringify({
+        issue_key: ISSUE,
+        type: "comment.created",
+        actor: { kind: "user", id: "alice" },
+        notify: true,
+        payload: {
+          author: { id: "alice", kind: "user" },
+          body: `Look:\n\n![shot.png](dispatch://LEGION-1/artifact/${slug}@v1)`,
+          created_at: "2026-10-26T12:00:00Z",
+          id: "66666666-6666-4666-8666-666666666666",
+          issue_key: ISSUE,
+          project_key: "INFRA",
+        },
+      }),
+    });
+  }
+
   const isNotice = (content: string) => content.includes("message not shown");
 
   /**
@@ -21387,6 +21501,128 @@ describe("messages missed while the subscription was down", () => {
       await session.tick();
       expect(session.notices("evt-live-not-served")).toHaveLength(1);
       expect(session.cards("evt-live-not-served")).toHaveLength(0);
+    });
+
+    // A frame on a followed topic names no session: nobody addressed one there, so the
+    // conversation the host has open is the one that took the frame and the one told that its
+    // delivery failed (dispatch://INFRA-812). The picture load is the last window before the
+    // card goes out, and the `/new` inside it leaves both the card and, once the host refuses
+    // that card, the notice naming it in the conversation the host moved to. Told to the
+    // session that was open when the frame arrived instead, the notice would reach nobody: that
+    // session is closed here now, and no sweep will show this frame either.
+    test("a live frame that names no session and fails after the host moved tells the conversation it moved to", async () => {
+      process.env.DISPATCH_URL = "http://moved-notice.dispatch.test";
+      process.env.DISPATCH_TOKEN = "dispatch-token";
+      const event = "dispatch-moved-notice";
+      const slug = "moved-notice-png";
+      const model = new StreamModel();
+      // The listener serves no replay, so no sweep will show this frame: its failure is told at
+      // once or not at all.
+      model.served = false;
+      const move: { fire?: () => Promise<void> } = {};
+      let moved = false;
+      const session = await bootReplay("replay-fail-moved-unaddressed", model, {
+        beforeSend: (content) => {
+          if (content.includes(event) && !isNotice(content)) {
+            throw new Error("host refuses the card");
+          }
+        },
+        dispatch: async (url) => {
+          if (url.pathname !== `/api/v1/issues/LEGION-1/artifacts/${slug}`) return undefined;
+          await move.fire?.();
+          moved = true;
+          // Dispatch serves no picture here, so the card carries the link alone; what this row
+          // is about is the move the read held open.
+          return undefined;
+        },
+      });
+      // The conversation the host moves to is idle and holds no message, so a card reaches it
+      // at once: this row reads whether the notice went there, not whether it waited.
+      move.fire = async () => {
+        await session.fixture.handlers.get("session_switch")?.(
+          { reason: "new" },
+          {
+            ...sessionContext("ses_after_notice"),
+            hasPendingMessages: () => false,
+            isIdle: () => true,
+          }
+        );
+      };
+      await session.follow(ISSUE_TOPIC);
+
+      session.live(ISSUE_TOPIC).push(commentWithPicture(event, slug));
+      await until(() => session.notices(event).length > 0, "the notice the moved host is told");
+
+      expect(moved).toBe(true);
+      expect(session.cards(event)).toHaveLength(0);
+      expect(session.notices(event)[0]?.content).toContain("host refuses the card");
+    });
+
+    // A frame the person addressed to this session is that session's wherever the host goes.
+    // The accept here spends their attempt, the host leaves inside it, and Dispatch refuses the
+    // reply that tells them their message still stands, so the delivery fails with the session
+    // they wrote to closed here. The notice of that failure is that session's: the conversation
+    // the host moved to is told nothing of a message nobody sent it, and its transcript records
+    // nothing of that message either (dispatch://INFRA-812). The engine makes the bind
+    // (`liveFailed`); what this row reads is the session this hand-off names at the call.
+    test("a live frame the person addressed, failing after the host moved, tells the conversation it moved to nothing", async () => {
+      process.env.DISPATCH_URL = "http://moved-bind.dispatch.test";
+      process.env.DISPATCH_TOKEN = "dispatch-token";
+      const event = "dispatch-moved-bind";
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      const model = new StreamModel();
+      model.served = false;
+      const move: { fire?: () => Promise<void> } = {};
+      let refusals = 0;
+      try {
+        const session = await bootReplay("replay-fail-moved-addressed", model, {
+          sessionID: "ses_delivery",
+          dispatch: async (url) => {
+            if (url.pathname.endsWith("/accept")) {
+              // The `/new` lands inside the accept: the message stays ses_delivery's, and the
+              // conversation the host has from here on is another.
+              await move.fire?.();
+              return acceptResponse(
+                Number(url.pathname.split("/").at(-2)),
+                { accepted: true },
+                url.pathname.split("/").at(-4)
+              );
+            }
+            if (!url.pathname.endsWith("/reply")) return undefined;
+            refusals += 1;
+            return new Response(JSON.stringify({ error: "refused" }), { status: 400 });
+          },
+        });
+        move.fire = async () => {
+          await session.fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            {
+              ...sessionContext("ses_after_bind"),
+              hasPendingMessages: () => false,
+              isIdle: () => true,
+            }
+          );
+        };
+
+        session.live(session.agentSubject).push(directDispatchEnvelope("steer", "moved-bind"));
+        await until(() => refusals > 0, "the refusal Dispatch would not take");
+        await until(
+          () => warnings.some((warning) => warning.includes("a failed frame was not reported")),
+          "the notice the engine held to the session the message named"
+        );
+
+        expect(session.notices(event)).toEqual([]);
+        expect(session.cards(event)).toEqual([]);
+        const recorded = session.fixture.entries.filter(
+          (entry) => entry.customType === REPLAY_DELIVERED_ENTRY
+        );
+        expect(JSON.stringify(recorded)).not.toContain(event);
+      } finally {
+        stopSink();
+      }
     });
 
     test("a live frame still pending while its stored copy is swept, then failing, is shown once later", async () => {

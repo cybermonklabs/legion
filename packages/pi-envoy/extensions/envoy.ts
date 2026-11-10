@@ -1185,9 +1185,10 @@ export default function envoyExtension(pi: PiApi): void {
   // names and the configuration it goes out under - are read from the one argument, so they
   // cannot name two different sessions.
   //
-  // A reply names the session its message was addressed to whether or not the host still has
-  // that session open: a configuration resolved for the session open when the reply goes out
-  // would sign one person's answer with the conversation the host moved to. A session this
+  // A reply names the session its message reached - the one the frame was addressed to, or,
+  // for a frame that addressed none, the session that took it - whether or not the host still
+  // has that session open: a configuration resolved for the session open when the reply goes
+  // out would sign one person's answer with the conversation the host moved to. A session this
   // host has left is logged here, so every reply to one says so - twice for a reply whose
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
@@ -1198,7 +1199,7 @@ export default function envoyExtension(pi: PiApi): void {
     replySessionID: string
   ): Promise<void> => {
     if (!sessionOpen(replySessionID)) {
-      logger.warn("envoy: a reply is signed as the session its message named, which is closed", {
+      logger.warn("envoy: a reply is signed as the session its message reached, which is closed", {
         addressed: replySessionID,
         open: sessionID,
       });
@@ -1291,16 +1292,28 @@ export default function envoyExtension(pi: PiApi): void {
 
   const unwritten = new UnwrittenFrames({
     sessionID: () => sessionID,
+    // The conversation the host has open, which is the one a card handed now reaches: a card
+    // named for any other session is handed to nobody. The host's live id alone, not
+    // `sessionOpen`: between the host's move and the switch event that tells this instance of
+    // it, a frame addressed to the session the host moved to - a fork carries its parent's
+    // subject on - is still that session's to be shown.
+    isOpen: (card) => hostSessionID() === card,
     settled: hostSettled,
-    // The card's own session: `UnwrittenFrames` records a card only once the session it was
-    // handed in is the one open here (`#recordWritten`), so the session named here is the
-    // session the card was shown in, rather than whichever one the host reaches by the time the
-    // write lands. A record that names a closed session is written nowhere, and that session's
-    // own sweep reads its transcript instead.
-    recordDelivered: async (identity) => {
-      await replay?.recordDeliveredFor(sessionID, identity);
+    recordDelivered: async (card, identity) => {
+      await replay?.recordDeliveredFor(card, identity);
     },
     handCard,
+    // A card the host would be handed in the conversation it moved to: nothing was handed, and
+    // nothing of the frame counts as shown. Its claim went back, so a relay frame is sent again
+    // by the listener to the session it names, and a core frame reaches that session again only
+    // through its replay sweep, as a card.
+    cardNotShown: (card, identity) => {
+      logger.warn("envoy: a card was not shown here; the session it names is closed", {
+        addressed: card,
+        eventID: identity?.event_id,
+        open: sessionID,
+      });
+    },
     handNotice: (content) => {
       pi.sendMessage(
         { customType: "envoy-message", content, display: true, details: LOCAL_ENVOY_NOTICE },
@@ -1339,18 +1352,22 @@ export default function envoyExtension(pi: PiApi): void {
     },
   });
 
-  // Shows a card the replay engine asked for (a stored frame, or a failure notice naming one)
-  // under a claim of that frame, so a live copy arriving meanwhile is a repeat: `queued` while it
-  // waits to be written (`UnwrittenFrames.sendCard`), `shown` when it does not wait. A frame the
-  // live path is delivering now is that path's to show and record, and one whose card waits
-  // already is that card's. A frame the dedupe let go of that the open session's ledger does not
-  // hold (one shown before the host moved to this session, say) is handed with no claim, and waits
-  // on its card's write all the same: nothing records it until the host writes it.
+  // Shows `session` a card the replay engine asked for (a stored frame, or a failure notice
+  // naming one) under a claim of that frame, so a live copy arriving meanwhile is a repeat:
+  // `queued` while it waits to be written (`UnwrittenFrames.sendCard`), `shown` when it does not
+  // wait, and `failed` when that session is closed, which is the engine's word for a frame
+  // nobody was shown: the frame keeps its place in the stream, and that session's own next sweep
+  // shows it there. A frame the live path is delivering now is that path's to show and record,
+  // and one whose card waits already is that card's. A frame the dedupe let go of that the open
+  // session's ledger does not hold (one shown before the host moved to this session, say) is
+  // handed with no claim, and waits on its card's write all the same: nothing records it until
+  // the host writes it.
   const showReplayCard = (
+    session: string,
     content: string,
     envelope: unknown,
     deliverAs: CardDelivery = "card"
-  ): "shown" | "queued" => {
+  ): "shown" | "queued" | "failed" => {
     const parsed = ClaimIdentitySchema.safeParse(envelope);
     const identity = parsed.success ? parsed.data : undefined;
     const claim = delivered.claim(identity);
@@ -1361,7 +1378,8 @@ export default function envoyExtension(pi: PiApi): void {
     ) {
       return "queued";
     }
-    return unwritten.sendCard(content, deliverAs, identity, claim);
+    const outcome = unwritten.sendCard(session, content, deliverAs, identity, claim);
+    return outcome === "closed" ? "failed" : outcome;
   };
 
   // The event ids of BTW frames this process met, live or replayed, so a failure notice naming one
@@ -1759,14 +1777,27 @@ export default function envoyExtension(pi: PiApi): void {
     // Whether the session this frame was addressed to is still the one open here, read by this
     // instance's own id and by the host's live one. A frame that addresses no session - a role
     // topic, an ad-hoc topic - is held to none: the session that took it answers it, wherever
-    // the host goes next. Every branch of `deliver` reads this before it hands a person's
-    // message to the host or asks the model for them, since each await above - the
-    // acknowledgement, the read of the body whole, the accept, the picture load - is a window a
-    // `/new` or a `/resume` lands in, and the work would then be another conversation's. The
+    // the host goes next. Every branch that spends the person's attempt or asks the model for
+    // them reads this before it acts, since each await above - the acknowledgement, the read of
+    // the body whole, the accept, the picture load - is a window a `/new` or a `/resume` lands
+    // in, and the work would then be another conversation's. A card needs no such read: it is
+    // held to its own session by `UnwrittenFrames.sendCard`, which hands none to any other. The
     // replay path never reaches here: it holds its own frames to the session it swept for
     // (`showReplayed`).
     const addressedSessionOpen = (): boolean =>
       addressedSession === undefined || sessionOpen(session);
+    // The session a card of this frame is for: the one the frame names, or, where it names none
+    // - a role topic, an ad-hoc topic - the conversation the host has open as the card is
+    // handed, since such a frame is held to no session and the one that takes it shows it.
+    const cardSession = (): string => addressedSession ?? hostSessionID();
+    // The session a failure notice of this frame is told to, read as the notice goes out: the
+    // one the frame names, or, where it names none - a role topic, an ad-hoc topic - the
+    // conversation open here then, since such a frame is held to no session and the one that
+    // took it is the one to be told that its delivery failed. Read at entry instead, a notice
+    // of a frame that named none would be told to nobody once the host moved: the engine holds
+    // it to the session it is given, and the notice is shown as the session open here
+    // (`ReplayEngine.liveFailed`, the `showFailureNotice` below).
+    const noticeSession = (): string => addressedSession ?? sessionID;
     // Every reply to this frame names `session` and is signed as it, and `postDispatchReply`
     // reads both halves from that one argument.
     let rendered = renderInbound(raw, session, subject);
@@ -1904,14 +1935,17 @@ export default function envoyExtension(pi: PiApi): void {
       if (identity !== undefined) await recordTaken(identity);
       claim.settle();
     };
-    // A card the host would be handed in the conversation it moved to: `sendCard` goes to
-    // whatever session the host has open now (`handCard`), and the pictures it carries would
-    // count as shown there. Nothing is handed and nothing is marked: the claim goes back, so a
-    // relay frame is sent again by the listener to the session it names, and a core frame
-    // reaches that session again only through its replay sweep, as a card. The pictures stay
-    // unshown, so the copy that comes back to that session carries them.
-    const cardNotShown = (): void => {
-      logger.warn("envoy: a card was not shown here; the session it names is closed", {
+    // A delivery whose session is not the one open here any more: the accept below would spend
+    // the person's attempt, and whatever Dispatch then answered would be run and shown in the
+    // conversation the host moved to. So nothing is accepted and nothing is posted - Dispatch
+    // never recorded this attempt as taken - and the claim goes back: a relay frame is sent
+    // again by the listener to the session it names and to no other, and a core frame reaches
+    // that session again only through its replay sweep, as a card, never answered by another
+    // session. The line below is what says here that a person's message went back unanswered.
+    // A card of such a frame goes back the same way, inside `UnwrittenFrames.sendCard`, which
+    // hands none to a session that is not open and leaves the pictures it carries unshown.
+    const goBack = (): void => {
+      logger.warn("envoy: a delivery was not taken here; the session it names is closed", {
         addressed: session,
         eventID: envelope?.event_id,
         open: sessionID,
@@ -1942,7 +1976,7 @@ export default function envoyExtension(pi: PiApi): void {
         );
         if (relayed !== undefined) relayed.done();
         else if (envelope !== undefined)
-          void replay?.liveFailed(session, topic, envelope, error, receivedAt);
+          void replay?.liveFailed(noticeSession(), topic, envelope, error, receivedAt);
       });
     };
     try {
@@ -1962,18 +1996,13 @@ export default function envoyExtension(pi: PiApi): void {
         // began) never starts a side turn: it is one inert card, as a replayed BTW is, written to
         // the transcript and done then. Its answer, if any, is on Dispatch.
         noteBtw(identity?.event_id);
-        // The card is the addressed session's, and the read of the body whole above is a window
-        // a `/new` or a `/resume` lands in.
-        if (!addressedSessionOpen()) {
-          cardNotShown();
-        } else {
-          unwritten.sendCard(
-            `${replayedText(rendered.content, relayed.storedAt)}\n${REPLAYED_BTW_NOTE}`,
-            "inert",
-            identity,
-            claim
-          );
-        }
+        unwritten.sendCard(
+          cardSession(),
+          `${replayedText(rendered.content, relayed.storedAt)}\n${REPLAYED_BTW_NOTE}`,
+          "inert",
+          identity,
+          claim
+        );
       } else if (rendered.delivery?.mode === "btw") {
         // A BTW is answered on Dispatch or refused there, never shown as a card: the stream's
         // copy must never come back from a sweep as a card that starts a turn. The ledger
@@ -2015,20 +2044,7 @@ export default function envoyExtension(pi: PiApi): void {
           });
         }
       } else if (rendered.delivery !== undefined && !addressedSessionOpen()) {
-        // A delivery Dispatch addressed to one session, and that session is not the one open
-        // here any more: the accept below would spend the person's attempt, and whatever
-        // Dispatch then answered would be run and shown in the conversation the host moved to.
-        // So nothing is accepted and the claim goes back: a relay frame is sent again by the
-        // listener to the session it names and to no other, and a core frame reaches that session
-        // again only through its replay sweep, as a card - never answered by another session.
-        // Nothing is posted either, since Dispatch never recorded this attempt as taken; the
-        // line below is what says here that a person's message went back unanswered.
-        logger.warn("envoy: a delivery was not taken here; the session it names is closed", {
-          addressed: session,
-          eventID: envelope?.event_id,
-          open: sessionID,
-        });
-        claim.release();
+        goBack();
       } else {
         const accepted = await acceptedUserTurn(rendered, session);
         // The pictures the delivered text embeds reach the model beside it, read with the
@@ -2039,10 +2055,10 @@ export default function envoyExtension(pi: PiApi): void {
         // `/resume` inside the accept has this text built against the set of the conversation
         // the host moved to: a picture that conversation was shown is left out of it, and one it
         // was not is carried again. Nothing is marked from it - each branch below marks the set
-        // it reads for itself, past its own check that the addressed session is still the open
-        // one, and a card for a session that is not is shown to nobody. That check compares
-        // session ids, as the branches that send a person's turn do, so a host that left this
-        // session and came back to it inside the accept reads here as one that never left.
+        // it reads for itself, once the host was handed the card or the turn: a card for a
+        // session that is not the open one is handed to nobody (`UnwrittenFrames.sendCard`),
+        // and a turn is sent only past its own check. Both compare session ids, so a host that
+        // left this session and came back to it inside the accept reads as one that never left.
         const shown = shownPictures(sessionID);
         if (accepted === undefined) {
           const card = await withDeliveredPictures(
@@ -2052,24 +2068,19 @@ export default function envoyExtension(pi: PiApi): void {
             true,
             shown
           );
-          // The accept, the picture load, or both, ran across a `/new` or a `/resume`: this card
-          // is the addressed session's, and that session is open nowhere here now. A frame that
-          // is no Dispatch delivery names no session to hold it to: which of them arrive while
-          // the host has moved and no event has said where is the subject's own lineage to
-          // decide (`topicAddress`), exactly as before the accept.
-          if (rendered.delivery !== undefined && !addressedSessionOpen()) {
-            cardNotShown();
-          } else {
-            // Settled once the host writes the card, or at once when nothing waits on that. How
-            // the card goes, and why, is the wake's (`handCard`, `../src/card-wake`).
-            unwritten.sendCard(
-              card.content,
-              rendered.delivery?.mode === "aside" ? "aside" : "card",
-              identity,
-              claim
-            );
-            markPicturesShown(shownPictures(sessionID), card.shown);
-          }
+          // Settled once the host writes the card, or at once when nothing waits on that. How
+          // the card goes, and why, is the wake's (`handCard`, `../src/card-wake`). The accept,
+          // the picture load, or both, may have run across a `/new` or a `/resume`: the card is
+          // then for a session open nowhere here, so it is handed to nobody (`closed`) and its
+          // pictures stay unshown, which is what the copy that reaches that session carries.
+          const outcome = unwritten.sendCard(
+            cardSession(),
+            card.content,
+            rendered.delivery?.mode === "aside" ? "aside" : "card",
+            identity,
+            claim
+          );
+          if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
           const { turn } = accepted;
           // Sent exactly as Enter, or an aside, at the terminal sends it, the person's pictures
@@ -2153,13 +2164,14 @@ export default function envoyExtension(pi: PiApi): void {
       console.warn(`[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, error);
       // A frame no sweep will show again (a role forward, already acknowledged; one on a
       // subscription the replay does not read: refused, not started, or the listener's replay
-      // failing) gets its notice at once, in the session the frame was addressed to and nowhere
-      // else: a frame that failed because the host moved on names a session that is closed here
-      // now, and the conversation it moved to is told nothing. The stream's copy of any other
-      // waits for a sweep. A relay frame's failure is the relay's to count: it comes again, or
-      // gets its notice.
+      // failing) gets its notice at once. A frame that names a session gets it in that session
+      // and nowhere else: one that failed because the host moved on names a session that is
+      // closed here now, and the conversation it moved to is told nothing. A frame that names
+      // none gets it in the conversation open here, which is the one that took it. The
+      // stream's copy of any other waits for a sweep. A relay frame's failure is the relay's to
+      // count: it comes again, or gets its notice.
       if (relayed === undefined && envelope !== undefined) {
-        void replay?.liveFailed(session, topic, envelope, error, receivedAt);
+        void replay?.liveFailed(noticeSession(), topic, envelope, error, receivedAt);
       }
       throw error;
     }
@@ -2533,10 +2545,11 @@ export default function envoyExtension(pi: PiApi): void {
         followedChanged: replayFollowedChanged,
       });
     }
-    // The close above is the one window here, and both cards below go to whatever session the
-    // host has open now (`handCard`): a `/new` or a `/resume` inside it would card the
-    // conversation the host moved to with a frame stored for the one it left. Nothing is handed
-    // and nothing is recorded. `failed` is the only answer for a frame nobody was shown, and it
+    // The close above is the one window here: a `/new` or a `/resume` inside it puts the host on
+    // another conversation, and this frame is stored for the one it left. The cards below are
+    // held to `addressed` wherever the host went (`UnwrittenFrames.sendCard`), and this answer
+    // keeps the inbox note and the removal's reading out of the move too. Nothing is handed and
+    // nothing is recorded. `failed` is the only answer for a frame nobody was shown, and it
     // counts as no failure here: the engine reads the move for itself after every delivery and
     // answers its sweep `stopped`, so the frame keeps its place in the stream and the addressed
     // session's own next sweep shows it there, as a card.
@@ -2556,9 +2569,9 @@ export default function envoyExtension(pi: PiApi): void {
     // turn. Its answer, if any, is on Dispatch.
     if (rendered.delivery?.mode === "btw") {
       noteBtw(rendered.envelope?.event_id);
-      return showReplayCard(`${shown}\n${REPLAYED_BTW_NOTE}`, frame.envelope, "inert");
+      return showReplayCard(addressed, `${shown}\n${REPLAYED_BTW_NOTE}`, frame.envelope, "inert");
     }
-    return showReplayCard(shown, frame.envelope);
+    return showReplayCard(addressed, shown, frame.envelope);
   };
 
   // The session this instance and the host are both on: an entry appended now lands in its
@@ -2593,12 +2606,20 @@ export default function envoyExtension(pi: PiApi): void {
             writeSessionID: transcriptSessionID,
             followedSubjects,
             deliver: showReplayed,
-            showFailureNotice: async (notice) =>
-              showReplayCard(
+            // The notice is this session's, as the frame it names was swept for it. One the
+            // open session is not handed is thrown back at the engine, which keeps the frame
+            // outstanding, as it does for a notice the host refused: the next sweep of the
+            // session the frame names shows it there.
+            showFailureNotice: async (notice) => {
+              const outcome = showReplayCard(
+                sessionID,
                 envoyNoticeText(failureNoticeFields(notice)),
                 notice.envelope,
                 btwEvents.has(notice.eventId) ? "inert" : "card"
-              ),
+              );
+              if (outcome === "failed") throw new Error("the session it names is closed");
+              return outcome;
+            },
             failureNoticeFailed: (notice, error) => {
               logger.warn("envoy: a message this session was not shown could not be reported", {
                 eventID: notice.eventId,

@@ -197,14 +197,14 @@ Every refusal, every error and the timeout (10 s), a Dispatch configuration that
 resolves included, keeps the card and posts nothing.
 
 Every branch of a delivery holds the frame to the one session it was addressed to.
-A `/new`, a `/resume` or a move with no event for it can land in any await before the work, so every branch reads `sessionOpen` again before it acts.
+A `/new`, a `/resume` or a move with no event for it can land in any await before the work, so every branch that spends the person's attempt or asks the model for them reads `sessionOpen` again before it acts.
 Those awaits are the acknowledgement, the read of a body the event carried in part, the accept, and the picture load.
 Before the accept nothing is answered: the claim is released, so a relay frame goes back to the listener, which sends it again to the session it names and to no other; a frame from the core subscription is not sent again live, and reaches that session again only through its replay sweep, as a card.
 Accepting it there would spend that person's attempt for the conversation the host moved to.
 After the accept the attempt is spent, so the person is answered instead, in the words the `!` path uses for the same move.
 A typed Send is answered that the message was not sent, since this session is no longer the one open here, and the host is handed nothing.
 A BTW is refused with that sentence before its side turn, which would otherwise be the conversation the host moved to answering a question nobody asked it.
-A card is held to that session too: a delivery whose accept Dispatch refused, one naming an attempt this session delivered, and a late BTW are each shown to nobody, and the claim goes back as it does before the accept.
+A card is held to that session inside `UnwrittenFrames.sendCard`, which hands none to any other: a delivery whose accept Dispatch refused, one naming an attempt this session delivered, and a late BTW are each shown to nobody, and the claim goes back as it does before the accept.
 Nothing of such a card counts as shown, so the copy that reaches the addressed session carries its pictures.
 
 On a host with `pi.sendUserInput` (our Oh My Pi fork, can1357/oh-my-pi#14323) the body runs as if

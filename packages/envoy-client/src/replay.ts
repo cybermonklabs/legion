@@ -1167,9 +1167,13 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
       // The notice belongs to the session the frame was addressed to, which is often the reason
       // the frame failed: the host moved on, and that session is closed here now. Bound to it,
       // nothing is shown and nothing is recorded, rather than a notice carded in the
-      // conversation the host moved to and a record of this frame in its transcript.
+      // conversation the host moved to and a record of this frame in its transcript. The line
+      // below is what says here that nobody was told of the frame.
       const alive = bindTo(sessionID, currentSession)?.alive;
-      if (alive === undefined) return;
+      if (alive === undefined) {
+        log("replay: a failed frame was not reported here; the session it names is closed");
+        return;
+      }
       try {
         await showFailureNotice(
           failureNotice(envelope, inboundTimestamp(envelope.issued_at), messageFor(error)),
