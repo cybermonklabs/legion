@@ -203,7 +203,7 @@ jobs:
     #
     # The image this repository builds and publishes for every CI job that can launch WebKit or
     # Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-    # tag browser-c7e154a1): Playwright's own browser host, which bakes Chromium, WebKit and
+    # tag browser-931408c6): Playwright's own browser host, which bakes Chromium, WebKit and
     # Firefox and every host package they need under /ms-playwright - where its
     # PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
     # binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
@@ -229,7 +229,7 @@ jobs:
     # container's first runs, so `--shm-size=2g` is not needed beside it. --init gives the
     # container a pid 1 that reaps the browsers' orphans, which four lanes of them make many of.
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:c7e154a1f6d29dc1a64b3a020957c27e3366a9d16e09cd57bc4477d2611baff5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:931408c6f14b78cea57d92232c0ee3b6d9018a69c5f2e1e6ecd29c15b891a93f
       options: --user 1001 --ipc=host --init
     #
     # This job runs no `go` command, directly or through a script: the binaries job above builds
@@ -698,7 +698,7 @@ jobs:
     # The container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here
     # too, and so do their reasons.
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:c7e154a1f6d29dc1a64b3a020957c27e3366a9d16e09cd57bc4477d2611baff5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:931408c6f14b78cea57d92232c0ee3b6d9018a69c5f2e1e6ecd29c15b891a93f
       options: --user 1001 --ipc=host --init
     # This job takes the container because its matrix holds webkit-alone and firefox-alone,
     # which launch the two engines the image exists for; chromium-alone is a leg of a container
