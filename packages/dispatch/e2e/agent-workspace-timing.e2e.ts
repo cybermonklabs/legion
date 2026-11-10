@@ -121,7 +121,7 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
 // median of them to be the page's. What was measured on 2026-11-10: three runs of eight wakes
 // read medians of 1379, 1127 and 1102 ms against minima of 861, 861 and 972 ms, and the parent
 // commit's unmodified copy of this file failed the same bound at this head (a wake of 1401 ms),
-// which is what rules the page out as the cause. What the readings cannot say is why the
+// which is what rules this file's change out as the cause; the page is the same at both. What the readings cannot say is why the
 // machine is slow: nothing in this pod can measure its load - `/proc/loadavg` reads 0.00 with
 // both CPUs busy and `/proc/stat` reports 91% busy either way, both blind under gVisor
 // (measured 2026-11-10) - so a host that is slow for as long as it runs and another of this
@@ -253,7 +253,7 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 // median of them to be the page's. What was measured on 2026-11-10: three runs of twenty loads
 // read medians of 111, 109 and 101 ms against minima of 90, 57 and 59 ms, and the parent
 // commit's unmodified copy of this file failed the same bound at this head (a paint of 128 ms),
-// which is what rules the page out as the cause. Why the machine is slow is not something a
+// which is what rules this file's change out as the cause; the page is the same at both. Why the machine is slow is not something a
 // reading here can say: nothing in this pod can measure its load - `/proc/loadavg` reads 0.00
 // with both CPUs busy and `/proc/stat` reports 91% busy either way, both blind under gVisor
 // (measured 2026-11-10) - so a host that is slow for as long as it runs and another of this

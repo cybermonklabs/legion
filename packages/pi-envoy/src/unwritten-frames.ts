@@ -196,9 +196,9 @@ export class UnwrittenFrames {
    * and nothing is marked shown - the host writes what it is handed in the conversation it has,
    * under the name of the session the card is for. The claim goes back with nothing recorded
    * (`cardNotShown`), and the frame is shown again only by whatever sends it again: a caller
-   * names a session other than the host's own for a Dispatch delivery alone, which the listener
-   * sends again to the session it names and that session's own replay sweep shows as a card
-   * (`cardSession` in `../extensions/envoy.ts`). Every caller is answered this, so none has to
+   * names a session other than the host's own for a Dispatch delivery and for a replayed frame
+   * alone (`cardSession` and `showReplayCard` in `../extensions/envoy.ts`), and each of those is
+   * sent again to the session it names. Every caller is answered this, so none has to
    * read the session for itself.
    *
    * An inert card sent while the host is not settled is not handed: it waits, `queued`, and the

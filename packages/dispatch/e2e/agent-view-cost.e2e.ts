@@ -112,7 +112,7 @@ test("eight agents opened in turn cost the page two live views, not eight", asyn
 
     // One or two of each, never none: an upper bound alone is passed by a reading that never
     // happened - a broken report hook, a selector that matches nothing - so the floor is what
-    // makes the row fail for the reason it exists (the check's v19 words). Both counts are in
+    // makes the row fail for the reason it exists (the words of check k11). Both counts are in
     // the annotations above and in each message here, so the figures are on the record whether
     // the row passes or fails.
     const heldSubscriptions = `the socket held ${subscriptions.join(", ")} agent subscriptions after the eight opens`;
