@@ -16,12 +16,15 @@
 # this script builds with `-tags e2e`). Each check prints `== <name>`, what it observed and
 # `ok <name>`; the first that fails ends the run non-zero, naming it.
 #
-# Run it from a checkout on a Linux host with go and awk, as
-#   LEGION_TEST_PG_DSN=postgres://<user>@<host>:<port>/<database>?sslmode=disable \
+# Run it from a checkout on a Linux host with go, awk and python3, as
+#   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/ci-red-no-takeover.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on — CI's
-# service, a devbox container and a pod's own embedded PostgreSQL all satisfy it, and this script
-# starts none, so the tester can re-run it wherever one is. The broker is the run's own: a
+# service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback
+# address, and this script starts none, so the tester can re-run it wherever one is. That server
+# must be this machine's: prerequisites reads the DSN with lib/loopback-dsn.sh's
+# require_loopback_dsn and refuses a host that is not 127.0.0.1, localhost or ::1 with exit 2,
+# before it builds or starts anything. The broker is the run's own: a
 # nats-server from LEGION_E2E_NATS_BIN, or the pinned one this script installs with `go install`
 # into a GOBIN of its own, started with JetStream on a port of the run's own and stopped on any
 # exit. CI_RED_NO_TAKEOVER_EVIDENCE_DIR (default a fresh directory under TMPDIR, or /tmp when it is

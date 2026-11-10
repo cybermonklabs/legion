@@ -218,34 +218,7 @@ type Awaiting struct {
 	AnsweredAt     *time.Time
 	AnsweredBy     Answer
 	AnsweredDetail string
-	// SlotNoticeAt is when the daemon wrote this wait's architect the waiting-for-slot notice
-	// (workflow.WaitingForSlotNoticeKind), and nil until it did: an admission pass writes it for
-	// an answered wait whose root needs a slot the cap has none of, so that architect is told
-	// once that its root waits and that the daemon starts it again by itself. It records that the
-	// notice was written, never that an architect read it.
-	//
-	// The mark belongs to this wait and goes where the wait goes. The stored shape clears it
-	// for a write that leaves it unchanged while leaving the row in anything but an answered
-	// wait (the trigger issues_carried_slot_notice_cleared, migration 20261108055000), whichever
-	// release makes that write, and the shape check refuses a mark stated anew outside an
-	// answered wait. Nothing in Go clears it on its own.
-	//
-	// Nine places outside the tests write Issue.Awaiting. admit.tellWaitingForSlot writes this
-	// field itself, beside the answer, in the transaction that enqueues the notice.
-	// workflow.enterAwaiting builds a fresh Awaiting for each new wait, which is why a new wait
-	// of a root told before carries no mark of the old one. admit.promoteHolds's resume,
-	// admit.readmit, workflow.beginLinger and workflow.leaveUnderOperator clear the wait whole,
-	// so the mark goes with the struct. The last three write through the wait the record already
-	// holds and keep every field they do not name: workflow.answerWait, which is safe because
-	// each of its callers reaches it for an unanswered wait alone, and workflow.itemLeft and
-	// workflow.leaveGateOff, which rewrite the wait's subject in place and are safe for the same
-	// reason — itemLeft returns at once when root.Awaiting.AnsweredAt != nil, and
-	// leaveGateOff's caller answerOpenGates skips an answered wait before it reaches
-	// leaveGateOff. A change to any of those guards changes this invariant, and would carry one
-	// wait's mark into the next wait, whose architect would then never be told. The stored shape
-	// holds the same rule (issues_awaiting_shape): the mark stands only beside an answer.
-	SlotNoticeAt *time.Time
-	Since        EventMark
+	Since          EventMark
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
@@ -322,7 +295,8 @@ type DeliveryHold struct {
 func (i Issue) AwaitingPerson() bool { return i.Phase == phase.AwaitingPerson && i.Awaiting != nil }
 
 // Answered says whether the issue is a root a person's answer released from awaiting_person, which
-// waits for its slot.
+// waits in the line for the resume of its architect, on the row it held through the wait
+// (KeepsSlot).
 func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.AnsweredAt != nil }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -1583,6 +1557,10 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
+	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' second statement
+	// without its first, for a caller that judges a run by its claim and reads no queued start
+	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
+	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -1609,14 +1587,23 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), and the task it holds,
-// nil for none, with the task's generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
+// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
+// generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
-	Pending      *supervise.Delivery
+	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
+	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
+	// does not), and 0 for a claim that has never retired and for one an earlier release retired,
+	// which recorded the moment nowhere. What it is for: its one reader weighs the write mark of a
+	// start row the issue owes against it, to tell a row the workflow wrote after the stop from one
+	// already written when the stop was recorded (admit's stopOutlivedStart). It says nothing about
+	// a claim that is not retired now, which is the only state that reader looks at.
+	RetiredAtWriteMark int64
+	Pending            *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger
