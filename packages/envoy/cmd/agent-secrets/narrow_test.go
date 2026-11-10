@@ -174,11 +174,14 @@ func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
 	}
 }
 
-// TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo: --github-repo or --github-read-only narrows one
-// account's token, so without --github-owner it is a usage error, and so is a --github-owner that
-// names no account (an unset variable a helper passed), which would otherwise send no narrowing at
-// all, and any narrowing the broker's parser refuses (policy.ParseGitHubNarrowing): the CLI runs
-// that parser itself, so nothing reaches the broker, not even the request a person would approve.
+// TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo: --github-repo, --github-read-only and
+// --github-token each name one account's token, so without --github-owner each is a usage error,
+// and the refusal names the flag the caller gave: --github-token beside --github-repo names
+// --github-token, since a caller who asked for a token and named no account is told about the
+// flag they asked with. So is a --github-owner that names no account (an unset variable a helper
+// passed), which would otherwise send no narrowing at all, and any narrowing the broker's parser
+// refuses (policy.ParseGitHubNarrowing): the CLI runs that parser itself, so nothing reaches the
+// broker, not even the request a person would approve.
 func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t)
@@ -189,6 +192,8 @@ func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 	}{
 		{[]string{"--github-repo", "widgets"}, "--github-owner"},
 		{[]string{"--github-read-only"}, "--github-owner"},
+		{[]string{"--github-token"}, "--github-token"},
+		{[]string{"--github-token", "--github-repo", "widgets"}, "--github-token"},
 		{[]string{"--github-owner", ""}, "--github-owner"},
 		{[]string{"--github-owner="}, "--github-owner"},
 		{[]string{"--github-owner", "  ", "--github-read-only"}, "--github-owner"},
