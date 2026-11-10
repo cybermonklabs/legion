@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // ghHelpDir holds the real gh's help of each command the resolver's tests read, saved from gh
@@ -816,6 +817,82 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 			}
 			if remotes, err := ReadGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
 				t.Errorf("ReadGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)
+			}
+		})
+	}
+}
+
+// The files a call would send to GitHub as content are read out of the same parse that reads the
+// owner, so the leak guard reads each file's text (leakguard.GhRequest.Files) and needs no second
+// reader of the argv. The parse knows each option's arity from the leaf's own help, which is what
+// a table of option names cannot: `-F` is --body-file in `gh pr create` and --field in `gh api`,
+// a short cluster gives its last letter the next argument (`-dF <path>` is `--draft --body-file
+// <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A value of `-`, an
+// `@-`, a field given a literal and a raw field name no file to open.
+func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want []leakguard.GhFile
+	}{
+		{
+			name: "a short cluster whose last letter is the option",
+			argv: []string{"pr", "create", "-R", "acme/widgets", "-dF", "body.md"},
+			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		},
+		{
+			name: "a short option with its value attached by an equals sign",
+			argv: []string{"pr", "create", "-R", "acme/widgets", "-F=body.md"},
+			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		},
+		{
+			name: "a separate --body-file",
+			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "body.md"},
+			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+		},
+		{
+			name: "gh api's field read from a file",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "--method", "PATCH", "-F", "body=@body.md"},
+			want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+		},
+		{
+			name: "gh api's request body",
+			argv: []string{"api", "repos/acme/widgets/pulls", "--input", "request.json"},
+			want: []leakguard.GhFile{{Option: "--input", Path: "request.json"}},
+		},
+		{
+			name: "a raw field, which sends its value literally",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-f", "body=@body.md"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "a field given a literal value",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=text"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "a body option whose value is standard input",
+			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "a field read from standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
+			want: []leakguard.GhFile{},
+		},
+		{
+			name: "the same file named twice",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
+			want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := TargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
+			if err != nil {
+				t.Fatalf("TargetOf(%q) = %v", tc.argv, err)
+			}
+			if !slices.Equal(target.Files, tc.want) {
+				t.Fatalf("TargetOf(%q) read the files %v, want %v", tc.argv, target.Files, tc.want)
 			}
 		})
 	}

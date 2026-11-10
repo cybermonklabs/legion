@@ -9,25 +9,84 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // Target is what TargetOf reads off a gh command: Owner, the owner, lowercased, of the repository
 // it acts on, empty when it names none; Repo, that repository's name as the bundle directory
 // holding its token is named for it (RepositoryName), where every selector of the command named
 // that one repository of that owner, and "" where they named more than one, where one named the
-// owner alone, and where none named a repository at all; and Command, the path of the leaf
+// owner alone, and where none named a repository at all; Command, the path of the leaf
 // command it runs as gh's own help names it (`pr list` for `pr ls`), nil when it runs none
-// (`gh`, a group alone, `gh help`, `gh --version`). A target with no Owner is a command naming
+// (`gh`, a group alone, `gh help`, `gh --version`); and Files, the files the command would send
+// to GitHub as content (sentFiles), for the leak guard a caller runs before gh
+// (leakguard.GhRequest.Files). A target with no Owner is a command naming
 // none, whose token stays the one GH_CONFIG_DIR already names.
 type Target struct {
 	Owner   string
 	Repo    string
 	Command []string
+	Files   []leakguard.GhFile
+}
+
+// sentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
+// sends to GitHub as content: true where the whole value is the path, and false for `gh api`'s
+// --field, whose file is the `@<path>` half of a `<name>=@<path>` value. They are the same four
+// plus the field that leakguard's own table holds (its ghFileArgs), read here by their long
+// names because the leaf's own help has already said which option each argument is: a `-F` is
+// --body-file in `gh pr create`, --notes-file in `gh release create` and --field in `gh api`,
+// and a short cluster (`-dF <path>`) and an attached value (`-F=<path>`) are read as pflag
+// reads them.
+var sentFileOptions = map[string]bool{
+	"body-file":  true,
+	"notes-file": true,
+	"input":      true,
+	"from-file":  true,
+	"field":      false,
+}
+
+// sentFiles are the files the parsed command would send to GitHub as content, each named once
+// and each named by the option it came from, for the leak guard to read the text of
+// (leakguard.GhRequest.Files). The answer is never nil, so a command that sends no file is a
+// command the guard reads no file of, rather than one it reads the argv of again with a table
+// of its own.
+//
+// A value of `-`, and an `@-`, is standard input, which the guard reads through the shared
+// check's own handshake and never opens as a file. The options are read in the order their
+// names sort, since a parse holds each option's values together and not the argv's order
+// across options, and a report that named two files must name them the same way twice.
+func sentFiles(parsed ghArgs) []leakguard.GhFile {
+	files := []leakguard.GhFile{}
+	for _, name := range slices.Sorted(maps.Keys(sentFileOptions)) {
+		whole := sentFileOptions[name]
+		for _, value := range parsed.values[name] {
+			path := value
+			if !whole {
+				_, after, found := strings.Cut(value, "=")
+				if !found || !strings.HasPrefix(after, "@") {
+					// A field given a literal value, and `gh project field-list --field <name>`,
+					// name no file.
+					continue
+				}
+				path = strings.TrimPrefix(after, "@")
+			}
+			if path == "" || path == "-" {
+				continue
+			}
+			if slices.ContainsFunc(files, func(file leakguard.GhFile) bool { return file.Path == path }) {
+				continue
+			}
+			files = append(files, leakguard.GhFile{Option: "--" + name, Path: path})
+		}
+	}
+	return files
 }
 
 // TargetOf reads the Target of the gh command argv (gh's arguments, without `gh`): the owner of
@@ -139,12 +198,13 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	if err := sel.fromOwnRepository(cmd, parsed, env, remotes); err != nil {
 		return Target{}, err
 	}
+	files := sentFiles(parsed)
 	switch len(sel.owners) {
 	case 0:
-		return Target{Command: cmd.path}, nil
+		return Target{Command: cmd.path, Files: files}, nil
 	case 1:
 		for owner := range sel.owners {
-			return Target{Owner: owner, Repo: sel.onlyRepository(), Command: cmd.path}, nil
+			return Target{Owner: owner, Repo: sel.onlyRepository(), Command: cmd.path, Files: files}, nil
 		}
 	}
 	var listed []string

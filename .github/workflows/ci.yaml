@@ -577,6 +577,7 @@ jobs:
               - 'packages/daemon/internal/githubrest/*'
               - 'packages/daemon/internal/intake/*'
               - 'packages/daemon/internal/launcher/*'
+              - 'packages/daemon/internal/leakguard/*'
               - 'packages/daemon/internal/lookpath/*'
               - 'packages/daemon/internal/memorygroup/*'
               - 'packages/daemon/internal/modeltoken/*'
@@ -2152,6 +2153,9 @@ jobs:
       - name: Check the saved gh help is the worker image's gh
         run: .github/scripts/check-gh-version.sh
 
+      - name: Check the gitleaks the release lane fetches is the one the daemon links
+        run: .github/scripts/check-gitleaks-version.sh
+
       - name: Check image triggers cover every image input
         run: .github/scripts/check-image-trigger-paths.sh
 
@@ -3420,6 +3424,9 @@ jobs:
       - name: Test the gh version check
         run: .github/scripts/check-gh-version.test.sh
 
+      - name: Test the gitleaks version check
+        run: .github/scripts/check-gitleaks-version.test.sh
+
       - name: Test the workflow path model the path checks import
         run: .github/scripts/workflow_paths.test.sh
 
@@ -3572,6 +3579,13 @@ jobs:
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
         run: .github/scripts/check-ts-filters.test.sh
+
+      # After setup-go, and not beside `Test release scripts` where the other .github/scripts
+      # suites sit: it builds the legion binary of this head out of packages/daemon and drives
+      # the leak guard through that binary, so it needs the Go the step above installs from that
+      # module's own go.mod.
+      - name: Test the private-name rules' port against the frozen script
+        run: .github/scripts/check-private-names-port.test.sh
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it.

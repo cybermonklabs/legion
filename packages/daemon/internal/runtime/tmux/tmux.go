@@ -195,16 +195,22 @@ type Runtime struct {
 	conns                runtime.Conns
 	paneEnv              map[string]string
 	environ              []string
-	tmuxPath             string
-	legion               string
-	now                  func() time.Time
-	log                  *slog.Logger
-	providerEnvDir       string
-	providerKeys         []string
-	sessionDSNFile       string
-	operatorEnv          map[string]string
-	piConfigFiles        []string
-	roleConfigFiles      map[claim.Role][]string
+	// ownEnviron is the daemon's own environment, as Options.Environ gave it and before
+	// PaneEnvironment made a pane's out of it: what a launch resolves the machine's shared public
+	// leak check in (resolveLeakCheck). environ above is the pane environment, which carries
+	// neither the operator's XDG_CONFIG_HOME nor any name off the allow list, so it is no
+	// environment to resolve that check in.
+	ownEnviron      []string
+	tmuxPath        string
+	legion          string
+	now             func() time.Time
+	log             *slog.Logger
+	providerEnvDir  string
+	providerKeys    []string
+	sessionDSNFile  string
+	operatorEnv     map[string]string
+	piConfigFiles   []string
+	roleConfigFiles map[claim.Role][]string
 	// memoryConfigFiles are the project's memory overlays (Options.MemoryConfigFiles), named last
 	// in PI_CONFIG_FILES by a pane whose tree is in the memory group alone.
 	memoryConfigFiles []string
@@ -355,6 +361,7 @@ func New(opts Options) (*Runtime, error) {
 		commandTimeout:       opts.CommandTimeout,
 		conns:                opts.Conns,
 		paneEnv:              paneEnv,
+		ownEnviron:           environ,
 		tmuxPath:             tmuxPath,
 		legion:               legion,
 		now:                  opts.Now,
