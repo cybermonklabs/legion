@@ -26,6 +26,9 @@
 # It is a sibling of dispatch-two-builds.sh rather than a case added to it: that proof needs a
 # base build older than this release's reference grammar, and this one needs the release before
 # the five members, so one --base-commit cannot serve both.
+# The harness the two run on — the argument, the prerequisites, the build of both binaries, the
+# reset, the fake Envoy and the start of each server — is scripts/e2e/lib/two-builds.sh, which
+# both source; what is below is this proof's own seed and cases.
 #
 # Both builds run the dev embedder (DISPATCH_DEV_EMBEDDER=1), which hashes a text's lower-case
 # words into the buckets of one vector in the server's own process and calls no model service, so
@@ -89,104 +92,22 @@ fail() {
   echo "FAIL $check: $*" >&2
   exit 1
 }
-# What lib/rig.sh reads of its caller: start_process and await_start log under $evidence/logs.
+# What lib/rig.sh, which lib/two-builds.sh sources, reads of its caller: start_process and
+# await_start log under $evidence/logs.
 evidence=''
 timeout_hook=''
-# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
-. "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/two-builds.sh
+. "$root/scripts/e2e/lib/two-builds.sh"
 
-# This script's own inputs, read before the sweep below drops every DISPATCH_* variable.
-base_commit=''
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --base-commit)
-      [ $# -ge 2 ] || fail "--base-commit takes the commit the base build is built from"
-      base_commit=$2
-      shift 2
-      ;;
-    --base-commit=*)
-      base_commit=${1#--base-commit=}
-      shift
-      ;;
-    *) fail "unknown argument '$1': this script takes --base-commit <rev> alone" ;;
-  esac
-done
-database_url=${DATABASE_URL:-}
+# This proof's own ports, and a longer wait on one call than the shared default: a search of
+# this corpus runs the meaning leg too. two_builds_setup reads this script's --base-commit and
+# DATABASE_URL before it drops every DISPATCH_*, ENVOY_*, NATS_* and PGHOSTADDR the shell
+# inherited, and arms the teardown, whose last line carries the label given here.
 base_port=${SEARCH_TWO_BUILDS_BASE_PORT:-19081}
 head_port=${SEARCH_TWO_BUILDS_HEAD_PORT:-19082}
 envoy_port=${SEARCH_TWO_BUILDS_ENVOY_PORT:-19083}
-
-# A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
-# DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, which would replace the URL's host for the reset below while a server,
-# which never reads it, connects to the host the check admitted.
-mapfile -t inherited < <(compgen -e)
-for name in "${inherited[@]}"; do
-  case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR) unset "$name" ;;
-  esac
-done
-
-# The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
-work=''
-fake_envoy_pid=''
-base_pid=''
-head_pid=''
-
-# cleanup stops what the run started and exits with rc: the script's own status for EXIT, 128 plus
-# the signal's number for INT and TERM, so an interrupted run never reports success.
-cleanup() {
-  local rc=$1
-  trap - EXIT INT TERM
-  set +e
-  stop_pid "$head_pid"
-  stop_pid "$base_pid"
-  stop_pid "$fake_envoy_pid"
-  if [ -z "$work" ]; then
-    echo "dispatch search two builds e2e: FAIL at $check after $((SECONDS - started))s" >&2
-  elif [ "$rc" -eq 0 ]; then
-    rm -rf "$work"
-    echo "dispatch search two builds e2e: PASS in $((SECONDS - started))s"
-  else
-    rm -rf "${work:?}/bin" "${work:?}/base"
-    echo "dispatch search two builds e2e: FAIL at $check after $((SECONDS - started))s (logs: $work)" >&2
-  fi
-  exit "$rc"
-}
-trap 'cleanup "$?"' EXIT
-trap 'cleanup 130' INT
-trap 'cleanup 143' TERM
-
-agent_token=''
-
-# call METHOD PATH [BODY] prints what the server on $target_url answers an agent bearer, and
-# returns non-zero with the answer on stderr when it is not 2xx. The body of an agent's write
-# carries its actor. Seeding uses it; the cases below read their own status code and answer with
-# fetch, since a 404 is one of the things they prove.
-target_url=''
-call() {
-  local method=$1 path=$2 body=${3:-} out status
-  out=$(mktemp "$work/call.XXXXXX")
-  if [ -z "$body" ]; then
-    status=$(curl -sS -o "$out" -w '%{http_code}' --max-time 30 -X "$method" \
-      -H "Authorization: Bearer $agent_token" "$target_url$path") || status=000
-  else
-    status=$(curl -sS -o "$out" -w '%{http_code}' --max-time 30 -X "$method" \
-      -H "Authorization: Bearer $agent_token" -H 'Content-Type: application/json' \
-      -d "$body" "$target_url$path") || status=000
-  fi
-  case "$status" in
-    2??)
-      cat "$out"
-      rm -f "$out"
-      ;;
-    *)
-      echo "$method $path answered $status: $(cat "$out")" >&2
-      rm -f "$out"
-      return 1
-      ;;
-  esac
-}
+call_seconds=30
+two_builds_setup 'dispatch search two builds e2e' "$@"
 
 # fetch URL reads one GET as an agent bearer and sets answer_status and answer_body, whatever the
 # status: a case of this proof judges the status itself, and 404 is the answer two of them want.
@@ -199,13 +120,6 @@ fetch() {
     -H "Authorization: Bearer $agent_token" "$1") || answer_status=000
   answer_body=$(cat "$out")
   rm -f "$out"
-}
-
-# json_field FIELD reads one string member of a JSON object on stdin. bun is already required by
-# the harness this run borrows its fake Envoy from.
-json_field() {
-  # shellcheck disable=SC2016 # the JavaScript below is bun's, not this shell's
-  bun -e 'const field = process.argv[1]; let data = ""; process.stdin.on("data", (chunk) => { data += chunk; }); process.stdin.on("end", () => { const value = JSON.parse(data)[field]; if (typeof value !== "string" || value === "") { console.error(`no ${field} in ${data}`); process.exit(1); } console.log(value); });' "$1"
 }
 
 # signal ANSWER prints one search answer as the one line this proof compares: each result as its
@@ -308,167 +222,48 @@ prove_member() {
   note "control GET /api/v1/search?$plain on this build: 200, [$head_plain], which $member changed"
 }
 
-begin prerequisites
-[ -n "$database_url" ] ||
-  fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
-[ -n "$base_commit" ] ||
-  fail "--base-commit is required: it names the commit the base build is built from, which for this proof is the release before the five narrowing members (legion-envoy-v29.47.1)"
-case "$database_url" in
-  postgres://* | postgresql://*) ;;
-  *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
-esac
-authority=${database_url#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
-fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-esac
-[[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-  fail "DATABASE_URL must not name its host in a parameter"
-for tool in go bun curl psql git tar openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
-base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
-  fail "--base-commit '$base_commit' names no commit of this repository"
-for port in "$base_port" "$head_port" "$envoy_port"; do
-  if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
-    fail "'$port' is not a port"
-  fi
-  port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
-done
-if [ "$base_port" = "$head_port" ] || [ "$base_port" = "$envoy_port" ] || [ "$head_port" = "$envoy_port" ]; then
-  fail "the base, head and fake Envoy ports must differ ($base_port, $head_port, $envoy_port)"
-fi
-# The `vector` extension is the deployment's bootstrap's to install, as a cluster's master role
-# (0072_embeddings_core.up.sql), and the role this run connects as is not one, so a database
-# without it is one no build can migrate. It is read here rather than met with a failed boot.
-[ "$(psql "$database_url" -X -tAc "select count(*) from pg_extension where extname = 'vector'" 2>/dev/null)" = 1 ] ||
-  fail "DATABASE_URL must name a database that already holds the vector extension, which only the cluster's master role can install"
 # The base build has to carry the dev embedder, or its meaning leg runs on nothing and the
-# keywords_only case has no second leg to tell apart. It is read from the commit's own tree.
-git -C "$root" show "$base_sha:packages/envoy/cmd/dispatch/embedder.go" 2>/dev/null |
-  grep -q DISPATCH_DEV_EMBEDDER ||
-  fail "the base build at $base_commit has no dev embedder (DISPATCH_DEV_EMBEDDER in packages/envoy/cmd/dispatch/embedder.go), so meaning search cannot run on both builds"
-note "database host $db_host (URL not printed)"
-note "base commit $base_sha"
+# keywords_only case has no second leg to tell apart. It is read from the commit's own tree, and
+# it is this proof's own prerequisite, which the shared block runs after the checks the two
+# proofs share.
+base_build_has_dev_embedder() {
+  git -C "$root" show "$base_sha:packages/envoy/cmd/dispatch/embedder.go" 2>/dev/null |
+    grep -q DISPATCH_DEV_EMBEDDER ||
+    fail "the base build at $base_commit has no dev embedder (DISPATCH_DEV_EMBEDDER in packages/envoy/cmd/dispatch/embedder.go), so meaning search cannot run on both builds"
+}
+
+begin prerequisites
+two_builds_prerequisites \
+  "--base-commit is required: it names the commit the base build is built from, which for this proof is the release before the five narrowing members (legion-envoy-v29.47.1)" \
+  base_build_has_dev_embedder
 pass
 
 begin build
-work=$(mktemp -d "${TMPDIR:-/tmp}/dispatch-search-two-builds.XXXXXXXX")
-evidence=$work
-note "work directory $work"
-mkdir -p "$work/bin" "$work/base" "$work/web-dist" "$work/logs"
-# The base tree is the commit's own, taken out of the repository rather than checked out, so this
-# working copy is never touched.
-git -C "$root" archive "$base_sha" | tar -x -C "$work/base" ||
-  fail "could not take the tree of $base_sha"
-go -C "$work/base/packages/envoy" build -o "$work/bin/dispatch-base" ./cmd/dispatch ||
-  fail "the base build's ./cmd/dispatch did not build"
-go -C "$root/packages/envoy" build -o "$work/bin/dispatch-head" ./cmd/dispatch ||
-  fail "this checkout's ./cmd/dispatch did not build"
-note "built the base build from $base_sha and this build from $root"
+two_builds_build dispatch-search-two-builds
 pass
 
 begin reset-database
-# Empty, migrations included: the base build migrates the new schema at boot, and this build
-# migrates it forward, which is the upgrade this proof is about. Every table, view, routine and
-# type of the public schema goes, and the extensions it holds stay: `vector` is installed by the
-# cluster's master role (0072_embeddings_core.up.sql says so, and takes it as given with
-# `create extension if not exists`), which the role this run connects as is not, so dropping the
-# schema would leave a database no build can migrate.
-reset_sql="do \$\$
-declare object record;
-begin
-  for object in select table_name, table_type from information_schema.tables where table_schema = 'public' loop
-    if object.table_type = 'VIEW' then
-      execute format('drop view if exists public.%I cascade', object.table_name);
-    else
-      execute format('drop table if exists public.%I cascade', object.table_name);
-    end if;
-  end loop;
-  for object in
-    select p.oid::regprocedure as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
-  loop
-    execute format('drop routine if exists %s cascade', object.signature);
-  end loop;
-  for object in
-    select t.oid::regtype as name from pg_type t join pg_namespace n on n.oid = t.typnamespace
-    where n.nspname = 'public' and t.typtype in ('e', 'c', 'd')
-      and not exists (select 1 from pg_depend d where d.objid = t.oid and d.deptype = 'e')
-      and not exists (select 1 from pg_class c where c.oid = t.typrelid and c.relkind <> 'c')
-  loop
-    execute format('drop type if exists %s cascade', object.name);
-  end loop;
-end
-\$\$;"
-psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
-  -c "$reset_sql" >/dev/null ||
-  fail "could not empty the database's public schema"
+two_builds_reset_database
 pass
 
 begin fake-envoy
-FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
-await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
-  curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
-note "fake Envoy listener on http://127.0.0.1:$envoy_port"
+two_builds_fake_envoy
 pass
 
-agent_token=$(openssl rand -hex 24)
-# Both processes serve one database, so each must sign its cookies with the key the other
-# holds, as e2e/run-server.sh gives two-process mode: a process with a key of its own is
-# refused registration by the one already live.
-signin_key=$(openssl rand -hex 32)
-base_url=http://127.0.0.1:$base_port
-head_url=http://127.0.0.1:$head_port
-
-# start_server NAME BINARY PORT starts one build with this environment and nothing else: identity
-# is the production cookie, minted at the dev sign-in route with a signing key the process
-# generates for itself, HOME and the XDG directories name nothing, and both processes share one
-# agent token, so a session's bearer is good against either. DISPATCH_DEV_EMBEDDER is what the
-# sibling proof does not need: it embeds in this process, calls no model service, and needs the
-# DISPATCH_DEV_SIGNIN=1 beside it.
-start_server() {
-  local name=$1 binary=$2 port=$3
-  start_process "$name" env -i \
-    PATH="$PATH" \
-    TMPDIR="$work" \
-    HOME=/nonexistent \
-    XDG_CACHE_HOME=/nonexistent \
-    XDG_CONFIG_HOME=/nonexistent \
-    XDG_DATA_HOME=/nonexistent \
-    DATABASE_URL="$database_url" \
-    DISPATCH_AGENT_TOKEN="$agent_token" \
-    DISPATCH_DEV_EMBEDDER=1 \
-    DISPATCH_DEV_SIGNIN=1 \
-    DISPATCH_DEV_SIGNIN_SHARED_KEY="$signin_key" \
-    DISPATCH_IDENTITY=cookie \
-    DISPATCH_INSECURE_COOKIE=1 \
-    DISPATCH_LISTEN_HOST=127.0.0.1 \
-    DISPATCH_NATS_DISABLED=1 \
-    DISPATCH_PORT="$port" \
-    DISPATCH_SERVER_URL="http://127.0.0.1:$port" \
-    DISPATCH_WEB_DIST="$work/web-dist" \
-    ENVOY_URL="http://127.0.0.1:$envoy_port" \
-    "$binary"
-}
+two_builds_identity
 
 begin base-build
-start_server base "$work/bin/dispatch-base" "$base_port"
+# DISPATCH_DEV_EMBEDDER is what the sibling proof does not need: it embeds in this process,
+# calls no model service, and needs the DISPATCH_DEV_SIGNIN=1 the shared start_server sets
+# beside it.
+start_server base "$work/bin/dispatch-base" "$base_port" DISPATCH_DEV_EMBEDDER=1
 await_start base "$base_pid" 120 "the base build to answer /healthz" \
   curl -fsS --max-time 2 "$base_url/healthz"
 note "the base build serves $base_url on the schema it migrated"
 pass
 
 begin head-build
-start_server head "$work/bin/dispatch-head" "$head_port"
+start_server head "$work/bin/dispatch-head" "$head_port" DISPATCH_DEV_EMBEDDER=1
 await_start head "$head_pid" 120 "this build to answer /healthz" \
   curl -fsS --max-time 2 "$head_url/healthz"
 kill -0 "$base_pid" 2>/dev/null || fail "the base build exited when this build migrated the schema"
