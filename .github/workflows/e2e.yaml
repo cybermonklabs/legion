@@ -230,10 +230,11 @@ jobs:
       # (`cache: false`), so every run of every row fetches the module graph from
       # proxy.golang.org, with no cache to hide it; this step is where that fetch retries.
       # One download serves every row whichever module its script builds: go.work binds both,
-      # so `go mod download` resolves the workspace's whole build list wherever it is run
-      # (measured at this head with an empty module cache and GOPROXY=off: 193 modules looked
-      # up from the root, from packages/daemon and from packages/envoy alike, against 1 with
-      # GOWORK=off).
+      # so `go mod download` resolves the workspace's whole build list wherever it is run.
+      # Measured with an empty module cache and GOPROXY=off: the same count from the root,
+      # from packages/daemon and from packages/envoy alike, against 1 from packages/daemon
+      # with GOWORK=off. The count itself moves with the tree and the equality is the point -
+      # 193 at 40e742825e46, 249 at 320149433211 once main's b2a914bef2de was folded in.
       - name: Download the Go modules this job builds
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
