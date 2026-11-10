@@ -103,35 +103,40 @@ type attributionFacts struct {
 // Whether the host is the URL's own is not a question a boundary character can answer, and three
 // rounds of trying one got it wrong in both directions: a class wide enough to refuse
 // `example.test/github.com/…` also refused `Refs:https://github.com/…`, and one narrow enough to
-// credit that credited `example.test/~github.com/…`. So githubIssuePath finds the bytes alone and
-// citesGitHubIssue parses the URL they sit in, crediting it only where net/url reads github.com
-// as the host. The two capture groups and the number stay where citedIssues reads them.
+// credit that credited `example.test/~github.com/…`. So githubIssuePath matches the issue path
+// and no host at all, and citesGitHubIssue parses the URL that path belongs to, crediting it
+// only where net/url reads github.com as the host. The two capture groups and the number stay
+// where citedIssues reads them.
 //
 // A # after a word character, `&` (an HTML character reference), `/` (a URL fragment) or another
 // # (a heading) is not a reference.
 var (
-	githubIssuePath     = regexp.MustCompile(`(?i:github\.com)/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
+	githubIssuePath     = regexp.MustCompile(`/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
 	githubBareReference = regexp.MustCompile(`(?:^|[^\w&/#])#([1-9][0-9]{1,5})\b`)
 )
 
-// citesGitHubIssue says whether the `github.com/…` running from hostAt to end is the host and
-// path of its own URL, rather than bytes inside another host's URL or the tail of another host's
-// name. It reads the whitespace-delimited token the match sits in, since no URL holds a space,
-// cuts that token to end where the issue number does, and parses what is left:
+// citesGitHubIssue says whether the issue path running from pathAt to end is the path of a URL
+// whose host is github.com, rather than a path of another host's URL or of no URL at all. The
+// host is nowhere in githubIssuePath on purpose: a pattern that matched the host would have to
+// say where a host ends, which is the question three boundary classes answered wrongly, and a
+// regular expression matching `github.com` unanchored is the very defect alert 51 named. So the
+// expression finds the path, and this reads the whitespace-delimited token the path sits in,
+// since no URL holds a space, cuts it to end where the issue number does, and parses it:
 //
 //   - a token carrying a scheme is the URL that scheme opens, so `Refs:https://github.com/…`,
 //     `[1]:https://…` and `<a href=https://…>` are each a citation, while
 //     `https://example.test/github.com/…` is example.test's URL with github.com in its path;
-//   - a token with no scheme is a host and a path, so `//` is prefixed to make net/url read it as
-//     one, which is what tells `github.com/acme/widgets/issues/7` from `my-github.com/…`.
+//   - a token with no scheme is a host and a path, so `//` is prefixed to make net/url read it
+//     as one, which is what tells `github.com/acme/widgets/issues/7` from `my-github.com/…`,
+//     and what leaves a bare `/acme/widgets/issues/7` the path of no host at all.
 //
-// The host decides, so userinfo before it (`https://user:p@github.com/…`) is a citation and
-// `https://github.com@evil.test/…` is not, and a subdomain is another host: www.github.com and
-// pages.github.com are credited to nobody, as this issue's review settled.
-func citesGitHubIssue(body string, hostAt, end int) bool {
-	start := strings.LastIndexAny(body[:hostAt], " \t\r\n") + 1
+// The parsed host decides, so userinfo before it (`https://user:p@github.com/…`) is a citation
+// and `https://github.com@evil.test/…` is not, and a subdomain is another host: www.github.com
+// and pages.github.com are credited to nobody, as this issue's review settled.
+func citesGitHubIssue(body string, pathAt, end int) bool {
+	start := strings.LastIndexAny(body[:pathAt], " \t\r\n") + 1
 	token := body[start:end]
-	at := hostAt - start
+	at := pathAt - start
 	switch scheme := strings.LastIndex(token[:at], "://"); {
 	case scheme >= 0:
 		token = token[schemeStart(token[:scheme]):]
