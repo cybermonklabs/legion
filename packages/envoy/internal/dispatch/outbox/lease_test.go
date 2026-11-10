@@ -191,6 +191,67 @@ func waitForPublished(t *testing.T, within time.Duration, database *store.Store,
 	}
 }
 
+// restingOutbox arms outbox's two wait hooks and returns atRest, which waits until the outbox is
+// parked in its wait with nothing pending and nothing scanned since, on a wait it entered with
+// its LISTEN connection already up. That is "the outbox has nothing left to do": every catch-up
+// scan - the hold's take, and that connection's - has already run, and only a new event can wake
+// it again. A caller whose publisher never disconnects reads such a wait as one the holder
+// reached with nothing to scan, never one it reached with NATS down.
+//
+// It is what a row reads in place of a span of wall time, and an outbox that wakes itself never
+// reaches it: the wake it gave is pending when it parks, or it does not park at all. So a row
+// asserting that nothing woke the outbox fails at the hang guard below, on the outbox never
+// coming to rest, rather than on a count taken a second after another.
+//
+// The claims the outbox had made when it last parked are what atRest compares with the claims it
+// has made now. The holder stores the first before it waits and scans only after, so while the
+// two are equal the holder is waiting and nothing has scanned since - a state that holds for as
+// long as the outbox has nothing to do, rather than an edge a reader can arrive too late to see.
+// A wait entered with a wake pending records nothing, because the scan that wake causes is still
+// to come; a wait entered before the LISTEN connection is up records nothing either, because
+// that connection's own catch-up scan is still to come and would land inside the quiet the
+// caller is about to read.
+//
+// Both hooks take one lock, and the wait's own queue is read under it rather than handed in,
+// because the two facts have to be read together: the holder could otherwise record a rest in
+// the gap between the flag going up and the wake that follows it, and the scan that wake causes
+// would then land inside that quiet. Under one lock a wait that runs before the connection is
+// reported is refused by the flag, and one that runs while that wake is still queued is refused
+// by the queue. A wait after the wake's own scan finds the queue empty and records a rest, which
+// is the rest these rows are for: by then that scan is one of the claims the rest is compared
+// with.
+//
+// The hooks are read as Run starts, so this takes an outbox that has not been started yet.
+func restingOutbox(t *testing.T, outbox *Outbox) func(what string) {
+	t.Helper()
+	var restMu sync.Mutex
+	listening := false
+	var restingAt atomic.Int64
+	restingAt.Store(-1)
+	outbox.afterListening = func() {
+		restMu.Lock()
+		defer restMu.Unlock()
+		listening = true
+		// One wake more, so the holder is certain to enter a wait after the flag is set.
+		// OnConnected signals before it reports, so the holder may have taken that connection's
+		// own wake, scanned and parked again while the flag was still false.
+		outbox.signal()
+	}
+	outbox.afterServeWait = func() {
+		restMu.Lock()
+		defer restMu.Unlock()
+		if listening && len(outbox.wake) == 0 {
+			restingAt.Store(outbox.claims.Load())
+		}
+	}
+	return func(what string) {
+		t.Helper()
+		// restingAt is read first, so the claims it is compared with are never older than it: an
+		// equal pair is a wait no scan has followed, never a scan this read straddled.
+		waitFor(t, outboxHangGuard, what, func() bool { return restingAt.Load() == outbox.claims.Load() })
+	}
+}
+
 // outboxHangGuard bounds every wait the row below makes. It is a hang guard, not a budget: the row
 // asserts what the outbox did and in what order, never how fast it did it, so load only makes the
 // same reading take longer to reach, and a wait that reaches this bound means the thing it waited
@@ -248,66 +309,25 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		defer armedMu.Unlock()
 		return slices.Clone(armed)
 	}
-	// restingAt is the claims the outbox had made when the holder last entered its wait with
-	// nothing pending and the LISTEN connection already up, and -1 until it enters one. A wait
-	// entered with a wake pending records nothing, because the scan that wake causes is still to
-	// come; a wait entered before that connection is up records nothing either, because the
-	// connection's own catch-up scan is still to come and would land inside the idle window
-	// below. The holder stores this before it waits and scans only after, so while restingAt
-	// equals the claims made the holder is waiting and nothing has scanned since - a state that
-	// holds for as long as the outbox has nothing to do, rather than an edge a reader can arrive
-	// too late to see.
-	//
-	// Both hooks take restMu, and the wait's own queue is read under it rather than handed in,
-	// because the two facts have to be read together: the holder could otherwise record a rest
-	// in the gap between the flag going up and the wake that follows it, and the scan that wake
-	// causes would then land inside the window. Under one lock a wait that runs before the
-	// connection is reported is refused by the flag, and one that runs while that wake is still
-	// queued is refused by the queue. A wait after the wake's own scan finds the queue empty and
-	// records a rest, which is the rest this row is for: by then that scan is one of the claims
-	// restingAt is compared with.
-	var restMu sync.Mutex
-	listening := false
-	var restingAt atomic.Int64
-	restingAt.Store(-1)
-	outbox.afterListening = func() {
-		restMu.Lock()
-		defer restMu.Unlock()
-		listening = true
-		// One wake more, so the holder is certain to enter a wait after the flag is set.
-		// OnConnected signals before it reports, so the holder may have taken that connection's
-		// own wake, scanned and parked again while the flag was still false.
-		outbox.signal()
-	}
-	outbox.afterServeWait = func() {
-		restMu.Lock()
-		defer restMu.Unlock()
-		if listening && len(outbox.wake) == 0 {
-			restingAt.Store(outbox.claims.Load())
-		}
-	}
+	// The outbox's own reading of "nothing left to do", which this row reads twice: once before
+	// the idle window below, and once after the other process's event (restingOutbox).
+	atRest := restingOutbox(t, outbox)
 	go func() { outbox.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	// atRest waits for the holder to be waiting with nothing pending and nothing scanned since,
-	// a wait it entered with the LISTEN connection already up. That is this row's "the outbox has
-	// nothing left to do": every catch-up scan - the hold's take, and that connection's - has
-	// already run, and only a new event can wake the outbox again. This row's publisher never
-	// disconnects, so such a wait is always one the holder reached with nothing to scan, never
-	// one it reached with NATS down.
-	atRest := func(what string) {
-		t.Helper()
-		// restingAt is read first, so the claims it is compared with are never older than it: an
-		// equal pair is a wait no scan has followed, never a scan this read straddled.
-		waitFor(t, outboxHangGuard, what, func() bool { return restingAt.Load() == outbox.claims.Load() })
-	}
 
 	waitFor(t, outboxHangGuard, "the outbox taking the publisher hold", outbox.Publishing)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
 	// that they are over rather than allowing them a span of time.
 	atRest("the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
 	idleFrom := outbox.claims.Load()
-	// A lower bound on quiet, not an upper bound on work: the row asserts nothing scanned in this
-	// window, and load can only make an idle outbox quieter, never busier.
+	// The window is this row's subject and keeps its own number: the assertion is that nothing
+	// happened in it, so there is no event to wait for instead, and a shorter window would pass
+	// for an outbox that scans on a period just longer than it. Twelve seconds is read against
+	// the longest period this outbox's own machinery has, the publisher hold, which lasts 6 s on
+	// the database's clock and is renewed every second (publisherHoldOptions): two whole
+	// lifetimes of the hold and a dozen renewals pass here with nothing scanned. A lower bound
+	// on quiet and no upper bound on work - load can only make an idle outbox quieter, never
+	// busier (dispatch://INFRA-1075).
 	time.Sleep(12 * time.Second)
 	if claims := outbox.claims.Load() - idleFrom; claims != 0 {
 		t.Fatalf("an idle outbox ran %d claims in 12 s, want 0", claims)

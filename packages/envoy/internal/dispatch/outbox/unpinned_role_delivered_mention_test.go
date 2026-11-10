@@ -116,7 +116,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 
 	waitFor(t, 10*time.Second, "the comment's forward and the owner's later event at the holder",
 		func() bool { return len(recv.received()) > 1 })
-	time.Sleep(time.Second)
+	recv.drained(t)
 	copies := recv.received()
 	if len(copies) != 2 {
 		t.Fatalf("%s was sent %+v, want two copies: the comment's forward under its own mention's key and the owner's later event behind it. The copy bound for the holder's own topic is left to the mention that delivered the comment (destinations.leftToMention)",
@@ -193,7 +193,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	recv.drained(t)
 
 	failedKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, holderTarget, "steer"))
 	if got := recv.received(); len(got) != 0 {

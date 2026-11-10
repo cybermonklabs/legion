@@ -209,10 +209,43 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		_, attempts := publishedDestinations(t, database, first.ID)
 		return attempts > 0
 	})
+	// The later events are written while the stream still refuses S's subject, so what holds the
+	// first event back is this row's own doing and not a timer it has to beat: every retry of it
+	// fails for S again, for as long as the subject is refused, exactly as the withheld receipt
+	// holds the first event in the half of this row below.
+	second, third := write("second"), write("third")
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.AgentSubject("S")
+	// The two later events reach the topic family while the first event is still unreached at S:
+	// the back-off holds back its own destination and no other. It is read here, while that hold
+	// is on, and not from where two subjects' copies fell in one stream's sequence afterwards:
+	// the first event's retry falls due on its own back-off, about a second after its failure, so
+	// a run that took longer than that to restore the subject and write these two events saw S's
+	// copy of the first event stored ahead of them and read the owner's order as broken, though
+	// nothing had waited on anything. That is how this row reached a CI red (run 42779139068
+	// attempt 2, dispatch://INFRA-1075).
+	waitFor(t, eventWait, "the later events on the topic family", func() bool {
+		bySubject, _ := streamOrder(t, reader)
+		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
+	})
+	for _, event := range []model.Event{first, second, third} {
+		if publishedAt(t, database, event.ID) != nil {
+			t.Fatalf("event %d was published while S's subject was still refused, want it waiting on S", event.ID)
+		}
+	}
+	if bySubject, _ := streamOrder(t, reader); len(bySubject[session]) != 0 {
+		t.Fatalf("S's subject holds %v while the stream refuses it, want nothing", bySubject[session])
+	}
+
+	// S's subject is taken again and the first event is made due, with a wake of its own: an
+	// update of the row notifies nothing, and the outbox's retry timer is armed to the back-off
+	// the refusals grew, which this row would otherwise wait out.
 	if _, err := js.UpdateStream(&capturing); err != nil {
 		t.Fatalf("let the stream capture agent subjects again: %v", err)
 	}
-	second, third := write("second"), write("third")
+	dueNow(t, database, first.ID)
+	broker.Publish(model.Event{})
 
 	waitFor(t, 30*time.Second, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
@@ -223,36 +256,13 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.AgentSubject("S")
-	order := map[string][]int64{}
-	sequence := map[string]uint64{}
-	stream, err := js.StreamInfo(bus.Stream)
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
-	}
-	for seq := stream.State.FirstSeq; seq <= stream.State.LastSeq; seq++ {
-		message, err := js.GetMsg(bus.Stream, seq)
-		if err != nil {
-			t.Fatalf("read stream message %d: %v", seq, err)
-		}
-		id := envelopeEventID(t, message.Data)
-		order[message.Subject] = append(order[message.Subject], id)
-		sequence[fmt.Sprintf("%s %d", message.Subject, id)] = seq
-	}
+	bySubject, _ := streamOrder(t, reader)
 	want := []int64{first.ID, second.ID, third.ID}
-	if !slices.Equal(order[topic], want) {
-		t.Fatalf("the topic family holds %v, want %v", order[topic], want)
+	if !slices.Equal(bySubject[topic], want) {
+		t.Fatalf("the topic family holds %v, want %v", bySubject[topic], want)
 	}
-	if !slices.Equal(order[session], want) {
-		t.Fatalf("S's subject holds %v, want %v: each event only after the one before it", order[session], want)
-	}
-	firstAtS := sequence[fmt.Sprintf("%s %d", session, first.ID)]
-	for _, event := range []model.Event{second, third} {
-		if at := sequence[fmt.Sprintf("%s %d", topic, event.ID)]; at > firstAtS {
-			t.Fatalf("event %d reached the topic family at stream sequence %d, after the first event reached S at %d: it waited on S",
-				event.ID, at, firstAtS)
-		}
+	if !slices.Equal(bySubject[session], want) {
+		t.Fatalf("S's subject holds %v, want %v: each event only after the one before it", bySubject[session], want)
 	}
 }
 

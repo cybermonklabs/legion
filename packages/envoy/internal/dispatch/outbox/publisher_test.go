@@ -1794,10 +1794,19 @@ func TestRunMarksIssueLessTargetedMessagesPublishedWithoutRepublishing(t *testin
 	}
 }
 
+// outboxOn is the outbox run builds: database's store, publisher, broker and LISTEN connection,
+// with every role route resolved to a live holder (withHeldRoles). A test that must arm the
+// outbox's hooks, which are read as Run starts, builds it with this, arms them and starts it
+// itself (restingOutbox, started).
+func outboxOn(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) *Outbox {
+	t.Helper()
+	return New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+}
+
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), time.Second)
+	return started(t, outboxOn(t, database, publisher, broker), time.Second)
 }
 
 // runDeps runs New(deps) until the returned func stops it, which fails t unless Run returns within
@@ -1805,9 +1814,17 @@ func run(t *testing.T, database *store.Store, publisher Publisher, broker *event
 // counter among them - builds it itself and calls this.
 func runDeps(t *testing.T, deps Deps, stopWithin time.Duration) func() {
 	t.Helper()
+	return started(t, New(deps), stopWithin)
+}
+
+// started runs outbox until the returned func stops it, which fails t unless Run returns within
+// stopWithin. A test that must arm the outbox's hooks, which are read as Run starts, builds the
+// outbox itself, arms them - restingOutbox does - and calls this.
+func started(t *testing.T, outbox *Outbox, stopWithin time.Duration) func() {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { New(deps).Run(ctx); close(done) }()
+	go func() { outbox.Run(ctx); close(done) }()
 	return func() {
 		cancel()
 		select {

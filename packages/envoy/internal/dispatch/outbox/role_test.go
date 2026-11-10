@@ -293,13 +293,22 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 
 // receiver is a role holder's own subscription to its agent subject: it records every copy it
 // receives and answers the forwards among them with an empty receipt while answering is set
-// (awaitsAReceipt).
+// (awaitsAReceipt). conn and subject are what its own probe is published on (drained).
 type receiver struct {
 	answering atomic.Bool
 	mu        sync.Mutex
 	forwards  []contracts.Envelope
 	arrived   chan contracts.Envelope
+	conn      *natsgo.Conn
+	subject   string
+	probes    atomic.Int64
 }
+
+// receiverProbe is the topic of the envelope drained publishes to a receiver's own subject: the
+// receiver counts it and records nothing of it, so received() holds what the outbox sent and
+// nothing of the probe. No envelope of the outbox's carries it - a copy's topic is the subject
+// it went to and a forward's is its role's - so no copy is mistaken for one.
+const receiverProbe = "test.receiver.probe"
 
 // awaitsAReceipt reports whether item, which arrived on subject, is a send that waits for this
 // holder's empty receipt: a role forward, a core request the outbox makes to the holder's agent
@@ -319,11 +328,16 @@ func awaitsAReceipt(item contracts.Envelope, subject string) bool {
 
 func (r *roleRig) receiver(t *testing.T, holder string, answering bool) *receiver {
 	t.Helper()
-	recv := &receiver{arrived: make(chan contracts.Envelope, 64)}
+	subject := contracts.AgentSubject(holder)
+	recv := &receiver{arrived: make(chan contracts.Envelope, 64), conn: r.conn, subject: subject}
 	recv.answering.Store(answering)
-	sub, err := r.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
+	sub, err := r.conn.Subscribe(subject, func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
+			return
+		}
+		if item.Topic == receiverProbe {
+			recv.probes.Add(1)
 			return
 		}
 		recv.mu.Lock()
@@ -342,6 +356,40 @@ func (r *roleRig) receiver(t *testing.T, holder string, answering bool) *receive
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return recv
+}
+
+// drained returns once every copy the server had already handed this subscription has been
+// recorded, so a read of received() after it is the whole of what the pass before it sent.
+//
+// The passes these rows read return only once every send they made was answered - a stream
+// acknowledgement for a copy published to this subject, the holder's own receipt for a forward -
+// and the server fans a message out to this subscription as it processes it, before either
+// answer leaves it. So by the time such a pass returns, every copy it sent is already on its way
+// here and nothing further is coming, and the one thing left to wait for is this client's own
+// delivery. A probe published afterwards on this very subject is behind those copies in this one
+// subscription's queue, whose messages are dispatched in order, so its arrival says they have
+// all been recorded.
+//
+// It is what the flat second of sleep these reads used to take was reaching for, asked for
+// instead of timed: a copy the pass should not have sent fails the read after this exactly as it
+// failed after the sleep, and a run on a loaded box waits as long as it must rather than a
+// second (dispatch://INFRA-1075).
+//
+// The probe goes to the holder's agent subject, which the stream captures, so the stream holds
+// it too: a row that counts the stored copies of that subject (storedCopies) must read that
+// count before it drains the receiver.
+func (recv *receiver) drained(t *testing.T) {
+	t.Helper()
+	before := recv.probes.Load()
+	probe, err := json.Marshal(contracts.Envelope{Topic: receiverProbe})
+	if err != nil {
+		t.Fatalf("encode the probe for %s: %v", recv.subject, err)
+	}
+	if err := recv.conn.Publish(recv.subject, probe); err != nil {
+		t.Fatalf("publish the probe to %s: %v", recv.subject, err)
+	}
+	waitFor(t, eventWait, "the holder's subscription drained to the probe behind what the pass sent",
+		func() bool { return recv.probes.Load() > before })
 }
 
 func (recv *receiver) received() []contracts.Envelope {

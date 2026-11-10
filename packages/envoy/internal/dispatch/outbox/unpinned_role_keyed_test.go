@@ -90,7 +90,7 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	recv.drained(t)
 
 	if copies := recv.received(); len(copies) != 1 {
 		t.Fatalf("%s was sent %+v once its mention was pinned and sent, want the one copy it already has: the copy carries that mention's own key, so the session is shown the comment once",

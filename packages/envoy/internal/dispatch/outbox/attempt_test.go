@@ -87,19 +87,21 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	})
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
-	stop := run(t, database, publisher, broker)
+	outbox := outboxOn(t, database, publisher, broker)
+	atRest := restingOutbox(t, outbox)
+	stop := started(t, outbox, time.Second)
 	defer stop()
 
 	waitFor(t, 5*time.Second, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
-	// nothing does.
-	time.Sleep(500 * time.Millisecond)
-	settled := len(publisher.attempted())
-	time.Sleep(time.Second)
+	// nothing does, and this is the reading of that: the outbox parked with nothing pending and
+	// nothing scanned since it parked (restingOutbox). A batch sent again while NATS stays
+	// unreachable is a wake the outbox gave itself, and an outbox that wakes itself never comes
+	// to rest at all, so that defect fails this wait rather than a count read a second after
+	// another - two instants a parallel batch's load can push an honest scan between, which is
+	// how this row reached a CI red (run 42779139068, dispatch://INFRA-1075).
+	atRest("the outbox resting with every send the wakes it was given made")
 	topics := publisher.attempted()
-	if len(topics) != settled {
-		t.Fatalf("sent %d more envelopes with no wake while NATS was unreachable", len(topics)-settled)
-	}
 	firstHeads := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
 	for index, topic := range topics {
 		if topic != firstHeads[index%len(firstHeads)] {

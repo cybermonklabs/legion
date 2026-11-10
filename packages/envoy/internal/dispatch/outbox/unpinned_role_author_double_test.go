@@ -152,7 +152,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	wrote.drained(t)
 	// The outbox sends that session nothing further - its copy went, and the settled mention
 	// leaves it nothing to publish - so the comment stands at its host under two keys: this copy
 	// under the event's own, and the mention's steer under the mention's. That is the double.
@@ -253,7 +253,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	follows.drained(t)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
 	copies = follows.received()
@@ -341,7 +341,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	wrote.drained(t)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
 	copies = wrote.received()

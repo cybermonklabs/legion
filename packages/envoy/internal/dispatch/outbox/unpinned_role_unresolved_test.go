@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -140,7 +139,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	claimant.drained(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v, want nothing: its own mention of %s delivered the comment, and a copy under %s would show it that comment twice",
 			holder, got, target, fmt.Sprintf("dispatch-%d", comment.ID))
