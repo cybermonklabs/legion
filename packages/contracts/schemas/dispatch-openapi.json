@@ -19476,6 +19476,20 @@
           "components": {
             "$ref": "#/components/schemas/IssueComponents"
           },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "key": {
             "type": "string"
           },
@@ -19580,6 +19594,8 @@
           "route_status",
           "route_holder",
           "route_status_reason",
+          "created_by",
+          "created_at",
           "updated_at",
           "last_seq",
           "primary_artifact_id",

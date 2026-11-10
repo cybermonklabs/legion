@@ -350,6 +350,7 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 		"notifications.whatsapp.>",
 		"notifications.envoy.exceptions.notifications.agent.>",
 		"notifications.envoy.kept.>",
+		"notifications.envoy.resume.>",
 	}
 	if !reflect.DeepEqual(streamCfg.Subjects, wantSubjects) {
 		t.Fatalf("stream subjects = %v, want %v", streamCfg.Subjects, wantSubjects)
@@ -985,5 +986,41 @@ func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
 func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
 	if streamCfg.MaxConsumers != 24000 {
 		t.Fatalf("streamCfg.MaxConsumers = %d, want 24000", streamCfg.MaxConsumers)
+	}
+}
+
+// ListenerOwnLaneOf answers for every lane the stream carries for the listener itself, over the
+// exported list of them rather than over the lanes a caller happens to remember: a lane added to
+// listenerOwnStreamLanes is on ListenerOwnLanes, and so covered here and wherever a caller asks
+// (the publish route's refusal, cmd/listener/api.go). The lane a topic lies under is named as
+// every topic of that lane begins, which is what a refusal puts in front of its reader, and a
+// topic under no lane is named "". A notification topic, and a wildcard wider than any lane, are
+// no lane of the listener's.
+func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
+	lanes := ListenerOwnLanes()
+	if len(lanes) != len(listenerOwnStreamLanes) {
+		t.Fatalf("ListenerOwnLanes() = %q, want one entry for each of %q", lanes, listenerOwnStreamLanes)
+	}
+	for _, lane := range lanes {
+		if strings.HasSuffix(lane, ">") || !strings.HasSuffix(lane, ".") {
+			t.Fatalf("the listener's lane %q is not the prefix every topic of it begins with", lane)
+		}
+		for _, topic := range []string{lane + ">", lane + "a-topic", lane + "a.deeper.topic", lane + "*"} {
+			if got := ListenerOwnLaneOf(topic); got != lane {
+				t.Errorf("ListenerOwnLaneOf(%q) = %q, want the listener's own lane %q it lies under", topic, got, lane)
+			}
+		}
+	}
+	for _, topic := range []string{
+		"notifications.agent.ses_a",
+		"notifications.dispatch.issue.KEY-1.ask.answered",
+		ExceptionTopicPrefix + contracts.AgentSubject("ses_a"),
+		"notifications.envoy.deliver.ses_a",
+		"notifications.envoy.>",
+		"notifications.>",
+	} {
+		if lane := ListenerOwnLaneOf(topic); lane != "" {
+			t.Errorf("ListenerOwnLaneOf(%q) = %q, want \"\": no lane of the listener's holds every subject it matches", topic, lane)
+		}
 	}
 }

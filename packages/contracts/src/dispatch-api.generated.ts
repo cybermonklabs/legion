@@ -4587,6 +4587,9 @@ export interface components {
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       components: components["schemas"]["IssueComponents"];
+      /** Format: date-time */
+      created_at: string;
+      created_by: components["schemas"]["Actor"] | null;
       key: string;
       labels: string[] | null;
       last_seq: number;
