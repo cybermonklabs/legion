@@ -1184,7 +1184,11 @@ func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
 	ctx := context.Background()
 	const session = "ses_other_stream"
 	agent := contracts.AgentSubject(session)
-	record, err := json.Marshal(SessionResumeRecord{Floor: 1, StreamID: "a stream this is not"})
+	// Floor 7 is no sequence this fixture's start could be by accident: a trusted record would
+	// start the consumer at 8, while the agent-subject start is the second sequence the stream
+	// holds. With a floor of 1 the two were the same number, so the case passed whether the
+	// record was ignored or trusted (dispatch://INFRA-771, the tester's reading of this round).
+	record, err := json.Marshal(SessionResumeRecord{Floor: 7, StreamID: "a stream this is not"})
 	if err != nil {
 		t.Fatalf("marshal the resume record: %v", err)
 	}
