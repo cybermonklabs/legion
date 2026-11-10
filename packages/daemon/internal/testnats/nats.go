@@ -102,7 +102,9 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset deletes every stream, so a test creates its own there with CreateStream.
+// The reset deletes every stream, so a test creates its own there with CreateStream. Last, it
+// arms the leak check (leakcheck.go), which fails t at its end for a client connection t left
+// open on the server.
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
@@ -129,6 +131,7 @@ func URL(t testing.TB) string {
 		t.Fatalf("start NATS JetStream: %v", startErr)
 	}
 	drained(t)
+	fixtureOpenedNone()
 	conn, js := connect(t)
 	defer conn.Close()
 	names := js.StreamNames(t.Context())
@@ -151,6 +154,7 @@ func URL(t testing.TB) string {
 	if info.Streams != 0 {
 		t.Fatalf("the NATS server still holds %d streams after emptying it", info.Streams)
 	}
+	armLeakCheck(t)
 	return serverURL
 }
 
@@ -190,7 +194,9 @@ func take(t testing.TB) {
 }
 
 // drained waits, within readinessTimeout, for the server's monitoring endpoint to report no client
-// connection, and fails naming the connections left when it does not.
+// connection, and fails naming the connections left when it does not. Connections the last test's
+// own leak check reported and could not close are not waited out at all: nothing will close them,
+// so this test is failed at once, naming the test that left them (leakcheck.go).
 func drained(t testing.TB) {
 	t.Helper()
 	deadline := time.Now().Add(readinessTimeout)
@@ -199,9 +205,19 @@ func drained(t testing.TB) {
 		if err == nil && len(connections) == 0 {
 			return
 		}
+		if err == nil {
+			if leaker, all := leftByTheLastTest(connections); all {
+				t.Fatalf("the NATS server holds %d client connections %v, every one of them left open by %s, which could not close them",
+					len(connections), connections, leaker)
+			}
+		}
 		if time.Now().After(deadline) {
 			if err != nil {
 				t.Fatalf("read the NATS server's connections before emptying it: %v", err)
+			}
+			if leaker, _ := leftByTheLastTest(connections); leaker != "" {
+				t.Fatalf("the NATS server still has %d client connections %v from a previous test after %s, and %s left connections of its own it could not close",
+					len(connections), connections, readinessTimeout, leaker)
 			}
 			t.Fatalf("the NATS server still has %d client connections %v from a previous test after %s", len(connections), connections, readinessTimeout)
 		}
@@ -220,15 +236,35 @@ func Connections(t testing.TB) []string {
 	if err != nil {
 		t.Fatalf("read the NATS server's connections: %v", err)
 	}
-	return connections
+	names := make([]string, 0, len(connections))
+	for _, c := range connections {
+		names = append(names, c.String())
+	}
+	return names
 }
+
+// connection is one client connection the server holds: the id it gave it, and the name the
+// client gave itself (nats.Name, which natsauth.Connect and this package's own Connect make
+// every client pass). The id is what a check compares, since the server never reuses one within
+// its run, and the String is what a report prints.
+type connection struct {
+	cid  uint64
+	name string
+}
+
+func (c connection) String() string { return fmt.Sprintf("%d %q", c.cid, c.name) }
 
 // monitorClient bounds each monitoring request, so one the server never answers cannot outlast the
 // drain's own bound.
 var monitorClient = &http.Client{Timeout: 5 * time.Second}
 
-// clientConnections lists the server's open client connections, each by id and name.
-func clientConnections() ([]string, error) {
+// clientConnections lists the server's open client connections, each by id and name. It is the
+// one function the fixture asks which clients the server this test used holds — the drain, the
+// leak check and Connections all read it — and reading the monitoring endpoint's /connz is only
+// how it answers here. A server running inside the test process answers the same question from
+// the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
+// rewrite, and then this function is the only one to re-point.
+func clientConnections() ([]connection, error) {
 	response, err := monitorClient.Get(monitorURL + "/connz")
 	if err != nil {
 		return nil, err
@@ -246,9 +282,9 @@ func clientConnections() ([]string, error) {
 	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
 		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
 	}
-	connections := make([]string, 0, len(connz.Connections))
+	connections := make([]connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {
-		connections = append(connections, fmt.Sprintf("%d %q", c.CID, c.Name))
+		connections = append(connections, connection{cid: c.CID, name: c.Name})
 	}
 	return connections, nil
 }
@@ -274,6 +310,23 @@ func JetStream(t testing.TB) jetstream.JetStream {
 	conn, js := connect(t)
 	t.Cleanup(conn.Close)
 	return js
+}
+
+// Connect is the client a test of the shared server takes: it dials url, the URL that server
+// gave t, named t.Name() and bounded by a second, and closes it when t ends. A test takes its
+// client from here rather than dialling itself because the name is what the leak check prints
+// when a connection outlives the test that opened it, and because the fixture closes what it
+// opened, so the test owes that close to nobody. The caller's own options come after the
+// fixture's, so a caller wanting another name or another timeout passes one and wins.
+func Connect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
+	t.Helper()
+	conn, err := nats.Connect(url, append([]nats.Option{nats.Name(t.Name()), nats.Timeout(time.Second)}, options...)...)
+	if err != nil {
+		t.Fatalf("connect to the NATS server at %s: %v", url, err)
+	}
+	t.Cleanup(conn.Close)
+	fixtureOpened(conn)
+	return conn
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,
@@ -414,14 +467,17 @@ func answering(t testing.TB, url string) {
 	}
 }
 
-// connect returns a connection to the server once its JetStream API answers.
+// connect returns a connection to the server once its JetStream API answers. The connection
+// carries t's name, as a test's own client does, and is the fixture's to close: the reset's
+// client and a test's client are alike the fixture's (leakcheck.go).
 func connect(t testing.TB) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
 	defer cancel()
 	for {
-		conn, js, err := ready(ctx, serverURL)
+		conn, js, err := ready(ctx, serverURL, t.Name())
 		if err == nil {
+			fixtureOpened(conn)
 			return conn, js
 		}
 		select {
@@ -432,8 +488,8 @@ func connect(t testing.TB) (*nats.Conn, jetstream.JetStream) {
 	}
 }
 
-func ready(ctx context.Context, url string) (*nats.Conn, jetstream.JetStream, error) {
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
+func ready(ctx context.Context, url, name string) (*nats.Conn, jetstream.JetStream, error) {
+	conn, err := nats.Connect(url, nats.Name(name), nats.Timeout(time.Second))
 	if err != nil {
 		return nil, nil, err
 	}

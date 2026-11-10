@@ -301,7 +301,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: strings.TrimSpace(permissions.String())},
 		testnats.NkeyUser{Public: adminPublic})
-	admin, err := natsauth.Connect([]string{uri}, adminSeed, nats.Timeout(5*time.Second))
+	admin, err := natsauth.Connect([]string{uri}, adminSeed, t.Name()+" admin", nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("connect the admin user: %v", err)
 	}
