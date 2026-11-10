@@ -1,5 +1,5 @@
 kind: Removed
-body: The `./envoy-settings` subpath no longer exports `normalizeEnvoyUrl`. It had become a one-line wrapper over `withoutTrailingSlashes` from `@legion/contracts/trailing-slash`, which its two callers now call directly.
+body: The `./envoy-settings` subpath no longer exports `normalizeEnvoyUrl`. It trimmed a URL's trailing slashes, which `withoutTrailingSlashes` from `@legion/contracts/trailing-slash` now does for every client of this workspace; its two callers call that function directly.
 time: 2026-11-09T20:51:33.177023058Z
 custom:
     Issue: pr3279
