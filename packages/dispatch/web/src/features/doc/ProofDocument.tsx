@@ -76,7 +76,7 @@ import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
-import { loadBlockSchema } from "./schema";
+import { loadBlockSchema, reloadBlockSchema } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import type { AskBlockHost } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
@@ -832,6 +832,23 @@ export function ProofDocument({
               schemaReadOnlyRef.current = readOnly;
               setSchemaReadOnly(readOnly);
               editor?.setAccess(editorAccess(page, isClosedRef.current, readOnly));
+              // A read-only admission of an open document says the server does not serve the
+              // version this socket presented: the schema moved while this tab held no socket, or
+              // its close and this connect crossed. The installed value is read again, which
+              // rebuilds this effect at that version where it moved, so a switch leaves no editor
+              // read-only even when no close reached this tab. A read that fails, and one that
+              // answers the version this connection already holds - a tab older than the schema -
+              // changes nothing, and the line asking the reader to reload stands.
+              if (!readOnly || isClosedRef.current || !mounted) {
+                return;
+              }
+              void queryClient
+                .fetchQuery({
+                  queryFn: reloadBlockSchema,
+                  queryKey: ["block-schema"],
+                  staleTime: 0,
+                })
+                .catch(() => undefined);
             },
             onOutsideSchema: () => {
               if (!mounted) {
@@ -849,7 +866,37 @@ export function ProofDocument({
                 return;
               }
               setConnection("connecting");
-              refusalTimer = window.setTimeout(admit, delay);
+              // The close says the server will not serve this socket's schema. Which schema that
+              // is - the version this connection presented, or the stored document's own - the
+              // installed value alone says, so it is read again before anything reconnects. A
+              // version other than this connection's is a switch the store made: the read moves
+              // the query this effect holds its schema from, which rebuilds the effect, and the
+              // rebuilt one connects at the installed version, so no editor is left presenting a
+              // version the server has moved past. The same version is this document's own
+              // refusal - a stored tree outside the schema, which a replacement from markdown
+              // repairs - so that one admits again here, on the refusal ladder it always had. A
+              // read that fails leaves the schema query in error, which is what asks the reader
+              // to reload, and admits again all the same so the ladder still ends.
+              refusalTimer = window.setTimeout(() => {
+                void queryClient
+                  .fetchQuery({
+                    queryFn: reloadBlockSchema,
+                    queryKey: ["block-schema"],
+                    staleTime: 0,
+                  })
+                  .then(
+                    (installed: BlockSchema) => {
+                      if (mounted && installed.version === blockSchema.version) {
+                        admit();
+                      }
+                    },
+                    () => {
+                      if (mounted) {
+                        admit();
+                      }
+                    }
+                  );
+              }, delay);
             },
             onStatus: (status) => {
               if (!failed) {

@@ -32,6 +32,15 @@ type Installer struct {
 	Wake <-chan struct{}
 	// Retry is how soon a failed read is made again; zero is RetryInterval.
 	Retry time.Duration
+	// OnSwitch runs after a read that moved the schema this process serves: the installed
+	// version changed, or the store went above this build and left the process serving none
+	// (pmdoc.NotReadyReason). The server closes its document sockets there
+	// (docs.Service.CloseDocumentSockets), because a socket's admission was decided on the
+	// version its browser presented and nothing else tells that browser to read the schema
+	// again. It runs on this loop's goroutine, so a hook that blocks delays the next read; a
+	// reload that installed the same schema runs it not at all, which is what leaves an
+	// ordinary reinstall's editors connected. A nil hook is nothing.
+	OnSwitch func()
 }
 
 // RegisterWake registers the schema channel on the process's shared listener and answers the
@@ -82,15 +91,24 @@ func (i *Installer) Run(ctx context.Context) {
 // read, and the process keeps serving the schema it has until the store holds one it can
 // install - a schema above this build's version among them, which also makes the process report
 // itself not ready (pmdoc.NotReadyReason).
+//
+// What the process serves is read before the install and again after it, and OnSwitch runs when
+// the two differ: the version, and whether the process serves a schema at all. Both are read
+// here and not inside pmdoc, so the hook runs once per reload and the install stays what it is -
+// one pointer stored.
 func (i *Installer) reload(ctx context.Context) bool {
 	value, err := Read(ctx, i.Store)
 	if err != nil {
 		slog.Warn("dispatch: read the block schema from the store", "error", err)
 		return false
 	}
+	version, reason := pmdoc.SchemaVersion(), pmdoc.NotReadyReason()
 	if err := pmdoc.Install(value); err != nil {
 		slog.Error("dispatch: the store's block schema was not installed; this process keeps the schema it has",
 			"error", err, "store_version", value.Version, "built_version", pmdoc.BuiltSchemaVersion())
+	}
+	if i.OnSwitch != nil && (pmdoc.SchemaVersion() != version || pmdoc.NotReadyReason() != reason) {
+		i.OnSwitch()
 	}
 	return true
 }

@@ -451,6 +451,10 @@ type Service struct {
 	roomSlots     roomSlots
 	residentRooms atomic.Int64
 	connections   atomic.Int64
+	// documentSockets holds the close of every document socket this process is serving, keyed by
+	// the record the socket holds (holdDocumentSocket): the schema switch closes them all
+	// (CloseDocumentSockets), and each socket forgets its own as it ends.
+	documentSockets sync.Map
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
 	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions

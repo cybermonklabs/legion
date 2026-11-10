@@ -709,8 +709,14 @@ func main() {
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails leaves the installed schema in place and is made again; a store schema
 	// above this build's installs nothing and makes /healthz answer 503 with that version as
-	// its reason.
-	go (&schemanodes.Installer{Store: database.Pool, Wake: schemaWake}).Run(ctx)
+	// its reason. A read that moved the schema this process serves closes its document sockets,
+	// so each editor reads the installed schema and connects again with it rather than writing
+	// against types this process no longer holds.
+	go (&schemanodes.Installer{
+		Store:    database.Pool,
+		Wake:     schemaWake,
+		OnSwitch: func() { documentService.CloseDocumentSockets() },
+	}).Run(ctx)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
 	go documentService.RunSettlementResumption(ctx, leases)
