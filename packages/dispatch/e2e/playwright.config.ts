@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig, devices, type Project } from "@playwright/test";
+import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
 import { stubProjectNames, tagged } from "./configurations";
 import { harnessProcessCount } from "./harness-processes";
@@ -644,11 +644,18 @@ export default defineConfig({
   // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
-  // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the
-  // list reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
-  reporter: measuring
-    ? [["list"], [fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))]]
-    : "list",
+  // `failure-reporter.ts` is in every run: it writes nothing and prints nothing, and is the one
+  // way `globalTeardown` learns that a row failed, which is what decides whether this run's
+  // stack logs are kept (e2e/run-outcome.ts says why no other way reaches it). With
+  // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
+  // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
+  reporter: [
+    ["list"],
+    [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
+    ...(measuring
+      ? [[fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))] as const]
+      : []),
+  ] satisfies ReporterDescription[],
   timeout: testTimeout,
   expect: { timeout: expectTimeout },
   use: {
