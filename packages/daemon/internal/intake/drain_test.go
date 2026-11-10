@@ -146,9 +146,16 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		}
 		last = ack.Sequence
 	}
-	if waiting := githubWaiting(t, consumers); waiting != uint64(len(backlog)) {
-		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d", waiting, len(backlog))
-	}
+	// The consumer has not been started, so nothing takes a message off the backlog and this count
+	// can only rise to the backlog's size and stay there. A publish's ack says the STREAM holds the
+	// message; the consumer's pending count is the server's own computed state and catches up after
+	// a burst, so reading it the instant the last publish returns reads a number on its way up -
+	// measured at 5033 of 5050 in CI (run 42761624780, job 129648444650). The wait asserts what the
+	// test means, that the consumer holds the whole backlog before it runs, without racing the
+	// server's arithmetic.
+	testwait.Eventually(t, "every message of the backlog waiting for the GitHub consumer", func() bool {
+		return githubWaiting(t, consumers) == uint64(len(backlog))
+	})
 
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
