@@ -55,6 +55,7 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
     slot: null,
     title: `${key} title`,
     tree: key,
+    tree_slot: null,
     waiting_on: null,
     ...overrides,
   };
@@ -67,9 +68,12 @@ const BOARD: LegionBoardResponse = {
     ...column,
     cards:
       column.id === "implementing"
-        ? [card("ACME-1", { slot: 0, roles: ["implementer"] }), card("ACME-21", { tree: "ACME-2" })]
+        ? [
+            card("ACME-1", { slot: 0, roles: ["implementer"], checks_verdict: "green" }),
+            card("ACME-21", { tree: "ACME-2" }),
+          ]
         : column.id === "accepting"
-          ? [card("ACME-2", { phase: "accepting", slot: 1, children: 1 })]
+          ? [card("ACME-2", { phase: "accepting", slot: 1, children: 1, phase_since: null })]
           : column.id === "merging"
             ? [card("ACME-3", { phase: "awaiting_merge", slot: 2 })]
             : column.id === "queue"
@@ -260,4 +264,29 @@ test("an open timeline draws its phases with the table's label and colour, and i
   expect(timeline.querySelector('[data-legion-timeline-figure="Work time"]')?.textContent).toBe(
     "10.0h"
   );
+});
+
+test("a slot whose phase entry time is unknown shows no time in phase, never 0 m", async () => {
+  await renderTab();
+
+  const time = (slot: number) =>
+    document.querySelector(`[data-legion-slot="${slot}"] [data-legion-fact="phase-time"]`);
+  expect(time(1)?.textContent).toBe("—");
+  expect(time(1)?.getAttribute("title")).toBe("Phase entry time unknown");
+  expect(time(0)?.textContent).toMatch(/ in phase$/);
+});
+
+test("a holder between turns says so, never 'Nobody'", async () => {
+  await renderTab();
+
+  expect(document.querySelector('[data-legion-slot="2"]')?.textContent).toContain("between turns");
+  expect(document.querySelector("[data-legion-slots]")?.textContent).not.toContain("Nobody");
+});
+
+test("the CI column writes a short mark with the full verdict on hover", async () => {
+  await renderTab();
+
+  const ci = document.querySelector('[data-legion-slot="0"] [data-legion-slot-ci]');
+  expect(ci?.textContent).toBe("✓");
+  expect(ci?.getAttribute("title")).toBe("green");
 });

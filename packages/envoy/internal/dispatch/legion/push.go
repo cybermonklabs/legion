@@ -41,6 +41,9 @@ type PushEvent struct {
 	Kind  string          `json:"kind"`
 	Issue string          `json:"issue,omitempty"`
 	Value json.RawMessage `json:"value"`
+	// AtUnknown says a phase event's `at` is not when the issue entered the phase: the page shows
+	// no time in phase rather than one counted from `at`.
+	AtUnknown bool `json:"at_unknown,omitempty"`
 }
 
 // Push is one delivery: every event the daemon had pending, in one write. Snapshot marks a full
@@ -287,7 +290,7 @@ func pushedField(key fieldKey) bool {
 		return key.field == FieldAdmission || key.field == FieldSettings || key.field == FieldSettingSources
 	}
 	switch key.field {
-	case FieldPhase, FieldSlot, FieldWaitingOn, FieldPullRequestChecksVerdict:
+	case FieldPhase, FieldSlot, FieldWaitingOn, FieldPullRequestChecksVerdict, FieldPhaseEntryUnknown:
 		return true
 	}
 	return strings.HasPrefix(key.field, ClaimFieldPrefix)
@@ -339,6 +342,12 @@ func observationsOf(events []PushEvent, current map[fieldKey]heldValue, snapshot
 		switch event.Kind {
 		case KindPhase:
 			key = fieldKey{event.Issue, FieldPhase}
+			unknown := json.RawMessage("null")
+			if event.AtUnknown {
+				unknown = json.RawMessage("true")
+			}
+			carried[fieldKey{event.Issue, FieldPhaseEntryUnknown}] = true
+			set(fieldKey{event.Issue, FieldPhaseEntryUnknown}, unknown, event.At)
 		case KindSlot:
 			key = fieldKey{event.Issue, FieldSlot}
 		case KindWaitingOn:

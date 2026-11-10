@@ -111,6 +111,114 @@ export function workTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
   ];
 }
 
+/** The UTC days a report's window covers, oldest first, each partial where the window covers only
+ *  part of it. */
+function daysOf(report: LegionMetricsResponse): { day: string; partial: boolean }[] {
+  const from = Date.parse(report.from);
+  const to = Date.parse(report.to);
+  const days: { day: string; partial: boolean }[] = [];
+  for (let start = Math.floor(from / DAY_MS) * DAY_MS; start < to; start += DAY_MS) {
+    days.push({
+      day: new Date(start).toISOString().slice(0, 10),
+      partial: start < from || start + DAY_MS > to,
+    });
+  }
+  return days;
+}
+
+/** The q-quantile of values by linear interpolation, null for none. */
+function quantile(values: readonly number[], q: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (sorted.length - 1) * q;
+  const low = Math.floor(at);
+  const high = Math.min(low + 1, sorted.length - 1);
+  return (sorted[low] ?? 0) + ((sorted[high] ?? 0) - (sorted[low] ?? 0)) * (at - low);
+}
+
+/** A per-day trend: one point a UTC day of the window, from the issues that closed that day. */
+function trend(
+  report: LegionMetricsResponse,
+  label: string,
+  format: (value: number) => string,
+  value: (closed: readonly LegionWorkTimeIssue[]) => number | null
+): ChartSeries {
+  const byDay = new Map<string, LegionWorkTimeIssue[]>();
+  for (const issue of report.work_time.issues) {
+    const day = issue.closed_at.slice(0, 10);
+    byDay.set(day, [...(byDay.get(day) ?? []), issue]);
+  }
+  const points = daysOf(report).map(({ day, partial }) => {
+    const closed = byDay.get(day) ?? [];
+    return { label: day, partial, value: closed.length === 0 ? null : value(closed) };
+  });
+  return {
+    kind: "spark",
+    format,
+    label,
+    max: topOf(points.map((point) => point.value ?? 0)),
+    points,
+  };
+}
+
+/** Metric 1's graph: each UTC day's median and p90 work time of the issues that closed that day. */
+export function workTimeTrendSeries(report: LegionMetricsResponse): ChartSeries[] {
+  const median = trend(report, "Median work time", hours, (closed) =>
+    quantile(
+      closed.map((issue) => issue.hours),
+      0.5
+    )
+  );
+  const p90 = trend(report, "p90 work time", hours, (closed) =>
+    quantile(
+      closed.map((issue) => issue.hours),
+      0.9
+    )
+  );
+  const max = Math.max(
+    median.kind === "spark" ? median.max : 1,
+    p90.kind === "spark" ? p90.max : 1
+  );
+  return [median, p90].map((one) => (one.kind === "spark" ? { ...one, max } : one));
+}
+
+/** Metric 3's graph: each UTC day's median review rounds and share sent back, of the issues that
+ *  closed that day. */
+export function reworkTrendSeries(report: LegionMetricsResponse): ChartSeries[] {
+  const rework = new Map(report.rework.issues.map((issue) => [issue.key, issue]));
+  const rows = (closed: readonly LegionWorkTimeIssue[]) =>
+    closed.flatMap((issue) => {
+      const row = rework.get(issue.key);
+      return row === undefined ? [] : [row];
+    });
+  return [
+    trend(
+      report,
+      "Median review rounds",
+      (v) => v.toFixed(1),
+      (closed) =>
+        quantile(
+          rows(closed).map((row) => row.review_rounds),
+          0.5
+        )
+    ),
+    {
+      ...trend(
+        report,
+        "Sent back",
+        (v) => pct(v),
+        (closed) => {
+          const reworked = rows(closed);
+          return reworked.length === 0
+            ? null
+            : reworked.filter((row) => row.sent_back).length / reworked.length;
+        }
+      ),
+      max: 1,
+    } as ChartSeries,
+  ];
+}
+
 /** Metric 2's chart: each worker type's bar, split into its five segments, and the median hours
  *  per issue beside them. One row per worker type; a bar's whole time is its five segments, so
  *  the table holds every hour the card counts. */
@@ -225,6 +333,13 @@ export function LegionCard({
     () => (comparedData === undefined ? undefined : SERIES[metric](comparedData)),
     [comparedData, metric]
   );
+  // Work time and rework draw a trend per day, and their table keeps one row per issue.
+  const trendOf = TREND[metric];
+  const trendSeries = useMemo(() => trendOf?.(report), [trendOf, report]);
+  const comparedTrend = useMemo(
+    () => (comparedData === undefined ? undefined : trendOf?.(comparedData)),
+    [comparedData, trendOf]
+  );
   const range: ChartRange = { kind: "custom", from: report.from, to: report.to };
   const select = useMemo(() => selectors(report), [report]);
   const on = (pick: (row: string, column: string | null) => [string[], string]) =>
@@ -241,14 +356,15 @@ export function LegionCard({
     oneIssue = false
   ) => (
     <Chart
-      compare={chartCompare(compare, compared)}
+      compare={chartCompare(compare, trendSeries === undefined ? compared : comparedTrend)}
       label={label}
       onSelect={
         oneIssue && onOpenIssue !== undefined ? (row: string) => onOpenIssue(row) : on(pick)
       }
       range={range}
-      rows={rows}
-      series={series}
+      rows={trendSeries === undefined ? rows : undefined}
+      series={trendSeries ?? series}
+      table={trendSeries === undefined ? undefined : { compare: compared, rows, series }}
     />
   );
   const byIssue: ChartRows = { header: "Issue", over: "issue", pair: "name" };
@@ -350,6 +466,12 @@ export function LegionCard({
       );
   }
 }
+
+/** The per-day trend a card's graph draws in place of its per-issue series, where it has one. */
+const TREND: Partial<Record<LegionMetricKey, (report: LegionMetricsResponse) => ChartSeries[]>> = {
+  rework: reworkTrendSeries,
+  work_time: workTimeTrendSeries,
+};
 
 /** Each card's series builder. */
 const SERIES: Record<LegionMetricKey, (report: LegionMetricsResponse) => ChartSeries[]> = {

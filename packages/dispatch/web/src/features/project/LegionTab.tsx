@@ -22,7 +22,7 @@ import {
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
 import { LegionPhaseCell } from "./issues-table-columns";
-import { legionPhases } from "./issues-table-model";
+import { legionPhases, legionRolesText } from "./issues-table-model";
 import { LegionHealthPanel } from "./LegionHealthPanel";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
 
@@ -36,6 +36,8 @@ const HELD_FOR_CHILDREN: Record<string, true> = {
   awaiting_merge: true,
   awaiting_person: true,
 };
+/** A CI verdict in the Slots table's narrow column; the full word is its title. */
+const CI_SHORT: Record<string, string> = { green: "✓", failing: "✗", pending: "…" };
 const CHILD_WORK: Record<string, true> = { implementing: true, testing: true, reviewing: true };
 
 export function LegionTab({
@@ -219,7 +221,7 @@ function Slots({
                       {card.key}
                     </button>
                     <div
-                      className={`max-w-56 truncate ${textSecondaryOnCanvas}`}
+                      className={`max-w-44 truncate ${textSecondaryOnCanvas}`}
                       title={card.title}
                     >
                       {card.title}
@@ -228,11 +230,15 @@ function Slots({
                   <td className="px-1 py-1">
                     {phase === undefined ? null : <LegionPhaseCell phase={phase} />}
                   </td>
-                  <td className="px-1 py-1">
-                    {card.roles.length === 0 ? "Nobody" : card.roles.join(", ")}
-                  </td>
+                  <td className="px-1 py-1">{legionRolesText(card)}</td>
                   <td className="px-1 py-1">{card.children}</td>
-                  <td className="px-1 py-1">{card.checks_verdict ?? "—"}</td>
+                  <td
+                    className="px-1 py-1 whitespace-nowrap"
+                    data-legion-slot-ci={card.checks_verdict ?? ""}
+                    title={card.checks_verdict ?? "No CI verdict"}
+                  >
+                    {CI_SHORT[card.checks_verdict ?? ""] ?? card.checks_verdict ?? "—"}
+                  </td>
                   <td className="px-1 py-1" data-legion-slot-state={state(card)}>
                     {state(card)}
                   </td>

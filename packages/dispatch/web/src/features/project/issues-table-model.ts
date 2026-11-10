@@ -93,6 +93,20 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   if (hours < 24) return `${hours} h ${minutes % 60} m`;
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
+/** A card's slot in words: its own slot, its tree root's for a child (a slot belongs to the
+ *  tree's root), or none. The board cards and the Legion tab write it this way, and the table's
+ *  Slot column can (dispatch://INFRA-979). */
+export function legionSlotText(card: LegionBoardCard): string {
+  if (card.slot !== null) return `slot ${card.slot}`;
+  if (card.tree_slot !== null) return `slot ${card.tree_slot} · via ${card.tree}`;
+  return "no slot";
+}
+
+/** A card's roles in a turn in words; none working is "between turns". */
+export function legionRolesText(card: LegionBoardCard): string {
+  return card.roles.length === 0 ? "between turns" : `${card.roles.join(", ")} in a turn`;
+}
+
 /** Each board card's Legion phase as the table draws it: the card, its column's id and label,
  *  and the column's place on the board. One reading of the board for the table, the project
  *  board's cards and the Legion dashboard (LegionPhaseCell). */

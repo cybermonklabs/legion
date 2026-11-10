@@ -4,6 +4,7 @@ import {
   type DaemonState,
   FakeDaemonModel,
   type PushEvent,
+  phaseEntryTimes,
   ROLE,
   RUNNING,
 } from "../legion-fake-daemon-model";
@@ -112,4 +113,52 @@ test("an hour of simulated moves leaves every running issue running, in its slot
       expect(model.state.issues[issue.key]?.phase).toBe(issue.phase);
     }
   }
+});
+
+test("an issue's phase entry time is its last status change into that phase, or the handoff that starts it", () => {
+  const entries = phaseEntryTimes(
+    new Map([
+      ["ACME-1", "testing"],
+      ["ACME-2", "implementing"],
+      ["ACME-3", "reviewing"],
+      ["ACME-4", "awaiting_person"],
+    ]),
+    new Map([
+      [
+        "ACME-1",
+        [
+          { at: "2026-11-01T01:00:00Z", status: "in_progress" },
+          { at: "2026-11-01T02:00:00Z", status: "testing" },
+          { at: "2026-11-01T03:00:00Z", status: "in_progress" },
+          { at: "2026-11-01T04:00:00Z", status: "testing" },
+          // A repeated snapshot of the same status is no new entry.
+          { at: "2026-11-01T05:00:00Z", status: "testing" },
+        ],
+      ],
+      ["ACME-2", [{ at: "2026-11-01T01:00:00Z", status: "in_progress" }]],
+      ["ACME-4", [{ at: "2026-11-01T01:00:00Z", status: "in_progress" }]],
+    ]),
+    new Map([["ACME-2", [{ at: "2026-11-01T03:00:00Z", phase: "plan" }]]])
+  );
+
+  expect(entries.get("ACME-1")).toBe("2026-11-01T04:00:00Z");
+  expect(entries.get("ACME-2")).toBe("2026-11-01T03:00:00Z");
+  // No record places these two in their phase.
+  expect(entries.has("ACME-3")).toBe(false);
+  expect(entries.has("ACME-4")).toBe(false);
+});
+
+test("a snapshot sends a known entry time as the phase's time, and marks an unknown one", () => {
+  const state = replay();
+  const known = Object.values(state.issues)[0];
+  const unknown = Object.values(state.issues)[1];
+  const model = new FakeDaemonModel(structuredClone(state), {
+    entryTimes: new Map([[known?.key ?? "", "2026-10-30T00:00:00Z"]]),
+  });
+  const phases = model.snapshotEvents().filter((event) => event.kind === "phase");
+  const sent = (key: string | undefined) => phases.find((event) => event.issue === key);
+
+  expect(sent(known?.key)?.at).toBe("2026-10-30T00:00:00Z");
+  expect(sent(known?.key)?.at_unknown).toBeUndefined();
+  expect(sent(unknown?.key)?.at_unknown).toBe(true);
 });

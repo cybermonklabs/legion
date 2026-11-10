@@ -16,7 +16,11 @@
  *
  *   bun run packages/dispatch/scripts/legion-fake-daemon.ts --dispatch http://127.0.0.1:<port> \
  *     --token-file <f> --project INFRA --replay <state.json> [--interval 3] [--drop-every N] \
- *     [--keep N] [--heartbeat 60] [--listen <port>] [--session <uuid>]
+ *     [--keep N] [--heartbeat 60] [--listen <port>] [--session <uuid>] [--history-dsn <dsn>]
+ *
+ * --history-dsn reads each issue's phase entry time from a local Dispatch's imported history (its
+ * last status change into the phase's status, or the handoff that starts the phase); a phase no
+ * record places is sent with `at_unknown`, which the page shows as no time in phase.
  *
  * --drop-every N gives every Nth change event a seq but never sends it the first time, so the
  * gap repair is visible. --keep N keeps only the last N change events, so a gap older than them
@@ -24,7 +28,14 @@
  */
 import { parseArgs } from "node:util";
 
-import { type DaemonState, FakeDaemonModel, type PushEvent } from "./legion-fake-daemon-model";
+import { SQL } from "bun";
+
+import {
+  type DaemonState,
+  FakeDaemonModel,
+  type PushEvent,
+  phaseEntryTimes,
+} from "./legion-fake-daemon-model";
 
 const { values: args } = parseArgs({
   options: {
@@ -37,6 +48,9 @@ const { values: args } = parseArgs({
     keep: { type: "string", default: "100000" },
     heartbeat: { type: "string", default: "60" },
     listen: { type: "string" },
+    // A local Dispatch's database holding the imported history: each issue's phase entry time
+    // is read from its status changes and handoffs there (phaseEntryTimes).
+    "history-dsn": { type: "string" },
     // The shared token needs a session actor, as the daemon's own status writes carry.
     session: { type: "string", default: "019a1c09-0000-7000-8000-00000000da01" },
   },
@@ -55,7 +69,46 @@ const heartbeatMs = Number(args.heartbeat) * 1000;
 const dropEvery = Number(args["drop-every"]);
 const keepLimit = Number(args.keep);
 
-const model = new FakeDaemonModel((await Bun.file(replayPath).json()) as DaemonState, {
+const replay = (await Bun.file(replayPath).json()) as DaemonState;
+
+/** Each issue's phase entry time from the imported history, where --history-dsn names it. */
+async function entryTimesFromHistory(dsn: string): Promise<Map<string, string>> {
+  const db = new SQL(dsn);
+  const keys = Object.keys(replay.issues);
+  const statuses = new Map<string, { at: string; status: string }[]>();
+  for (const row of (await db.unsafe(
+    `select issue_key, created_at, payload->>'status' as status from events
+     where issue_key = any($1) and payload->>'status' is not null order by created_at, id`,
+    [keys]
+  )) as { issue_key: string; created_at: Date; status: string }[]) {
+    const marks = statuses.get(row.issue_key) ?? [];
+    marks.push({ at: row.created_at.toISOString(), status: row.status });
+    statuses.set(row.issue_key, marks);
+  }
+  const handoffs = new Map<string, { at: string; phase: string }[]>();
+  for (const row of (await db.unsafe(
+    `select issue_key, created_at, phase from handoffs where issue_key = any($1) order by created_at`,
+    [keys]
+  )) as { issue_key: string; created_at: Date; phase: string }[]) {
+    const list = handoffs.get(row.issue_key) ?? [];
+    list.push({ at: row.created_at.toISOString(), phase: row.phase });
+    handoffs.set(row.issue_key, list);
+  }
+  await db.close();
+  const phases = new Map(
+    Object.values(replay.issues).flatMap((issue) =>
+      issue.phase === undefined ? [] : [[issue.key, issue.phase] as const]
+    )
+  );
+  return phaseEntryTimes(phases, statuses, handoffs);
+}
+
+const entryTimes = args["history-dsn"]
+  ? await entryTimesFromHistory(args["history-dsn"])
+  : new Map<string, string>();
+console.log(`phase entry times from the history: ${entryTimes.size} issues`);
+const model = new FakeDaemonModel(replay, {
+  entryTimes,
   dropEvery,
   keep: keepLimit,
   log: (line) => console.log(line),
