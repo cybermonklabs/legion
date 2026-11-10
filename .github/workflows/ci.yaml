@@ -2463,10 +2463,19 @@ jobs:
     # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 2964 s
     # under the 50 minutes that step carries, above install-jj's 1482 + 450 = 1932 s, either
     # setup-bun step's 1482 s, the blob read's 1115 s and the ci-ok report's 600 s. The three
-    # minutes of steps counted above are all that runs before it, so a staging step that spends
-    # its whole ladder ends on its own budget with twenty-two minutes of this job's limit still
-    # unspent, and that step names the fetch that failed rather than the job reporting
-    # GitHub's bare timeout line.
+    # minutes of steps counted above are all that runs before it - measured at 0.3 minutes in
+    # job 129478173535, a 28.7-minute run of this job - so a staging step that spends its whole
+    # ladder ends on its own budget at about 50 minutes with this job's limit unspent, and that
+    # step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
+    #
+    # THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the
+    # arithmetic above does not give it. Under the 65 minutes this limit is built from, a
+    # 13-minute step late in the job would exhaust its ladder at about 78 minutes, the limit
+    # would cut it first, and it would report GitHub's bare line rather than its own. What keeps
+    # every retried step of this job diagnosable is that the long ones run early: the staging
+    # step first, and no retried step of job 129478173535 reached past 41.6 minutes. A step
+    # added late with a ladder of its own has to be read against this limit rather than assumed
+    # safe by it.
     timeout-minutes: 75
     # contents: read is the two checkouts'; actions: read and checks: write are the
     # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
