@@ -17,8 +17,8 @@ import { DEFAULT_MARGIN_WIDTH, MIN_MARGIN_WIDTH } from "./margin-width";
  *
  * `#first-screen` is written by the Go server into the page it sends, outside `#root`, and is on
  * the screen before any script of the page has run (`web/index.html`,
- * `internal/dispatch/routes/router.go`). No component can hold columns open for it - React has
- * not mounted - so `web/src/styles.css` reserves them in CSS instead, and the head of
+ * `internal/dispatch/routes/first_screen.go`). No component can hold columns open for it -
+ * React has not mounted - so `web/src/styles.css` reserves them in CSS instead, and the head of
  * `web/index.html` narrows them to what this browser last drew (dispatch://INFRA-341, R11).
  *
  * Four files have to agree for that to work and none of them can import the others: a
@@ -32,7 +32,7 @@ const read = (path: string) => readFileSync(join(import.meta.dir, path), "utf8")
 const stylesCss = read("../../styles.css");
 const appTsx = read("../../app.tsx");
 const indexHtml = read("../../../index.html");
-const routerGo = read("../../../../../envoy/internal/dispatch/routes/router.go");
+const firstScreenGo = read("../../../../../envoy/internal/dispatch/routes/first_screen.go");
 
 /** The one rule in `styles.css` that lays the server's draw out: its breakpoint, the property
  *  on each side, and the default each property falls back to. */
@@ -75,7 +75,7 @@ test("the rule selects the element the page keeps and the attribute the server w
     'id="first-screen"'
   );
   expect(
-    routerGo,
+    firstScreenGo,
     "the server no longer writes `data-first-screen-address` onto the element it draws"
   ).toContain("data-first-screen-address=");
 });

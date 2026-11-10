@@ -5,10 +5,10 @@
  * login (`features/shell/userPreference.ts`) and the page can read none of them until
  * `/auth/whoami` has answered - which is far too late for the blocks the server drew into the
  * page, already on the screen before any script ran (`web/index.html`,
- * `internal/dispatch/routes/router.go`). Those blocks were laid out in the default columns and
- * re-wrapped once the reader's own came back: measured at 1280x900, 528 px to 392 px for a
- * margin stored at 520 px, 528 px to 856 px for a margin collapsed to its rail, and 528 px to
- * 792 px for a sidebar hidden to its rail (dispatch://INFRA-341, R11).
+ * `internal/dispatch/routes/first_screen.go`). Those blocks were laid out in the default
+ * columns and re-wrapped once the reader's own came back: measured at 1280x900, 528 px to
+ * 392 px for a margin stored at 520 px, 528 px to 856 px for a margin collapsed to its rail,
+ * and 528 px to 792 px for a sidebar hidden to its rail (dispatch://INFRA-341, R11).
  *
  * So the layout is written here as well, under a key that names no login, and the head of
  * `web/index.html` reads it before `#first-screen` is parsed and sets the two properties
