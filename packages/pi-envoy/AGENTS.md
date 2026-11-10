@@ -1163,7 +1163,7 @@ handler, a subagent reading its parent's id, a Dispatch that answers no list (th
 and one with no answers route (no line, one warning for two requests), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
-that never answers costing a request under one second; a route that answers 404 (no line); the cache
+that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache
 prefix byte for byte with no `cache_control` on the list; a list with nothing new staying after
 the first turn's prompt while later requests end with their own and cache through it; a `/btw` side turn and the handoff
 ending with their own prompts, with no list and no read; a remote compaction request ending at

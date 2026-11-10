@@ -668,24 +668,26 @@ test.skipIf(skipped)(
 );
 
 // The wait each reading measures is the deadline the extension gives Dispatch
-// (`SESSION_ANSWERS_DEADLINE_MS`, 800 ms) and whatever the machine adds to it: on this pod, idle,
-// two runs of the one-reading row read 853, 841, 848 ms and 855, 839, 858 ms, about 50 ms over
-// the deadline against a 1,000 ms bound.
+// (`SESSION_ANSWERS_DEADLINE_MS`, 800 ms) as the machine schedules it: on this pod, with no job
+// of the tester's running, two runs of the one-reading row read 853, 841, 848 ms and 855, 839,
+// 858 ms, about 50 ms over the deadline against a 1,000 ms bound. A reading can also fall under
+// the deadline, since the deadline starts before the request reaches the stand-in that measures
+// the gap: a re-run read 682 ms.
 //
 // A median of three readings per label rather than one, because one reading judges the pod's
 // scheduling rather than the route. At c772c9881dd2, whose copy of this file is byte for byte the
 // one this change starts from, the single reading for `turn 1 with no cache` failed the bound at
-// 1012.5 ms in the package suite, and a re-run of this file alone read 682 ms and passed. The
-// route hangs the same either way: that reading sat 212 ms over the deadline where a reading on
-// this pod idle sits about 50 ms over it, so what crossed is the pod's scheduling, not the route.
-// The median of three is the second of three, so no one slow reading can carry it: two of the
-// three have to cross before the row fails.
+// 1012.5 ms in the package suite, and a re-run of this file alone passed. The route hangs the
+// same either way: that reading sat 212 ms over the deadline where a reading on this pod sits
+// about 50 ms over it, so what crossed is the pod's scheduling, not the route. The median of
+// three is the second of three, so no one slow reading can carry it: two of the three have to
+// cross before the row fails.
 //
 // Each reading is a session of its own, ended before the next one starts, so no reading is taken
 // beside the stand-in and the binary of an earlier one. All three are printed with the median
 // beside them, whether or not the row passes.
 test.skipIf(skipped)(
-  "(f) an answers route that never answers holds no request for a second: turn 1, turn 2 after a good read, and a subagent's first request",
+  "(f) an answers route that never answers holds no request for a second, by the median of three readings: turn 1, turn 2 after a good read, and a subagent's first request",
   async () => {
     const deadline = `Dispatch did not answer within ${SESSION_ANSWERS_DEADLINE_MS} ms`;
     /** One reading: the gap between the answers request a Messages request waited on and the

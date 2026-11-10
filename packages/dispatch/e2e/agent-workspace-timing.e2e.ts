@@ -213,19 +213,20 @@ test("a sleeping view at the stream's worst case comes back with a median wake i
 // A median rather than one reading, because one reading judges the machine rather than the
 // page: the same bytes have painted in 40 ms and in 212 ms on this pod, so a single reading
 // says as much about what else the machine was doing as about the page. Five loads rather
-// than three, because a median of three is one slow load away from failing on this pod's
-// scheduling tail. At 547d0d72, whose page is byte for byte the page that read medians of 57,
-// 56 and 52 ms at 2b4b2ddf, seven medians of three read 53, 54, 106, 79, 67, 135 and 54 ms:
-// the 106 is of loads 106, 49 and 110 and the 135 of loads 77, 135 and 162, so each crossing
-// is one slow load carrying the median, and an eighth reading of 54 ms, of loads 132, 52 and
-// 54, has the same shape without crossing. Three loads of those twenty-one are over 100 ms
-// and two over 130, with the machine idle throughout at a load average of 0.00; across four
-// earlier heads the worst single load was 169 ms once and 103 ms once. The median of five is
-// the third of five, so no one slow load can carry it: two loads have to cross before the row
-// fails. Each of the five loads is a page of its own, fresh from its own load, with one timed
-// redraw and then closed - never a second timed draw on a page that has already been timed -
-// so a page warmed by an earlier timing cannot pull the median under a bound a fresh one
-// misses.
+// than three, because a median of three is two slow loads away from failing, and this pod's
+// scheduling tail has put two slow loads into one run of three. At 547d0d72, whose page is
+// byte for byte the page that read medians of 57, 56 and 52 ms at 2b4b2ddf, seven medians of
+// three read 53, 54, 106, 79, 67, 135 and 54 ms: the 106 is of loads 106, 49 and 110 and the
+// 135 of loads 77, 135 and 162, so each crossing is two slow loads in one run, and an eighth
+// reading of 54 ms, of loads 132, 52 and 54, had one slow load and did not cross. At least
+// five loads of those twenty-four are over 100 ms, three of them over 130, read while no job
+// of the tester's ran (this pod's load average reads 0.00 even when both CPUs are saturated,
+// so it shows nothing); across four earlier heads the worst single load was 169 ms once and
+// 103 ms once. The median of five is the third of five, so three loads have to cross before
+// the row fails. Each of the five loads is a page of its own, fresh from its own load, with
+// one timed redraw and then closed - never a second timed draw on a page that has already been
+// timed - so a page warmed by an earlier timing cannot pull the median under a bound a fresh
+// one misses.
 //
 // The 150 ms is this pod's own gap between a windowed draw and an un-windowed one, measured on
 // 2026-11-09 with the machine idle. Windowed, three runs of three loads: the median longest
