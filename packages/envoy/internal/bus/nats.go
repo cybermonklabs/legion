@@ -1694,8 +1694,8 @@ func (c *Client) publishBytesOn(ctx context.Context, subject string, data []byte
 // sendStored publishes data to subject on the notification stream under options, once more if the
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge or
 // ErrStreamFull it is. It is the one send of the stored path: its callers (publishJetStreamOn,
-// PublishCursorAt) bound ctx, connected first and pass nats.Context(ctx) among the options, so the
-// acknowledgement wait ends with that bound.
+// publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx) among the options, so
+// the acknowledgement wait ends with that bound.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)
@@ -1736,15 +1736,7 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // connection's user may not make, ErrTooLarge for a subject or body past the server's bounds,
 // ErrStreamFull while the stream holds its byte limit, and ctx's error when ctx ends first.
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
-	if err := checkSubject(subject); err != nil {
-		return 0, err
-	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
-	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
-		return 0, err
-	}
-	ack, err := c.sendStored(ctx, subject, data, nats.Context(ctx), nats.ExpectLastSequencePerSubject(expected))
+	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
 		return 0, cursorMoved(err)
 	}
@@ -1769,6 +1761,33 @@ func (c *Client) PublishRetained(ctx context.Context, subject string, data []byt
 		return false, fmt.Errorf("the notification stream does not capture %q", subject)
 	}
 	return c.publishBytesOn(ctx, subject, data, msgID)
+}
+
+// publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of
+// the caller's own rather than an envelope - under extra, one publish option beyond the context
+// the send already carries, or none when extra is nil, and returns the server's acknowledgement.
+// It is the body of every raw write of the stored path: the subject check, the acknowledgement
+// bound, the connect and the send (sendStored). Its callers name their own failures, since what
+// a refusal means is theirs: PublishCursorAt, which writes under a precondition and reads a
+// refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a record
+// whose one writer keeps no sequence to write against, so the newest write stands.
+//
+// extra is one option rather than a variadic list because each caller has exactly one or none:
+// a list would have the caller build a slice and this method append to it, where the two sends
+// below build sendStored's own variadic slice once, exactly as each caller built it before.
+func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, extra nats.PubOpt) (*nats.PubAck, error) {
+	if err := checkSubject(subject); err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	defer cancel()
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	if extra == nil {
+		return c.sendStored(ctx, subject, data, nats.Context(ctx))
+	}
+	return c.sendStored(ctx, subject, data, nats.Context(ctx), extra)
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did

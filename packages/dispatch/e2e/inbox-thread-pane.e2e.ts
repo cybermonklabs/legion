@@ -323,7 +323,8 @@ test("a comment thread, a message conversation and an Agent thread are drawn ali
   }
 });
 
-test("a reply sent from the pane reaches the thread, and an Agent reply goes in the Agents page's mode", async ({
+// @pr: A write a person makes: a reply sent from the thread pane reaches the thread, and an Agent reply goes out in the Agents page's mode.
+test("a reply sent from the pane reaches the thread, and an Agent reply goes in the Agents page's mode @pr", async ({
   browser,
 }) => {
   await setLiveSessions([THREAD_SESSION]);

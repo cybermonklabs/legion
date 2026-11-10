@@ -1,26 +1,19 @@
 import { expect, test } from "@playwright/test";
 
 import { resetDatabase } from "./seed";
-import { asUser } from "./users";
+
+/**
+ * The reader nobody signed in. It is no stubbed row: that layer's page is signed in, because
+ * its recording answers `/auth/whoami` with the person the seeding signed in as. The signed-in
+ * reader's empty Inbox is `smoke.stub.e2e.ts`.
+ */
 
 test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an authenticated user sees their empty inbox", async ({ browser }, testInfo) => {
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
-
-  await page.goto("/");
-
-  await expect(page.getByText("Signed in as alice")).toBeVisible();
-  await expect(page.getByText("Nothing needs you")).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("empty-inbox.png"), fullPage: true });
-
-  await context.close();
-});
-
-test("an anonymous user is sent to Google sign-in", async ({ browser }) => {
+// @pr: Sign-in and tokens: the first thing an anonymous person meets, and the row the whole lane rests on.
+test("an anonymous user is sent to Google sign-in @pr", async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
 

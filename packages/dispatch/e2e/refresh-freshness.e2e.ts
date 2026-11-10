@@ -219,7 +219,8 @@ test("architecture: an attached issue's new title shows in its component's open 
   }
 });
 
-test("inbox: a snooze from alice's other tab moves the row to Later in this tab within 2 s", async ({
+// @pr: A two-context race: alice's snooze in her other tab moves the row to Later here within 2 s.
+test("inbox: a snooze from alice's other tab moves the row to Later in this tab within 2 s @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

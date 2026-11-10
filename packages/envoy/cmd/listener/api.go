@@ -827,11 +827,37 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // one the bus does not answer is the bus-unavailable 503 with Retry-After: 1 inside the caller's
 // attempt (writeStoreError).
 //
+// A registration this route removed takes its session consumer with it
+// (sessionDelivery.deleteAfterAnswer), so the consumer holds a slot of the stream's consumer
+// cap no longer: after the unconditional delete, and after a conditional one answered
+// session.EntryDeleted. The answer is written first and that delete runs after it, off this
+// handler's goroutine, because a handler holds its written response until it returns: the
+// delete waits on the session's lock with no bound of its own and then makes up to four calls
+// under a budget of its own, after a KV delete that may already have spent sendRequestBudget,
+// so a deregistration that succeeded would read as failed to a caller whose attempt ends at 5 s
+// (LISTENER_CALL_TIMEOUT_MS). The shutdown waits for a delete still running before it drains
+// the connection it runs on, and one the listener was too late to start is logged and left to
+// the sweep (sessionDelivery.awaitDeletes).
+//
+// Which consumer that delete removes is settled under the session's lock rather than by the
+// outcome above: it reads the session bucket again there, from the leader of that bucket's
+// stream, and deletes only where the bucket holds no record at all
+// (sessionDelivery.deleteConsumer). So an outcome that keeps the entry keeps the consumer, a
+// live registration standing behind it — another client instance's, a later one's, or the one a
+// lost race read — and so does a registration that landed between this route's own delete and
+// that lock: the relaunch behind an if_not_registered_after stop, whose entry this route read
+// before the relaunch wrote its own. That registration's own write is what the read must see,
+// which is why it is the leader's: a direct get of a replicated bucket is answered by any copy
+// near enough to current, and one that has not applied the write yet would answer not found for
+// a session that is live. The request answers exactly as it did before whether that delete ran,
+// stood down or failed: the entry is gone, which is what the caller asked for, and the
+// listener's sweep and the server's inactivity threshold each reach a consumer left behind.
+//
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
 // session it names. The Claude Code /clear handoff still deregisters its predecessor, since it
 // does so while it is still that session.
-func deleteSessionHandler(sessions *session.SessionRegistry, logger *logging.Logger) http.HandlerFunc {
+func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -858,15 +884,24 @@ func deleteSessionHandler(sessions *session.SessionRegistry, logger *logging.Log
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
+		// The consumer's delete is made outside the request's own context, and after the
+		// answer: the entry is gone whatever the caller does next, a plugin that goes away as
+		// its deregistration answers - the shutdown this route mostly serves - must not leave
+		// the consumer behind for the sweep, and no caller waits on it.
+		deleting := context.WithoutCancel(r.Context())
 		if conditions == (session.DeleteConditions{}) {
-			if err := sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+			// A session the registry no longer holds (nats.ErrKeyNotFound) is the success this
+			// route has always answered, and it leaves no registration standing either, so its
+			// consumer goes too.
+			if err := d.sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
 				writeStoreError(ctx, w, err, http.StatusInternalServerError)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
+			d.consumers.deleteAfterAnswer(deleting, d.sessions, sessionID)
 			return
 		}
-		outcome, err := sessions.DeleteIf(ctx, sessionID, conditions)
+		outcome, err := d.sessions.DeleteIf(ctx, sessionID, conditions)
 		if err != nil {
 			writeStoreError(ctx, w, err, http.StatusInternalServerError)
 			return
@@ -874,6 +909,7 @@ func deleteSessionHandler(sessions *session.SessionRegistry, logger *logging.Log
 		switch outcome {
 		case session.EntryDeleted:
 			writeJSON(w, http.StatusOK, deleteSessionResponse{Deleted: true})
+			d.consumers.deleteAfterAnswer(deleting, d.sessions, sessionID)
 		case session.EntryKeptForAnotherInstance:
 			writeJSON(w, http.StatusOK, deleteSessionResponse{
 				Reason: "the registration belongs to another client instance",
@@ -905,7 +941,8 @@ type deleteSessionResponse struct {
 }
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead) and the listener's own kept lane, and sends the envelope. A role
+// instead) and the listener's own lanes, the kept one and the session resume one, and sends the
+// envelope. A role
 // topic is forwarded to its holder and
 // an ad-hoc topic confirmed with each self-subscribed recipient, both answered
 // once confirmed or when publishDeliveryWindow from the request's arrival has
@@ -983,8 +1020,19 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				"cannot publish to "+bus.LegionWakeTopic+"; the listener alone reports a Legion pod wake", "topic")
 			return
 		}
-		if strings.HasPrefix(request.Topic, bus.KeptTopicPrefix) {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to "+bus.KeptTopicPrefix+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder and the cursors of its drains")
+		// A lane of the listener's own is refused, and named in the refusal as the stream itself
+		// spells it, by the one call that covers every one of them (bus.ListenerOwnLaneOf), so a
+		// lane the stream gains is refused and named here with
+		// nothing written out a second time. What each holds says why: the kept lane holds the
+		// copies the listener keeps for a role's next holder and the cursors of its drains, so
+		// a bearer publishing there could rewind a role's drain or put a copy of its own on the
+		// lane; the resume lane holds its record of where a deleted session consumer stopped,
+		// which is where that session's consumer is created again, so one publishing there
+		// would choose where another session's delivery resumes and make it miss every message
+		// stored before that floor or read again what it has read.
+		if lane := bus.ListenerOwnLaneOf(request.Topic); lane != "" {
+			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+				"cannot publish to "+lane+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
 			return
 		}
 		message, field, bodyExpectsReply := validateMessageBody(request.messageBody)
@@ -2261,14 +2309,34 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// set to the stored topics, this registration's included, before the registration answers,
 		// so a message published on a newly followed stored topic after the answer is the
 		// consumer's to deliver.
-		delivery := d.consumers.register(r.Context(), body, d.registry)
+		//
+		// A registration answered consumer holds the session's lock from that consumer call
+		// (bus.SessionConsumers.Ensure) until its entry is written (PutWithin), and releases it
+		// here (sessionDelivery.register): a consumer delete of this listener's takes the same
+		// lock and deletes only where the session bucket holds no record, so this
+		// registration's entry is either not written yet and the delete not started, or
+		// written by the time that read is made. Both halves are needed, the lock and the read
+		// the delete makes under it, which is the bucket's leader's answer rather than a
+		// direct get: a copy that has not applied this write yet would answer the delete not
+		// found for the session this registration has just made live
+		// (sessionDelivery.deleteConsumer). Without them a clean stop that read the entry this
+		// registration replaces would delete the consumer of a session that is live again, and
+		// its relay would pause until the session registered anew. A registration left on the
+		// core path releases nothing (noUnlock).
+		delivery, unlock := d.consumers.register(r.Context(), body, d.registry)
+		// Released where it is meant to be, right after the entry is written, and deferred
+		// here as the backstop: the release is idempotent, so a path that leaves this handler
+		// without reaching that line still frees the session's lock.
+		defer unlock()
 		if body.SelfSubscribed || delivery.relayed() {
 			epochChanged := false
 			if delivery.relayed() {
 				previous, err := d.sessions.Get(body.SessionID)
 				epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != delivery.epoch
 			}
-			if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, delivery)); err != nil {
+			err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, delivery))
+			unlock()
+			if err != nil {
 				logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 				writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", err), http.StatusServiceUnavailable)
 				return
@@ -2410,7 +2478,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		d.consumers.refollow(ctx, d, sessionID)
 	}, logger))
 	v1.Handle("/v1/sessions", sessionsHandler(d.registry, d.sessions))
-	v1.Handle("/v1/sessions/", deleteSessionHandler(d.sessions, logger))
+	v1.Handle("/v1/sessions/", deleteSessionHandler(d, logger))
 	v1.HandleFunc("/v1/messages/send", sendHandler(d, logger))
 	v1.HandleFunc("/v1/messages/publish", publishHandler(d, logger))
 	v1.HandleFunc("/v1/replay", replayHandler(d, logger))
