@@ -802,10 +802,9 @@ func (h *Horizon) stalled(now time.Time) *horizonObservation {
 // horizon pool cannot open) would have the diagnosis's QueryRow refused as a nested acquire. A
 // failed diagnosis is logged in the warning, never returned.
 func (h *Horizon) warnStall(oldest horizonObservation, pendingFor time.Duration, safe int64) {
-	// The clear is deferred so that it happens on every path out of this function, the early
-	// returns of the switch below included, and under h.mu because stalled reads it: a path
-	// that left diagnosing set would have stalled return nil for ever and silence the stall
-	// warning for the rest of the process's life.
+	// The clear is deferred so that it happens however this function ends, and under h.mu
+	// because stalled reads the flag: a path that left diagnosing set would have stalled
+	// return nil for ever and silence the stall warning for the rest of the process's life.
 	defer func() {
 		h.mu.Lock()
 		h.diagnosing = false
