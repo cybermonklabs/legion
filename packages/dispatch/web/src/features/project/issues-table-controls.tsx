@@ -1,7 +1,7 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import type { Column, Row, Table } from "@tanstack/react-table";
+import type { Column, Table } from "@tanstack/react-table";
 import { type ReactNode, type RefObject, useCallback, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -10,28 +10,22 @@ import {
   card,
   checkboxAccent,
   issueStatusScale,
-  linkHoverText,
-  linkText,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   tableFilterActive,
   textMutedOnCanvas,
-  textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { buildIssuePath } from "../refs/routes";
-import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
+import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
   ALL_ROWS,
-  columnFilterSpec,
   type Item,
   PAGE_SIZES,
   readUrl,
-  reorder,
   runningIssueStatuses,
   writeUrl,
 } from "./issues-table-model";

@@ -82,7 +82,10 @@ export function ComponentPicker({
   };
   return (
     <MultiSelect
-      disabled={disabled || saving}
+      // Not disabled while it saves what the close committed: a disabled button cannot hold
+      // focus, so Escape's return to the trigger would be undone by the save's own render.
+      // `setOpenState` is what refuses to reopen until the save has landed.
+      disabled={disabled}
       emptyMessage={loading ? "Loading components…" : "No components to attach to."}
       error={error}
       label="Components"

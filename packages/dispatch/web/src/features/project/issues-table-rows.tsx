@@ -67,7 +67,7 @@ export function TableHeaderCell({
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}
       onDrop={() => {
-        if (dragColumn === undefined || pinned) return;
+        if (dragColumn === undefined || pinned || dragColumn === column.id) return;
         setOrder(reorder(order, dragColumn, column.id));
         setDragColumn(undefined);
       }}

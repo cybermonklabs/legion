@@ -10,6 +10,10 @@ import {
 } from "./issues-table-model";
 import { readLayout, writeLayout } from "./issues-table-storage";
 
+/** What stands under the box before the page has been laid out: the gap, the pager and the
+ *  section's bottom padding. */
+const FALLBACK_BELOW_BOX = 212;
+
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
  * in the window. The widths, order and visibility are the reader's, saved per project; the box
@@ -86,11 +90,13 @@ export function useTableLayout(project: string) {
       (height, row) => height + row.getBoundingClientRect().height,
       0
     );
-    const available =
-      window.innerHeight -
-      (bounds.top + window.scrollY) -
-      (pagerRef.current?.getBoundingClientRect().height ?? 80) -
-      32;
+    // Everything the page holds under the box: the gap, the pager and the bottom padding that
+    // leaves room for the floating selection bar. Read rather than assumed — an assumed figure
+    // is what left the document a hundred pixels taller than the window — so the pager ends at
+    // the window's edge with nothing below it to scroll to.
+    const measured = document.documentElement.scrollHeight - (bounds.bottom + window.scrollY);
+    const below = measured > 0 ? measured : FALLBACK_BELOW_BOX;
+    const available = window.innerHeight - (bounds.top + window.scrollY) - below;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
     setBoxWidth(bounds.width);
   }, []);
@@ -99,7 +105,13 @@ export function useTableLayout(project: string) {
     window.addEventListener("resize", measure);
     // happy-dom lays nothing out and has no `ResizeObserver`; the unit suite installs one.
     const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
-    if (box) sizes?.observe(box);
+    if (box) {
+      sizes?.observe(box);
+      // Everything the window holds above the table: the page's own header strip wraps on a
+      // phone when a pill arrives, which moves the box's top edge without resizing the box.
+      const page = box.closest("main") ?? box.parentElement;
+      if (page) sizes?.observe(page);
+    }
     if (above) sizes?.observe(above);
     return () => {
       window.removeEventListener("resize", measure);

@@ -4,6 +4,7 @@ import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/c
 import { mergeIssue } from "../../api/issue-cache";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
+import { settledWithLimit } from "../../lib/settled";
 import { plainWrite, useWrites } from "../writes/write-store";
 import {
   buildItems,
@@ -11,6 +12,7 @@ import {
   mergeMembers,
   queuedInOrder,
   startNextWrites,
+  WRITES_IN_FLIGHT,
 } from "./issues-table-model";
 import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
 
@@ -31,35 +33,6 @@ interface DuplicateEpic {
 export type EpicNaming =
   | { kind: "new"; keys: readonly string[] }
   | { kind: "rename"; key: string; title: string };
-
-/** How many writes of one bulk action are in flight at once. A selection is as large as the
- *  project, and "Select all N matching" is two clicks away, so the table sends them in a
- *  bounded stream rather than all at once; each write is still independent in the store. */
-const WRITES_IN_FLIGHT = 8;
-
-/** `Promise.allSettled` over `items`, at most `limit` of them running at a time, answers in the
- *  order the items came in. */
-async function settledWithLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  run: (item: T) => Promise<R>
-): Promise<PromiseSettledResult<R>[]> {
-  const results: PromiseSettledResult<R>[] = Array.from({ length: items.length });
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      for (let index = next++; index < items.length; index = next++) {
-        const item = items[index] as T;
-        try {
-          results[index] = { status: "fulfilled", value: await run(item) };
-        } catch (reason) {
-          results[index] = { status: "rejected", reason };
-        }
-      }
-    })
-  );
-  return results;
-}
 
 /** The one sentence a merge records on the source issue, written and recognised in one place.
  *  A resume compares the whole sentence against the source's own messages, because the server
@@ -386,9 +359,13 @@ export function useIssueTableActions({
       describe: (record) =>
         `New epic${record.target ? ` ${record.target}` : ""}: ${record.keys.join(", ")} are not yet adopted. Finish checks which open issues still need to move.`,
       resume: async (record, current) => {
+        // A creation still in Pending changes can be retried; one the reader discarded is gone
+        // with its step, so there is no epic and nothing to adopt — Finish says which it is.
         if (!record.target)
           throw new Error(
-            "The created epic's key is still unknown. Retry its creation in Pending changes before finishing adoption."
+            record.writes.create === undefined
+              ? "The epic was never created: its creation was discarded. Nothing has been adopted. Dismiss this action and make the epic again."
+              : "The created epic's key is still unknown. Retry its creation in Pending changes before finishing adoption."
           );
         const target = current.find((issue) => issue.key === record.target);
         if (!target || target.status === "done")

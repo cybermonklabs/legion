@@ -31,6 +31,12 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
 
+/** How many of one action's writes are in flight at once, whether it is sending them for the
+ *  first time or Finish is retrying what a refusal left behind. A selection is as large as the
+ *  project, and "Select all N matching" is two clicks away, so the table sends a bounded
+ *  stream rather than every request at once; each write is still independent in the store. */
+export const WRITES_IN_FLIGHT = 8;
+
 /** How a column filters, and everything a filter of its kind needs: a column that filters by
  *  picking values cannot exist without the values a row files under, nor one that filters by
  *  typed text without the text it reads. Matching, the URL parameter and the options a filter
@@ -398,6 +404,22 @@ export function matchesFilters(item: Item, filters: ColumnFiltersState, except?:
         )
       : facets(item, id).some((entry) => value.includes(entry));
   });
+}
+/** Which of two rows' groups comes first under `id`: the order its filter lists its values in,
+ *  and by name where the registry gives none. A group's place is its column's, not the row
+ *  sort's, so the headings read P0, P1, P2, P3 however the rows beneath them are sorted. */
+export function compareGroups(id: string, a: Item, b: Item): number {
+  const filter = columnFilterSpec(id);
+  if (filter?.kind !== "picks" || filter.group === undefined) return 0;
+  const left = filter.group(a);
+  const right = filter.group(b);
+  const order = filter.order;
+  if (order === undefined) return left.localeCompare(right);
+  const place = (value: string) => {
+    const index = order.indexOf(value);
+    return index === -1 ? order.length : index;
+  };
+  return place(left) - place(right);
 }
 export function facetCounts(
   items: readonly Item[],

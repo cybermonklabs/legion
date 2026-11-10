@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
+import { settledWithLimit } from "../../lib/settled";
 import { defineWriteKind, useWrites } from "../writes/write-store";
+import { WRITES_IN_FLIGHT } from "./issues-table-model";
 import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
 
 export type { TableAction } from "./issues-table-storage";
@@ -143,27 +145,36 @@ export function useTableRecovery(project: string, report: (text: string) => void
       if (row) owned.current.set(row.id, { ...owned.current.get(row.id), issue });
     },
     settle: async (record: TableAction) => {
-      await Promise.all(
-        writes
-          .rows()
-          .filter((row) => Object.values(record.writes).includes(row.key))
-          .map((row) => {
-            const { promise, resolve, reject } = Promise.withResolvers<void>();
-            const unsubscribe = writes.onOutcome((event) => {
-              if (event.write.id !== row.id) return;
-              unsubscribe();
-              if (event.kind === "landed") resolve();
-              else
-                reject(
-                  event.kind === "refused"
-                    ? event.refusal
-                    : new Error(`${row.label} was discarded.`)
-                );
-            });
-            if (row.status === "refused") writes.retry(row.id);
-            return promise;
-          })
+      const rows = writes.rows().filter((row) => Object.values(record.writes).includes(row.key));
+      const outcome = (row: (typeof rows)[number]) => {
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        const unsubscribe = writes.onOutcome((event) => {
+          if (event.write.id !== row.id) return;
+          unsubscribe();
+          if (event.kind === "landed") resolve();
+          else
+            reject(
+              event.kind === "refused" ? event.refusal : new Error(`${row.label} was discarded.`)
+            );
+        });
+        return promise;
+      };
+      // A write still in flight is only waited on; a refused one is sent again, and no more of
+      // those run at once than a bulk action sends, so Finish after a 250-row refusal is the
+      // same bounded stream the action itself was.
+      const waiting = rows.filter((row) => row.status !== "refused").map(outcome);
+      const retried = settledWithLimit(
+        rows.filter((row) => row.status === "refused"),
+        WRITES_IN_FLIGHT,
+        async (row) => {
+          const landed = outcome(row);
+          writes.retry(row.id);
+          await landed;
+        }
       );
+      const [, results] = await Promise.all([Promise.all(waiting), retried]);
+      const refused = results.find((result) => result.status === "rejected");
+      if (refused?.status === "rejected") throw refused.reason;
     },
     dismiss: () => remember(undefined),
   };

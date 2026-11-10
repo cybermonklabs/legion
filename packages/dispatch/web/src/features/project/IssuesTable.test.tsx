@@ -982,6 +982,161 @@ test("an epic left with no children is still a row while grouped by epic", async
   expect(within(row).getByRole("checkbox", { name: "Select CORE-1" })).toBeDefined();
 });
 
+// An epic is filterable and searchable in every grouping: grouped by Epic its heading is made
+// by the children the table lists, under the same filters and search, so one that leaves the
+// epic no child leaves the epic its own row rather than taking it out of the view.
+test("an epic whose children a status filter hides keeps its own row while grouped by epic", async () => {
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], status: "triage", title: "Telemetry rollout" }),
+      issue("CORE-2", { parent: "CORE-1", status: "todo", title: "Wire the exporter" }),
+    ],
+    "?group=epic&status=triage"
+  );
+  expect(await screen.findByRole("row", { name: "CORE-1 Telemetry rollout" })).toBeDefined();
+  expect(screen.queryByRole("row", { name: "CORE-2 Wire the exporter" })).toBeNull();
+});
+
+test("a Labels filter of epic shows the epics while grouped by epic", async () => {
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Telemetry rollout" }),
+      issue("CORE-2", { parent: "CORE-1", title: "Wire the exporter" }),
+    ],
+    "?group=epic&label=epic&nofilter=1"
+  );
+  expect(await screen.findByRole("row", { name: "CORE-1 Telemetry rollout" })).toBeDefined();
+  expect(screen.queryByRole("row", { name: "CORE-2 Wire the exporter" })).toBeNull();
+});
+
+/** The group headings on the page, in the order they are drawn. */
+function headings(): string[] {
+  return [...document.querySelectorAll("tbody tr")]
+    .filter((row) => row.querySelector("td[colspan]"))
+    .map((row) => (row.textContent ?? "").trim());
+}
+
+// A group's place is its column's, not the row sort's: the registry lists the values in the
+// order the filter offers them, and the headings read the same way.
+test("grouped by Priority, the headings run P0, P1, P2, P3 whatever the rows are sorted by", async () => {
+  table(
+    [
+      issue("CORE-1", { priority: 0, rank: "a" }),
+      issue("CORE-2", { priority: 1, rank: "b" }),
+      issue("CORE-3", { priority: 3, rank: "c" }),
+      issue("CORE-4", { priority: 2, rank: "d" }),
+    ],
+    "?group=priority"
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await waitFor(() =>
+    expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
+  );
+});
+
+test("grouped by Status, the headings run in workflow order", async () => {
+  table(
+    [
+      issue("CORE-1", { status: "needs_review", rank: "a" }),
+      issue("CORE-2", { status: "triage", rank: "b" }),
+      issue("CORE-3", { status: "in_progress", rank: "c" }),
+    ],
+    "?group=status&nofilter=1"
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await waitFor(() =>
+    expect(
+      headings().map((text) =>
+        ["Triage", "In progress", "Needs review"].find((name) => text.includes(name))
+      )
+    ).toEqual(["Triage", "In progress", "Needs review"])
+  );
+});
+
+// Start all its queued issues next is Start next over an epic's queued children: it moves them
+// and says so, rather than leaving the reader to guess whether anything happened.
+test("Start all its queued issues next moves the epic's queued children and reports it", async () => {
+  const user = userEvent.setup();
+  const sent: { path: string; body: unknown }[] = [];
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    sent.push({ path: request.path, body: request.body });
+    return savedIssue("CORE-3") as never;
+  });
+  restores.push(() => send.mockRestore());
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Queue epic" }),
+      issue("CORE-2", { labels: ["legion"], rank: "a", title: "Ahead of the epic" }),
+      issue("CORE-3", { labels: ["legion"], parent: "CORE-1", rank: "b", title: "Behind" }),
+    ],
+    "?group=epic"
+  );
+  const heading = (await screen.findByRole("link", { name: "CORE-1 · Queue epic" })).closest("tr");
+  if (!heading) throw new Error("The epic has no heading row");
+  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+  await user.click(screen.getByRole("button", { name: "Start all its queued issues next" }));
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
+    ).toContain("now starts next")
+  );
+  expect(sent).toEqual([{ path: "/api/v1/issues/CORE-3", body: { rank: { before: "CORE-2" } } }]);
+});
+
+// Finish sends what a refusal left behind under the same bound a bulk action keeps, so a
+// 250-row refusal is a stream of eight rather than 250 requests at once.
+test("Finish retries a refused action's writes eight at a time", async () => {
+  const user = userEvent.setup();
+  let inFlight = 0;
+  let peak = 0;
+  let refuse = true;
+  const held: (() => void)[] = [];
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    const holding = Promise.withResolvers<void>();
+    held.push(holding.resolve);
+    await holding.promise;
+    inFlight -= 1;
+    return savedIssue("CORE-1") as never;
+  });
+  restores.push(() => send.mockRestore());
+  const children = Array.from({ length: 20 }, (_, index) =>
+    issue(`CORE-${index + 1}`, { parent: "CORE-98" })
+  );
+  const { client } = table(
+    [
+      issue("CORE-98", { labels: ["epic"], title: "Merge source" }),
+      issue("CORE-99", { labels: ["epic"], title: "Merge target" }),
+      ...children,
+    ],
+    "?group=epic"
+  );
+  const heading = (await screen.findByRole("link", { name: "CORE-98 · Merge source" })).closest(
+    "tr"
+  );
+  if (!heading) throw new Error("The source epic has no heading row");
+  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-99"
+  );
+  await screen.findByRole("alert");
+  refuse = false;
+  expect(
+    writesOf(client)
+      .rows()
+      .filter((write) => write.status === "refused").length
+  ).toBeGreaterThan(8);
+  const interrupted = await screen.findByRole("region", { name: "Interrupted table action" });
+  await user.click(within(interrupted).getByRole("button", { name: "Finish" }));
+  await waitFor(() => expect(inFlight).toBe(8));
+  expect(peak).toBe(8);
+  for (const resolve of held.splice(0)) resolve();
+  await waitFor(() => expect(peak).toBe(8));
+});
+
 // TanStack hands a resize to the state the reader owns, not to the widths a narrow window
 // derives from it, so a drag on a phone leaves the saved desktop key and title widths alone.
 test("resizing a column on a phone leaves the saved key and title widths alone", async () => {

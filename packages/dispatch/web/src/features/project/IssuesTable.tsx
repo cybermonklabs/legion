@@ -42,9 +42,11 @@ import { useProjectIssueItems } from "./issues-table-data";
 import { useRowKeymap } from "./issues-table-keys";
 import { useTableLayout } from "./issues-table-layout";
 import {
+  compareGroups,
   facetCounts,
   type Item,
   isEpic,
+  matchesFilters,
   matchesSearch,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
@@ -96,15 +98,26 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         (!flags.needsYou || issue.open_asks > 0) &&
         (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
     );
-    if (grouping[0] !== "epic") return shown;
+    const grouped = grouping[0];
+    if (grouped === undefined) return shown;
+    // A group's heading is where its column's filter would list it, so the headings run in that
+    // order whatever the rows are sorted by: the groups are made in the order the rows arrive.
+    const ordered = [...shown].sort((a, b) => compareGroups(grouped, a, b));
+    if (grouped !== "epic") return ordered;
     // An epic is an ordinary row, except where it is already a group's heading. A heading is
-    // made by its children, so an epic none of these rows belongs to keeps its own row rather
-    // than leaving the view with nothing to show it, select it or act on it.
+    // made by the children the table lists — the same filters and search it applies to every
+    // row — so an epic none of the listed rows belongs to keeps its own row rather than leaving
+    // the view with nothing to show it, select it or act on it.
     const headings = new Set(
-      shown.filter(({ issue }) => !isEpic(issue)).map(({ epicKey }) => epicKey)
+      ordered
+        .filter(
+          (item) =>
+            !isEpic(item.issue) && matchesFilters(item, filters) && matchesSearch(item, search)
+        )
+        .map(({ epicKey }) => epicKey)
     );
-    return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
-  }, [allItems, flags.needsYou, flags.unread, grouping, userState.data]);
+    return ordered.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
+  }, [allItems, filters, flags.needsYou, flags.unread, grouping, search, userState.data]);
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640);
 
@@ -282,6 +295,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
 
   const leafCount = table.getFilteredRowModel().rows.length;
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
+  // The order a drop rewrites, read once rather than per header cell.
+  const columnOrder = table.getAllLeafColumns().map((column) => column.id);
 
   return (
     <section aria-label="Project issues" className="space-y-3 pb-24">
@@ -411,7 +426,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                       header={header}
                       key={header.id}
                       openFilter={openFilter}
-                      order={table.getAllLeafColumns().map((column) => column.id)}
+                      order={columnOrder}
                       setDragColumn={setDragColumn}
                       setOpenFilter={setOpenFilter}
                       setOrder={layout.setOrder}

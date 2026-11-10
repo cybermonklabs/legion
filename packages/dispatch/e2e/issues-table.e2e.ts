@@ -633,6 +633,29 @@ test("compact windows give the table three full rows and let the page scroll @ph
   }
 });
 
+test("a roomy window holds the whole page, with nothing under the pager", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 6; index++)
+    await createIssue({ project: "CORE", title: `Roomy row ${index}` });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto("/projects/CORE/issues");
+    await expect(page.locator("[data-issue-row]").nth(5)).toBeAttached();
+    // The box takes the room the page leaves, so the document is the window: the pager sits at
+    // its bottom edge and nothing below it scrolls into view.
+    const overflow = async () =>
+      await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
+    await expect.poll(overflow).toBeLessThanOrEqual(1);
+    await page.mouse.wheel(0, 400);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeInViewport();
+  } finally {
+    await context.close();
+  }
+});
+
 test("phone status labels are readable and closed issues load from the Status filter @phone", async ({
   browser,
 }) => {
