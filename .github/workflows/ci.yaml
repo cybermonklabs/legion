@@ -2480,6 +2480,30 @@ jobs:
       - name: Stage the correct bytes of every row a case serves, before the fault
         run: .github/scripts/ci-tools-proof.sh stage
 
+      # The stand-in curl every step after this one runs, which shortens only a fetch this job
+      # arranged to fail. Every case of this job is a refusal this rig arranged, and each of
+      # those refusals rode a retry ladder nobody reads: job 129743677408 ran 1994 s and spent
+      # 1952 s in the steps that pay for them.
+      # Every other fetch keeps the pinned ladder, so that ladder still rides out a flap of
+      # npm, PyPI, get.pulumi.com or the local origin, each of which this job reaches through
+      # the fault proxy and none of which it faults. No reading of this job counts requests or
+      # durations, so a shortened ladder takes no statement away: what a case proves is which
+      # source served its bytes and that the digest held, and the stand-in changes neither.
+      # One case keeps the pinned ladder, the head's own install-crane below, and the
+      # ladder-report step at the end of this job reads what that one measured. That install
+      # carries no seam, so its primary is the real faulted host and its second source the real
+      # package copy, and it drives the whole claim the shortened cases give up: a real ladder,
+      # then a second source, then the digest check. The negative controls cannot be that case,
+      # because a control ends in failure and proves no fall-through. The head's installs
+      # cannot move above the controls either, because .github/actions/setup-bun takes its
+      # existing-install branch when a Bun of the pinned version is already on the runner,
+      # which is exactly what the base-bun control must not find.
+      # It runs here, straight after `stage`, because `stage` fetches about 165 MB from the
+      # real sources while the network is whole and must keep the pinned ladder for them, and
+      # because $GITHUB_PATH reaches the steps after this one and not this one.
+      - name: Shorten the ladder of every fetch this job arranges to fail
+        run: .github/scripts/ci-tools-proof.sh shorten-ladder
+
       - id: origin
         name: Start the origin that stands in for all four sources
         run: .github/scripts/ci-tools-proof.sh origin-start
@@ -2699,7 +2723,12 @@ jobs:
       # fault: its `mise install` must reach the release asset mise fetches jj from, which the
       # fault holds, so that install fails and the action reads the copy. This step is therefore
       # the proof of jj's second source itself, rather than a warm directory answering for it.
+
+      # This install is the one case that keeps the pinned ladder, and the ladder-report step
+      # at the end of this job reads the measurement it leaves.
       - uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_PROOF_FULL_LADDER: crane-head
 
       - uses: ./.github/actions/install-changie
 
@@ -3116,6 +3145,15 @@ jobs:
             exit 1
           fi
           echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the sixteen corrupted payloads was installed"
+
+      # The reading of what the stand-in curl measured, before the fault stops, so that its own
+      # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
+      # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
+      # one did; for a kept measurement outside the window the rig holds it to; and for a fetch
+      # that stayed on the ladder, spent one and then failed, which is a fault shape the
+      # stand-in's rule did not recognise.
+      - name: Read what the stand-in curl measured of every fetch
+        run: .github/scripts/ci-tools-proof.sh ladder-report
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
