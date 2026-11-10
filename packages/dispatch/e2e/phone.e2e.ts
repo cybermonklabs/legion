@@ -17,7 +17,7 @@ import {
 } from "./api";
 import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
-import { expectActivePreset, openIssueAddress } from "./issue-presets";
+import { expectActivePreset, openIssueAddress } from "./issue-page";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink, resetDatabase } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";

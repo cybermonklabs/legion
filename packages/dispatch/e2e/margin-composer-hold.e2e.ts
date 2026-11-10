@@ -10,7 +10,7 @@ import {
   selectEditorText,
   setSheet,
 } from "./editor";
-import { expectIssueClosed } from "./issue-presets";
+import { expectIssueClosed } from "./issue-page";
 import { resetDatabase } from "./seed";
 import {
   answeredPost,

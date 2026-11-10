@@ -1,20 +1,57 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 /**
- * Nothing between `locator`'s own deepest content and the document clips it: no line-clamp or
- * ellipsis anywhere from its first text node up through every ancestor, and no ancestor actually
- * set to clip its own overflow (`overflow` other than `visible`) has grown past the box it sits
- * in. A page taller than its viewport scrolling normally (`overflowY: visible` on `html`) is not
- * a clip, so the walk never flags that; an ancestor set to clip, with content that no longer fits
- * it, is. The walk starts at the deepest descendant rather than `locator` itself because a clamp
- * can live on an inner span the locator wraps, not on the element the locator resolves to
- * (LEGION-559's issue title: a `line-clamp-2` span nested inside the `h1` the heading role
- * resolves to); descending first and climbing from there visits that span, then the heading,
- * then its ancestors, in one pass that also covers the ordinary case where `locator` already is
- * the clamped element (approval.e2e.ts's long-question `<p>`, whose only child is its text node).
+ * Nothing anywhere inside `locator`, or above it, cuts its text: no clamp that is cutting
+ * anything on the scope, on any of its descendants or on any of its ancestors, and no box set
+ * to clip its own overflow (`overflow` other than `visible`) holding content that no longer
+ * fits it. A page taller than its viewport scrolling normally (`overflowY: visible` on `html`)
+ * is not a clip, so the walk never flags that; a box set to clip, with content past its edge,
+ * is.
+ *
+ * The walk is every element of the subtree and not one chain from the first leaf up, because a
+ * scope is usually a container - the identity block, the preset row, the panel - and a clamp
+ * sits on whichever child drew it, not on the one chain a descent through first children
+ * happens to take: a clamp off that chain was never read (dispatch://INFRA-1196, the review of
+ * pull request 2813). It still covers the two cases the chain covered: an inner span the
+ * locator wraps (LEGION-559's issue title, a `line-clamp-2` inside the `h1` the heading role
+ * resolves to) and a locator that is itself the clamped element (approval.e2e.ts's
+ * long-question `<p>`).
+ *
+ * **A clamp counts only while it is clamping**, and this is the part a later reader will want
+ * to undo: do not. `truncate` computes `text-overflow: ellipsis` whether or not the text is
+ * longer than its box, and a clamp that cuts nothing takes no word from a reader, so a reading
+ * made on the declaration alone fails on a class name rather than on a fault. The old chain
+ * walk only looked whole because it missed most elements; broadening it and keeping the
+ * declaration-only rule would fail every surface that writes `truncate` anywhere. So
+ * `text-overflow: ellipsis` counts only where `scrollWidth > clientWidth + 1`, and
+ * `-webkit-line-clamp` only where `scrollHeight > clientHeight + 1`: the box is cutting text a
+ * reader cannot otherwise reach. That is stronger than the reading this replaced in what it
+ * covers and honest in what it calls a defect.
+ *
+ * **An element that is not drawn is not read, and neither is anything inside it.** The reading
+ * is of what a reader on the screen loses, and an element taken out of the drawing and left to
+ * assistive technology loses them nothing: the technology reads all of it. Such an element is
+ * told by its computed box and never by a class name - a utility is one spelling of it and the
+ * next surface may write the same CSS by hand - and it leaves two marks together: a border box
+ * of a CSS pixel or less in each direction, and a `clip-path` other than `none`. Either mark
+ * is enough, because both describe a box no reader can see: the 1x1 box clips 128 px of words
+ * down to nothing by design, which the overflow rule would otherwise read as a clip of
+ * something a person was meant to see (measured on the panel's own `sr-only` description,
+ * `span: 128x20 in 1x1`). What is inside such an element is not drawn either, so the walk
+ * stops there rather than descending.
+ *
+ * These two ask **does the reader have every word**, so a box that cuts counts however it
+ * cuts: `overflow: hidden` is a finding exactly as an ellipsis is, because a word cut off is
+ * a word gone whether or not the box advertised the cut. `assertFitsItsBox` below asks the
+ * other question - does this box scroll sideways - and there `hidden` is no finding; a scope
+ * picks the reading it means.
+ *
+ * There is no exception list and no file is special-cased. A clamp that is cutting words is a
+ * finding wherever it is drawn, and the answer is the page's or the scope's, never this
+ * helper's.
  */
 export async function assertWhole(locator: Locator): Promise<void> {
-  await assertUnclipped(locator, true);
+  await assertUnclipped(locator, { clamps: true, cuts: true, down: true });
 }
 
 /**
@@ -22,39 +59,131 @@ export async function assertWhole(locator: Locator): Promise<void> {
  * the properties, the focused node's facts and the whole conversation, so it is taller than the
  * screen and scrolls vertically by design (`features/margin/MarginSheet.tsx`'s `overflow-y-auto`
  * on a `h-dvh` rail). R17 bans scrolling in *two* dimensions, never in one, so this reading
- * drops the vertical half and keeps the rest: a sideways clip and a clamped line still fail.
+ * drops the vertical half of the overflow rule and keeps the rest: a sideways clip still
+ * fails, and so does a line clamp that is cutting lines, since a line a clamp took is a line
+ * the reader does not have whichever way the box scrolls.
  */
 export async function assertWholeAcross(locator: Locator): Promise<void> {
-  await assertUnclipped(locator, false);
+  await assertUnclipped(locator, { clamps: true, cuts: true, down: false });
 }
 
-async function assertUnclipped(locator: Locator, down: boolean): Promise<void> {
-  const clips = await locator.evaluate((element, readsDown) => {
-    const found: string[] = [];
-    let deepest: Node = element;
-    while (deepest.firstChild !== null) {
-      deepest = deepest.firstChild;
+/**
+ * The weaker of the two readings, for a box that may shorten its own text: no box inside
+ * `locator` *scrolls* past its own edge, and `locator`'s own right edge is inside the box that
+ * holds it. Neither a clamp nor a box that cuts is read at all.
+ *
+ * The two readings answer two different questions, which is the whole of the difference
+ * between them. `assertWhole` and `assertWholeAcross` ask **does the reader have every word**:
+ * there, `overflow: hidden` is a finding exactly as an ellipsis is, because a word cut off is
+ * a word gone whether the box advertised the cut or not. This asks **does this box scroll
+ * sideways**, which is R17's question (it bans scrolling in two dimensions, never cutting), so
+ * here only a box that can actually be scrolled counts - `overflow` of `auto`, `scroll` or
+ * `overlay` - and `hidden` and `clip` do not.
+ *
+ * A row of the issue tree is the case this exists for (`e2e/issue-layout.e2e.ts`, c-reflow). A
+ * row is one line by design and cuts its first line at a sentence end, or at a word boundary
+ * by 100 characters (`web/src/features/issue/NodeRow.tsx`), and the focused node's body holds
+ * that text whole - c-tree reads the body against the stored text - so the reader loses no
+ * word to the cut: they open the node. Tailwind's `truncate` is `overflow: hidden` with
+ * `text-overflow: ellipsis`, so both halves of the stronger reading fail on that one cut,
+ * measured at 1440 px as `span…truncate: 323x20 in 186x20`, and both would be right to for a
+ * scope that promises every word on screen. A row promises something else, which is what this
+ * reads: whatever it shortened, it fits the box it is drawn in and takes the page nowhere
+ * sideways.
+ *
+ * So the two readings stand side by side and a scope picks the one it means. This is not an
+ * exception inside `assertWhole`: the identity block, the preset row and the panel keep that
+ * reading unchanged, and a scope that wants this one asks for it by name.
+ */
+export async function assertFitsItsBox(locator: Locator): Promise<void> {
+  await assertUnclipped(locator, { clamps: false, cuts: false, down: true });
+  const over = await locator.evaluate((element) => {
+    const parent = element.parentElement;
+    if (parent === null) return null;
+    const box = element.getBoundingClientRect();
+    const holder = parent.getBoundingClientRect();
+    if (box.right <= holder.right + 1) return null;
+    return `${Math.round(box.right)} past the ${Math.round(holder.right)} its container ends at`;
+  });
+  expect(over, over ?? "").toBeNull();
+}
+
+/** How many clipped elements a failure names. A scope holds hundreds, and a page that clips at
+ *  all usually clips in several places at once; ten of them, each with its tag, its classes and
+ *  its two sizes, say where to look without printing a subtree. */
+const CLIPS_NAMED = 10;
+
+async function assertUnclipped(
+  locator: Locator,
+  reading: { clamps: boolean; cuts: boolean; down: boolean }
+): Promise<void> {
+  // One `evaluate` over the whole subtree: a round trip per element would be hundreds of them
+  // per scope, and the six widths of c-reflow pay for every one.
+  const clips = await locator.evaluate(
+    (element, { named, readsClamps, readsCuts, readsDown }) => {
+      const found: string[] = [];
+      const where = (node: Element) => {
+        const classes = node.getAttribute("class");
+        return `${node.tagName.toLowerCase()}${classes === null ? "" : `.${classes}`}`;
+      };
+      // Whether a reader on the screen sees this box at all: an element the page takes out of
+      // the drawing and leaves to assistive technology is a box of a pixel or less, or one
+      // with a `clip-path`, and either way nothing it holds is drawn.
+      const drawn = (node: Element, style: CSSStyleDeclaration) => {
+        const rect = node.getBoundingClientRect();
+        return (rect.width > 1 || rect.height > 1) && style.clipPath === "none";
+      };
+      const read = (node: Element) => {
+        const style = getComputedStyle(node);
+        if (!drawn(node, style)) return false;
+        const size = `${node.scrollWidth}x${node.scrollHeight} in ${node.clientWidth}x${node.clientHeight}`;
+        const cutsAcross = node.scrollWidth > node.clientWidth + 1;
+        const cutsDown = node.scrollHeight > node.clientHeight + 1;
+        // A declaration cuts nothing until the text is longer than its box, in the direction
+        // that declaration cuts: an ellipsis takes words off the end of a line, a line clamp
+        // takes lines off the end of a box.
+        if (
+          readsClamps &&
+          ((style.textOverflow === "ellipsis" && cutsAcross) ||
+            (style.webkitLineClamp !== "none" && cutsDown))
+        ) {
+          found.push(
+            `${where(node)}: line clamp ${style.webkitLineClamp}, ${style.textOverflow}, ${size}`
+          );
+        }
+        // What counts as a box holding content past its edge: every box that is not `visible`
+        // for the reading that asks whether the reader has every word, and only a box that can
+        // be scrolled for the reading that asks whether anything scrolls sideways.
+        const holds = (overflow: string) =>
+          readsCuts
+            ? overflow !== "visible"
+            : overflow === "auto" || overflow === "scroll" || overflow === "overlay";
+        if (
+          (readsDown && holds(style.overflowY) && cutsDown) ||
+          (holds(style.overflowX) && cutsAcross)
+        ) {
+          found.push(`${where(node)}: ${size}`);
+        }
+        return true;
+      };
+      // Down the subtree child by child rather than over one flat list, so an element that is
+      // not drawn takes its own descendants out of the walk with it.
+      const descend = (node: Element) => {
+        if (!read(node)) return;
+        for (const child of node.children) descend(child);
+      };
+      descend(element);
+      for (let node = element.parentElement; node !== null; node = node.parentElement) read(node);
+      if (found.length <= named) return found;
+      return [...found.slice(0, named), `and ${found.length - named} more`];
+    },
+    {
+      named: CLIPS_NAMED,
+      readsClamps: reading.clamps,
+      readsCuts: reading.cuts,
+      readsDown: reading.down,
     }
-    for (
-      let node: Element | null = deepest.parentElement;
-      node !== null;
-      node = node.parentElement
-    ) {
-      const style = getComputedStyle(node);
-      if (style.webkitLineClamp !== "none" || style.textOverflow === "ellipsis") {
-        found.push(`${node.tagName}: line clamp ${style.webkitLineClamp}, ${style.textOverflow}`);
-      }
-      if (
-        (readsDown && style.overflowY !== "visible" && node.scrollHeight > node.clientHeight + 1) ||
-        (style.overflowX !== "visible" && node.scrollWidth > node.clientWidth + 1)
-      ) {
-        found.push(
-          `${node.tagName}: ${node.scrollWidth}x${node.scrollHeight} in ${node.clientWidth}x${node.clientHeight}`
-        );
-      }
-    }
-    return found;
-  }, down);
+  );
   expect(clips, clips.join(", ")).toEqual([]);
 }
 

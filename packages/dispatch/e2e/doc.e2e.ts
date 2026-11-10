@@ -30,7 +30,7 @@ import {
   selectEditorText,
   typeAtEnd,
 } from "./editor";
-import { openPreset } from "./issue-presets";
+import { pickPreset } from "./issue-page";
 import { engineParagraphs } from "./read-back";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -739,7 +739,7 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
     expect(scripts.size).toBeGreaterThan(1);
     expect(await transportChunks()).toEqual([]);
 
-    await openPreset(page, "Spec");
+    await pickPreset(page, "Spec");
     await expect(documentEditor(page)).toContainText("Use SQLite");
     expect((await transportChunks()).length).toBeGreaterThan(0);
   } finally {

@@ -7,7 +7,7 @@ import {
   test,
 } from "@playwright/test";
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
-import { conversationState, openIssueAddress } from "./issue-presets";
+import { conversationStateControl, openIssueAddress } from "./issue-page";
 import { boxesApart } from "./layout";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -305,7 +305,10 @@ test("on a phone, a reader who leaves the Conversation while it loads lands on i
     await expect.poll(() => held.length).toBe(1);
 
     await openIssueAddress(page, "activity");
-    await expect(conversationState(page, "everything")).toHaveAttribute("aria-selected", "true");
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
     const answered = page.waitForResponse(
       (response) => asksRead(new URL(response.url())) && response.status() === 200
     );

@@ -5,7 +5,7 @@ import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import type { Swatch } from "../web/src/theme/palette";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { conversationThreadScope } from "./editor";
-import { openIssueAddress } from "./issue-presets";
+import { openIssueAddress } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 

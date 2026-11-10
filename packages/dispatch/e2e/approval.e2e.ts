@@ -28,7 +28,7 @@ import {
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
-import { conversationState, openIssueAddress } from "./issue-presets";
+import { conversationStateControl, openIssueAddress } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { assertWhole } from "./unclipped";
@@ -1039,7 +1039,7 @@ test("an approval ask's Inbox row, drawer link and bare ask route land on the sp
 
     await page.goto(`/issues/${issue.key}/asks/${unanchoredAsk.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/asks/${unanchoredAsk.id}`);
-    await expect(conversationState(page, "words")).toHaveAttribute("aria-selected", "true");
+    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
     await expect(
       page.locator("#issue-conversation-panel").getByTestId(`ask-${unanchoredAsk.id}`)
     ).toContainText("Ship it?");

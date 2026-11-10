@@ -2,6 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "../web/src/features/issue/page-words";
 import type { Box } from "./layout";
+import { navigateInApp } from "./sends";
 
 /**
  * The DOM of the redesigned issue page (dispatch://INFRA-1196), as one module.
@@ -11,6 +12,11 @@ import type { Box } from "./layout";
  * what the page's DOM is: the page is built to it, and anything named here is a requirement on
  * that page. Each item below names the check that reads it, by the `check` block of
  * `dispatch://INFRA-1196/artifact/verification-md`, so nothing is named that no check reads.
+ *
+ * It is also the one place every other spec reaches the page through: the moves at the end of
+ * the file - a preset, one of the addresses the old tabs answered, the identity block's actions
+ * - are here rather than in a second module of their own, so one page has one set of helpers and
+ * no name means two things (`openPreset` the address and `pickPreset` the control).
  *
  * ## What the page draws
  *
@@ -266,6 +272,15 @@ export function addControl(page: Page): Locator {
   return identityBlock(page).getByRole("button", { exact: true, name: CONTROL_LABELS.add });
 }
 
+/** The value a badge-and-select control shows a reader: the badge drawn under the `select`
+ *  named `label` (the assignee, the priority, the repository; `web/src/features/issue/
+ *  badge-select.ts`). The badge is hidden from assistive technology, because the select
+ *  carries the name, and the select's own `option` for the same value holds the same words -
+ *  so a reading by that text alone finds two elements and says which is drawn for neither. */
+export function badgeValue(page: Page, label: string): Locator {
+  return page.locator(`:has(> select[aria-label="${cssValue(label)}"]) > [aria-hidden="true"]`);
+}
+
 export function tree(page: Page): Locator {
   return issuePage(page).getByRole("tree", { name: "Issue tree" });
 }
@@ -352,6 +367,14 @@ export function filterBox(page: Page): Locator {
  *  control and the approval control. */
 export function presetToolbar(page: Page): Locator {
   return page.getByTestId("issue-preset-toolbar");
+}
+
+/** Which version of the open document the toolbar is showing, as the picker's own value: the
+ *  empty string for the current version and the number of a pinned one. The toolbar's text
+ *  cannot say it - a `select`'s option texts are part of its container's `innerText`, so
+ *  "Version 1" is in that text whichever version is shown - so the value is what is read. */
+export function versionPicker(page: Page): Locator {
+  return presetToolbar(page).getByRole("combobox", { exact: true, name: CONTROL_LABELS.version });
 }
 
 /** The issue page's own slot in the shell's margin. */
@@ -519,6 +542,26 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
   }, SELECTORS);
 }
 
+/** One fact a node's body draws: the label of a `dt` and the text of the `dd` after it. */
+export interface DrawnFact {
+  readonly label: string;
+  readonly value: string;
+}
+
+/** The facts `body` draws, in order (`web/src/features/issue/NodeFacts.tsx`): a check's
+ *  attributes, and what a recorded result says of itself. Each pair is read as a pair, because
+ *  the body's own text holds no divider between a label and its value - "failed" and "2" are
+ *  both in it whatever the other says, and `observed` text of the result's own may hold either
+ *  word - so a reading of that text cannot say what a fact is, or that a fact is absent. */
+export function factsOf(body: Locator): Promise<DrawnFact[]> {
+  return body.evaluate((element) =>
+    [...element.querySelectorAll("dt")].map((term) => ({
+      label: (term.textContent ?? "").replace(/\s+/g, " ").trim(),
+      value: (term.nextElementSibling?.textContent ?? "").replace(/\s+/g, " ").trim(),
+    }))
+  );
+}
+
 /** The row `id` sits under, by the tree's own `aria-level`: the nearest row before it one level
  *  up. `null` for a row at the top level, and `undefined` for a row the page does not draw, which
  *  a test tells apart from "under the issue". */
@@ -573,8 +616,16 @@ export async function focusInside(scope: Locator): Promise<boolean> {
     );
 }
 
-/** Whether every pixel of `scope` is inside the viewport and clear of the sticky identity block,
- *  which is what "brings a target on screen" is read as (c-keyboard, c-open-questions). */
+/**
+ * Whether every pixel of `scope` is inside the viewport and clear of the sticky identity block,
+ * which is what "brings a target on screen" is read as (c-keyboard, c-open-questions) and what
+ * the page's own `bringOnScreen` (`web/src/features/issue/identity-block.ts`) places a target
+ * by: at or below the block's lower edge, and above the foot of the screen.
+ *
+ * A scope taller than the screen can satisfy neither, by construction, so a caller reads the
+ * control the page leaves the reader on rather than the whole part around it, as the page
+ * itself does (`useIssueKeymap.ts`'s `showPart`).
+ */
 export async function onScreen(scope: Locator): Promise<boolean> {
   if ((await scope.count()) === 0) return false;
   return await scope.first().evaluate((element, header) => {
@@ -582,8 +633,8 @@ export async function onScreen(scope: Locator): Promise<boolean> {
     const sticky = document.querySelector(header)?.getBoundingClientRect().bottom ?? 0;
     return (
       rect.height > 0 &&
-      rect.top >= Math.min(sticky, 0) - 1 &&
-      rect.top <= window.innerHeight &&
+      rect.top >= sticky - 1 &&
+      rect.bottom <= window.innerHeight + 1 &&
       rect.left >= -1 &&
       rect.right <= window.innerWidth + 1
     );
@@ -897,4 +948,75 @@ export async function gotoIssue(page: Page, path: string): Promise<void> {
 /** Opens `preset` on `key` at its own address. */
 export async function openPreset(page: Page, key: string, preset: Preset): Promise<void> {
   await gotoIssue(page, presetAddress(key, preset));
+}
+
+/** Opens one of the addresses the old tabs answered, from wherever the page is on that issue:
+ *  every one of them still resolves (R19, c-urls), and a spec that only needs to be there goes
+ *  straight to it rather than pressing a control that no longer exists. The move is inside the
+ *  page, as the tab it replaces was: a reload would drop a staged upload, a held transport and
+ *  everything else the page is holding. */
+export async function openIssueAddress(page: Page, tab: string): Promise<void> {
+  const key = new URL(page.url()).pathname.match(/^\/issues\/([A-Z][A-Z0-9]*-\d+)/)?.[1] ?? "";
+  await navigateInApp(page, `/issues/${key}/${tab}`);
+}
+
+/**
+ * Moves to `name` by pressing the preset row itself, however that row draws at the width a test
+ * runs at (R3): a row of five tabs from 1280 px, and one control opening a menu of five at
+ * 1024 px and below. `openPreset` goes to the preset's own address instead, which is a load;
+ * this is for a spec whose page is holding something a load would drop.
+ */
+export async function pickPreset(page: Page, name: string): Promise<void> {
+  const row = presetRow(page);
+  // The row has to be on the page before its shape can be read: a count taken while the page
+  // is still loading answers zero for both shapes and would send every caller to the control
+  // that is not there.
+  await row.waitFor();
+  const tab = row.getByRole("tab", { exact: true, name });
+  if ((await tab.count()) > 0) {
+    await tab.click();
+    return;
+  }
+  await presetChooser(page).click();
+  await openMenu(page).getByRole("menuitem", { exact: true, name }).click();
+}
+
+/** Fails unless the page is on `name`, whichever shape the row has at this width: the row of
+ *  tabs marks the preset it is on with `aria-selected`, and the one control below 1025 px draws
+ *  that preset and its count as its own name (`web/src/features/issue/IssuePresets.tsx`). */
+export async function expectActivePreset(page: Page, name: string): Promise<void> {
+  const row = presetRow(page);
+  await row.waitFor();
+  const tab = row.getByRole("tab", { exact: true, name });
+  if ((await tab.count()) > 0) {
+    await expect(tab).toHaveAttribute("aria-selected", "true");
+    return;
+  }
+  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+$`));
+}
+
+/** The identity block's one actions control, open. Close, reopen and the control that gives the
+ *  issue a parent are behind it now (R11), where the eight-tab page drew them as bare buttons.
+ *  The control toggles, so this opens it only while it is shut: a spec that asks twice leaves
+ *  the actions on screen rather than hiding them again. */
+export async function openIssueActions(page: Page): Promise<void> {
+  const control = offered(page, "button", CONTROL_LABELS.issue_actions);
+  if ((await control.getAttribute("aria-expanded")) !== "true") {
+    await control.click();
+  }
+}
+
+/** Presses one of the identity block's actions by the words it shows, which are its name
+ *  (`CONTROL_LABELS.close_issue`, `CONTROL_LABELS.reopen_into_backlog`), opening the control
+ *  that holds it first. */
+export async function runIssueAction(page: Page, name: string): Promise<void> {
+  await openIssueActions(page);
+  await offered(page, "button", name).click();
+}
+
+/** Fails until the page has taken in that its issue is closed. The identity block's own line is
+ *  what says so (R11): reopening is behind the actions control, so a closed issue no longer
+ *  draws a bare control for a spec to wait on. */
+export async function expectIssueClosed(page: Page): Promise<void> {
+  await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
 }

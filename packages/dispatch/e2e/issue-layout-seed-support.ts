@@ -143,8 +143,9 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
     [ARCHITECTURE_REPO]: { contents: "read", files: ARCHITECTURE_MODEL, installation_id: 311 },
     [repository]: {
       // `STRAY_SHA` is a commit the repository holds and no pull request heads, which is what
-      // makes a result recorded at it read `Unmarked`. A commit the repository holds nowhere
-      // at all is refused `400 RESULT_COMMIT_UNKNOWN`, so it is named here.
+      // makes a result recorded at it read as the `unmarked` state, drawn `Not judged`. A
+      // commit the repository holds nowhere at all is refused `400 RESULT_COMMIT_UNKNOWN`, so
+      // it is named here.
       commit_pulls: { [HEAD_SHA]: [PULL_NUMBER] },
       commits: [STRAY_SHA],
       contents: "read",

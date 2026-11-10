@@ -32,12 +32,12 @@ import {
   nodeRow,
   onScreen,
   openMenu,
+  pickPreset,
   pinnedBodies,
   rowBody,
   tree,
   treeActiveDescendant,
 } from "./issue-page";
-import { conversationState, openPreset } from "./issue-presets";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -170,7 +170,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.keyboard.press("c");
     await expect(indicator).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "Create issue" })).toHaveCount(0);
-    await expect(conversationState(page, "words")).toHaveAttribute("aria-selected", "true");
+    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`));
     await page.screenshot({
       path: testInfo.outputPath(`issue-tab-conversation-${testInfo.project.name}.png`),
@@ -203,25 +203,50 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Set priority P0–P3" }).locator("kbd")
     ).toHaveText(["0", "3"]);
+    // Each chord is listed under what it opens on this page, not under a tab the page no
+    // longer has (`web/src/features/issue/useIssueKeymap.ts`'s `CHORDS`): the presets by the
+    // row's own names, and the panel, the children and the node menu as the page names them.
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Conversation tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Open the conversation in the panel" })
+        .locator("kbd")
     ).toHaveText(["t", "c"]);
-    // `t v` is Activity and `t c` the Conversation, so Verification takes its checks' `k`.
+    // `t v` is the activity and `t c` the conversation, so the Checks preset takes `k`.
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Verification tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: `Open the ${PRESET_NAMES.checks} preset` })
+        .locator("kbd")
     ).toHaveText(["t", "k"]);
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Plan tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: `Open the ${PRESET_NAMES.plan} preset` })
+        .locator("kbd")
     ).toHaveText(["t", "p"]);
-    // Collaborators is the last tab and takes `t o`; Activity takes `t v`, since `t a` is
-    // Artifacts and `l` the labels.
-    await expect(issueSection).toContainText("Activity tab");
+    // The collaborators keep `t o`; the activity takes `t v`, since `t a` opens the node menu
+    // and `l` the labels.
+    await expect(issueSection).toContainText("Open the activity in the panel");
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Activity tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Open the activity in the panel" })
+        .locator("kbd")
     ).toHaveText(["t", "v"]);
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Collaborators tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Open the collaborators in the panel" })
+        .locator("kbd")
     ).toHaveText(["t", "o"]);
+    // No row of the help names a tab this page does not have (R21).
+    for (const gone of ["Verification tab", "Children tab", "Artifacts tab", "Collaborators tab"]) {
+      await expect(
+        issueSection.getByRole("listitem").filter({ hasText: gone }),
+        `the help still lists "${gone}", which this page has no such thing for`
+      ).toHaveCount(0);
+    }
     await page.screenshot({
       path: testInfo.outputPath(`issue-shortcut-help-${testInfo.project.name}.png`),
     });
@@ -414,7 +439,9 @@ test("a closed issue greys the shortcuts its header disables, and keeps the ones
     await openIssue(page, issue.key, "Closed issue");
     // Reopen is behind the identity block's actions control now (dispatch://INFRA-1196 R11).
     await page.getByRole("button", { name: "Issue actions" }).click();
-    await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: CONTROL_LABELS.reopen_into_backlog })
+    ).toBeVisible();
 
     await page.keyboard.press("?");
     const issueSection = page
@@ -428,7 +455,7 @@ test("a closed issue greys the shortcuts its header disables, and keeps the ones
     await expect(row("Edit labels")).toHaveAttribute("data-enabled", "false");
     await expect(row("Set priority P0–P3")).toHaveAttribute("data-enabled", "false");
     await expect(row("Pin or unpin the issue")).toHaveAttribute("data-enabled", "true");
-    await expect(row("Conversation tab")).toHaveAttribute("data-enabled", "true");
+    await expect(row("Open the conversation in the panel")).toHaveAttribute("data-enabled", "true");
   } finally {
     await context.close();
   }
@@ -524,8 +551,11 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
       await page.keyboard.press("t");
       await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
       await page.keyboard.press("c");
-      await expect(conversationState(page, "words")).toHaveAttribute("aria-selected", "true");
-      await openPreset(page, "Spec");
+      await expect(conversationStateControl(page, "words")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      await pickPreset(page, "Spec");
       await leaveFocus(page);
     }
 
@@ -831,11 +861,21 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
       await focusedRow(page),
       "the right arrow left the focused node before unfolding it"
     ).toBe(branch);
+    // The branch's first child is the row after it one level deeper, which is where the second
+    // right arrow has to land: "not the branch" would also hold for a focus that was lost or
+    // that moved to the branch's own sibling.
+    const unfolded = (await drawnRows(page)).filter((row) => row.visible);
+    const at = unfolded.findIndex((row) => row.id === branch);
+    const firstChild = unfolded[at + 1];
+    expect(
+      firstChild?.level,
+      "the unfolded branch draws no row under it, so it has no first child to move into"
+    ).toBe(String(Number(unfolded[at]?.level ?? "0") + 1));
     await page.keyboard.press("ArrowRight");
     expect(
       await focusedRow(page),
       "the second right arrow did not move into the branch's first child"
-    ).not.toBe(branch);
+    ).toBe(firstChild?.id);
     await page.keyboard.press("ArrowLeft");
     expect(await focusedRow(page), "the left arrow did not move to the parent").toBe(branch);
     await page.keyboard.press("ArrowLeft");
@@ -982,9 +1022,15 @@ test("every chord the page bound before the redesign brings a target on screen w
         `t ${chord.second} does not open the ${chord.preset} preset`
       ).toBe(chord.preset);
       await expectTreeDrawn(page);
+      // The tree is a column of its own and may be taller than the screen, which no reading of
+      // "every pixel on screen" could pass; the page shows the control it leaves the reader on
+      // where a part does not fit (`useIssueKeymap.ts`'s `showPart`), and that control is the
+      // tree's one tab stop, so the row it lands on is what is read.
+      const landed = await focusedRow(page);
+      expect(landed, `t ${chord.second} leaves the focus on no row of the tree`).not.toBeNull();
       expect(
-        await onScreen(tree(page)),
-        `t ${chord.second} does not bring the preset's content on screen`
+        await onScreen(nodeRow(page, landed ?? "").first()),
+        `t ${chord.second} does not bring the row it lands on on screen`
       ).toBe(true);
       expect(
         await focusInside(tree(page)),
@@ -1061,12 +1107,17 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
     );
     await page.keyboard.type("Requirement 2");
     await expect.poll(async () => (await visibleIds(page)).length).toBeLessThan(before.length);
+    const narrowed = (await drawnRows(page)).filter((row) => row.visible && !row.context);
     expect(
-      (await drawnRows(page))
-        .filter((row) => row.visible && !row.context && !row.text.includes("Requirement 2"))
-        .map((row) => row.id),
+      narrowed.filter((row) => !row.text.includes("Requirement 2")).map((row) => row.id),
       "the filter kept rows that do not match what was typed"
     ).toEqual([]);
+    // A filter that hides every row meets that, and meets the count above too, so what is left
+    // is asserted as well: the row the words name is still drawn.
+    expect(
+      narrowed.map((row) => row.id),
+      "the filter hid every row of the tree, matches included"
+    ).not.toEqual([]);
 
     // `/` is the application's global search, which this page does not shadow.
     await page.keyboard.press("Escape");

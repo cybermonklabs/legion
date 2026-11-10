@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createComment, createIssue, createProject } from "./api";
-import { conversationState } from "./issue-presets";
+import { conversationStateControl } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -81,7 +81,7 @@ test("a comment deep link keeps the compact review-panel toggle hit-testable", a
 
     await page.setViewportSize({ height: 768, width: 1024 });
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(conversationState(page, "words")).toHaveAttribute("aria-selected", "true");
+    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
     await expect(
       page.locator(`li[data-turn="comment:${comment.id}"][aria-current="true"]`)
     ).toBeVisible();

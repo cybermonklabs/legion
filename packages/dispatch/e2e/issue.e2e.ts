@@ -1,8 +1,9 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Locator, test } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { HELP_LINES } from "../web/src/features/issue/page-structure";
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -20,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
+import { openIssueActions } from "./issue-page";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -80,10 +82,16 @@ test("issue header closes an issue and reopens it into Backlog", async ({ browse
     expect((await closing).status()).toBe(200);
     await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     await openIssueActions(page);
-    const reopen = page.getByRole("button", { name: "Reopen issue" });
-    // What reopening does is the control's own words now: the tooltip that used to say it is no
-    // explanation on a phone, which raises none (dispatch://INFRA-1196 R11).
-    await expect(reopen).toHaveText("Reopen into Backlog");
+    // The control is found by the sentence it reads and asserted to read exactly that: its
+    // accessible name is its visible words, so a voice user who says what they see presses it
+    // (WCAG 2.5.3, axe's `label-content-name-mismatch`). Under the old `aria-label` "Reopen
+    // issue" the two said different things, and what reopening does was a tooltip, which a
+    // phone raises for nobody (dispatch://INFRA-1196 R11).
+    const reopen = page.getByRole("button", {
+      exact: true,
+      name: CONTROL_LABELS.reopen_into_backlog,
+    });
+    await expect(reopen).toHaveText(CONTROL_LABELS.reopen_into_backlog);
     await expect
       .poll(() => getIssue(issue.key))
       .toMatchObject({
@@ -403,6 +411,14 @@ test("editing the parent line moves the issue across Children tabs live", async 
     await Promise.all([
       (async () => {
         await parentPage.goto(`/issues/${newParent.key}`);
+        // The page is drawn before the section is counted: `IssueChildren` renders nothing
+        // while the issue read is still out, so a count of zero taken before the page has
+        // loaded says nothing, and the row that follows it would then prove no live feed.
+        await expect(
+          parentPage
+            .getByTestId("issue-header")
+            .getByRole("heading", { level: 1, name: "New parent" })
+        ).toBeVisible();
         // An issue with no children draws no children section at all (R10).
         await expect(parentPage.getByTestId("issue-children")).toHaveCount(0);
       })(),
@@ -698,17 +714,6 @@ test("a human can unsubscribe an agent from an issue and the session is told", a
   }
 });
 
-/** Opens the identity block's one actions control, which holds close, reopen and the control
- *  that sets the parent (dispatch://INFRA-1196 R11: row one holds the actions, and every
- *  property with a value is drawn). A press inside it closes it, so this opens it only while it
- *  is closed. */
-async function openIssueActions(page: Page): Promise<void> {
-  const control = page.getByRole("button", { name: "Issue actions" });
-  if ((await control.getAttribute("aria-expanded")) !== "true") {
-    await control.click();
-  }
-}
-
 async function subscribeSession(issueKey: string): Promise<void> {
   await setLiveSessions([{ session_id: "e2e-session", title: "e2e-session-title" }]);
   await setInterests([
@@ -751,9 +756,13 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     await page.goto(`/issues/${issue.key}`);
     const header = page.getByTestId("issue-header");
     const indicator = page.getByTestId("issue-whose-turn");
-    const openedBy = page.getByText("Opened by:", { exact: true });
-    const subscribers = page.getByRole("button", { name: "Subscribers: 1" });
-    const link = page.getByRole("link", { name: "#1051 sjawhar/legion" });
+    // Each of the three is read inside the panel, which is what "they are in the panel" means:
+    // read off the page as a whole, every one of them would pass with the change reverted,
+    // since the header's own fourth row sits below the state row too.
+    const panel = page.getByTestId("issue-margin");
+    const openedBy = panel.getByText("Opened by:", { exact: true });
+    const subscribers = panel.getByRole("button", { name: "Subscribers: 1" });
+    const link = panel.getByRole("link", { name: "#1051 sjawhar/legion" });
     await expect(indicator).toHaveText("Waiting on you (1)");
     await expect(subscribers).toBeVisible();
     await expect(link).toBeVisible();
@@ -769,7 +778,8 @@ test("the identity block keeps its rows and the whose-turn indicator in view at 
     expect(await top(page.getByLabel("Priority"))).toBe(stateRow);
     await expect(page.getByTestId("issue-state-actions").getByTestId("issue-labels")).toBeVisible();
     expect(await top(page.getByRole("button", { name: "Issue actions" }))).toBeLessThan(stateRow);
-    await expect(page.getByTestId("issue-margin")).toHaveCount(1);
+    await expect(panel).toHaveCount(1);
+    // Each sits below the state row as well, which is where the panel is drawn at this width.
     for (const item of [openedBy, subscribers, link]) {
       expect(await top(item)).toBeGreaterThan(stateRow);
     }
@@ -976,7 +986,9 @@ test("issue header delivers the click that ends a title edit to the control unde
       await pressWhileEditingTitle(page.getByRole("button", { name: "Issue actions" }));
       await page.getByRole("button", { name: "Close issue" }).click();
       await openIssueActions(page);
-      await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: CONTROL_LABELS.reopen_into_backlog })
+      ).toBeVisible();
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "done" });
       if (width === 1024) {
         const shot = testInfo.outputPath("issue-header-title-edit-click-1024.png");

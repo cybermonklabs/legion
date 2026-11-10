@@ -24,6 +24,7 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
+import { openIssueAddress } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { asUser } from "./users";
@@ -667,9 +668,16 @@ const hiddenEditorJourneys = [
     namedVersion: false,
     async hide(page: Page, issueKey: string): Promise<() => Promise<void>> {
       // The conversation keeps its address; the Spec editor it hides is the Spec preset's.
-      await page.goto(`/issues/${issueKey}/conversation`);
+      // The move is inside the page and never a load: a load would unmount the editor this
+      // journey is about, and "View in document" would then mount a fresh one with no stale
+      // report to withdraw, so the row would pass with the withdrawal reverted
+      // (`doc.e2e.ts:435-437` gives the same reason for the same move).
+      await openIssueAddress(page, "conversation");
+      await expect(page).toHaveURL(`/issues/${issueKey}/conversation`);
       const conversation = page.locator("#issue-conversation-panel");
       await expect(conversation).toBeVisible();
+      // The editor is hidden, not gone: the journey's return finds the editor that landed.
+      await expect(page.locator("#issue-spec-panel")).toBeAttached();
       return async () => {
         await conversation.getByRole("link", { name: "View in document" }).click();
         await expect(page.locator("#issue-spec-panel")).toBeVisible();

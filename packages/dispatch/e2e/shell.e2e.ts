@@ -5,7 +5,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { EVENT_HEAD_RETRY_CEILING_MS, QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
-import { openPreset } from "./issue-presets";
+import { pickPreset } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -254,7 +254,7 @@ test("a chunk that fails after a Download link was followed reloads the page", a
     // back inside the page: one document load, with the transport still held, which is the
     // state this test needs.
     await page.goto(`/issues/${issue.key}/artifacts`);
-    await openPreset(page, "Spec");
+    await pickPreset(page, "Spec");
     const held = await transportCode.held;
     await page.goBack();
     await expect(page.getByRole("link", { name: "Download version 1" })).toBeVisible();
@@ -714,7 +714,7 @@ test("the document editor renders headings and ordered lists with real typograph
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto(`/issues/${issue.key}`);
-  await openPreset(page, "Spec");
+  await pickPreset(page, "Spec");
 
   await expect(page.getByRole("heading", { level: 1, name: "Title" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Section" })).toBeVisible();

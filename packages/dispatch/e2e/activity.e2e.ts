@@ -15,7 +15,7 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
-import { conversationState, openIssueAddress } from "./issue-presets";
+import { conversationStateControl, openIssueAddress } from "./issue-page";
 import { resetDatabase, setEventCreatedAt } from "./seed";
 import { asUser } from "./users";
 
@@ -59,7 +59,10 @@ test("the Activity tab lists the event rows the Conversation does not draw", asy
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/activity`);
-    await expect(conversationState(page, "everything")).toHaveAttribute("aria-selected", "true");
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
     const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
     // The three kinds the Conversation never draws, each a line of its own.
     for (const description of ["updated the issue", "claimed the issue", "added note.md"]) {

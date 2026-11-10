@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { createAsk, createIssue, createProject } from "./api";
 import { needsYouCards } from "./editor";
-import { expectActivePreset } from "./issue-presets";
+import { expectActivePreset } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 

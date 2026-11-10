@@ -1,6 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
 
-import { EMPTY_STATE_LINES, NODE_STATE_WORDS } from "../web/src/features/issue/page-words";
+import {
+  EMPTY_STATE_LINES,
+  NODE_FACT_LABELS,
+  NODE_STATE_WORDS,
+} from "../web/src/features/issue/page-words";
 import {
   createIssue,
   createIssueArtifact,
@@ -12,7 +16,9 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import {
   blockNodeId,
   branchMoreRows,
+  type DrawnFact,
   drawnRows,
+  factsOf,
   gotoIssue,
   nodeRow,
   rowBody,
@@ -80,6 +86,15 @@ async function bodyOf(page: Page, id: string): Promise<string> {
   const row = nodeRow(page, id).first();
   await row.focus();
   return (await rowBody(row).innerText()).replace(/\s+/g, " ");
+}
+
+/** The facts one row's body draws, label against value (`e2e/issue-page.ts`'s `factsOf`): what
+ *  a result counted is a `dt`/`dd` pair with nothing between them, so the body's own text
+ *  cannot say whether a count is drawn at all or what it reads. */
+async function factsIn(page: Page, id: string): Promise<DrawnFact[]> {
+  const row = nodeRow(page, id).first();
+  await row.focus();
+  return await factsOf(rowBody(row));
 }
 
 /** Opens every branch the fold left as one row, which is where a check's results sit: a check
@@ -182,14 +197,31 @@ A check nobody has run yet reads no result.
     expect(current).toContain(secondHead);
     expect(current).toContain("Removed the list and the run failed.");
     // A run that counted nothing draws no count at all, where the old tab drew three zeroes.
-    expect(current).not.toContain("failed:");
+    // Read as facts: a `dt` "failed" over a `dd` "0" would leave the body's text saying
+    // "failed 0" with no colon in it, which no reading of that text can tell from a body
+    // drawing no count.
+    const currentFacts = await factsIn(page, results[0]?.id ?? "");
+    for (const label of [
+      NODE_FACT_LABELS.failed,
+      NODE_FACT_LABELS.skipped,
+      NODE_FACT_LABELS.excluded,
+    ]) {
+      expect(
+        currentFacts.map((fact) => fact.label),
+        `the passing result draws ${label}, which that run never counted`
+      ).not.toContain(label);
+    }
 
     // A check whose newest result failed reads failed, and the result counts what that run
-    // counted.
+    // counted: the count is the `dd` after the `dt` that reads "failed", and not the "2
+    // failed" the result's own observed text says.
     const failed = await bodyOf(page, results[1]?.id ?? "");
     expect(failed).toContain("Fail");
-    expect(failed).toContain("failed");
-    expect(failed).toContain("2");
+    const failedFacts = await factsIn(page, results[1]?.id ?? "");
+    expect(
+      failedFacts.filter((fact) => fact.label === NODE_FACT_LABELS.failed),
+      "the failing result draws no count of what failed"
+    ).toEqual([{ label: NODE_FACT_LABELS.failed, value: "2" }]);
 
     // A check nobody has run says so in its state and has no result under it.
     const none = (await drawnRows(page)).find(

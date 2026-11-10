@@ -18,7 +18,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { conversationState } from "./issue-presets";
+import { conversationStateControl } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -331,7 +331,7 @@ test("live: new events on the open issue appear in Conversation and mark it read
   const page = await alice.newPage();
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(conversationState(page, "words")).toHaveAttribute("aria-selected", "true");
+  await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
 
   await createMessage(issue.key, { body: "Live message from bob" }, bob);
 
@@ -724,6 +724,15 @@ test("live: a fresh page load opens the socket at the current head and stays wit
       ),
     ].sort();
   await expect.poll(seen).toEqual(firstLoad);
+
+  // The batch is one request, which the set above cannot say: it holds the address once
+  // however many times the page asked for it. The tree waits for all of its reads before it
+  // asks (`features/issue/useIssueTree.ts`), where before it asked for the addresses known so
+  // far and asked again for the rest, so the count is the assertion that rule needs.
+  expect(
+    apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/reference-targets"),
+    "the page read /api/v1/reference-targets more than once on a first load"
+  ).toHaveLength(1);
 
   await alice.close();
 });

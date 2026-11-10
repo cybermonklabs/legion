@@ -2,6 +2,7 @@ import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import type { Locator } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { agentRow, setLiveSessions, setSessionLastSeen, setSessionState } from "./agents";
 import {
   claimIssue,
@@ -185,7 +186,9 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
     const chip = page.getByTestId("issue-claim");
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toContainText("unresponsive since");
-    await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(", takeable now");
+    await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(
+      `, ${CONTROL_LABELS.takeable_now}`
+    );
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
     await expect(chip).not.toHaveAttribute("title", /./);
     await expect(chip.locator(`[data-agent-name="${holder.session_id}"]`)).toHaveAttribute(

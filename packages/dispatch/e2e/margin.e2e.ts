@@ -27,7 +27,7 @@ import {
   selectEditorText,
   setSheet,
 } from "./editor";
-import { openPreset } from "./issue-presets";
+import { pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
 import { resetDatabase, setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
@@ -642,7 +642,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await openPreset(page, "Spec");
+    await pickPreset(page, "Spec");
     await selectEditorText(page, "brown");
     await barAction(page, "Ask");
 
@@ -716,7 +716,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
   try {
     const alicePage = await alice.newPage();
     await alicePage.goto(`/issues/${issue.key}`);
-    await openPreset(alicePage, "Spec");
+    await pickPreset(alicePage, "Spec");
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
     await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
@@ -728,7 +728,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     // cache. He still sees the answered anchored ask in the margin.
     const bobPage = await bob.newPage();
     await bobPage.goto(`/issues/${issue.key}`);
-    await openPreset(bobPage, "Spec");
+    await pickPreset(bobPage, "Spec");
     const bobCard = marginCard(bobPage, ask.id);
     await expect(bobCard).toBeVisible();
     await expect(bobCard).toContainText("brown");

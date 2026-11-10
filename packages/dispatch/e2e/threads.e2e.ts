@@ -13,7 +13,7 @@ import {
 } from "./api";
 import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
-import { openIssueAddress, openPreset } from "./issue-presets";
+import { openIssueAddress, pickPreset } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { asUser } from "./users";
@@ -77,7 +77,7 @@ test("an ask is a thread: replies before and after answering, then a live agent 
   // page holds to one per second (`MIN_REFETCH_INTERVAL_MS`): a page timer its own clock fires.
   await alicePage.clock.install();
   await alicePage.goto(`/issues/${issue.key}`);
-  await openPreset(alicePage, "Spec");
+  await pickPreset(alicePage, "Spec");
 
   const margin = alicePage.getByTestId("margin-sheet");
   const card = margin.getByTestId(`ask-${ask.id}`);
@@ -159,7 +159,7 @@ test("an answered ask's thread keeps a reply typed before the card leaves Needs 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await openPreset(page, "Spec");
+    await pickPreset(page, "Spec");
     const margin = page.getByTestId("margin-sheet");
     const card = margin.getByTestId(`ask-${ask.id}`);
     await expect(card).toContainText("Ship the change?");
@@ -448,7 +448,7 @@ test("a session retraction leaves its reason on the card and removes the human's
 
   const issuePage = await alice.newPage();
   await issuePage.goto(`/issues/${issue.key}`);
-  await openPreset(issuePage, "Spec");
+  await pickPreset(issuePage, "Spec");
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
   await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");

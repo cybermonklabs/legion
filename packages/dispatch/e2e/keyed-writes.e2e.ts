@@ -18,7 +18,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
-import { openIssueAddress } from "./issue-presets";
+import { openIssueAddress } from "./issue-page";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,

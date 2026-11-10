@@ -89,9 +89,9 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   `seedWholeIssue` records its results while the fake GitHub serves the repository and the pull
  *   request and then seeds the fake with no repository: the head results stay `current`, the
  *   reworded check's goes `older`, and the one at a commit no pull request names reads `unknown`,
- *   the `Unmarked` of `NODE_STATE_WORDS.check`. `seedRequestBaseline` keeps the repository
- *   installed, because its three GitHub reads are part of the measured baseline, so only four of
- *   the five states appear there.
+ *   the `unmarked` state of `NODE_STATE_WORDS.check`, which the page draws as `Not judged`.
+ *   `seedRequestBaseline` keeps the repository installed, because its three GitHub reads are
+ *   part of the measured baseline, so only four of the five states appear there.
  * - **The reply that answers a reply.** `threadHeadOf` in
  *   `packages/envoy/internal/dispatch/api/comment_create.go` climbs `reply_to` to the thread head
  *   before storing, so which entry a reply answered survives only as `reply_to_block` and
@@ -212,7 +212,7 @@ export async function seedWholeIssue(): Promise<WholeIssueSeed> {
   });
 
   // With the App installed on nothing, the result at a commit no pull request names is the one
-  // the page draws as Unmarked: see this module's doc comment on the five result states.
+  // the page draws as `Not judged`: see this module's doc comment on the five result states.
   await seedFakeGithub({});
   await awaitSeededCurrencies(seeded.key, 6, false);
 

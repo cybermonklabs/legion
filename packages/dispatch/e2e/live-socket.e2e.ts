@@ -19,7 +19,7 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { conversationState } from "./issue-presets";
+import { conversationStateControl } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { asUser } from "./users";
@@ -392,7 +392,10 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     const first = page.waitForEvent("websocket", isLiveSocket);
     await page.goto(`/issues/${issue.key}/activity`);
     await expect(page.getByRole("heading", { exact: true, name: "Rotation target" })).toBeVisible();
-    await expect(conversationState(page, "everything")).toHaveAttribute("aria-selected", "true");
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
     await first;
     await expect.poll(() => sockets.received.includes("events_start")).toBe(true);
     await untilIssueReadsSettle(reads, pending);

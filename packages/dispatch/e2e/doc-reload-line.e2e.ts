@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
-import { expectIssueClosed, openIssueActions, runIssueAction } from "./issue-presets";
+import { expectIssueClosed, openIssueActions, runIssueAction } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 

@@ -100,7 +100,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     // (dispatch://INFRA-1196 R11), which is where the button is read.
     await page.reload();
     await page.getByRole("button", { name: "Issue actions" }).click();
-    await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reopen into Backlog" })).toBeVisible();
     await page.keyboard.press("Escape");
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
@@ -1046,7 +1046,7 @@ test("a row whose control has gone since the palette opened does nothing", async
     // Reopen sits behind the identity block's one actions control (dispatch://INFRA-1196 R11).
     // The group stays open under the palette, so the check below reads the header's own button.
     await page.getByRole("button", { name: "Issue actions" }).click();
-    await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reopen into Backlog" })).toBeVisible();
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
     const reopen = dialog
@@ -1054,11 +1054,12 @@ test("a row whose control has gone since the palette opened does nothing", async
       .getByRole("option", { name: "Reopen issue" });
     await expect(reopen).toBeVisible();
 
-    // Someone else reopens the issue while the palette is open; the header's Reopen button goes.
-    // A CSS locator, since what is asserted is the header behind the modal palette.
+    // Someone else reopens the issue while the palette is open; the header's own control goes.
+    // A CSS locator, since what is asserted is the header behind the modal palette, and the
+    // control carries no `aria-label`: its name is the words it draws (WCAG 2.5.3).
     await patchIssue(issue.key, { status: "in_progress" }, { login: "bob" });
     await expect(
-      page.locator('[data-testid="issue-header"] button[aria-label="Reopen issue"]')
+      page.locator('[data-testid="issue-header"] button').filter({ hasText: "Reopen into Backlog" })
     ).toHaveCount(0);
 
     // The row checks its control again when it runs, so it writes nothing. The palette closing

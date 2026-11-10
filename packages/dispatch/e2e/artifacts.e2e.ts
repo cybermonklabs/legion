@@ -16,7 +16,13 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { openIssueAddress, openPreset } from "./issue-presets";
+import {
+  openIssueAddress,
+  pickPreset,
+  presetChooser,
+  presetTablist,
+  presetTabs,
+} from "./issue-page";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { signIn } from "./users";
@@ -81,7 +87,7 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   await createAsk(issue.key, { question: "Can this ship?" });
 
   await page.goto(`/issues/${issue.key}`);
-  await openPreset(page, "Spec");
+  await pickPreset(page, "Spec");
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
@@ -135,7 +141,7 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   const notes = page.getByTestId("artifact-notes-md");
   await expect(notes).toContainText("notes.md");
   await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await openPreset(page, "Spec");
+  await pickPreset(page, "Spec");
   await expect(documentEditor(page)).toContainText("The original document.");
 
   await createComment(issue.key, {
@@ -295,15 +301,22 @@ test("an uploaded document is linked from the Activity list and the presets fit 
   const issue = await createIssue({ project: "OPS", title: "Customer update" });
   await page.goto(`/issues/${issue.key}/activity`);
 
+  // The list is drawn before the upload, so the line below is one the live feed brought and
+  // not one the first read already held: without this the upload can land before that read
+  // answers, and the row would pass with the feed disconnected. This is what the retired
+  // `Artifacts 1` badge reading proved - that the page's own counts move without a reload.
+  const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
+  await expect(rows.filter({ hasText: "created the issue" })).toHaveCount(1);
+
   const name = "cu-update-2026-09-15.md";
+  const added = rows.filter({ hasText: `added ${name}` });
+  await expect(added).toHaveCount(0);
   const upload = await createIssueArtifact(issue.key, {
     content: "# Draft\n\nHi team, here is this week's update.\n",
     name,
   });
 
   // The live event feed puts the upload on the open Activity list without a reload.
-  const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
-  const added = rows.filter({ hasText: `added ${name}` });
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
@@ -318,8 +331,8 @@ test("an uploaded document is linked from the Activity list and the presets fit 
 
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 1440 });
-  const tablist = page.getByRole("tablist", { name: "Issue presets" });
-  const tabs = tablist.getByRole("tab");
+  const tablist = presetTablist(page);
+  const tabs = presetTabs(page);
   await expect(tabs).toHaveCount(5);
   const insideTablist = async (tab: Locator) => {
     const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
@@ -330,6 +343,21 @@ test("an uploaded document is linked from the Activity list and the presets fit 
       (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
     );
   };
+  // Each tab is a touch target of its own at 1440 px too, and no taller than the row it shares:
+  // the floor is the 44 px a finger needs and the ceiling is what keeps five of them one row
+  // (`web/src/styles.css`). The eight-tab page was held to the same pair of numbers, and this
+  // is the reading that carries them over.
+  const isATouchTarget = async (tab: Locator, label: string) => {
+    const height = (await tab.boundingBox())?.height ?? 0;
+    expect(
+      height,
+      `the ${label} tab is ${height} px tall, under the 44 px a touch needs`
+    ).toBeGreaterThanOrEqual(44);
+    expect(
+      height,
+      `the ${label} tab is ${height} px tall, taller than the row of five`
+    ).toBeLessThanOrEqual(48);
+  };
   // Every preset is reachable from the keyboard, each is inside the row as it takes focus, and
   // each keeps its 44 px touch target.
   await page.getByRole("tab", { exact: true, name: "Tree" }).focus();
@@ -338,17 +366,19 @@ test("an uploaded document is linked from the Activity list and the presets fit 
     const tab = page.getByRole("tab", { exact: true, name: label });
     await expect(tab).toBeFocused();
     await insideTablist(tab);
+    await isATouchTarget(tab, label);
   }
   await page.keyboard.press("Home");
   const treeTab = page.getByRole("tab", { exact: true, name: "Tree" });
   await expect(treeTab).toBeFocused();
   await insideTablist(treeTab);
+  await isATouchTarget(treeTab, "Tree");
 
   // At 390 px the row is one control naming the preset the page is on, which opens the five,
   // and that control keeps a 44 px touch target - the width where a touch is what reaches it.
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveCount(0);
-  const chooser = page.getByTestId("issue-presets").getByRole("button");
+  const chooser = presetChooser(page);
   await expect(chooser).toBeVisible();
   expect((await chooser.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   await chooser.click();

@@ -12,7 +12,7 @@ import {
   putIssueState,
 } from "./api";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { openIssueAddress } from "./issue-presets";
+import { openIssueAddress } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { type Traffic, watchTraffic } from "./traffic";
 import { asUser } from "./users";

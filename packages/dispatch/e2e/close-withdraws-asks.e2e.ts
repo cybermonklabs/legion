@@ -204,7 +204,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
     await page.getByRole("button", { name: "Issue actions" }).click();
-    await page.getByRole("button", { name: "Reopen issue" }).click();
+    await page.getByRole("button", { name: "Reopen into Backlog" }).click();
     await page.getByRole("button", { name: "Issue actions" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
     await page.getByRole("button", { name: "Issue actions" }).click();

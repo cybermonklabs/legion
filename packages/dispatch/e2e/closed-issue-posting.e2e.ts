@@ -21,7 +21,7 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
-import { expectIssueClosed, runIssueAction } from "./issue-presets";
+import { expectIssueClosed, runIssueAction } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -334,7 +334,7 @@ test("a spec opened while its issue was closed takes edits once the issue is reo
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
 
     // Reopen is behind the identity block's one actions control (dispatch://INFRA-1196 R11).
-    await runIssueAction(page, "Reopen issue");
+    await runIssueAction(page, "Reopen into Backlog");
     await expect(page.getByText("This issue is closed.", { exact: true })).toHaveCount(0);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true");
     await selectEditorQuote(page, "brown");
