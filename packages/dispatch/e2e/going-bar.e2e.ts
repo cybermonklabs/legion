@@ -272,3 +272,45 @@ test("an empty input lists the person's recent items and the actions of that pag
     await context.close();
   }
 });
+
+// The bare `/projects/CORE`, the path the sidebar links, is a route that settles itself: it
+// draws nothing while its architecture-sources read is pending, then redirects with `replace`
+// to Issues. The bar a person opened in that moment is theirs, and a redirect the page made on
+// its own is no navigation of theirs, so the bar stays open and stays typable
+// (dispatch://INFRA-2452).
+test("the bar opened on a project page that has not settled survives that page's own redirect", async ({
+  browser,
+}) => {
+  await seed();
+  // The sources read is held, so the page is still deciding where it goes while the bar opens
+  // on it; releasing it sends the redirect out from under the open bar.
+  const release = Promise.withResolvers<void>();
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await page.route("**/api/v1/projects/*/architecture-sources", async (route) => {
+      await release.promise;
+      await route.continue();
+    });
+
+    await page.goto("/projects/CORE");
+    await page.locator("body").focus();
+    await openBar(page, ["/"]);
+    const box = page.getByRole("combobox", { name: "Search" });
+    await expect(box).toBeVisible();
+
+    release.resolve();
+    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+
+    // The redirect has landed and the bar is still there, and still the same box to type in:
+    // the page moved under it and took nothing from the person.
+    await expect(bar(page)).toBeVisible();
+    await box.fill("Instruments");
+    await expect(box).toHaveValue("Instruments");
+  } finally {
+    // A held route must never outlive the row: teardown waits on nothing.
+    release.resolve();
+    await context.close();
+  }
+});
