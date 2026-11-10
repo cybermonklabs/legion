@@ -2,9 +2,11 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -39,6 +41,63 @@ const (
 // a day at a time. It is read as one statement over events and printed row by row.
 const eventRateQuery = `select type, count(*) / 28.0 as per_day
 	from events where created_at > now() - interval '28 days' group by type order by 2 desc`
+
+// blockIndexBacklogQuery is what the block-index reconciliation still owes documents: how many
+// hold no indexed version (document_block_versions.version null), and when the oldest of those
+// debts was incurred. The server's own tick reads the same two figures and logs them
+// (docs.ReconcileBlockIndex); this is the read for somebody holding the database and not the
+// log.
+//
+// Nothing dates a debt. document_block_versions is (artifact_id, version) and no more
+// (migration 0121), and neither 0122's trigger nor rebuild-refs writes a time when it sets the
+// version back to null. So a debt is dated by the write that owed it: the created_at of the
+// latest markdown version the document holds, the version the tick would index. A document
+// that holds no markdown version is dated by its own creation, since it has been owed since
+// its row existed and no tick can settle it. The smallest change that would date the mark
+// itself is an `owed_at timestamptz not null default now()` column on
+// document_block_versions, written wherever the version goes back to null; it needs a
+// migration and its census file, which this change does not.
+const blockIndexBacklogQuery = `
+	select count(*), min(owed.owed_at) from (
+		select coalesce(
+		         (select v.created_at from artifact_versions v
+		          where v.artifact_id = b.artifact_id and v.markdown is not null
+		          order by v.number desc limit 1),
+		         a.created_at) as owed_at
+		from document_block_versions b
+		left join artifacts a on a.id = b.artifact_id
+		where b.version is null
+	) owed`
+
+// backlogClockQuery is the newest write the database recorded: the created_at of its highest
+// event id, read through events_pkey. It is the clock the oldest debt's age is measured
+// against, in place of now(), because this report must print the same bytes twice over an
+// unchanged database and an age against now() would move between the two runs. The same clock
+// dates every write rate above it, and a document version write appends an event of its own,
+// so the gap between the two is the reconciliation's own lag behind the writes it serves. A
+// database that recorded no event at all has no clock, and the age prints as zero against
+// `none`.
+const backlogClockQuery = `select created_at from events order by id desc limit 1`
+
+// BlockIndexBacklog is what the block-index reconciliation owes documents in this snapshot:
+// how many are owed an index, when the oldest of those debts was incurred, and the clock the
+// age is measured against.
+type BlockIndexBacklog struct {
+	Documents    int64
+	OldestOwedAt time.Time
+	ClockAt      time.Time
+}
+
+// Age is how long the oldest owed document has waited: from the write that owed it the index
+// to the newest write the database recorded. Zero where nothing is owed, where the database
+// recorded no write, and where the debt is newer than that write, which is the write that owed
+// it arriving after the last event the clock read.
+func (b BlockIndexBacklog) Age() time.Duration {
+	if b.OldestOwedAt.IsZero() || b.ClockAt.IsZero() || !b.ClockAt.After(b.OldestOwedAt) {
+		return 0
+	}
+	return b.ClockAt.Sub(b.OldestOwedAt)
+}
 
 // branchTables are the tables the migrations of this branch touch, each with whether the
 // migration alters a relation that already held rows. graph_nodes, graph_tuples,
@@ -136,14 +195,16 @@ type StoreTableGrowth struct {
 	Past            bool
 }
 
-// SizingReport is what the sizing pass read. Every figure in it comes from a count, so two runs
-// over one unchanged database print the same report.
+// SizingReport is what the sizing pass read. Every figure in it comes from a count or from a
+// timestamp the database already holds, so two runs over one unchanged database print the same
+// report.
 type SizingReport struct {
 	Limit    int64
 	Events   []EventRate
 	Tables   []TableSize
 	Kinds    []StoreKind
 	Growth   []StoreTableGrowth
+	Backlog  BlockIndexBacklog
 	Refusals []string
 }
 
@@ -151,8 +212,9 @@ func (s *SizingReport) Refused() bool { return len(s.Refusals) > 0 }
 
 // readSizing reads the growth pass in the census's own snapshot: the write rate by kind over
 // the last 28 days of events, the size of every table this branch's migrations touch, the
-// tuples and nodes a write of each kind states, and where graph_tuples and graph_nodes reach in
-// a year at the rate the database has been written at.
+// tuples and nodes a write of each kind states, where graph_tuples and graph_nodes reach in a
+// year at the rate the database has been written at, and what the block-index reconciliation
+// still owes documents.
 func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 	report := &SizingReport{Limit: pgmigrate.CensusTableLimit}
 	events, err := readEventRates(ctx, tx)
@@ -210,7 +272,35 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		}
 		report.Growth = append(report.Growth, projected)
 	}
+	backlog, err := readBlockIndexBacklog(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	report.Backlog = backlog
 	return report, nil
+}
+
+// readBlockIndexBacklog reads what the block-index reconciliation owes documents and the clock
+// its age is measured against. It refuses nothing: a backlog is a fact for the reader of the
+// report and for the driver that watches it grow, and what counts as too large depends on the
+// rate the database is written at, which the lines above this one carry.
+func readBlockIndexBacklog(ctx context.Context, tx pgx.Tx) (BlockIndexBacklog, error) {
+	var backlog BlockIndexBacklog
+	var oldest *time.Time
+	if err := tx.QueryRow(ctx, blockIndexBacklogQuery).Scan(&backlog.Documents, &oldest); err != nil {
+		return BlockIndexBacklog{}, fmt.Errorf("read the documents owed a block index: %w", err)
+	}
+	if oldest != nil {
+		backlog.OldestOwedAt = *oldest
+	}
+	var clock *time.Time
+	if err := tx.QueryRow(ctx, backlogClockQuery).Scan(&clock); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return BlockIndexBacklog{}, fmt.Errorf("read the newest write the database recorded: %w", err)
+	}
+	if clock != nil {
+		backlog.ClockAt = *clock
+	}
+	return backlog, nil
 }
 
 // bytesARow is the bytes one row of a store table costs, table, indexes and TOAST: measured
@@ -316,6 +406,13 @@ func (s *SizingReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: sizing year table=%s bytes_now=%d bytes_at_a_year=%d limit_bytes=%d verdict=%s\n",
 			growth.Name, growth.Bytes, growth.YearBytes, s.Limit, verdict)
 	}
+	// The backlog of the reconciliation that defers a large document's block index: a loop
+	// that falls behind owes more documents and owes them for longer, and nothing else in this
+	// report would say so. Two lines, so a driver can read the count without parsing the age.
+	fmt.Fprintf(w, "census: sizing backlog owed_documents=%d dated_by=%s\n",
+		s.Backlog.Documents, backlogDatedBy)
+	fmt.Fprintf(w, "census: sizing backlog oldest_owed_at=%s oldest_owed_age_seconds=%.2f against=%s\n",
+		backlogTime(s.Backlog.OldestOwedAt), s.Backlog.Age().Seconds(), backlogTime(s.Backlog.ClockAt))
 	for _, refusal := range s.Refusals {
 		fmt.Fprintf(w, "census: sizing refusal: %s\n", refusal)
 	}
@@ -329,4 +426,20 @@ func (s *SizingReport) Write(w io.Writer) {
 // bytesText writes a size as the report prints it: the bytes, and the GiB a human compares.
 func bytesText(n int64) string {
 	return fmt.Sprintf("%d bytes (%.2f GiB)", n, float64(n)/float64(1<<30))
+}
+
+// backlogDatedBy says on the line itself what dates a document's debt, because no column of
+// the schema does and a reader of this report would otherwise have to read the source to know
+// what the age is measured from (blockIndexBacklogQuery).
+const backlogDatedBy = "the created_at of the latest markdown version each owed document holds," +
+	" the write that owed it the index, or the document's own created_at where it holds no version"
+
+// backlogTime writes a timestamp as the backlog lines print it: UTC to the nanosecond, so two
+// runs over one unchanged database print one byte sequence, and `none` where there is no such
+// time, which a zero value would otherwise print as a date in the year 1.
+func backlogTime(at time.Time) string {
+	if at.IsZero() {
+		return "none"
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }

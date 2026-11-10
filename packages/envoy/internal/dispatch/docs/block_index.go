@@ -85,6 +85,27 @@ type BlockIndexTick struct {
 	OwedTexts      int
 	OwedItems      int
 	OwedItemBlocks int
+	// OldestOwedDocumentAt dates the oldest of the documents still owed a block index: the
+	// created_at of the latest markdown version it holds, which is the write that owed it one
+	// (migration 0122's trigger) and the version this tick would have indexed, or its own
+	// artifact's created_at where it holds no markdown version at all. Zero where none is owed.
+	//
+	// Nothing dates the debt itself. document_block_versions is (artifact_id, version) and no
+	// more (migration 0121), and neither the trigger nor rebuild-refs writes a time when it
+	// sets the version back to null, so the age is measured from the write that owed the index
+	// rather than from the mark. The two differ only where a rebuild marks a document long
+	// after its last version, and then the debt reads older than it is, which is the safe
+	// direction for a backlog nobody is watching. The smallest change that would date the mark
+	// itself: an `owed_at timestamptz not null default now()` column on
+	// document_block_versions, written wherever the version goes back to null, with a partial
+	// index on it where version is null, which would also make the oldest debt one index
+	// lookup instead of a probe for each owed row. That needs a migration and its census file
+	// (store/README.md), which this change does not.
+	//
+	// A document that holds no markdown version is owed an index for ever: indexOwedDocument
+	// passes over it, so nothing settles its mark. Its age is therefore true and keeps
+	// growing, which is what an operator needs to see about a row that will never drain.
+	OldestOwedDocumentAt time.Time
 	// Cursor is where the next tick's batches start: the last owner each batch listed while that
 	// batch was full, and the start again once a batch lists fewer.
 	Cursor BlockIndexCursors
@@ -96,6 +117,27 @@ type BlockIndexTick struct {
 	// own, and the walk would then advance one slice every BlockIndexReconcileInterval instead
 	// of every blockIndexStep.
 	Full bool
+}
+
+// OldestOwedDocumentAge is how long the oldest document owed a block index has been owed one,
+// at now, measured from the write that owed it (OldestOwedDocumentAt). Zero where none is
+// owed. A loop that drains faster than work arrives holds this at about one tick; one that
+// falls behind grows it, and that growth is the backlog an operator reads.
+func (tick BlockIndexTick) OldestOwedDocumentAge(now time.Time) time.Duration {
+	if tick.OldestOwedDocumentAt.IsZero() || !now.After(tick.OldestOwedDocumentAt) {
+		return 0
+	}
+	return now.Sub(tick.OldestOwedDocumentAt)
+}
+
+// oldestOwedText writes the oldest owed document's own timestamp for a log line: UTC to the
+// nanosecond, and `none` where nothing is owed, which a zero time would otherwise print as a
+// date in the year 1.
+func oldestOwedText(at time.Time) string {
+	if at.IsZero() {
+		return "none"
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }
 
 // RunBlockIndexReconciliation indexes what no block-aware version write indexed: every document
@@ -146,12 +188,20 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
-		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts {
+		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
+		!tick.OldestOwedDocumentAt.Equal(logged.OldestOwedDocumentAt) {
+		// The backlog goes in the line that says what the tick did, so an operator reading the
+		// log sees a growing one: the count, the oldest debt's own timestamp and its age now.
+		// The age moves every tick while a document stays owed, and logging on that alone would
+		// write a line every interval for ever, so the line is written when the oldest debt
+		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
-			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead)
+			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
+			"oldest_owed_at", oldestOwedText(tick.OldestOwedDocumentAt),
+			"oldest_owed_age_seconds", tick.OldestOwedDocumentAge(time.Now()).Seconds())
 		*logged = tick
 	}
 	if tick.Full {
@@ -326,15 +376,35 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		len(itemBlocks) == blockIndexItemBatch || len(texts) == blockIndexItemBatch ||
 		windowsFull || tick.Retired > 0
 
+	// What is owed after the tick, and how old the oldest document's debt is, in the one
+	// statement: a tick pays one round trip for the whole backlog. The owed documents come
+	// through document_block_versions_owed and each costs one probe into its own versions by
+	// (artifact_id, number), the same read the owed listing makes for the version it indexes.
+	// `envoy-dispatch census --store --sizing` reads the same two figures from the database
+	// alone (graphcensus's blockIndexBacklogQuery), so an operator who cannot read the server's
+	// log can still read the backlog.
+	var oldestOwed *time.Time
 	if err := s.store.Pool.QueryRow(ctx, `
 		select (select count(*) from document_block_versions where version is null),
+		       (select min(owed.owed_at) from (
+		            select coalesce(
+		                     (select v.created_at from artifact_versions v
+		                      where v.artifact_id = b.artifact_id and v.markdown is not null
+		                      order by v.number desc limit 1),
+		                     a.created_at) as owed_at
+		            from document_block_versions b
+		            left join artifacts a on a.id = b.artifact_id
+		            where b.version is null) owed),
 		       (select count(*) from block_grammar_owed),
 		       (select count(*) from refs_grammar_owed),
 		       (select count(*) from comment_block_state where owed_at is not null) +
 		       (select count(*) from message_block_state where owed_at is not null) +
 		       (select count(*) from ask_block_state where owed_at is not null)
-	`).Scan(&tick.OwedDocuments, &tick.OwedItems, &tick.OwedTexts, &tick.OwedItemBlocks); err != nil {
+	`).Scan(&tick.OwedDocuments, &oldestOwed, &tick.OwedItems, &tick.OwedTexts, &tick.OwedItemBlocks); err != nil {
 		return tick, fmt.Errorf("count what is owed a block index: %w", err)
+	}
+	if oldestOwed != nil {
+		tick.OldestOwedDocumentAt = *oldestOwed
 	}
 	return tick, nil
 }
