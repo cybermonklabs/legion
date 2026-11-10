@@ -259,9 +259,11 @@ export function facets(item: Item, id: string): string[] {
     case "phase":
       return [item.legion?.id ?? "No Legion phase"];
     case "slot":
-      return [item.legion?.card.slot == null ? "No slot" : String(item.legion.card.slot)];
+      return [item.legion ? legionSlotText(item.legion.card) : "No Legion phase"];
     case "roles":
-      return item.legion?.card.roles.length ? [...item.legion.card.roles] : ["Nobody"];
+      return item.legion?.card.roles.length
+        ? [...item.legion.card.roles]
+        : [item.legion ? "between turns" : "No Legion phase"];
     case "ci":
       return [item.legion?.card.checks_verdict ?? "No verdict"];
     case "epic":

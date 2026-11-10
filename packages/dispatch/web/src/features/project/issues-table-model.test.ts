@@ -287,7 +287,7 @@ test("phase facets and workflow ordering come from the board, not alphabetical o
     rows
       .filter((row) =>
         matchesFilters(row, [
-          { id: "slot", value: ["0"] },
+          { id: "slot", value: ["slot 0"] },
           { id: "roles", value: ["implementer"] },
           { id: "ci", value: ["failing"] },
         ])

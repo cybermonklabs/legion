@@ -27,6 +27,8 @@ import {
   ageOf,
   formatPhaseTime,
   type Item,
+  legionRolesText,
+  legionSlotText,
   matchesFilters,
   priorityName,
 } from "./issues-table-model";
@@ -287,21 +289,26 @@ export function useIssueTableColumns(
                 {
                   id: "slot",
                   header: "Slot",
-                  accessorFn: (item: Item) => item.legion?.card.slot ?? undefined,
+                  // A child holds its root's slot, so it sorts and reads by that slot too.
+                  accessorFn: (item: Item) =>
+                    item.legion
+                      ? (item.legion.card.slot ?? item.legion.card.tree_slot ?? undefined)
+                      : undefined,
                   sortUndefined: "last",
                   sortDescFirst: false,
                   filterFn: inPicks,
                   enableGrouping: false,
-                  cell: ({ getValue }) => (
+                  cell: ({ row }) => (
                     <span className="tabular-nums" data-legion-fact="slot">
-                      {getValue<number | undefined>() ?? "No slot"}
+                      {row.original.legion ? legionSlotText(row.original.legion.card) : "No slot"}
                     </span>
                   ),
                 },
                 {
                   id: "roles",
                   header: "Roles in a turn",
-                  accessorFn: (item: Item) => item.legion?.card.roles.join(", ") || "Nobody",
+                  accessorFn: (item: Item) =>
+                    item.legion ? legionRolesText(item.legion.card) : "No Legion phase",
                   filterFn: inPicks,
                   enableGrouping: false,
                   cell: ({ getValue }) => (
