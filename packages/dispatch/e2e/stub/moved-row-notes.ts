@@ -26,6 +26,28 @@ export const unchangedByTheMove =
 /** The rows the sentence above is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
+  "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
+    'the List\'s row is read inside the issues table this branch ships (`getByRole("table", { name: "Project issues table" })`), since `[data-issue-row]` alone now also matches the Board\'s own rows; every key, link and address it asserts is main\'s',
+  "keyboard-issue.stub.e2e.ts › j and k cross a collapsed band instead of dead-ending in it, and reach its rows once it opens @pr":
+    "the bands are the table's status groups: the row opens `?group=status&sort=key&nofilter=1`, collapses Todo through its heading button rather than a `details` summary, and walks the same four rows in the same order with the same keys. What it asserts - that j steps over a collapsed group and k comes back, and that opening it puts its rows between the two they sit between - is main's",
+  "keyboard-issue.stub.e2e.ts › the project List view roves with j/k and opens the focused row with Enter and o @pr":
+    "the three rows are read inside the issues table rather than through the old `Todo issues` list; the roving, Enter, o and the shortcuts dialog are main's",
+  "keyboard-issue.stub.e2e.ts › with every band collapsed j and k do nothing and ? greys them, and opening one restores both @pr":
+    "the bands are the table's status groups, collapsed through their heading buttons; what the row asserts - no rows, the keys doing nothing, the two shortcuts greyed, and both restored when one group opens - is main's",
+  "keyboard-palette.stub.e2e.ts › a List row's own row runs on the row that opened the palette, and its movement keys are no rows @pr":
+    "the row is read inside the issues table; everything the palette does in it is main's",
+  "polish.stub.e2e.ts › project filters stay collapsed until needed and margin asks use the compact composer @pr":
+    "the project list half is the table: there is no collapsed filter strip to open, so the row asserts the table is drawn with no popover open, picks a label in the column filter and reads the trigger's own name. The board, inbox, margin and agents halves, and every screenshot, are main's",
+  "project.stub.e2e.ts › a 1,000-character table search stays inside the page @phone @pr":
+    'renamed from "a 1,000-character search filter\'s chip ends in an ellipsis inside its row": the table has no filter chip, so the claim the same 1,000 characters make is that the search box and the page stay inside the viewport at both widths',
+  "project.stub.e2e.ts › a table keeps its key whole and uses its title cell without overflowing the phone @phone @pr":
+    "renamed from \"a list row keeps its key whole and gives the title the row's width\": the row is a table row, so the title's room is its own cell rather than the row, and the row also asserts that the box scrolls sideways instead of the page",
+  "project.stub.e2e.ts › clearing the table search keeps the next keystroke in the search box @pr":
+    "renamed from \"clearing the issue search keeps the strip open and the next keystroke in the search box\": the table's toolbar holds the search box with no strip to keep open, and what is left - the address, the cleared value, focus and the next keystroke - is main's",
+  "project.stub.e2e.ts › status groups stay expandable and the project key sits beside its name @pr":
+    "renamed from \"status bands stay expandable...\": the bands are the table's groups, reached by letting Done through the Status filter and grouping by status, and collapsed through the heading button rather than a `details` summary. The header half - the key pill beside the name, the gap and the title attribute - is main's",
+  "project.stub.e2e.ts › the project page fits a phone screen with touch-sized tabs, filters and document controls @phone @phone-only @pr":
+    "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
 };

@@ -7,24 +7,22 @@ import {
   patchIssue,
   putIssueState,
 } from "./api";
-import { pickFilterOption } from "./filters";
+import { filterPicker, pickFilterOption } from "./filters";
 import { navigateInApp } from "./sends";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The project page's one walk: nine issues across eight statuses, the grouped board over them,
- * eight filter presses, and the Documents tab down to a document created in its editor. What
- * the page draws over one fixed answer - its fit on a phone, its filter chips, its reference
- * closure, its status bands and its rows - is in `project.stub.e2e.ts`.
+ * The project page's one walk: nine issues across eight statuses, the table over them, eight
+ * filter presses, and the Documents tab down to a document created in its editor. What the
+ * page draws over one fixed answer - its fit on a phone, its long search, its reference
+ * closure, its status groups and its rows - is in `project.stub.e2e.ts`.
  */
 
 const session = { actor: { id: "e2e-project", kind: "session" as const }, as: "agent" as const };
 
-// SLOW(>=2s): one row for the whole project page - nine issues seeded across eight statuses,
-// the grouped board over them, eight filter presses, and the Documents tab down to a created
-// document with its editor. Each clause of the title is a press the row has to make.
-test("project page groups issues by status in board order; filters narrow issues; documents stay scoped to the project", async ({
+// SLOW(>=2s): the project's table, status and label filters, and a created project document.
+test("project table filters narrow issues; documents stay scoped to the project", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -70,21 +68,16 @@ test("project page groups issues by status in board order; filters narrow issues
     await page.goto("/projects/CORE");
     await expect(page).toHaveTitle("CORE · Core · Dispatch");
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
-    // The pill counts this project's questions waiting on the reader themselves: one, Bob's
-    // not among them.
+    // The pill counts this project's questions waiting on the signed-in reader.
+    await expect(
+      page
+        .locator(`[data-issue-row="${child.key}"]`)
+        .getByRole("link", { name: parent.key, exact: true })
+    ).toBeVisible();
     const blockedOnYou = page.getByRole("link", { name: "Blocked on you · 1" });
-    await expect(blockedOnYou).toHaveAttribute("href", "/");
-    // The filter strip is the first content row under the dense header; the issue list
-    // follows it. Density contract: that first row starts within 120px of the top.
-    const filterStrip = page.getByRole("button", { name: /Filters · \d+ active/ });
-    const stripBox = await filterStrip.boundingBox();
-    const issueList = page.getByRole("region", { name: "Project issues" });
-    const issueListBox = await issueList.boundingBox();
-    if (stripBox === null || issueListBox === null) {
-      throw new Error("project issue list is not visible");
-    }
-    expect(stripBox.y).toBeLessThanOrEqual(120);
-    expect(issueListBox.y).toBeLessThanOrEqual(stripBox.y + stripBox.height + 24);
+    const issueTable = page.getByRole("table", { name: "Project issues table" });
+    await expect(issueTable).toBeVisible();
+    expect((await page.getByTestId("issues-table-scroll").boundingBox())?.y).toBeLessThan(420);
     const blockerBox = await blockedOnYou.boundingBox();
     const mainBox = await page.getByTestId("main-content").boundingBox();
     if (blockerBox === null || mainBox === null) {
@@ -95,60 +88,37 @@ test("project page groups issues by status in board order; filters narrow issues
       "aria-selected",
       "true"
     );
-    await expect(page.locator("details > summary")).toHaveText([
-      "Triage (1)",
-      "Icebox (1)",
-      "Backlog (1)",
-      "Todo (2)",
-      "In progress (2)",
-      "Testing (1)",
-      "Done (1)",
-    ]);
-    await expect(page.getByRole("group", { name: "Done (1)" })).not.toHaveAttribute("open", "");
-    await expect(
-      page
-        .getByRole("listitem", { name: /CORE-.*Child work/ })
-        .getByRole("link", { name: parent.key })
-    ).toHaveAttribute("href", `/issues/${parent.key}`);
-
-    // Status is a multi-select: one status narrows, a second widens (OR), each is a chip. Rows
-    // and chips read the display label; the URL keeps the key.
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
-    await pickFilterOption(page, "Status", "Testing");
-    await expect(page).toHaveURL(/\?status=testing$/);
-    await expect(page.getByText("Child work")).toBeVisible();
-    await expect(page.getByText("Triage work")).toHaveCount(0);
+    // Closed issues load when the Status filter lets Done through; the bar's own Done cell,
+    // which only exists once they are loaded, then narrows to them.
+    await pickFilterOption(page, "Status", "Done");
+    await page.getByRole("button", { name: "Done 1", exact: true }).click();
+    await expect(page.getByText("Done work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Testing 1", exact: true }).click();
+    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Status", "Triage");
-    await expect(page).toHaveURL(/\?status=testing&status=triage$/);
-    await expect(page.getByText("Triage work")).toBeVisible();
-    await expect(page.getByText("Backlog work")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Filters · 2 active" })).toBeVisible();
-    await page.getByRole("button", { name: "Remove Status: Testing filter" }).click();
-    await expect(page.getByText("Child work")).toHaveCount(0);
-    await page.getByRole("button", { name: "Remove Status: Triage filter" }).click();
-    await expect(page.getByText("Backlog work")).toBeVisible();
-
-    // Removing the last filter leaves the strip open under the user; only they close it.
-    await expect(page.getByRole("button", { name: "Filters · 0 active" })).toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    await page.getByRole("button", { exact: true, name: "Needs you" }).click();
-    await expect(page.getByText("Needs attention")).toBeVisible();
-    await expect(page.getByText("Triage work")).toHaveCount(0);
-    await page.getByRole("button", { exact: true, name: "Needs you" }).click();
-
-    await page.getByRole("button", { exact: true, name: "Unread" }).click();
-    await expect(page.getByText("Unread work")).toBeVisible();
-    await expect(page.getByText("Needs attention")).toHaveCount(0);
-    await page.getByRole("button", { exact: true, name: "Unread" }).click();
-
+    await expect(page.getByText("Triage work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/status=testing.*status=triage/);
+    await filterPicker(page, "Status").click();
+    await page.getByRole("button", { name: "Clear status", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page.getByText("Needs attention")).toBeVisible();
-    await expect(page.getByText("Unread work")).toHaveCount(0);
-    await page.getByRole("searchbox", { name: "Search issues" }).fill("attention");
-    await expect(page.getByText("Needs attention")).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("project-issues.png"), fullPage: true });
+    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await filterPicker(page, "Labels").click();
+    await page.getByRole("button", { name: "Clear labels", exact: true }).click();
+    await page.keyboard.press("Escape");
+    const search = page.getByRole("searchbox", { name: "Search issues" });
+    await search.fill("backlog");
+    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await search.clear();
+    await page.getByRole("button", { name: "Needs you", exact: true }).click();
+    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents");

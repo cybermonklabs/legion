@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
-import { openIssue } from "./keyboard-palette";
+import { openIssue, searchPath } from "./keyboard-palette";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -271,14 +271,11 @@ test("a query that holds a card move further in moves no card on Enter", async (
     // then would have taken the move to the next status before any answer came.
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await page.keyboard.press("Control+k");
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
@@ -465,14 +462,11 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     // Hold the search the way a slow network would, so the reader arrows before the hits arrive.
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await openIssue(page, issue.key, "Go held search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -524,14 +518,11 @@ test("an arrow pressed before the search answers reaches no action the query fin
     });
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await openIssue(page, issue.key, "Arrow before the issue search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -601,14 +592,11 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     await page.clock.fastForward("00:31");
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     await input.fill("issue");
