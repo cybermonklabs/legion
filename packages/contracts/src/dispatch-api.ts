@@ -1131,6 +1131,23 @@ export interface Ask extends AnchorPosition {
    *  open-ask read (inbox rows, ask lists, the ask detail, the issue detail's `open_asks`); absent on
    *  closed asks and on `ask.*` event payloads. */
   readonly waiting_on?: AskTurn;
+  /** The person an open ask waits on once somebody has handed it on: the canonical login of
+   *  somebody who has signed in (`PUT /api/v1/asks/{id}/asked-of` writes it). Empty until a
+   *  person hands the ask on, and empty again when they hand it to the assignee of its own
+   *  issue, since an empty field means the ask waits on that assignee, which is where every ask
+   *  starts and where it follows the issue's next move. */
+  readonly asked_of?: string | null;
+  /** The person who last handed this ask on, and when they did: null until somebody hands it on,
+   *  and set from then on, including on the hand-on to the issue's own assignee that leaves
+   *  `asked_of` empty. */
+  readonly asked_of_by?: string | null;
+  readonly asked_of_at?: string | null;
+  /** The person an open ask waits on, by the one rule every list reading it shares: `asked_of`
+   *  once somebody has handed the ask on, and the assignee of its issue until then. Present on
+   *  every ask read (inbox rows, ask lists, the ask detail, the issue detail's `open_asks`);
+   *  absent on `ask.*` event payloads, as `waiting_on` is, and absent where nobody waits on the
+   *  ask: one on a project document, or on an issue nobody holds that nobody was handed. */
+  readonly waiting_on_person?: string;
   readonly edited_at: string | null;
   /** Present only on a server-created approval ask. */
   readonly approval?: AskApproval;
@@ -1260,6 +1277,10 @@ export interface OpenAsk {
   readonly last_reply: AskLastReply | null;
   /** Whose reply would move the currently open ask forward. */
   readonly waiting_on: AskTurn;
+  /** The person that reply waits on: whoever the ask was handed to (`asked_of`), and the
+   *  assignee of its issue until somebody hands it on. Empty where nobody waits on it: an ask on
+   *  a project document, or on an issue nobody holds. */
+  readonly waiting_on_person?: string;
 }
 
 export interface OpenAsksResponse {
@@ -1744,7 +1765,9 @@ export type IssueEventPayload = Issue & ReferenceChangesPayload & IssueEventChan
  *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
  *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
  *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
- *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`. */
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
 export type AskEventPayload = Ask &
   ReferenceChangesPayload &
   ThreadLoginsPayload & { readonly restored?: boolean };
@@ -3562,6 +3585,14 @@ export type DispatchEvent =
       readonly type: "ask.handed_back";
       readonly payload: AskEventPayload;
     })
+  /** One person handed an open ask to another: `asked_of` is whom it waits on from now on, empty
+   *  where that is the assignee of its own issue, and `asked_of_by` who handed it on. The ask
+   *  keeps its question, its thread and its followers; only whose list it sits in moves, so
+   *  `thread_logins` names those two people and nobody else. */
+  | (DispatchEventBase & {
+      readonly type: "ask.asked_of";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;
@@ -4330,6 +4361,14 @@ const askEventPayloadFields = {
       at: z.string().optional(),
     })
     .nullish(),
+  // The three stored fields of a hand-on, carried by every ask payload as the row carries them:
+  // whom the ask waits on, who handed it there and when. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object strips any field it does not declare, so a payload that somehow carried it would
+  // reach no reader with it.
+  asked_of: z.string().nullish(),
+  asked_of_by: z.string().nullish(),
+  asked_of_at: z.string().nullish(),
   thread_logins: z.array(z.string()).optional(),
 };
 

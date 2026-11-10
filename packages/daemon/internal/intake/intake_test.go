@@ -307,6 +307,15 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-architect"},
 				Mark: mark(10, "2026-09-23T00:46:35Z")},
 		},
+		// A hand-on moves which person's Inbox the ask sits in, and no root waits on a person,
+		// so the daemon reads the type by ignoring it (decode.go's default arm): no fact, no
+		// error, and nothing of the workflow moves.
+		{
+			name:    "Dispatch ask handed to another person (hand-built)",
+			subject: "notifications.dispatch.issue.CAPTURE-4.ask.asked_of",
+			file:    "dispatch/ask-asked-of.json",
+			want:    nil,
+		},
 		{
 			name:    "Dispatch ask reply returning the turn to the agent (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.comment.created",
