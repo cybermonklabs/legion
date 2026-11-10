@@ -27,8 +27,8 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 	// pgx reads PGPORT where a DSN names no port and PGUSER where a DSN names no user, so a
 	// refusal below would turn on this machine's environment rather than on the DSN. An empty
 	// value is one pgx skips, which leaves pgx's own default of 5432 for the port. A user has no
-	// such default — pgx takes the account the test runs as — so PGUSER is set here, and the one
-	// rewrite below that names no user reads it.
+	// such default — pgx takes the account the test runs as — so PGUSER is set here, and the
+	// three rewrites below that name no user read it.
 	t.Setenv("PGPORT", "")
 	t.Setenv("PGUSER", "legion_test")
 	for _, tc := range []struct {
@@ -162,10 +162,10 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			// A `#` in a password ends net/url's authority there too, and what follows is a
 			// fragment rather than a port, so net/url takes this DSN: the host is `u:12`, and the
 			// password's tail the fragment. The rewrite carries that fragment after the database
-			// name, where pgx reads it as part of the database, and pgx reads the host and the
-			// port from the password's head. All four fields moved, and the reading printed the
-			// password before this rule. The password is `12#SECRET`, and the assertion takes
-			// `SECRET`, since `12` is also the port pgx reads from `u:12`.
+			// name, where pgx reads it as part of the database, and pgx reads the user name as
+			// the host and the password's head as the port. All four fields moved, and the
+			// reading printed the password before this rule. The password is `12#SECRET`, and
+			// the assertion takes `SECRET`, since `12` is also the port pgx reads from `u:12`.
 			name:     "a password holding a `#` that leaves the DSN a URL",
 			dsn:      "postgres://u:12#SECRET@localhost/db",
 			database: "legion_live_proof_1",
