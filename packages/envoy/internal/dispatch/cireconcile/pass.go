@@ -29,16 +29,18 @@ import (
 // holds no cursor for. The cycle after it begins the repository at its first page and queries
 // it again.
 //
-// from is what names a page of that listing: the number of the first open pull request of it,
-// and zero the start of the listing. A page read from the listing is named by a number and
-// not by its position because the pass taking the cursor up reads the listing again, and a
-// pull request closed or merged between the two passes moves every position after it down: a
-// window cut at the position the page sat at would begin further on than the page did, the
+// from is the number that names the page: one more than the last head of the page before it,
+// and zero for a repository's first page (walk.sweep). Every page of a repository carries it,
+// the page a query answered as much as the page cut from the REST listing, and a page is cut
+// from that listing at the first open pull request at or above from (walk.window). A page is
+// named by a number and never by the position it sat at because the pass taking the cursor up
+// reads the listing again, and a pull request closed or merged below moves every position
+// after it down: a window cut at that position would begin further on than the page did, the
 // heads between would be read by no pass of this cycle, and the pass that closed the cycle
 // would record that it had covered them. A number names the same place in the listing whatever
-// has closed below it. The one page no number names is the page a query was refused for, since
-// its heads were never answered: the walk takes that page at its position in the listing it
-// reads there and then, and writes the number it begins at into the cursor (walk.restPage).
+// has closed below it, and the page a query was refused for is named like any other: the page
+// before it was answered, and every head a query answers carries a number, so the refused page
+// begins above the last of them.
 //
 // number is the first head of the page the pass did not finish, and zero is the whole page: a
 // head below it was read by the pass that left the cursor. counted says the heads of that page
@@ -90,11 +92,6 @@ type walk struct {
 	// (walk.restPage). Its pages are windows of it, so the listing is read once however many
 	// pages the walk takes from it.
 	listing []githubapp.PullRequestHead
-	// next is the number the page after the one the walk stands at begins at, which is what
-	// names that page when the walk moves on to it (cursor.from). It is the listing's own
-	// answer, set by each page the walk takes from it, and zero while the walk reads by query,
-	// where GitHub's end cursor names the page after this one instead.
-	next int64
 }
 
 // cut is the ending the pass's own bound, or its caller's cancellation, makes; stopped is the
@@ -319,7 +316,18 @@ func (w *walk) sweep(ctx context.Context) *ending {
 		if !page.hasNextPage {
 			return nil
 		}
-		w.here = cursor{repository: w.here.repository, after: page.endCursor, page: w.here.page + 1, from: w.next, rest: w.here.rest}
+		// The page after this one begins above its last head: every head of an answered query
+		// page carries a number (graphql.go), as every head of a window of the listing does,
+		// so one more than the last of them names the page after it in any listing of this
+		// repository, whatever has closed below. A page that answered no head at all names
+		// nothing of its own, so the cursor keeps the number this page was named by: that
+		// number is at or below the first head of the page after it, so a walk resuming there
+		// reads heads a second time at worst and skips none.
+		from := w.here.from
+		if read := len(page.heads); read > 0 {
+			from = page.heads[read-1].number + 1
+		}
+		w.here = cursor{repository: w.here.repository, after: page.endCursor, page: w.here.page + 1, from: from, rest: w.here.rest}
 	}
 }
 
@@ -373,16 +381,14 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 // walk, page by page and each page conditional on its own ETag, and every head it names is read
 // as every other head a query could not answer is (visitHeadOverREST).
 //
-// The window begins at the number the cursor names and the page after it is named by the number
-// it begins at, both written here, so a pass taking this repository up reads the listing again
-// and finds the page where the pass before it left it, whatever has closed or merged below
-// (walk.window, cursor.from).
-//
-// The page a query was refused for is the one page no number names, since the heads of it were
-// never answered: it is taken at its position in this listing, which holds those heads because
-// GitHub's own order for the query and the order this listing is sorted into are both the pull
-// request number ascending. That listing is read in the pass the refusal fell in, so no pass
-// stands between the refusal and the window cut from it.
+// The window begins at the first open pull request of the listing at or above the number the
+// cursor names, which is where the page the walk stands at begins (walk.window). The cursor
+// carries that number for every page: a pass cut short in this listing left it, and the page
+// a query answered before a refusal named the page after it, which is the page the refusal
+// fell on (walk.sweep, cursor.from). Nothing here reads the listing by position, so whatever
+// stands between the read that wrote the number and this one -- a pass's bound, a rate limit,
+// or only the time the pages before it took -- costs the walk no head: a pull request closed
+// or merged below the number moves no page of this listing.
 func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
 	r, c, repository := w.r, w.c, w.repository
 	if w.listing == nil {
@@ -403,15 +409,6 @@ func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
 	}
 	from := w.window()
 	to := min(from+pullsPerQuery, len(w.listing))
-	if from < to {
-		// This page is named by its first open pull request from here on, so a pass cut short
-		// inside it takes it up at that number rather than at the position it sits at now.
-		w.here.from = w.listing[from].Number
-	}
-	w.next = 0
-	if to < len(w.listing) {
-		w.next = w.listing[to].Number
-	}
 	page := queryPage{heads: make([]queryHead, 0, to-from), hasNextPage: to < len(w.listing)}
 	for _, pull := range w.listing[from:to] {
 		page.heads = append(page.heads, queryHead{number: pull.Number, sha: pull.HeadSHA, overflow: refusedPage})
@@ -419,26 +416,22 @@ func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
 	return page, nil, true
 }
 
-// window is where in the listing the page the walk stands at begins.
+// window is where in the listing the page the walk stands at begins: the first open pull
+// request of the listing at or above the number the cursor names.
 //
-// A page the cursor names by number begins at the first open pull request of the listing at or
-// above that number: the listing is sorted by number ascending, and a number names the same
-// place in it however many pull requests below have closed or merged since the pass that left
-// the cursor read it. The pull request the cursor named may be one of them, and the page then
-// begins at the first head still open after it, which is the first head this cycle has not
-// read.
+// The listing is sorted by number ascending, and a number names the same place in it however
+// many pull requests below have closed or merged since that number was written. The number is
+// one above the last head the walk read, so the window begins at the first head still open
+// above that one -- no pull request of the listing need carry the number itself -- and that
+// head is the first this cycle has not read.
 //
-// Zero is the start of the listing, which is both a repository read over REST from its first
-// page and the page a query was refused for: that page has no number of its own, so it is
-// taken at the position it sits at in the repository (restPage).
+// Zero is the start of the listing, which is a repository read over REST from its first page:
+// every pull request number is above zero, so no page of the listing is skipped for it.
 func (w *walk) window() int {
-	if w.here.from > 0 {
-		at, _ := slices.BinarySearchFunc(w.listing, w.here.from, func(pull githubapp.PullRequestHead, number int64) int {
-			return cmp.Compare(pull.Number, number)
-		})
-		return at
-	}
-	return min(w.here.page*pullsPerQuery, len(w.listing))
+	at, _ := slices.BinarySearchFunc(w.listing, w.here.from, func(pull githubapp.PullRequestHead, number int64) int {
+		return cmp.Compare(pull.Number, number)
+	})
+	return at
 }
 
 // refusedPage is why a head of a page GitHub would not answer the query for is read over REST,

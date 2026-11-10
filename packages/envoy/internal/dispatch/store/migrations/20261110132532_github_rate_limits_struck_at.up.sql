@@ -8,15 +8,20 @@
 --               run -- one minute, two, four, up to 64 -- and one after that quiet hour is the
 --               first of a new run, at one minute again.
 --
--- The reset read updated_at, the row's last write by anything, until this column. That was the
--- last strike only while a scope was struck and recorded by nothing else, and from this
--- release's change to GitHub's secondary limits an installation's scope is both: a secondary
+-- The release before this one resets the count by nothing at all: its Strike counts every
+-- strike of a scope until a Clear, and a Clear is reached solely by a sweep that found GitHub
+-- willing again within the one pass that was already backing off. A scope struck six times
+-- over a month met its next limit, unrelated to any of them, with the full 64-minute wait.
+-- The reset the release adds needs the time of the scope's last strike, and no column held
+-- it: updated_at is the row's last write by anything, and from this release's change to
+-- GitHub's secondary limits an installation's scope is both struck and recorded -- a secondary
 -- limit a GraphQL query meets is struck there, because GitHub shares that limit with the
 -- installation's REST calls, while every ordinary REST limit of that installation is recorded
--- there with Record. Record refreshes updated_at, so the ordinary REST limits of a busy
--- installation held its run of strikes open for ever, and a secondary limit days after the last
--- one waited up to 64 minutes for it. The count now resets by an hour with no strike, which is
--- what StrikeReset says it is, rather than by an hour with no write of any kind.
+-- there with Record, which refreshes updated_at. Read from updated_at, the ordinary REST
+-- limits of a busy installation would hold its run of strikes open for ever, and a secondary
+-- limit days after the last one would wait up to 64 minutes for it. The count resets by an
+-- hour with no strike, which is what StrikeReset says it is, rather than by an hour with no
+-- write of any kind.
 --
 -- A row struck before this migration carries null here, so the first strike after the deploy
 -- starts that scope's run again: no backfill writes the column, since a census that rewrites a
@@ -29,10 +34,10 @@
 -- github_rate_limits (one row per scope, of which a deployment has a handful) ACCESS EXCLUSIVE
 -- for milliseconds. The release before this one neither reads nor writes the column, so the two
 -- roll side by side (cmd/dispatch/README.md, "Database migrations"), with one thing to know:
--- the old build's Strike keeps striking by updated_at and writes struck_at not at all, so on a
--- row the new build has already struck it leaves the new build's time standing rather than
--- nulling it. During a roll, and during a rollback to that build, the old build's strikes do
--- not move struck_at, and the new build's next strike reads a clock the old build's strikes
+-- the old build's Strike counts every strike until a Clear and writes struck_at not at all, so
+-- on a row the new build has already struck it leaves the new build's time standing rather
+-- than nulling it. During a roll, and during a rollback to that build, the old build's strikes
+-- do not move struck_at, and the new build's next strike reads a clock the old build's strikes
 -- never advanced: a run the old build was keeping going starts again at one minute if the new
 -- build's own last strike of that scope is an hour old. That costs one shorter wait, as the
 -- deploy itself does. Rolling back past this migration is an image rollback alone; the column
