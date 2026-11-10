@@ -143,7 +143,12 @@ function SlotPhase({
         data-legion-slot-line
       >
         slot {card.slot} · {use}
-        {time.text === "—" ? "" : ` · ${time.text}`}
+        {time.text === "—" ? null : (
+          <>
+            {" · "}
+            <span className="whitespace-nowrap">{time.text}</span>
+          </>
+        )}
       </span>
     </span>
   );
