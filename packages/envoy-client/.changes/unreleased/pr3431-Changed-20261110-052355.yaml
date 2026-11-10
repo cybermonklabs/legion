@@ -1,0 +1,5 @@
+kind: Changed
+body: DispatchClient.search sends a request carrying a member beyond q, project, limit and offset to GET /api/v1/search/results, which a build released before those members refuses rather than answering with the member dropped.
+time: 2026-11-10T05:23:55.036302808Z
+custom:
+    Issue: pr3431
