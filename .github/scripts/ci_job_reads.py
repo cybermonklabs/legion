@@ -618,17 +618,19 @@ def race_step(job):
     ])
 
 
-# The package list of the unit step runs the module less three things: the lane's packages,
+# The package list of the unit step runs the module less four things: the lane's packages,
 # which the three race jobs run under the detector, internal/integration, which the integration
-# call of the same step runs, and internal/dispatch/routes, which its routes call runs against a
-# second Postgres service (ci.yaml says why). Its `grep -Ev` is `/integration`, then, in the
-# lane's own order, each package in the form go list's import paths need - a tree matching the
-# package and everything under it, any other the package alone - and the routes package last.
+# call of the same step runs, and internal/dispatch/routes and internal/pgmigrate, which the
+# routes call and the pgmigrate call of the same step run against Postgres services of their own
+# (ci.yaml says why). Its `grep -Ev` is `/integration`, then, in the lane's own order, each
+# package in the form go list's import paths need - a tree matching the package and everything
+# under it, any other the package alone - and the two packages with a service of their own last.
 ROUTES_PACKAGE = "internal/dispatch/routes"
+PGMIGRATE_PACKAGE = "internal/pgmigrate"
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
-    + [f"/{ROUTES_PACKAGE}$"])
+    + [f"/{ROUTES_PACKAGE}$", f"/{PGMIGRATE_PACKAGE}$"])
 # The routes call's own DSN, the envoy-go job's second Postgres service: it names 5433 on that
 # one call and nowhere else, which is what keeps the event log's safe horizon off the other
 # calls' transactions (ci.yaml's postgres_routes service). It is on the call rather than in the
@@ -642,7 +644,14 @@ SHUTDOWN_DSN = "postgres://postgres:ci@localhost:5434/postgres?sslmode=disable"
 SHUTDOWN_PACKAGE = "cmd/dispatch"
 SHUTDOWN_TESTS = ["TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument"]
 SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
-# -p 8 and -parallel 12, the seven calls the step starts in the background, and the streams
+# The fourth service, 5435, and the package whose round trips the shared one pays most for:
+# internal/pgmigrate. Its redaction oracle asks a server about 158,364 (text, setting) pairs, and
+# a round trip of it cost 2.16 ms in this lane against 0.16 ms against an idle server, so the
+# load is the service's queue rather than the package's own arithmetic - and that queue is one
+# every other package of this job waits in too (ci.yaml's postgres_pgmigrate service,
+# dispatch://INFRA-1075).
+PGMIGRATE_DSN = "postgres://postgres:ci@localhost:5435/postgres?sslmode=disable"
+# -p 8 and -parallel 12, the eight calls the step starts in the background, and the streams
 # and logs they write, are ci.yaml's own comments' to explain. The text itself is
 # UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
 # UNIT_TEST_LEAD is the longest-first order ci.yaml's comment gives its reason for: go test starts
@@ -650,7 +659,7 @@ SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
 # alone. The names are import paths because that is what `go list ./...` prints, and the lines of
 # the workflow's own block carry its indentation, which YAML strips before the shell sees them.
 UNIT_TEST_LEAD = ["internal/dispatch/pmdoc", "cmd/dispatch-seed", "internal/dispatch/outbox",
-                  "internal/pgmigrate", "cmd/dispatch", "cmd/broker"]
+                  "cmd/dispatch", "cmd/broker"]
 UNIT_TEST_LEAD_TEXT = "\n".join(f"github.com/sjawhar/envoy/{p}" for p in UNIT_TEST_LEAD)
 
 
@@ -849,7 +858,7 @@ RACE_IMPOSSIBLE_CALL = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 # aside, and check-ci-filters.sh fails when the two differ.
 UNIT_TEST_SCRIPT = f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-# Longest first. The seven calls share this runner's four cores, so the step is over
+# Longest first. The eight calls share this runner's four cores, so the step is over
 # when its longest call is, and a call that starts late ends as late as it started.
 # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
 # is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
@@ -862,6 +871,11 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # short calls follow, each of them many times over inside those two
 # (dispatch://INFRA-1075). The `go list` that builds the list's arguments runs ahead of
 # every call for the same reason: what the longest call needs waits on nothing.
+# The pgmigrate call is third, at the head of the short ones. The run above had its
+# package inside the package list, where the lane's own CPU measurement found it
+# 375.5 s (run 42774209109); against a server of its own it is 53.7 s of wall on four
+# idle cores, which puts it with routes and the shutdown call rather than with the two
+# calls above it.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
 printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" &
@@ -900,6 +914,28 @@ unit=$!
 # so running them at the same time changes no number any of them asserts on.
 {RACE_IMPOSSIBLE_CALL} > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
 impossible=$!
+# internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
+# scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
+# 158,364 (text, setting) pairs asked over two connections, and what a pair costs is a
+# round trip rather than arithmetic. Measured on run 42774209109: 2.16 ms a round trip
+# in this lane against 0.16 ms against an idle server, the package 375.5 s here for
+# 53.7 s of wall alone on four idle cores and 63.8 s of CPU. The instance pays for
+# both halves of that - the queue this package waits in, and the 158,364 round trips
+# it puts into the queue every other package of the job waits in - so
+# DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the two
+# calls below name 5433 and 5434. The package list above leaves the package out.
+#
+# -timeout 4m. The call's slowest package is its only one, and with its round trips
+# off the shared service what is left of it is CPU: 63.8 s of it, against 53.7 s of
+# wall on a box whose four cores were idle, which this job's never are. So the half
+# rule is taken on 120 s - that CPU at about half of one of the four cores, while the
+# package list and the race-impossible call have the rest - and 4 is the smallest
+# whole minute 120 s is at most half of. No floor stands above that rule here: no test
+# of internal/pgmigrate reads the test binary's deadline, so it declares no margin of
+# its own the way the documents package's roomWaitMargin (30 s) and pmdoc's
+# perCallReportMargin (60 s) are theirs.
+DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 4m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
 # its own tests'. It is on the call rather than on the step because every other call
@@ -955,6 +991,8 @@ s=0
 wait "$unit" || s=$?
 p=0
 wait "$impossible" || p=$?
+m=0
+wait "$pgmigrate" || m=$?
 r=0
 wait "$routes" || r=$?
 d=0
@@ -968,7 +1006,7 @@ wait "$vet" || v=$?
 # One group per call, in the order the calls were started: the package list first,
 # then the rest. Each is its own log, then its stream - the package result lines
 # when it passed, the whole stream when it failed - and an ::error:: naming it when it
-# failed. The step's status is the first non-zero of the seven, and the package list,
+# failed. The step's status is the first non-zero of the eight, and the package list,
 # which prints as it goes, writes no log of its own.
 status=0
 replay() {{
@@ -985,6 +1023,7 @@ replay() {{
 }}
 replay "the package list" "$s" unit
 replay "the race-impossible run" "$p" race-impossible
+replay "the pgmigrate package" "$m" pgmigrate
 replay "the routes package" "$r" routes
 replay "the shutdown feed test" "$d" shutdown
 replay "the natslive matrix" "$n" natslive
@@ -1420,19 +1459,21 @@ GATES = [
         # not a flag the check reduces and a redirect is not in that form either
         # (dispatch://INFRA-1075).
         #
-        # The unit step, whose six calls run at the same time (ci.yaml says why): the package
-        # list, which starts first, and the plain run of what the race build cannot make, the
-        # routes package, the two natslive calls, the integration suite and the agentloop vet
-        # beside it. One Run each, which together are everything the step compiles:
-        #   * the package list is ./... but the race lane's packages, internal/integration and
-        #     internal/dispatch/routes, which the other calls run; a Run cannot name "./...
-        #     but those", so the entry declares the superset ./..., which over-declares and so
-        #     keeps this gate's wide patterns justified;
+        # The unit step, whose eight calls run at the same time (ci.yaml says why): the package
+        # list, which starts first, and the plain run of what the race build cannot make,
+        # internal/pgmigrate, the routes package, the shutdown feed test, the two natslive
+        # calls, the integration suite and the agentloop vet beside it. One Run each, which
+        # together are everything the step compiles:
+        #   * the package list is ./... but the race lane's packages, internal/integration,
+        #     internal/dispatch/routes and internal/pgmigrate, which the other calls run; a Run
+        #     cannot name "./... but those", so the entry declares the superset ./..., which
+        #     over-declares and so keeps this gate's wide patterns justified;
         #   * the race-impossible call is one go test over every package of the plain run the
         #     race lane cannot make (RACE_IMPOSSIBLE_*), selecting their tests with one -run,
         #     so it gets a Run per package of that walk;
-        #   * the routes package and internal/integration are in the superset too, and are
-        #     named all the same, so a call left out of the step is a Run with no command;
+        #   * internal/pgmigrate, internal/dispatch/routes, cmd/dispatch and
+        #     internal/integration are in the superset too, and are named all the same, so a
+        #     call left out of the step is a Run with no command;
         #   * the two natslive calls run only what their tag adds, one package at a time: the
         #     rig's own matrix, and the one test of internal/bus that needs a real server
         #     image. The rest of internal/testnats runs in the package list beside them; the
@@ -1445,6 +1486,7 @@ GATES = [
             (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
             *[(ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
               for under in RACE_IMPOSSIBLE_PACKAGES],
+            (ENVOY, [f"./{PGMIGRATE_PACKAGE}/"], f"go test ./{PGMIGRATE_PACKAGE}/", {}),
             (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),
             (ENVOY, [f"./{SHUTDOWN_PACKAGE}/"], f"go test -run of the live-feed test in ./{SHUTDOWN_PACKAGE}/", {}),
             (ENVOY, ["./internal/integration/"], "go test ./internal/integration/", {}),

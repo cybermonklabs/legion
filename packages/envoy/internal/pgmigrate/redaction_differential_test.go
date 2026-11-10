@@ -766,10 +766,25 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 		readings := [2]reading{readingOf(text, true), readingOf(text, false)}
 		redaction := redact(text, readings[0], readings[1])
 		printed := strings.Contains(redaction, marker)
+		// The two settings are asked at the same time. A pair costs a round trip, not
+		// arithmetic - 2.16 ms of one in CI's envoy-go lane against 0.16 ms against an idle
+		// server - and the two connections are already open, one per setting, sharing nothing
+		// but this text: probe reads conns[i], the reading it is handed and the package's own
+		// tables, and writes only its own verdict. What follows the asking is left where it
+		// was, one setting after the other in settings' own order, so every comparison, every
+		// counter and every capped sample below is what a serial sweep made.
 		var verdicts [2]verdict
+		var asking sync.WaitGroup
+		for i := range settings {
+			asking.Add(1)
+			go func() {
+				defer asking.Done()
+				verdicts[i] = probe(ctx, conns[i], text, readings[i])
+			}()
+		}
+		asking.Wait()
 		for i, setting := range settings {
 			ours := readings[i]
-			verdicts[i] = probe(ctx, conns[i], text, ours)
 			switch {
 			case ours.failure >= 0 && !verdicts[i].failed:
 				refusalSpurious++

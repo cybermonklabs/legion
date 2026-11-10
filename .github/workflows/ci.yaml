@@ -4431,7 +4431,7 @@ jobs:
     # (30s): this looks like a misconfigured run; raise -timeout".
     #
     # The job's own bound is its measured time on that attempt, 496 s, plus the largest of those
-    # limits, 12 minutes, plus 6, rounded up: 27. The six calls of the unit step run at the same
+    # limits, 12 minutes, plus 6, rounded up: 27. The eight calls of the unit step run at the same
     # time, so the step's own worst case is the longest of them rather than their sum.
     timeout-minutes: 27
     services:
@@ -4548,6 +4548,30 @@ jobs:
           --health-interval 1s
           --health-timeout 5s
           --health-retries 50
+      # A fourth instance, for internal/pgmigrate, whose redaction oracle holds scanl.go's
+      # transcription of PostgreSQL's scan.l to a real PostgreSQL: it asks a server about 158,364
+      # (text, setting) pairs, and what a pair costs is a round trip, not arithmetic. Measured on
+      # run 42774209109: 2.16 ms a round trip in this lane against 0.16 ms against an idle
+      # server, the package 375.5 s here for 53.7 s of wall alone on four idle cores and 63.8 s
+      # of CPU. Two things follow, and the service answers both: the package waits on a queue the
+      # rest of this job fills, and those 158,364 round trips are themselves load on the server
+      # every other package of the job shares - a cost its own time does not show. So it gets an
+      # instance of its own, on 5435, named on the pgmigrate call of the unit step and nowhere
+      # else (dispatch://INFRA-1075).
+      postgres_pgmigrate:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5435:5432"]
+        # The five settings of the services above, for the reasons given there.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -4628,6 +4652,23 @@ jobs:
           done
           echo "$id:$read_back"
           [ -z "$failed" ] || exit 1
+      # The same five settings, read back from internal/pgmigrate's own instance, for the reason
+      # the step above gives: it is a fourth server, started from a fourth command: line, and a
+      # runner that dropped that one would leave it on the image's defaults with nothing else
+      # saying so.
+      - name: Read the pgmigrate service's settings back
+        run: |
+          id="${{ job.services.postgres_pgmigrate.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the pgmigrate Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
       # Every image the tests here start: testnats.Image and testnats.HubImage, which the
       # natslive calls of the unit step below run the two-image matrix on, and tests3.Image,
       # pulled first for the reason the action gives.
@@ -4646,12 +4687,14 @@ jobs:
       # on one package's serial tail, and those five steps ran one after another on cores it had
       # left idle: on the slower of the two attempts measured, the race-impossible step 60 s,
       # routes 13 s, natslive 12 s, integration 3 s and the vet 8 s, the 90 s this job spent on
-      # test steps running one at a time. All six are started in the background at the head of
-      # this step now, longest first, so the step costs the longest of the six rather than their
-      # sum.
-      # The race-impossible call joined them last, once the measurement dispatch://INFRA-985
-      # asked for had been made; the comment on that call says what was measured and what it
-      # came back with.
+      # test steps running one at a time. All eight calls this step runs now are started in the
+      # background at its head, longest first, so the step costs the longest of them rather than
+      # their sum.
+      # The race-impossible call joined those five last, once the measurement
+      # dispatch://INFRA-985 asked for had been made; the comment on that call says what was
+      # measured and what it came back with. The shutdown feed test and internal/pgmigrate came
+      # after it, each taken out of the package list onto a Postgres service of its own, for the
+      # reasons their own calls and services give.
       #
       # Each call writes its own `go test -json` stream to a file under $RUNNER_TEMP/go-test-json,
       # which the upload step below publishes as one artifact per run attempt.
@@ -4664,8 +4707,8 @@ jobs:
       # `(cached)`. What a background call prints outside its stream cannot be left to interleave
       # with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
       # replayed with its stream; the package list, which prints as it goes, writes no log of
-      # its own. The step waits for all six, replays one group per call, and exits with the first
-      # non-zero status of the six, each failing call named in an ::error:: of its own.
+      # its own. The step waits for all eight, replays one group per call, and exits with the
+      # first non-zero status of the eight, each failing call named in an ::error:: of its own.
       #
       # The API package used to run first and on its own in this job, because the per-test
       # database clone and drop of every other package queued on the service's one checkpointer
@@ -4701,20 +4744,21 @@ jobs:
       # under the detector, and so is internal/integration, which the integration call tests. The
       # pattern is built in .github/scripts/ci_job_reads.py from the same list those jobs' own
       # steps are built from, so what the list leaves out and what the lane runs cannot drift
-      # apart. What is left is the rest of the module less the routes package, the two longest
-      # packages of it (the API's and the documents service's) now among the ones the lane runs,
-      # so its 20 minutes are ample.
+      # apart. What is left is the rest of the module less the routes package and
+      # internal/pgmigrate, each of which has a call and a service of its own, and less the two
+      # longest packages it held (the API's and the documents service's), which the lane runs
+      # now, so its 12 minutes are ample.
       # The long poles lead the list. `go test` starts the packages in the order its arguments
       # name, so a package that starts late ends the call late however little it is waiting for:
       # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
       # after any other package finished, while every other long package was done 90 s earlier.
-      # Leading with the six longest overlaps the longest one with the rest, which is what
+      # Leading with the five longest overlaps the longest one with the rest, which is what
       # longest-first scheduling buys, and the order is read back from the call's own -json
       # (dispatch://INFRA-1075).
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-          # Longest first. The seven calls share this runner's four cores, so the step is over
+          # Longest first. The eight calls share this runner's four cores, so the step is over
           # when its longest call is, and a call that starts late ends as late as it started.
           # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
           # is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
@@ -4727,13 +4771,17 @@ jobs:
           # short calls follow, each of them many times over inside those two
           # (dispatch://INFRA-1075). The `go list` that builds the list's arguments runs ahead of
           # every call for the same reason: what the longest call needs waits on nothing.
+          # The pgmigrate call is third, at the head of the short ones. The run above had its
+          # package inside the package list, where the lane's own CPU measurement found it
+          # 375.5 s (run 42774209109); against a server of its own it is 53.7 s of wall on four
+          # idle cores, which puts it with routes and the shutdown call rather than with the two
+          # calls above it.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
           github.com/sjawhar/envoy/cmd/dispatch-seed
           github.com/sjawhar/envoy/internal/dispatch/outbox
-          github.com/sjawhar/envoy/internal/pgmigrate
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/broker"
-          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
+          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 12m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
@@ -4770,6 +4818,28 @@ jobs:
           # so running them at the same time changes no number any of them asserts on.
           go test -json -count=1 -timeout 6m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
+          # internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
+          # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
+          # 158,364 (text, setting) pairs asked over two connections, and what a pair costs is a
+          # round trip rather than arithmetic. Measured on run 42774209109: 2.16 ms a round trip
+          # in this lane against 0.16 ms against an idle server, the package 375.5 s here for
+          # 53.7 s of wall alone on four idle cores and 63.8 s of CPU. The instance pays for
+          # both halves of that - the queue this package waits in, and the 158,364 round trips
+          # it puts into the queue every other package of the job waits in - so
+          # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the two
+          # calls below name 5433 and 5434. The package list above leaves the package out.
+          #
+          # -timeout 4m. The call's slowest package is its only one, and with its round trips
+          # off the shared service what is left of it is CPU: 63.8 s of it, against 53.7 s of
+          # wall on a box whose four cores were idle, which this job's never are. So the half
+          # rule is taken on 120 s - that CPU at about half of one of the four cores, while the
+          # package list and the race-impossible call have the rest - and 4 is the smallest
+          # whole minute 120 s is at most half of. No floor stands above that rule here: no test
+          # of internal/pgmigrate reads the test binary's deadline, so it declares no margin of
+          # its own the way the documents package's roomWaitMargin (30 s) and pmdoc's
+          # perCallReportMargin (60 s) are theirs.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 4m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+          pgmigrate=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
@@ -4825,6 +4895,8 @@ jobs:
           wait "$unit" || s=$?
           p=0
           wait "$impossible" || p=$?
+          m=0
+          wait "$pgmigrate" || m=$?
           r=0
           wait "$routes" || r=$?
           d=0
@@ -4838,7 +4910,7 @@ jobs:
           # One group per call, in the order the calls were started: the package list first,
           # then the rest. Each is its own log, then its stream - the package result lines
           # when it passed, the whole stream when it failed - and an ::error:: naming it when it
-          # failed. The step's status is the first non-zero of the seven, and the package list,
+          # failed. The step's status is the first non-zero of the eight, and the package list,
           # which prints as it goes, writes no log of its own.
           status=0
           replay() {
@@ -4855,6 +4927,7 @@ jobs:
           }
           replay "the package list" "$s" unit
           replay "the race-impossible run" "$p" race-impossible
+          replay "the pgmigrate package" "$m" pgmigrate
           replay "the routes package" "$r" routes
           replay "the shutdown feed test" "$d" shutdown
           replay "the natslive matrix" "$n" natslive
