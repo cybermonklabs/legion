@@ -280,6 +280,45 @@ const ALLOWED: readonly (readonly [string, string])[] = [
     "dispatch_claim description",
     "to it, except in an ask you follow: anyone else's answer, hand-back, resolution or edit of",
   ],
+  // The guides of this repository, which state the rule for whoever edits the code rather than
+  // telling an agent to use it: who an ask waits on, and what a hand-on moves.
+  [
+    "packages/contracts/AGENTS.md",
+    "Every ask on the issue waits on the assignee until a person hands that ask to somebody else, which no agent may do.",
+  ],
+  [
+    "packages/contracts/AGENTS.md",
+    "on an `ask.asked_of` the two people the hand-on moved the ask between",
+  ],
+  ["packages/dispatch/AGENTS.md", "A hand-on is there for the reason a reassignment is"],
+  [
+    "packages/dispatch/AGENTS.md",
+    "the lowercase email of who an ask on it waits on until somebody hands that ask to another person",
+  ],
+  [
+    "packages/envoy/AGENTS.md",
+    "email of the person every ask on it waits on until somebody hands that ask to another person",
+  ],
+  [
+    "packages/envoy/AGENTS.md",
+    "the person an ask on the issue waits on until somebody hands it on",
+  ],
+  [
+    "packages/envoy/AGENTS.md",
+    "`ask.asked_of` names two people instead, the person the ask waited on and the person it waits on now",
+  ],
+  [
+    "packages/envoy/AGENTS.md",
+    "that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other",
+  ],
+  [
+    "packages/envoy/AGENTS.md",
+    "the asks handed to them, and the asks on the issues assigned to them that nobody has handed on",
+  ],
+  [
+    "packages/envoy/AGENTS.md",
+    "the person the ask was handed to, and the assignee of its issue until somebody hands it on",
+  ],
 ];
 
 interface Hit {
