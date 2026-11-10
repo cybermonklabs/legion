@@ -149,7 +149,11 @@ test("a reference the page moves in the moment the pointer reaches it still open
   });
   try {
     const reference = screen.getByRole("link", { name: "the reference" });
+    // The reader's arrival, at a place of its own: the host tells a pointer the reader moved
+    // from one the engine moved by the position changing, and user-event's hover sends neither
+    // those coordinates nor the `pointerType` the hover-intent gate reads.
     fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
+    // The hover itself, for that same `pointerType`.
     fireEvent.pointerOver(reference, { pointerType: "mouse" });
 
     // The page, not the reader, taking the reference out from under the pointer, in the same
@@ -240,6 +244,8 @@ test("a dialog drawn over the reference while its delay runs leaves the card clo
   );
   try {
     const reference = screen.getByRole("link", { name: "the reference" });
+    // The reader's arrival and the hover, for the reasons the first row of this file gives:
+    // user-event sends neither the pointer's own coordinates nor a `pointerType`.
     fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
     fireEvent.pointerOver(reference, { pointerType: "mouse" });
 
@@ -283,6 +289,11 @@ test("a reference the page slid out from under the pointer opens after the delay
   });
   try {
     const reference = screen.getByRole("link", { name: "the reference" });
+    // The reader's arrival, the hover, and the page taking the reference away in the same
+    // instant - each for the reasons the first row of this file gives: the pointer's own
+    // coordinates, the `pointerType` the gate reads, and a boundary event with a
+    // `relatedTarget` while the pointer stays where the reader left it, which user-event has no
+    // form for.
     fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
     fireEvent.pointerOver(reference, { pointerType: "mouse" });
     fireEvent.pointerOut(reference, {
