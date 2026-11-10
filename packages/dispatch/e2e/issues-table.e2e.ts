@@ -243,8 +243,12 @@ test("selection actions move, remove and create an epic, whose name can then cha
     await expect(page.getByRole("toolbar")).toHaveCount(0);
     await select(first.key);
     await select(second.key);
-    page.once("dialog", (dialog) => dialog.accept("Coordinate onboarding release"));
     await page.getByRole("button", { name: "New epic from these" }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Coordinate onboarding release");
+    await page.getByRole("button", { name: "Create epic", exact: true }).click();
     await expect.poll(() => getIssue(first.key).then((issue) => issue.parent)).not.toBeNull();
     const epicKey = (await getIssue(first.key)).parent;
     if (!epicKey) throw new Error("The new epic was not assigned");
@@ -255,8 +259,12 @@ test("selection actions move, remove and create an epic, whose name can then cha
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Coordinate onboarding release/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    page.once("dialog", (dialog) => dialog.accept("Release coordination"));
     await page.getByRole("button", { name: "Rename", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Rename the epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Release coordination");
+    await page.getByRole("button", { name: "Rename epic", exact: true }).click();
     await expect
       .poll(() => getIssue(epicKey).then((issue) => issue.title))
       .toBe("Release coordination");
@@ -481,6 +489,9 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     expect(await panel.evaluate((element) => element.contains(document.activeElement))).toBe(true);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Columns", exact: true })).toBeFocused();
+    // An epic is an ordinary row of the table, searchable and selectable like any other, and
+    // becomes a heading only in the grouping that makes it one.
+    await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(1);
     await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
     await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(0);
     await expect(
@@ -619,7 +630,9 @@ test("compact windows give the table three full rows and let the page scroll @ph
   }
 });
 
-test("phone status labels and Done load are readable and reachable @phone", async ({ browser }) => {
+test("phone status labels are readable and closed issues load from the Status filter @phone", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Triage member" });
   const todo = await createIssue({ project: "CORE", title: "Todo member" });
@@ -635,7 +648,8 @@ test("phone status labels and Done load are readable and reachable @phone", asyn
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("group", { name: "Issues by status" });
-    await expect(strip.getByRole("button", { name: "Done: load", exact: true })).toBeAttached();
+    // No Done cell at all while closed issues are unloaded: the bar counts what it has.
+    await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
     for (const button of await strip.getByRole("button").all()) {
       await button.scrollIntoViewIfNeeded();
       const readable = await button.evaluate((element) => {
@@ -652,7 +666,8 @@ test("phone status labels and Done load are readable and reachable @phone", asyn
       expect(readable.readable).toBe(true);
       await expect(button).toBeInViewport();
     }
-    await strip.getByRole("button", { name: "Done: load", exact: true }).click();
+    await page.getByRole("button", { name: /^Filter Status/ }).click();
+    await page.getByRole("option", { name: "Done, not loaded" }).click();
     await expect(page.locator(`[data-issue-row="${closed.key}"]`)).toBeAttached();
   } finally {
     await context.close();
@@ -675,7 +690,7 @@ test("on a desktop the status bar spans its box and stays one short line", async
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("group", { name: "Issues by status" });
-    await expect(strip.getByRole("button", { name: "Done: load", exact: true })).toBeAttached();
+    await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
     const geometry = await strip.evaluate((element) => {
       const box = element.getBoundingClientRect();
       const buttons = [...element.querySelectorAll("button")].map((button) =>
@@ -805,8 +820,12 @@ test("a stopped committed epic retries one key and reload finishes only its rema
     await page.goto("/projects/CORE/issues");
     await page.getByRole("checkbox", { name: `Select ${first.key}`, exact: true }).check();
     await page.getByRole("checkbox", { name: `Select ${closed.key}`, exact: true }).check();
-    page.once("dialog", (dialog) => void dialog.accept("Recover one created epic"));
     await page.getByRole("button", { name: "New epic from these", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Recover one created epic");
+    await page.getByRole("button", { name: "Create epic", exact: true }).click();
     expect(await committed).toBe(201);
     await page.clock.fastForward(SEND_DEADLINE_MS + 1);
     const pending = page.getByRole("region", { name: "Pending changes" });

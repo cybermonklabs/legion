@@ -2,44 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
 import { defineWriteKind, useWrites } from "../writes/write-store";
+import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
 
-export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
-export interface TableAction {
-  id: string;
-  kind: "newEpic" | "startNext" | "merge";
-  project: string;
-  keys: readonly string[];
-  source?: string;
-  target?: string;
-  writes: Record<string, string>;
-}
-export function readTableAction(project: string): TableAction | undefined {
-  try {
-    const action = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}").action;
-    if (
-      action?.project === project &&
-      typeof action.id === "string" &&
-      ["newEpic", "startNext", "merge"].includes(action.kind) &&
-      Array.isArray(action.keys) &&
-      action.keys.every((key: unknown) => typeof key === "string") &&
-      action.writes &&
-      typeof action.writes === "object" &&
-      !Array.isArray(action.writes) &&
-      Object.values(action.writes).every((key) => typeof key === "string") &&
-      (action.target === undefined || typeof action.target === "string") &&
-      (action.kind !== "merge" ||
-        (typeof action.source === "string" && typeof action.target === "string"))
-    )
-      return action;
-  } catch {
-    // A malformed preference is not an action to send.
-  }
-  return undefined;
-}
-function keepAction(project: string, action: TableAction | undefined): void {
-  const saved = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}");
-  localStorage.setItem(tableStorageKey(project), JSON.stringify({ ...saved, action }));
-}
+export type { TableAction } from "./issues-table-storage";
 
 // Keep the answer's issue key even when the table that started creation is no longer mounted.
 export const tableEpicWrite = defineWriteKind<string>({
@@ -54,7 +19,7 @@ export const tableEpicWrite = defineWriteKind<string>({
       "key" in answer &&
       typeof answer.key === "string"
     ) {
-      keepAction(write.detail, { ...action, target: answer.key });
+      writeTableAction(write.detail, { ...action, target: answer.key });
     }
     if (!awaited || answer === null) void client.invalidateQueries();
   },
@@ -71,7 +36,7 @@ export function useTableRecovery(project: string, report: (text: string) => void
   const failed = useRef(new Map<number, string>());
   const remember = useCallback(
     (next: TableAction | undefined) => {
-      keepAction(project, next);
+      writeTableAction(project, next);
       current.current = next;
       if (alive.current) setAction(next);
     },
@@ -115,12 +80,17 @@ export function useTableRecovery(project: string, report: (text: string) => void
             owned.current.get(event.write.id)?.issue ?? event.write.label
           );
       } else if (failed.current.delete(event.write.id)) {
+        // Only a write of the interrupted action's own says anything about finishing it: a
+        // Move or a Rename retried beside one reports like any other change.
+        const ofAction =
+          current.current !== undefined &&
+          owned.current.get(event.write.id)?.action === current.current.id;
         reportRef.current(
           failed.current.size
             ? `Changes not saved: ${[...failed.current.values()].join(", ")}. Retry them in Pending changes.`
             : event.kind === "discarded"
               ? "The failed change was discarded."
-              : current.current
+              : ofAction
                 ? "The retried changes are saved. Finish the interrupted action to complete its remaining steps."
                 : "All changes saved."
         );

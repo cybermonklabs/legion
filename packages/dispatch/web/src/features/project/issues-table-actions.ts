@@ -8,7 +8,7 @@ import {
   buildItems,
   type Item,
   mergeMembers,
-  remainingStartNextWrites,
+  queuedInOrder,
   startNextWrites,
 } from "./issues-table-model";
 import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
@@ -25,6 +25,51 @@ interface DuplicateEpic {
   keys: readonly string[];
   title: string;
   message: string;
+}
+/** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
+export type EpicNaming =
+  | { kind: "new"; keys: readonly string[] }
+  | { kind: "rename"; key: string; title: string };
+
+/** How many writes of one bulk action are in flight at once. A selection is as large as the
+ *  project, and "Select all N matching" is two clicks away, so the table sends them in a
+ *  bounded stream rather than all at once; each write is still independent in the store. */
+const WRITES_IN_FLIGHT = 8;
+
+/** `Promise.allSettled` over `items`, at most `limit` of them running at a time, answers in the
+ *  order the items came in. */
+async function settledWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  run: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = Array.from({ length: items.length });
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (let index = next++; index < items.length; index = next++) {
+        const item = items[index] as T;
+        try {
+          results[index] = { status: "fulfilled", value: await run(item) };
+        } catch (reason) {
+          results[index] = { status: "rejected", reason };
+        }
+      }
+    })
+  );
+  return results;
+}
+
+/** The one sentence a merge records on the source issue, written and recognised in one place. */
+const mergeReason = (into: string, title: string) =>
+  `Merged into ${into} (“${title}”) from the issues table.`;
+
+/** What an interrupted action of each kind says it left behind, and how it is finished. The
+ *  record's kind union is the only list of kinds: a new one fails to compile until both are
+ *  written for it. */
+interface ResumableAction {
+  describe: (record: TableAction) => string;
+  resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;
 }
 
 export function useIssueTableActions({
@@ -45,6 +90,7 @@ export function useIssueTableActions({
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
+  const [naming, setNaming] = useState<EpicNaming>();
   const recovery = useTableRecovery(project, (text) =>
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
@@ -66,23 +112,23 @@ export function useIssueTableActions({
       request: value,
       target: `issue:${issue}`,
     });
+    // Every write is watched, so a refusal names its issue; only a write of a recorded action
+    // belongs to it, so a refused Move or Rename retries with the ordinary wording.
     recovery.watch(key, issue);
     return answer;
   };
   const apply = async (operations: readonly Patch[], id?: string) => {
-    const results = await Promise.allSettled(
-      operations.map(async ({ key, input }) => {
-        const answer = await request(
-          issuePatchRequest(key, input),
-          `Update ${key} from the issues table`,
-          key,
-          id
-        );
-        if (answer !== null) mergeIssue(client, answer);
-        setMoved((current) => new Set([...current, key]));
-        return key;
-      })
-    );
+    const results = await settledWithLimit(operations, WRITES_IN_FLIGHT, async ({ key, input }) => {
+      const answer = await request(
+        issuePatchRequest(key, input),
+        `Update ${key} from the issues table`,
+        key,
+        id
+      );
+      if (answer !== null) mergeIssue(client, answer);
+      setMoved((current) => new Set([...current, key]));
+      return key;
+    });
     const failed = results.flatMap((result, index) =>
       result.status === "rejected"
         ? [{ key: operations[index]?.key ?? "Unknown issue", error: result.reason }]
@@ -151,9 +197,22 @@ export function useIssueTableActions({
   };
   const startNext = (keys: readonly string[]) => {
     if (!canBegin()) return;
-    const operations = startNextWrites(items, keys);
-    if (!operations.length) return;
-    const queued = operations.map(({ key }) => key).reverse();
+    const queued = queuedInOrder(items, keys);
+    if (!queued.length) {
+      setNotice({
+        kind: "error",
+        text: "Only issues waiting in Legion's queue can start next.",
+      });
+      return;
+    }
+    const operations = startNextWrites(items, queued);
+    if (!operations.length) {
+      setNotice({
+        kind: "success",
+        text: `${named(queued)} already ${queued.length === 1 ? "starts" : "start"} next.`,
+      });
+      return;
+    }
     const record = recovery.begin({ kind: "startNext", keys: queued });
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
@@ -188,8 +247,13 @@ export function useIssueTableActions({
       });
       return;
     }
-    const title = chosenTitle ?? window.prompt(`Name the new epic for ${named(open)}`);
+    if (chosenTitle === undefined) {
+      setNaming({ kind: "new", keys: open });
+      return;
+    }
+    const title = chosenTitle.trim();
     if (!title) return;
+    setNaming(undefined);
     setDuplicateEpic(undefined);
     const record = recovery.begin({ kind: "newEpic", keys: open });
     const key = recovery.key("create", record.id);
@@ -232,8 +296,13 @@ export function useIssueTableActions({
       }
     );
   };
-  const renameEpic = (key: string) => {
-    const title = window.prompt("Rename the epic", titleOf(key));
+  const renameEpic = (key: string, chosenTitle?: string) => {
+    if (chosenTitle === undefined) {
+      setNaming({ kind: "rename", key, title: titleOf(key) });
+      return;
+    }
+    const title = chosenTitle.trim();
+    setNaming(undefined);
     if (title && title !== titleOf(key))
       void perform(`Renamed the epic to “${title}”.`, () => apply([{ key, input: { title } }]));
   };
@@ -241,20 +310,23 @@ export function useIssueTableActions({
     const from = record.source;
     const into = record.target;
     if (!from || !into || !recovery.active(record.id)) return;
+    // The reason write's own key says whether it was sent: a sentence anyone may comment does
+    // not. The text check is the second answer, for a record that lost its key, and it compares
+    // the whole sentence the writer builds.
+    const saved = recovery.current.current;
     const alreadySaid =
       resumed &&
-      (await api.listIssueMessages(from)).some(
-        ({ message }) =>
-          message.body.startsWith(`Merged into ${into} (“`) &&
-          message.body.endsWith(" from the issues table.")
-      );
+      (saved?.writes.reason !== undefined ||
+        (await api.listIssueMessages(from)).some(
+          ({ message }) => message.body === mergeReason(into, titleOf(into))
+        ));
     if (!recovery.active(record.id)) return;
     if (!alreadySaid)
       await request(
         {
           method: "POST",
           path: `/api/v1/issues/${encodeURIComponent(from)}/messages`,
-          body: { body: `Merged into ${into} (“${titleOf(into)}”) from the issues table.` },
+          body: { body: mergeReason(into, titleOf(into)) },
         },
         `Record the merge reason on ${from}`,
         from,
@@ -286,17 +358,12 @@ export function useIssueTableActions({
       return members;
     });
   };
-  const finish = () => {
-    const interrupted = recovery.current.current;
-    if (!interrupted) return;
-    void perform("Finished the interrupted action.", async () => {
-      await recovery.settle(interrupted);
-      if (!recovery.active(interrupted.id)) return undefined;
-      const record = recovery.current.current;
-      if (!record) return undefined;
-      const current = await api.listIssues({ project });
-      if (!recovery.active(record.id)) return undefined;
-      if (record.kind === "newEpic") {
+
+  const kinds: Record<TableAction["kind"], ResumableAction> = {
+    newEpic: {
+      describe: (record) =>
+        `New epic${record.target ? ` ${record.target}` : ""}: ${record.keys.join(", ")} are not yet adopted. Finish checks which open issues still need to move.`,
+      resume: async (record, current) => {
         if (!record.target)
           throw new Error(
             "The created epic's key is still unknown. Retry its creation in Pending changes before finishing adoption."
@@ -317,34 +384,59 @@ export function useIssueTableActions({
             .map((issue) => ({ key: issue.key, input: { parent: record.target } })),
           record.id
         );
-      } else if (record.kind === "startNext") {
-        for (const operation of remainingStartNextWrites(
+      },
+    },
+    startNext: {
+      describe: (record) =>
+        `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
+      resume: async (record, current) => {
+        for (const operation of startNextWrites(
           buildItems(current, () => ""),
           record.keys
         )) {
-          if (!recovery.active(record.id)) return undefined;
+          if (!recovery.active(record.id)) return;
           await apply([operation], record.id);
         }
-      } else if (current.find((issue) => issue.key === record.source)?.status !== "done") {
+      },
+    },
+    merge: {
+      describe: (record) =>
+        `Merge ${record.source} into ${record.target}: remaining open issues, the merge reason and closing the source still need to be checked.`,
+      resume: async (record, current) => {
+        if (current.find((issue) => issue.key === record.source)?.status === "done") return;
         const members = mergeMembers(current, record.source ?? "");
         await apply(
           members.map((key) => ({ key, input: { parent: record.target } })),
           record.id
         );
-        if (!recovery.active(record.id)) return undefined;
+        if (!recovery.active(record.id)) return;
         const remaining = mergeMembers(await api.listIssues({ project }), record.source ?? "");
         if (remaining.length)
           throw new Error(
             `The source epic ${record.source} remains open: ${remaining.join(", ")} still need to move.`
           );
         await closeMerge(record, true);
-      }
+      },
+    },
+  };
+  const finish = () => {
+    const interrupted = recovery.current.current;
+    if (!interrupted) return;
+    void perform("Finished the interrupted action.", async () => {
+      await recovery.settle(interrupted);
+      if (!recovery.active(interrupted.id)) return undefined;
+      const record = recovery.current.current;
+      if (!record) return undefined;
+      const current = await api.listIssues({ project });
+      if (!recovery.active(record.id)) return undefined;
+      await kinds[record.kind].resume(record, current);
       if (!recovery.active(record.id)) return undefined;
       recovery.dismiss();
       setUnansweredEpic(undefined);
       return record.keys;
     });
   };
+  const interrupted = busy ? undefined : recovery.action;
   return {
     busy,
     notice,
@@ -356,7 +448,10 @@ export function useIssueTableActions({
       setUnansweredEpic(undefined);
       recovery.dismiss();
     },
-    interrupted: busy ? undefined : recovery.action,
+    interrupted,
+    interruptedDescription: interrupted && kinds[interrupted.kind].describe(interrupted),
+    naming,
+    cancelNaming: () => setNaming(undefined),
     finish,
     dismiss: recovery.dismiss,
     moveTo,

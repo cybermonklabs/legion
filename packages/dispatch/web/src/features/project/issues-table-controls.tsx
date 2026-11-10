@@ -1,19 +1,9 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Column, Row, Table } from "@tanstack/react-table";
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { createPortal } from "react-dom";
+import { type ReactNode, type RefObject, useCallback, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueSummary } from "../../api/types";
-import { Chip } from "../../components/Chip";
+import { AnchoredPanel } from "../../components/AnchoredPanel";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
@@ -33,8 +23,17 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
+import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
-import { ALL_ROWS, type Item, priorityName, readUrl, writeUrl } from "./issues-table-model";
+import {
+  ALL_ROWS,
+  type Item,
+  PAGE_SIZES,
+  priorityName,
+  readUrl,
+  runningIssueStatuses,
+  writeUrl,
+} from "./issues-table-model";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -264,64 +263,7 @@ function Popover({
     [onOpenChange]
   );
   const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ top: 0, left: 0 });
-  useLayoutEffect(() => {
-    if (!open) return;
-    const place = () => {
-      const box = trigger.current?.getBoundingClientRect();
-      if (!box) return;
-      const width = Math.min(256, window.innerWidth - 16);
-      const left = Math.max(
-        8,
-        Math.min(align === "right" ? box.right - width : box.left, window.innerWidth - width - 8)
-      );
-      const top = Math.max(
-        8,
-        Math.min(box.bottom + 4, window.innerHeight - (panel.current?.offsetHeight ?? 200) - 8)
-      );
-      setPosition((current) =>
-        current.left === left && current.top === top ? current : { left, top }
-      );
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open, align]);
-  useEffect(() => {
-    if (!open) return;
-    panel.current?.querySelector<HTMLElement>("input, button, select, [tabindex]")?.focus();
-    const outside = (event: MouseEvent) => {
-      if (
-        !panel.current?.contains(event.target as Node) &&
-        !trigger.current?.contains(event.target as Node)
-      )
-        setOpen(false);
-    };
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus();
-    };
-    const focus = () =>
-      queueMicrotask(() => {
-        if (!panel.current?.contains(document.activeElement)) setOpen(false);
-      });
-    document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", keyboard, true);
-    document.addEventListener("focusin", focus);
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", keyboard, true);
-      document.removeEventListener("focusin", focus);
-    };
-  }, [open, setOpen]);
+
   const close = () => {
     setOpen(false);
     trigger.current?.focus();
@@ -343,20 +285,18 @@ function Popover({
       >
         {label}
       </button>
-      {open
-        ? createPortal(
-            <div
-              aria-label={title ?? (typeof label === "string" ? label : "Table actions")}
-              className={`fixed z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
-              ref={panel}
-              role="dialog"
-              style={position}
-            >
-              {children(close)}
-            </div>,
-            document.body
-          )
-        : null}
+      {open ? (
+        <AnchoredPanel
+          align={align}
+          anchorRef={trigger}
+          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
+          label={title ?? (typeof label === "string" ? label : "Table actions")}
+          onDismiss={() => setOpen(false)}
+          role="dialog"
+        >
+          {children(close)}
+        </AnchoredPanel>
+      ) : null}
     </>
   );
 }
@@ -481,12 +421,10 @@ export function IssueTableStatus({
   table,
   items,
   epics,
-  doneLoaded,
 }: {
   table: Table<Item>;
   items: readonly Item[];
   epics: readonly IssueSummary[];
-  doneLoaded: boolean;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
@@ -495,7 +433,7 @@ export function IssueTableStatus({
     statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
   const queuedCount = items.filter((item) => item.queue !== undefined).length;
   const runningCount = items.filter((item) =>
-    ["in_progress", "testing", "needs_review", "retro"].includes(item.issue.status)
+    (runningIssueStatuses as readonly string[]).includes(item.issue.status)
   ).length;
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
@@ -541,22 +479,19 @@ export function IssueTableStatus({
             </button>
           );
         })}
-        {doneLoaded ? null : (
-          <button
-            className={`min-h-11 shrink-0 px-3 py-2 text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${issueStatusScale.done}`}
-            onClick={() => statusColumn?.setFilterValue(["done"])}
-            title="Closed issues load when you show them"
-            type="button"
-          >
-            Done: load
-          </button>
-        )}
       </fieldset>
     </div>
   );
 }
 
-export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode {
+export function IssueTableToolbar({
+  table,
+  unclaimedUnchecked,
+}: {
+  table: Table<Item>;
+  /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
+  unclaimedUnchecked: "refilling" | "unreachable" | undefined;
+}): ReactNode {
   const flags = useIssueFilters();
   const [, setParams] = useSearchParams();
   const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
@@ -599,20 +534,8 @@ export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode 
           </select>
         </label>
         <ColumnsMenu columns={table.getAllLeafColumns()} />
-        <Chip selected={flags.needsYou} onClick={() => flags.setNeedsYou(!flags.needsYou)}>
-          Needs you
-        </Chip>
-        <Chip selected={flags.unread} onClick={() => flags.setUnread(!flags.unread)}>
-          Unread
-        </Chip>
-        <Chip selected={flags.unclaimed} onClick={() => flags.setUnclaimed(!flags.unclaimed)}>
-          Unclaimed
-        </Chip>
-        {filters.length > 0 ||
-        search !== "" ||
-        flags.needsYou ||
-        flags.unread ||
-        flags.unclaimed ? (
+        <IssueFlagChips />
+        {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
           <button
             className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
             onClick={() =>
@@ -624,7 +547,7 @@ export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode 
                     search: "",
                     page: 0,
                   });
-                  for (const flag of ["needs-you", "unread", "unclaimed"]) next.delete(flag);
+                  for (const flag of ["needs-you", "unread"]) next.delete(flag);
                   return next;
                 },
                 { replace: true }
@@ -636,18 +559,7 @@ export function IssueTableToolbar({ table }: { table: Table<Item> }): ReactNode 
           </button>
         ) : null}
       </div>
-      {flags.unclaimedUnchecked ? (
-        <p
-          role="status"
-          data-testid="unclaimed-unchecked"
-          className={`text-sm ${textSecondaryOnCanvas}`}
-        >
-          Couldn't check which claims have lapsed, so every claim counts as held:{" "}
-          {flags.unclaimedUnchecked === "refilling"
-            ? AGENT_LIST_REFILLING
-            : "Envoy listener unreachable."}
-        </p>
-      ) : null}
+      <UnclaimedUnchecked reason={unclaimedUnchecked} />
     </>
   );
 }
@@ -696,7 +608,7 @@ export function IssueTablePager({
         onChange={(event) => table.setPageSize(Number(event.target.value))}
         value={pageSize}
       >
-        {[25, 50, 100, 250, ALL_ROWS].map((size) => (
+        {PAGE_SIZES.map((size) => (
           <option key={size} value={size}>
             {size >= ALL_ROWS ? "All rows" : `${size} per page`}
           </option>

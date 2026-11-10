@@ -2,15 +2,17 @@ import { expect, test } from "@playwright/test";
 
 import { setListsState, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
+import { pickFilterOption } from "./filters";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 // A session's claim lapses when its session is no longer running, and the claim chip and the
-// project list's Unclaimed filter judge that against the live agent list. A list the Envoy
-// listener refuses as refilling (ENVOY_REFILLING) says nothing of whether the holder is gone, so
-// neither view may call the claim lapsed from it: the chip says it could not check, and the
-// filter keeps the claim as held and says why. A complete list that does not name the holder is
-// the one answer that lapses the claim, which the second test shows.
+// issues table's Claimed by filter - its "Nobody or lapsed" value, which `?unclaimed=1` also
+// sets - judge that against the live agent list. A list the Envoy listener refuses as
+// refilling (ENVOY_REFILLING) says nothing of whether the holder is gone, so neither view may
+// call the claim lapsed from it: the chip says it could not check, and the filter keeps the
+// claim as held and says why. A complete list that does not name the holder is the one answer
+// that lapses the claim, which the second test shows, picking the value in the column itself.
 //
 // Dispatch passes the listener's `Retry-After: 5` on with that refusal, and the shared retry
 // policy leaves a read that names a wait alone for it before each of its two retries, plus a
@@ -39,7 +41,7 @@ async function seedSessionClaim(): Promise<string> {
   return issue.key;
 }
 
-test("a refilling agent list never lapses a session's claim on the chip or in the Unclaimed filter", async ({
+test("a refilling agent list never lapses a session's claim on the chip or in the Claimed by filter", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -78,7 +80,7 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
   }
 });
 
-test("a complete agent list without the holder lapses its claim on the chip and in the Unclaimed filter", async ({
+test("a complete agent list without the holder lapses its claim on the chip and in the Claimed by filter", async ({
   browser,
 }) => {
   const key = await seedSessionClaim();
@@ -88,7 +90,10 @@ test("a complete agent list without the holder lapses its claim on the chip and 
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
     await expect(page.getByTestId("issue-claim")).toHaveAttribute("title", /no longer running/);
-    await page.goto("/projects/CORE/issues?unclaimed=1");
+    // Picked in the column, not through the link's parameter: the same rule, one place.
+    await page.goto("/projects/CORE/issues");
+    await pickFilterOption(page, "Claimed by", "Nobody or lapsed");
+    await expect(page).toHaveURL(/unclaimed=1/);
     await expect(
       page.getByRole("table", { name: "Project issues table" }).locator(`[data-issue-row="${key}"]`)
     ).toHaveCount(1);

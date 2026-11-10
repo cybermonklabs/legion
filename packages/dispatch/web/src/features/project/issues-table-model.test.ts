@@ -4,12 +4,15 @@ import {
   buildItems,
   defaultView,
   facetCounts,
+  isEpic,
+  isQueued,
   matchesFilters,
   matchesSearch,
   mergeMembers,
+  queuedInOrder,
   readUrl,
-  remainingStartNextWrites,
   startNextWrites,
+  UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
 
@@ -125,37 +128,73 @@ test("URL round trip preserves Board status and label params plus every table co
   );
 });
 
-test("Start next writes before keys in reverse order to retain the selected queue order", () => {
-  const queue = buildItems(
-    ["A", "B", "C", "D"].map((key) => issue(key, { labels: ["legion"] })),
-    (actor) => actor.id
-  );
-  expect(startNextWrites(queue, ["C", "B"])).toEqual([
-    { key: "C", input: { rank: { before: "A" } } },
-    { key: "B", input: { rank: { before: "C" } } },
-  ]);
-  expect(startNextWrites(queue, ["A", "B", "C", "D"])).toEqual([]);
-});
-
-test("Finish preserves the selected order and sends only ranks still behind the queue head", () => {
+test("Start next ranks the selected rows in queue order and skips the ones already ahead", () => {
   const rows = (keys: string[]) =>
     buildItems(
       keys.map((key, index) => issue(key, { rank: String(index), labels: ["legion"] })),
       (actor) => actor.id
     );
-  expect(remainingStartNextWrites(rows(["C", "A", "B", "D"]), ["B", "C"])).toEqual([
+  const queue = rows(["A", "B", "C", "D"]);
+  expect(queuedInOrder(queue, ["C", "B"])).toEqual(["B", "C"]);
+  expect(startNextWrites(queue, queuedInOrder(queue, ["C", "B"]))).toEqual([
+    { key: "C", input: { rank: { before: "A" } } },
     { key: "B", input: { rank: { before: "C" } } },
   ]);
-  expect(remainingStartNextWrites(rows(["B", "C", "A", "D"]), ["B", "C"])).toEqual([]);
-  expect(remainingStartNextWrites(rows(["C", "B"]), ["B", "C"])).toEqual([
+  expect(startNextWrites(queue, ["A", "B", "C", "D"])).toEqual([]);
+  // The same function picks up an action a reload cut short: only the ranks still behind.
+  expect(startNextWrites(rows(["C", "A", "B", "D"]), ["B", "C"])).toEqual([
     { key: "B", input: { rank: { before: "C" } } },
   ]);
-  expect(remainingStartNextWrites(rows(["A", "C"]), ["B", "C"])).toEqual([
+  expect(startNextWrites(rows(["B", "C", "A", "D"]), ["B", "C"])).toEqual([]);
+  expect(startNextWrites(rows(["C", "B"]), ["B", "C"])).toEqual([
+    { key: "B", input: { rank: { before: "C" } } },
+  ]);
+  expect(startNextWrites(rows(["A", "C"]), ["B", "C"])).toEqual([
     { key: "C", input: { rank: { before: "A" } } },
   ]);
 });
 
-test("an epic is the open root, and equal titles never merge distinct epic groups", () => {
+// The server matches a label on `lower(label)`, so an issue labelled `Legion` is queued and one
+// labelled `Epic` is an epic, exactly as the lower-case spellings are.
+test("the legion and epic labels are matched case-insensitively", () => {
+  expect(isQueued(issue("A", { labels: ["Legion"] }))).toBe(true);
+  expect(isQueued(issue("A", { labels: ["LEGION"], status: "testing" }))).toBe(false);
+  expect(isEpic(issue("A", { labels: ["Epic"] }))).toBe(true);
+  expect(isEpic(issue("A", { labels: ["epic"], status: "done" }))).toBe(false);
+  const rows = buildItems(
+    [issue("A", { labels: ["Epic"] }), issue("B", { parent: "A", labels: ["Legion"] })],
+    (actor) => actor.id
+  );
+  expect(rows.find((row) => row.issue.key === "B")?.queue).toBe(1);
+  expect(rows.find((row) => row.issue.key === "B")?.epicKey).toBe("A");
+});
+
+test("Nobody or lapsed picks unheld and takeable claims, and ?unclaimed=1 still sets it", () => {
+  const held = issue("A", {
+    claim: { actor: { kind: "session", id: "one" }, at: "2026-09-10T00:00:00Z" },
+  });
+  const rows = buildItems(
+    [held, issue("B")],
+    (actor) => actor.id,
+    [],
+    (row) => row.key === "B"
+  );
+  const picked = [{ id: "claim", value: [UNCLAIMED_FACET] }];
+  expect(rows.filter((row) => matchesFilters(row, picked)).map((row) => row.issue.key)).toEqual([
+    "B",
+  ]);
+  expect([...facetCounts(rows, "claim", [], "")]).toEqual([
+    ["one", 1],
+    ["Nobody", 1],
+    [UNCLAIMED_FACET, 1],
+  ]);
+  const fromLink = readUrl(new URLSearchParams("unclaimed=1"));
+  expect(fromLink.filters.find(({ id }) => id === "claim")?.value).toEqual([UNCLAIMED_FACET]);
+  // And a view written back from it keeps the parameter the Board's own chip reads.
+  expect(writeUrl(new URLSearchParams(), fromLink).get("unclaimed")).toBe("1");
+});
+
+test("an open root labelled epic is a row of its own, and equal titles never merge groups", () => {
   const rows = buildItems(
     [
       issue("A", { labels: ["epic"], title: "Same" }),
@@ -166,8 +205,8 @@ test("an epic is the open root, and equal titles never merge distinct epic group
     ],
     (actor) => actor.id
   );
-  expect(rows.find((row) => row.issue.key === "A")).toBeUndefined();
-  expect(rows.find((row) => row.issue.key === "B")).toBeUndefined();
+  expect(rows.find((row) => row.issue.key === "A")?.epicKey).toBe("A");
+  expect(rows.find((row) => row.issue.key === "B")?.epicKey).toBe("B");
   expect(rows.find((row) => row.issue.key === "D")?.epicKey).toBe("A");
   expect(rows.find((row) => row.issue.key === "D")?.epic).not.toBe(
     rows.find((row) => row.issue.key === "E")?.epic

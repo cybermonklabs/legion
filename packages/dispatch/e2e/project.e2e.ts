@@ -95,7 +95,10 @@ test("project table filters narrow issues; documents stay scoped to the project"
       "aria-selected",
       "true"
     );
-    await page.getByRole("button", { name: "Done: load", exact: true }).click();
+    // Closed issues load when the Status filter lets Done through; the bar's own Done cell,
+    // which only exists once they are loaded, then narrows to them.
+    await pickFilterOption(page, "Status", "Done");
+    await page.getByRole("button", { name: "Done 1", exact: true }).click();
     await expect(page.getByText("Done work", { exact: true })).toBeVisible();
     await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Testing 1", exact: true }).click();
@@ -325,7 +328,7 @@ test("status groups stay expandable and the project key sits beside its name", a
       exact: true,
     });
     await expect(shippedLink).toHaveCount(0);
-    await page.getByRole("button", { name: "Done: load", exact: true }).click();
+    await pickFilterOption(page, "Status", "Done");
     await expect(shippedLink).toBeVisible();
     await page.getByRole("combobox", { name: "Group by" }).selectOption("status");
     const done = page.getByRole("button", { name: /Done.*1 issue/ });

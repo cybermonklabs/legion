@@ -1,31 +1,22 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  type ColumnFiltersState,
-  type ColumnOrderState,
-  type ColumnSizingState,
   type ExpandedState,
   type FilterFn,
   flexRender,
-  type GroupingState,
   getCoreRowModel,
   getExpandedRowModel,
   getFilteredRowModel,
   getGroupedRowModel,
   getPaginationRowModel,
   getSortedRowModel,
-  type PaginationState,
   type Row,
   type RowSelectionState,
-  type SortingState,
   useReactTable,
-  type VisibilityState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { issueQuery, projectIssuesQuery, userStateQuery } from "../../api/queries";
+import { userStateQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { capSearchQuery } from "../../lib/query-param";
 import {
   borderDefault,
   dangerText,
@@ -37,25 +28,14 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { claimIsTakeable } from "../issue/ClaimChip";
-import { useAgentText } from "../refs/AgentName";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
-import { useKeymap } from "../shell/keymap";
-import { closestMatching } from "../shell/roving";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { EpicNameDialog } from "./EpicNameDialog";
+import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
-import {
-  COLUMN_MIN,
-  COLUMN_SIZES,
-  COMPACT_COLUMN_MIN,
-  PHONE_PINNED_SHARE,
-  PINNED,
-  PINNED_SHARE,
-  useIssueTableColumns,
-} from "./issues-table-columns";
+import { useIssueTableColumns } from "./issues-table-columns";
 import {
   ColumnFilter,
   GroupRow,
@@ -64,18 +44,17 @@ import {
   IssueTableStatus,
   IssueTableToolbar,
 } from "./issues-table-controls";
+import { useProjectIssueItems } from "./issues-table-data";
+import { useRowKeymap } from "./issues-table-keys";
+import { useTableLayout } from "./issues-table-layout";
 import {
-  buildItems,
-  type EpicAncestor,
   facetCounts,
   type Item,
   isEpic,
   matchesSearch,
-  readUrl,
-  type View,
-  writeUrl,
+  UNCLAIMED_FACET,
 } from "./issues-table-model";
-import { tableStorageKey } from "./issues-table-recovery";
+import { useTableView } from "./issues-table-view";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
@@ -84,188 +63,38 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
-interface Layout {
-  sizing: ColumnSizingState;
-  order: ColumnOrderState;
-  visibility: VisibilityState;
-}
-function loadLayout(project: string): Layout {
-  const empty = { sizing: {}, order: [], visibility: { updated: false } };
-  try {
-    const saved = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}");
-    const sizing = Object.fromEntries(
-      Object.entries(saved.sizing ?? {}).filter(
-        ([id, size]) =>
-          id in COLUMN_SIZES &&
-          typeof size === "number" &&
-          Number.isFinite(size) &&
-          size >= 36 &&
-          size <= 2000
-      )
-    );
-    const order = Array.isArray(saved.order)
-      ? [
-          ...new Set<string>(
-            saved.order.filter((id: unknown) => typeof id === "string" && id in COLUMN_SIZES)
-          ),
-        ]
-      : [];
-    const visibility = Object.fromEntries(
-      Object.entries(saved.visibility ?? {}).filter(
-        ([id, visible]) =>
-          id in COLUMN_SIZES && !PINNED.includes(id) && typeof visible === "boolean"
-      )
-    );
-    return {
-      sizing: sizing as ColumnSizingState,
-      order,
-      visibility: { ...empty.visibility, ...visibility },
-    };
-  } catch {
-    return empty;
-  }
-}
-
 export function IssuesTable({ project }: { project: string }): ReactNode {
-  const queryClient = useQueryClient();
-  const text = useAgentText();
-  const [params, setParams] = useSearchParams();
-  const view = useMemo(() => readUrl(params), [params]);
+  const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
+    useTableView();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const updateView = (update: (current: View) => View) =>
-    setParams((current) => writeUrl(current, update(readUrl(current))), { replace: true });
-  const setSorting = (update: SortingState | ((current: SortingState) => SortingState)) =>
-    updateView((current) => ({
-      ...current,
-      sorting: typeof update === "function" ? update(current.sorting) : update,
-      page: 0,
-    }));
-  const setGrouping = (update: GroupingState | ((current: GroupingState) => GroupingState)) =>
-    updateView((current) => ({
-      ...current,
-      grouping: typeof update === "function" ? update(current.grouping) : update,
-      page: 0,
-    }));
-  const setFilters = (
-    update: ColumnFiltersState | ((current: ColumnFiltersState) => ColumnFiltersState)
-  ) =>
-    updateView((current) => ({
-      ...current,
-      filters: typeof update === "function" ? update(current.filters) : update,
-      page: 0,
-    }));
-  const setSearch = (search: string) =>
-    updateView((current) => ({ ...current, search: capSearchQuery(search), page: 0 }));
-  const setPagination = (
-    update: PaginationState | ((current: PaginationState) => PaginationState)
-  ) =>
-    updateView((current) => {
-      const next =
-        typeof update === "function"
-          ? update({ pageIndex: current.page, pageSize: current.pageSize })
-          : update;
-      return { ...current, page: next.pageIndex, pageSize: next.pageSize };
-    });
-  const layout = useMemo(() => loadLayout(project), [project]);
-  const [visibility, setVisibility] = useState<VisibilityState>(layout.visibility);
+  const layout = useTableLayout(project);
+  const { boxHeight, boxWidth, measure, pagerRef, responsive, scrollRef } = layout;
   const flags = useIssueFilters();
-  const registry = useAgentRegistry(flags.unclaimed);
   const userState = useQuery(userStateQuery());
-  const [sizing, setSizing] = useState<ColumnSizingState>(layout.sizing);
-  const [boxWidth, setBoxWidth] = useState(1000);
-  const responsiveLayout = useMemo(() => {
-    const widths = Object.fromEntries(
-      Object.entries(COLUMN_SIZES).map(([id, fallback]) => [
-        id,
-        Math.max(COLUMN_MIN[id] ?? 116, sizing[id] ?? fallback),
-      ])
-    );
-    // On a phone the key and title are the row, so they take most of the box, leaving an edge of
-    // the next column to show the table scrolls sideways; wider boxes keep room for the rest.
-    const budget = boxWidth * (boxWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
-    if (boxWidth < 640) {
-      widths.key = COMPACT_COLUMN_MIN.key;
-      widths.title = Math.max(
-        COMPACT_COLUMN_MIN.title,
-        Math.min(widths.title ?? 380, budget - (widths.select ?? 44) - widths.key)
-      );
-      return { sizing: widths, pinned: ["select", "key", "title"] };
-    }
-    const pinned = [...PINNED];
-    const width = () => pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
-    widths.title = Math.max(
-      COLUMN_MIN.title ?? 116,
-      (widths.title ?? 380) - Math.max(0, width() - budget)
-    );
-    // At readable minimums, unpin from the right rather than cover the viewport.
-    while (pinned.length > 1 && width() > budget) pinned.pop();
-    return { sizing: widths, pinned };
-  }, [boxWidth, sizing]);
-  const [order, setOrder] = useState<ColumnOrderState>(layout.order);
   const [expanded, setExpanded] = useState<ExpandedState>(true);
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
   const [dragColumn, setDragColumn] = useState<string>();
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}");
-      localStorage.setItem(
-        tableStorageKey(project),
-        JSON.stringify({ ...saved, sizing, order, visibility })
-      );
-    } catch {
-      /* The URL still works when the browser refuses local preferences. */
-    }
-  }, [project, sizing, order, visibility]);
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
   const wantsDone = statusPicked.length === 0 || statusPicked.includes("done");
-  const openIssues = useQuery(projectIssuesQuery(project, [], true));
-  const everyIssue = useQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
-  const issues = wantsDone && everyIssue.data !== undefined ? everyIssue : openIssues;
-  const doneLoaded = issues === everyIssue && everyIssue.data !== undefined;
-  const listingError =
-    wantsDone && everyIssue.isError ? everyIssue : issues.isError ? issues : undefined;
-  const all = issues.data ?? [];
-  const missingParents = useMemo(() => {
-    const keys = new Set(all.map((issue) => issue.key));
-    return [
-      ...new Set(
-        all.flatMap((issue) => (issue.parent && !keys.has(issue.parent) ? [issue.parent] : []))
-      ),
-    ];
-  }, [all]);
-  const ancestry = useQuery({
-    queryKey: [...projectIssuesQueryKey(project, []), "ancestors", ...missingParents],
-    enabled: missingParents.length > 0,
-    retry: false,
-    queryFn: async () => {
-      const known = new Map<string, EpicAncestor>(all.map((issue) => [issue.key, issue]));
-      const ancestors: EpicAncestor[] = [];
-      for (;;) {
-        const missing = [
-          ...new Set(
-            [...known.values()].flatMap((issue) =>
-              issue.parent && !known.has(issue.parent) ? [issue.parent] : []
-            )
-          ),
-        ];
-        if (missing.length === 0) return ancestors;
-        for (const parent of await Promise.all(
-          missing.map((key) => queryClient.fetchQuery(issueQuery(key)))
-        )) {
-          known.set(parent.key, parent);
-          ancestors.push(parent);
-        }
-      }
-    },
-  });
-  const epics = useMemo(() => all.filter(isEpic), [all]);
-  const allItems = useMemo(
-    () => buildItems(all, text.label, ancestry.data),
-    [all, text, ancestry.data]
-  );
+  const claimPicked = (filters.find((filter) => filter.id === "claim")?.value ?? []) as string[];
+  // Which claims have lapsed is the agent registry's answer, read only while the Claimed by
+  // filter asks for it: because it is picked, or because its panel is open and counting.
+  const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
+  const registry = useAgentRegistry(wantsFree || openFilter === "claim");
+  const {
+    all,
+    allItems,
+    ancestry,
+    doneLoaded,
+    epics,
+    everyIssue,
+    issues,
+    listingError,
+    missingParents,
+  } = useProjectIssueItems(project, { wantsDone, registry });
   const items = useMemo(
     () =>
       allItems.filter(
@@ -273,9 +102,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           (!flags.needsYou || issue.open_asks > 0) &&
           (!flags.unread ||
             issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
-          (!flags.unclaimed || issue.claim === null || claimIsTakeable(issue.claim, registry))
+          // An epic is an ordinary row, except in the grouping that makes it a group heading.
+          (grouping[0] !== "epic" || !isEpic(issue))
       ),
-    [allItems, flags.needsYou, flags.unread, flags.unclaimed, registry, userState.data]
+    [allItems, flags.needsYou, flags.unread, grouping, userState.data]
   );
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640);
@@ -287,23 +117,23 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       sorting,
       grouping,
       columnFilters: filters,
-      columnVisibility: visibility,
+      columnVisibility: layout.visibility,
       pagination,
       globalFilter: search,
       expanded,
       rowSelection: selection,
-      columnSizing: responsiveLayout.sizing,
-      columnOrder: order,
-      columnPinning: { left: responsiveLayout.pinned },
+      columnSizing: responsive.sizing,
+      columnOrder: layout.order,
+      columnPinning: { left: responsive.pinned },
     },
     getRowId: (item) => item.issue.key,
-    onColumnSizingChange: setSizing,
-    onColumnOrderChange: setOrder,
+    onColumnSizingChange: layout.setSizing,
+    onColumnOrderChange: layout.setOrder,
     columnResizeMode: "onChange",
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
     onColumnFiltersChange: setFilters,
-    onColumnVisibilityChange: setVisibility,
+    onColumnVisibilityChange: layout.setVisibility,
     onPaginationChange: setPagination,
     onGlobalFilterChange: setSearch,
     onExpandedChange: setExpanded,
@@ -374,7 +204,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     newEpic,
     renameEpic,
     mergeEpic,
+    naming,
+    cancelNaming,
     interrupted,
+    interruptedDescription,
     finish,
     dismiss,
   } = useIssueTableActions({
@@ -384,32 +217,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     clearSelection: () => setSelection({}),
   });
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const pagerRef = useRef<HTMLDivElement>(null);
-  const [boxHeight, setBoxHeight] = useState(400);
-  useLayoutEffect(() => {
-    const place = () => {
-      const box = scrollRef.current;
-      if (!box) return;
-      const bounds = box.getBoundingClientRect();
-      const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
-      const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
-      const rowsHeight = firstRows.reduce(
-        (height, row) => height + row.getBoundingClientRect().height,
-        0
-      );
-      const available =
-        window.innerHeight -
-        (bounds.top + window.scrollY) -
-        (pagerRef.current?.getBoundingClientRect().height ?? 80) -
-        32;
-      setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
-      setBoxWidth(bounds.width);
-    };
-    place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  });
   const pageRows = table.getRowModel().rows;
   const continued =
     pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
@@ -419,6 +226,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     ...(continued === undefined ? [] : [{ row: continued, continued: true }]),
     ...pageRows.map((row) => ({ row })),
   ];
+  // The box is measured when its contents change height, never on a scroll: the virtualizer
+  // commits on every visible range, and measuring there is a forced reflow per scrolled row.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: how many rows the page holds and how they are grouped is what changes the box's height.
+  useLayoutEffect(measure, [measure, displayRows.length, grouping[0]]);
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => scrollRef.current,
@@ -429,96 +240,18 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     overscan: 12,
   });
 
-  const pendingFocus = useRef<string | null>(null);
-  const focusedRow = () => closestMatching(document.activeElement, "[data-issue-row]");
-  const moveFocus = (direction: 1 | -1) => {
-    const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());
-    const current = leaves.findIndex(
-      ({ row }) => row.id === focusedRow()?.getAttribute("data-issue-row")
-    );
-    const target =
-      leaves[
-        current < 0
-          ? direction === 1
-            ? 0
-            : leaves.length - 1
-          : Math.max(0, Math.min(leaves.length - 1, current + direction))
-      ];
-    if (!target) return;
-    pendingFocus.current = target.row.id;
-    const element = scrollRef.current?.querySelector<HTMLElement>(
-      `[data-issue-row="${CSS.escape(target.row.id)}"]`
-    );
-    if (element) {
-      element.focus();
-      pendingFocus.current = null;
-    } else virtualizer.scrollToIndex(displayRows.indexOf(target), { align: "auto" });
-  };
-  useLayoutEffect(() => {
-    if (!pendingFocus.current) return;
-    const element = scrollRef.current?.querySelector<HTMLElement>(
-      `[data-issue-row="${CSS.escape(pendingFocus.current)}"]`
-    );
-    if (element) {
-      element.focus({ preventScroll: true });
-      pendingFocus.current = null;
-    }
+  useRowKeymap({
+    displayRows,
+    rowsById: table.getCoreRowModel().rowsById,
+    scrollRef,
+    scrollToIndex: (index) => virtualizer.scrollToIndex(index, { align: "auto" }),
   });
-  const openFocusedRow = () =>
-    focusedRow()?.querySelector<HTMLElement>("[data-issue-link]")?.click();
-  useKeymap("project", [
-    {
-      id: "list-next",
-      keys: "j",
-      label: "Next issue",
-      palette: false,
-      run: () => moveFocus(1),
-      when: () => displayRows.some(({ row }) => !row.getIsGrouped()),
-    },
-    {
-      id: "list-previous",
-      keys: "k",
-      label: "Previous issue",
-      palette: false,
-      run: () => moveFocus(-1),
-      when: () => displayRows.some(({ row }) => !row.getIsGrouped()),
-    },
-    {
-      id: "list-open",
-      keys: "o",
-      label: "Open issue",
-      run: openFocusedRow,
-      when: () => focusedRow() !== null,
-    },
-    {
-      id: "list-open-enter",
-      keys: "Enter",
-      label: "Open the focused issue",
-      palette: false,
-      run: openFocusedRow,
-      when: () => document.activeElement?.matches("[data-issue-row]") === true,
-    },
-    {
-      // Selecting walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
-      id: "list-select",
-      keys: "x",
-      label: "Select or deselect the focused issue",
-      palette: false,
-      run: () => {
-        const key = focusedRow()?.getAttribute("data-issue-row");
-        if (key !== null && key !== undefined) {
-          table.getCoreRowModel().rowsById[key]?.toggleSelected();
-        }
-      },
-      when: () => focusedRow() !== null,
-    },
-  ]);
   const controlSignature = params.toString();
   const previousControls = useRef(controlSignature);
   useLayoutEffect(() => {
     if (previousControls.current !== controlSignature) scrollRef.current?.scrollTo({ top: 0 });
     previousControls.current = controlSignature;
-  }, [controlSignature]);
+  }, [controlSignature, scrollRef]);
   useEffect(() => {
     if (
       (!wantsDone || everyIssue.data !== undefined) &&
@@ -582,9 +315,18 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           </p>
         ) : null}
         {/* Issues by status: a click shows only that status, a second click every status. */}
-        <IssueTableStatus table={table} items={allItems} epics={epics} doneLoaded={doneLoaded} />
+        <IssueTableStatus table={table} items={allItems} epics={epics} />
 
-        <IssueTableToolbar table={table} />
+        <IssueTableToolbar
+          table={table}
+          unclaimedUnchecked={
+            wantsFree && registry.isError
+              ? registry.refilling
+                ? "refilling"
+                : "unreachable"
+              : undefined
+          }
+        />
 
         <p
           aria-live="polite"
@@ -595,13 +337,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         </p>
         {interrupted ? (
           <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
-            <p>
-              {interrupted.kind === "newEpic"
-                ? `New epic${interrupted.target ? ` ${interrupted.target}` : ""}: ${interrupted.keys.join(", ")} are not yet adopted. Finish checks which open issues still need to move.`
-                : interrupted.kind === "startNext"
-                  ? `Start next: ${interrupted.keys.join(", ")} may still need to move up, in that order.`
-                  : `Merge ${interrupted.source} into ${interrupted.target}: remaining open issues, the merge reason and closing the source still need to be checked.`}
-            </p>
+            <p>{interruptedDescription}</p>
             <button
               type="button"
               onClick={finish}
@@ -696,7 +432,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                           const current = table.getAllLeafColumns().map((column) => column.id);
                           const next = current.filter((id) => id !== dragColumn);
                           next.splice(next.indexOf(header.column.id), 0, dragColumn);
-                          setOrder(next);
+                          layout.setOrder(next);
                           setDragColumn(undefined);
                         }}
                         style={{
@@ -862,6 +598,24 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         moveTo={moveTo}
         newEpic={newEpic}
       />
+      {naming === undefined ? null : naming.kind === "new" ? (
+        <EpicNameDialog
+          key="new-epic"
+          onCancel={cancelNaming}
+          onSubmit={(name) => void newEpic(naming.keys, name)}
+          submitLabel="Create epic"
+          title="Name the new epic"
+        />
+      ) : (
+        <EpicNameDialog
+          initial={naming.title}
+          key={`rename-${naming.key}`}
+          onCancel={cancelNaming}
+          onSubmit={(name) => renameEpic(naming.key, name)}
+          submitLabel="Rename epic"
+          title="Rename the epic"
+        />
+      )}
     </section>
   );
 }
