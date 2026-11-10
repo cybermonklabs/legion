@@ -136,7 +136,11 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 	}
 	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
 	config = wireTestRoleForwarder(t, config)
-	delivery := connectSessionDelivery([]string{testnats.URL(t)}, config.logger)
+	// The connection carries the threshold the listener's own windows derive, as main opens it
+	// (inactiveThresholdFor): nothing here waits one out, but no rig creates a consumer under a
+	// threshold the deployment would not.
+	delivery := connectSessionDelivery([]string{testnats.URL(t)},
+		inactiveThresholdFor(d.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), config.logger)
 	t.Cleanup(delivery.close)
 	if delivery.consumers == nil {
 		t.Fatal("the session-consumer connection did not open")

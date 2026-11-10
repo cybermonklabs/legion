@@ -124,7 +124,11 @@
     },
     {
       "script": "dispatch-two-builds.sh",
-      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+    },
+    {
+      "script": "dispatch-search-two-builds.sh",
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and the commit this proof needs is the release before the five narrowing members, legion-envoy-v29.47.1, which no job can pick for it. It is the live proof that a search carrying one of those members reaches an older build as 404 no route rather than as unnarrowed rows, through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
     },
     {
       "script": "dispatch-session-settings.sh",

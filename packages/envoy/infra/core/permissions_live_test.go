@@ -663,7 +663,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			owner, err := bus.ConnectOwningStream([]string{uri}, environment)
 			require.NoError(t, err)
 			t.Cleanup(owner.Close)
-			consumers, err := bus.ConnectSessionConsumers([]string{uri}, environment)
+			consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, environment)
 			require.NoError(t, err)
 			t.Cleanup(consumers.Close)
 

@@ -188,8 +188,10 @@ describe("EnvoyClient", () => {
       stream_id: "stream-1",
       gap: false,
     };
+    const started: DeliveryAnswer = { ...consumer, consumer_start: 42 };
     const recorded = recordFetch([
       jsonResponse({ ...interest, delivery: consumer }),
+      jsonResponse({ ...interest, delivery: started }),
       jsonResponse({ ...interest, delivery: { mode: "core", reason: "no_grant" } }),
       jsonResponse(interest),
       jsonResponse({ ...interest, delivery: { mode: "push" } }),
@@ -208,7 +210,10 @@ describe("EnvoyClient", () => {
         plugin: PLUGIN,
       });
 
+    // A listener of an earlier release answers no `consumer_start`, and one that carries it is
+    // read with it: the session keeps it as the floor of its resume point.
     expect((await register()).delivery).toEqual(consumer);
+    expect((await register()).delivery).toEqual(started);
     expect((await register()).delivery).toEqual({ mode: "core", reason: "no_grant" });
     // A listener of an earlier release answers no `delivery`: core.
     expect((await register()).delivery).toEqual({ mode: "core", reason: "not_answered" });

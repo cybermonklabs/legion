@@ -78,6 +78,10 @@ absent_session_id="ses_e2e_local_absent"
 readonly absent_session_id
 
 readonly envelopes_file="${out_dir}/envelopes.jsonl"
+# The listener's own record of where a deleted session consumer stopped, one line per record as
+# `<subject> <json>`: no envelope, so the capture keeps it apart from the envelopes, and the run
+# reads it to show the deregistration below recorded the session's floor.
+readonly resume_records_file="${out_dir}/resume-records.txt"
 readonly session_frames_file="${out_dir}/session-frames.jsonl"
 readonly rendered_ts_file="${out_dir}/rendered-ts.txt"
 readonly direct_response_file="${out_dir}/direct-send-response.json"
@@ -88,6 +92,10 @@ readonly no_reply_none_response_file="${out_dir}/no-reply-none-send-response.jso
 readonly registry_session_response_file="${out_dir}/registry-session-response.json"
 readonly registry_missing_response_file="${out_dir}/registry-missing-response.json"
 readonly subscribe_response_file="${out_dir}/subscribe-response.json"
+# The answer to the registration the session makes again after its deregistration: its
+# delivery.consumer_start is where the listener created its consumer, which the floor the delete
+# recorded is read against.
+readonly resubscribe_response_file="${out_dir}/resubscribe-response.json"
 readonly unwired_response_file="${out_dir}/unwired-subscribe-response.json"
 readonly port_registration_response_file="${out_dir}/port-registration-response.json"
 readonly unheld_role_response_file="${out_dir}/unheld-role-response.json"
@@ -179,6 +187,7 @@ rm -f "$envelopes_file" "$session_frames_file" "$rendered_ts_file" \
   "$listener_binary" "$nats_binary" "$session_ready_fifo" "$subscriber_ready_fifo"
 rm -rf "$nats_store_dir"
 : >"$envelopes_file"
+: >"$resume_records_file"
 : >"$session_frames_file"
 # Every log file is created before the process that writes it, so a wait that reads one cannot
 # race the redirect that creates it: wait_for_listener's jq and wait_for_nats's grep would
@@ -383,28 +392,38 @@ fi
 
 (
   cd "$repo_root"
-  exec env E2E_NATS_URL="$nats_url" E2E_ENVELOPES_FILE="$envelopes_file" bun -e '
+  exec env E2E_NATS_URL="$nats_url" E2E_ENVELOPES_FILE="$envelopes_file" E2E_RESUME_RECORDS_FILE="$resume_records_file" bun -e '
     import { appendFileSync } from "node:fs";
     import { connect, StringCodec } from "nats";
 
     const url = process.env.E2E_NATS_URL;
     const output = process.env.E2E_ENVELOPES_FILE;
-    if (url === undefined || output === undefined) throw new Error("capture configuration is invalid");
+    const resumeOutput = process.env.E2E_RESUME_RECORDS_FILE;
+    if ([url, output, resumeOutput].some((value) => value === undefined)) throw new Error("capture configuration is invalid");
+    const resumePrefix = "notifications.envoy.resume.";
     const codec = StringCodec();
     const connection = await connect({ servers: url, name: "envoy-e2e-capture" });
-    // Everything the listener publishes, except the relay frames of the session above: a frame
-    // carries a copy of a stored envelope, on notifications.envoy.deliver.<session id>, so
-    // counting one here would count its message twice. The frames are evidence of their own, and
-    // the stand-in that writes them also answers the role-forward receipts answered here before.
     const subscription = connection.subscribe("notifications.>");
     process.stdout.write("ready\n");
     for await (const message of subscription) {
-      // The listener keeps a role message nobody can take on a kept lane of that role, and records
-      // how far it has drained that lane on a cursor subject beside it. The kept copy is an
-      // envelope and is captured; the cursor is bookkeeping of the listener alone, which carries
-      // no envelope and reaches no session, so this capture of envelopes skips it.
-      if (message.subject.startsWith("notifications.envoy.kept.cursor.")) continue;
-      if (message.subject.startsWith("notifications.envoy.deliver.")) continue;
+      // Only what carries an envelope is captured here. The listener publishes records of its
+      // own under notifications.envoy. as well: the cursor beside a kept role lane, which says
+      // how far that lane has been drained, and the resume floor of a session whose consumer it
+      // has deleted, which says where the next consumer of that session starts. Neither is an
+      // envelope and neither reaches a session, so a reader of this file that took one for an
+      // envelope would read a message with no topic at all. The two things under that prefix
+      // that are envelopes are a kept role copy and a delivery exception, so this capture takes
+      // those and passes over everything else there, a lane added later included. A relay frame
+      // (notifications.envoy.deliver.<session id>) is a copy of a stored envelope and would be
+      // counted twice; the frames are evidence of their own.
+      const subject = message.subject;
+      const ownLane = subject.startsWith("notifications.envoy.") &&
+        !subject.startsWith("notifications.envoy.kept.role.") &&
+        !subject.startsWith("notifications.envoy.exceptions.");
+      if (ownLane) {
+        if (subject.startsWith(resumePrefix)) appendFileSync(resumeOutput, `${subject} ${codec.decode(message.data)}\n`);
+        continue;
+      }
       appendFileSync(output, `${codec.decode(message.data)}\n`);
     }
   ' >"$subscriber_ready_fifo" 2>"$subscriber_log_file"
@@ -865,7 +884,7 @@ printf 'lapsed-claim window: the publish was refused 404 holder_lapsed, the clai
 # The session registers again, with the registration it first made, and claims the role again:
 # its own claim never left it, so the claim answers as the same session's.
 curl -fsS -X POST -H 'Content-Type: application/json' \
-  "${listener_url}/v1/interests/subscribe" -d "$subscribe_body" >/dev/null
+  "${listener_url}/v1/interests/subscribe" -d "$subscribe_body" >"$resubscribe_response_file"
 curl -fsS -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/roles/set" \
   -d "{\"session_id\":\"${session_id}\",\"role\":\"${lapsed_role}\"}" >"$lapsed_role_reclaim_response_file"
@@ -873,6 +892,33 @@ jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_
   printf 'ERR: the re-registered session did not claim the lapsed role again.\n' >&2
   exit 1
 }
+
+# The deregistration above deleted the session's consumer, and before deleting it the listener
+# recorded where that consumer stopped on a lane of its own (notifications.envoy.resume.<session
+# id>, bus.SessionResumeSubject): one record, carrying a floor and the stream's identity, and no
+# envelope, which is why the capture keeps it out of the envelopes. The registration just made
+# carries no resume point of its own, so the consumer it created starts at that floor plus one -
+# which is what keeps a session that comes back from losing what the stream still holds for it.
+resume_record="$(grep -F "notifications.envoy.resume.${session_id} " "$resume_records_file" | tail -n 1)" || true
+if [[ -z "$resume_record" ]]; then
+  printf 'ERR: the deregistration deleted the session consumer without recording its resume floor; the records seen were:\n' >&2
+  cat "$resume_records_file" >&2
+  exit 1
+fi
+resume_floor="$(printf '%s' "${resume_record#* }" | jq -r 'if (.floor | type) == "number" and (.stream_id | length) > 0 then .floor else empty end')"
+if [[ -z "$resume_floor" ]]; then
+  printf 'ERR: the resume record of %s is not a floor and a stream id: %s\n' "$session_id" "$resume_record" >&2
+  exit 1
+fi
+consumer_start="$(jq -r '.delivery.consumer_start // empty' "$resubscribe_response_file")"
+if [[ "$consumer_start" != "$((resume_floor + 1))" ]]; then
+  printf 'ERR: the consumer created for %s starts at %s, not %s, the sequence after the floor its delete recorded (%s)\n' \
+    "$session_id" "${consumer_start:-none}" "$((resume_floor + 1))" "$resume_record" >&2
+  cat "$resubscribe_response_file" >&2
+  exit 1
+fi
+printf 'resume record: the delete recorded floor %s for %s, and its new consumer starts at %s\n' \
+  "$resume_floor" "$session_id" "$consumer_start"
 
 post_github issue_comment "${fixture_dir}/issue-comment-created.json"
 post_github issue_comment "${fixture_dir}/issue-comment-edited.json"

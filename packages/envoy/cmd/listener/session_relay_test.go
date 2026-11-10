@@ -920,7 +920,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 // observeConsumers opens the test's own view of the session consumers on uri.
 func observeConsumers(t *testing.T, uri string) *bus.SessionConsumers {
 	t.Helper()
-	consumers, err := bus.ConnectSessionConsumers([]string{uri})
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
