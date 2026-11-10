@@ -110,15 +110,26 @@ const fillEmbeddingProjectKeysCursorQuery = `select kind, id from embeddings_pro
 // - which the write functions label themselves - is read and left alone rather than rewritten,
 // and a second run of the pass over the same keys writes nothing. The value is
 // embeddings_owner_project_key's, the one definition of the project a row belongs to
-// (20261109120000). A row whose owner is gone resolves to null, stays null and is passed over
-// here for ever: nothing can label it, no join would have returned it to a scoped search
-// either, and the block index deletes such a window when it next sees its owner.
+// (20261109120000), and `batch` computes it: once per row of the batch, in the target list of
+// the scan that reads the row anyway, rather than once in the update's own filter and again in
+// its `set`, which is what naming a plpgsql function twice would cost.
+//
+// It also writes only where that value is a project. A row whose owner is gone resolves to
+// null and would be written null over null: a new heap tuple of about 253 bytes and an entry
+// in every index the row is in, the vector index among them, which only grows
+// (EmbeddingProjectKeyBatch holds what that costs). It gains nothing, since the row comes out
+// as unlabelled as it went in: measured over the sixteen unlabellable rows this round read,
+// eleven of them moved tuple for a null written over null (INFRA-988). Such a row stays null
+// for ever: nothing can label it, no join would have returned it to a scoped search either,
+// and the block index deletes such a window when it next sees its owner. The cursor still
+// walks past it like any other row, because the cursor comes from `batch`, which takes every
+// row whatever its owner.
 //
 // So the count is of the rows that gained a project, `count(project_key)` over what the write
-// returned, and not of the rows the write touched: the nine owner shapes that resolve to no
-// project - an item whose row is gone, an id in no shape a uuid cast takes, a retired whole-text
-// row, each kind of orphan - are written and walked past like any other row, and counting them
-// told a reader of the finish line that 16 rows had been labelled where 5 had (INFRA-988).
+// returned: the nine owner shapes that resolve to no project - an item whose row is gone, an id
+// in no shape a uuid cast takes, a retired whole-text row, each kind of orphan - are walked
+// past and not written, and counting them told a reader of the finish line that 16 rows had
+// been labelled where 5 had (INFRA-988).
 //
 // The cursor comes from `batch` and never from `labelled`'s `returning`: a row already labelled
 // returns nothing, so a cursor taken from the write would stall on the first such row. `done`
@@ -128,10 +139,12 @@ const fillEmbeddingProjectKeysCursorQuery = `select kind, id from embeddings_pro
 // `batch` is read once and kept. Two references to a CTE already mean `as materialized`, which
 // is written out here because the defect this statement replaced was a side the planner read
 // again for every candidate row, and an edit that left this CTE with one reference would
-// quietly inline it into the two statements that read it.
+// quietly inline it into the two statements that read it - and inlined, the owner lookup in its
+// target list would be made once per reference rather than once.
 const fillEmbeddingProjectKeysBatchQuery = `
 	with batch as materialized (
-		select e.kind, e.id
+		select e.kind, e.id,
+		       case when e.project_key is null then embeddings_owner_project_key(e.kind, e.id) end as owner_project_key
 		  from embeddings e
 		 where (e.kind, e.id) > ($1::text, $2::text)
 		 order by e.kind, e.id
@@ -140,9 +153,10 @@ const fillEmbeddingProjectKeysBatchQuery = `
 		select b.kind, b.id from batch b order by b.kind desc, b.id desc limit 1
 	), labelled as (
 		update embeddings e
-		   set project_key = embeddings_owner_project_key(e.kind, e.id)
+		   set project_key = b.owner_project_key
 		  from batch b
 		 where e.kind = b.kind and e.id = b.id and e.project_key is null
+		   and b.owner_project_key is not null
 		returning e.project_key
 	), moved as (
 		update embeddings_project_key_backfill

@@ -141,18 +141,37 @@ func openFillTestStore(t *testing.T, issues int) (*Store, int64) {
 	return database, seedUnlabelledEmbeddings(t, database, issues)
 }
 
-// seedOwnerlessWindow stores one window row whose owner is gone, which is a row the pass
-// rewrites and must not count: embeddings_owner_project_key answers null for it, so the update
-// writes null over null and the row gains no project. A comment window whose comment was never
-// stored is the cheapest of the nine shapes that resolve to nothing (INFRA-988).
-func seedOwnerlessWindow(t *testing.T, database *Store) {
+// seedOwnerlessWindow stores one window row whose owner is gone and answers its id: a row the
+// pass walks past, counts as nothing and must not write at all, since
+// embeddings_owner_project_key answers null for it and the only write there is to make is null
+// over null. A comment window whose comment was never stored is the cheapest of the nine shapes
+// that resolve to nothing (INFRA-988).
+func seedOwnerlessWindow(t *testing.T, database *Store) string {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
+	var id string
+	if err := database.Pool.QueryRow(context.Background(), `
 		insert into embeddings (kind, id, text_snapshot, content_hash)
 		values ('comment_block', 'comment/' || gen_random_uuid()::text || '#b1', 'a window of a comment that is gone', 'ownerless')
-	`); err != nil {
+		returning id
+	`).Scan(&id); err != nil {
 		t.Fatalf("seed the window whose owner is gone: %v", err)
 	}
+	return id
+}
+
+// embeddingPhysicalRow is where the embeddings row id is stored. An update moves a row to a new
+// tuple whatever it writes, so this is how a test asks whether the batch wrote a row at all:
+// what a label costs is not the 253-byte heap tuple but the entry it adds to a vector index
+// that only grows (EmbeddingProjectKeyBatch holds the measurements), and a row that gains no
+// project may not pay it.
+func embeddingPhysicalRow(t *testing.T, database *Store, id string) string {
+	t.Helper()
+	var at string
+	if err := database.Pool.QueryRow(context.Background(),
+		"select ctid::text from embeddings where id = $1", id).Scan(&at); err != nil {
+		t.Fatalf("read where the embeddings row %s is stored: %v", id, err)
+	}
+	return at
 }
 
 // An hour-long pass that logs once at its end tells a reader of a rolling deploy nothing while
@@ -174,8 +193,10 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 
 	// The row the pass walks past and gains nothing from. The finish line's count is what a
 	// reader takes for how much of the deployment is now searchable by project, so a row that
-	// came out of the pass as unlabelled as it went in may not be in it.
-	seedOwnerlessWindow(t, database)
+	// came out of the pass as unlabelled as it went in may not be in it - and nor may it have
+	// been written, which is what the tuple it stands in says.
+	ownerless := seedOwnerlessWindow(t, database)
+	stillAt := embeddingPhysicalRow(t, database, ownerless)
 
 	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
 		t.Fatalf("label the stored rows: %v", err)
@@ -213,13 +234,20 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 
 	finished := oneLine(t, records, fillFinishedLine)
 	if rows := loggedAttr(t, finished, "rows").Int64(); rows != stored {
-		t.Errorf("the fill finished reporting %d rows, want the %d that gained a project; the row whose owner is gone is rewritten and gains nothing",
+		t.Errorf("the fill finished reporting %d rows, want the %d that gained a project; the row whose owner is gone gains nothing",
 			rows, stored)
 	}
 	// Walked past, not skipped: the pass has to leave that row behind it like any other, or its
 	// cursor would stop there, and it is still unlabelled because nothing can label it.
 	if left := unlabelledEmbeddings(t, database); left != 1 {
 		t.Errorf("%d rows carry no project after the fill, want the one whose owner is gone", left)
+	}
+	// Walked past and not written: a label it cannot work out is no reason to write the row, and
+	// a write of one costs a heap tuple and an entry in every index the row is in for nothing.
+	// Measured over the sixteen unlabellable rows this round read, eleven of them moved tuple
+	// for a null written over null (INFRA-988).
+	if movedTo := embeddingPhysicalRow(t, database, ownerless); movedTo != stillAt {
+		t.Errorf("the row whose owner is gone moved from tuple %s to %s, so the batch wrote null over its null", stillAt, movedTo)
 	}
 	if _, _, done := fillProgress(t, database); !done {
 		t.Error("the fill did not record itself finished, so it did not walk past the row whose owner is gone")

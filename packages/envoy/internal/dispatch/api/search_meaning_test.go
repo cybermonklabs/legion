@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -1289,5 +1291,117 @@ func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
 	if got, want := searchResultKeys(scoped.Results), searchResultKeys(owned); !slices.Equal(got, want) {
 		t.Errorf("the scoped search returned %v, want %v: what the unscoped search found of %s, which no project_key predicate filtered",
 			got, want, project)
+	}
+}
+
+// unlabelledFillWindow is the fixture the two tests below stand on: one project holding an
+// issue and a comment, each embedded to a word the corpus does not hold, with every embeddings
+// row set back to unlabelled. That is a database the migrations have reached and the fill has
+// not, which is the one state in which what a scoped search finds turns on the read of the
+// fill's progress row: the joined statement answers from the owner each arm joins, and the
+// column's own predicate would answer nothing at all. It answers the handler, the store and
+// the two items a scoped search has to come back with.
+func unlabelledFillWindow(t *testing.T, project string) (http.Handler, *store.Store, string, string) {
+	t.Helper()
+	const title, spec = "A subject no fill has labelled", "Body text."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		"wibbleflorp":                   queryVector(),
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+	}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, project, title, spec)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to find."}, "alice")
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.9, 3))
+	processAllPending(t, database, embedder)
+	if _, err := database.Pool.Exec(context.Background(), "update embeddings set project_key = null"); err != nil {
+		t.Fatalf("unlabel the stored rows: %v", err)
+	}
+	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
+		t.Fatalf("%d embeddings rows are still labelled, so this is not the database a fill has yet to reach", labelled)
+	}
+	return handler, database, issue.Key, comment.ID
+}
+
+// A progress row this process cannot read serves the joined statement and a complete page, and
+// that promise is the whole of why the read may fail at all (embeddingProjectKeysFilled). It is
+// kept only if the failure leaves the search's own transaction usable, since the meaning
+// statement runs on that transaction next.
+//
+// Here the table is not there: a binary newer than its database, which is reachable, since the
+// server migrates before it serves and a database somebody repaired by hand has whatever it
+// has. Measured at this change's head, every project-scoped meaning search answered 500 for as
+// long as that lasted, where the release before it answered from the owner each arm joins
+// (INFRA-988).
+func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testing.T) {
+	const project = "NOTB"
+	handler, database, issueKey, commentID := unlabelledFillWindow(t, project)
+	if _, err := database.Pool.Exec(context.Background(), "drop table embeddings_project_key_backfill"); err != nil {
+		t.Fatalf("drop the fill's progress table: %v", err)
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
+	}
+	searchHit(t, response, "issue", issueKey)
+	searchHit(t, response, "comment", commentID)
+}
+
+// The same promise, broken the other way the round measured: the row is there and holds a value
+// this process cannot scan. The first scoped search on each pooled connection answered 500 with
+// SQLSTATE 0A000, `cached plan must not change result type`, which Postgres raises when the
+// cached plan of a prepared statement no longer describes the row it reads and which pgx does
+// not retry inside a transaction; every later search on that connection degraded as promised.
+// So the search this test drives is the first one on connections that hold such a plan, which
+// is the one that failed.
+func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *testing.T) {
+	const project = "BADV"
+	handler, database, issueKey, commentID := unlabelledFillWindow(t, project)
+	cacheTheProgressReadOnEveryConnection(t, database)
+	for _, statement := range []string{
+		"alter table embeddings_project_key_backfill alter column done drop default",
+		"alter table embeddings_project_key_backfill alter column done type text using 'labelling'",
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
+	}
+	searchHit(t, response, "issue", issueKey)
+	searchHit(t, response, "comment", commentID)
+}
+
+// cacheTheProgressReadOnEveryConnection reads the fill's progress row once on every connection
+// of the pool, which leaves each of them holding a prepared plan for that read (pgx's
+// QueryExecModeCacheStatement, the pool's own default). A deployment's connections hold such a
+// plan after one search apiece; a database a test has just opened holds none, and the failure
+// the test above covers is only raised on a connection that does. They are taken together and
+// released together, so the pool hands back no unprepared connection after it.
+func cacheTheProgressReadOnEveryConnection(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
+	defer func() {
+		for _, connection := range held {
+			connection.Release()
+		}
+	}()
+	for range cap(held) {
+		connection, err := database.Pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("take a pooled connection to prepare the progress read on: %v", err)
+		}
+		held = append(held, connection)
+		var done bool
+		if err := connection.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+			t.Fatalf("read the fill's progress to prepare its plan: %v", err)
+		}
 	}
 }

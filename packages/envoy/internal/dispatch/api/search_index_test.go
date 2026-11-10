@@ -128,10 +128,13 @@ func meaningPlanOf(
 // picks for this project (meaningStatementFor) over the flag it itself reads
 // (embeddingProjectKeysFilled), so what the plan says is what a scoped search runs: with the
 // fill's row recorded done that is the column's own predicate and this index, and with the
-// same row not done it is the joined statement, whose comment candidates carry no project
-// predicate at all. A search before the fill finishes is answered by the owner each arm joins
-// (TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling); this exact read is what
-// finishing the pass buys.
+// same row not done it is the joined statement, whose comment candidates cut by the project of
+// the comment's own issue or document inside the same limit - the arm the release before this
+// change ran, joins and all (searchMeaningCommentArmJoined). A search before the fill finishes
+// is answered by the owner each arm joins
+// (TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling); this exact read is
+// what finishing the pass buys, and what the joined shape pays for it is the comments row read
+// under the limit here.
 //
 // The fixture is the shape the measurement was taken on: one small project beside a crowd of
 // another project's windows, analyzed so the planner's statistics hold the difference.
@@ -169,10 +172,19 @@ func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 		t.Errorf("the scoped comment arm's scan of embeddings_kind_project carries no project_key condition:\n%s", planString(t, planJSON))
 	}
 
+	if scoped := leg.find(func(node planNode) bool { return node.NodeType == "Limit" }); scoped == nil {
+		t.Errorf("the scoped comment arm's candidates are read under no limit:\n%s", planString(t, planJSON))
+	} else if owner := scoped.find(func(node planNode) bool { return node.Relation == "comments" }); owner != nil {
+		t.Errorf("the scoped comment arm reads comments inside its limit, so the candidate set is spent before the join rather than on the column's own predicate:\n%s",
+			planString(t, planJSON))
+	}
+
 	// The other side, on the same fixture: with the row back as a running fill leaves it, the
-	// statement the read path picks cuts its comment candidates by nothing but kind and model,
-	// because the project it is scoped to is read above that limit off the comment's own issue
-	// and document (searchMeaningCommentArm).
+	// statement the read path picks is the arm the release before this change ran, which cuts
+	// its candidates by the project of the comment's own issue or document inside that same
+	// limit. It pays for that in the joins it takes below the limit, and what it buys is the
+	// rows: `e.project_key = $2` loses every row the fill has not labelled yet
+	// (searchMeaningCommentArmJoined).
 	recordEmbeddingProjectKeyFill(t, database, false)
 	joined := meaningStatementAsSearchPicksIt(t, database, "SARM")
 	root, planJSON = meaningPlanOf(t, database, embedder, joined, "SARM", "set local enable_seqscan = off")
@@ -180,10 +192,18 @@ func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 	if leg == nil {
 		t.Fatalf("the plan has no node for meaning_comment_candidates:\n%s", planString(t, planJSON))
 	}
-	if cut := leg.find(func(node planNode) bool {
+	limit := leg.find(func(node planNode) bool { return node.NodeType == "Limit" })
+	if limit == nil {
+		t.Fatalf("the joined comment arm's candidates are read under no limit:\n%s", planString(t, planJSON))
+	}
+	if cut := limit.find(func(node planNode) bool {
 		return strings.Contains(strings.Join(node.conditions(), " "), "project_key")
-	}); cut != nil {
-		t.Errorf("before the fill records itself done the comment arm still cuts its candidates by project_key, so the read path did not change statement with the flag:\n%s",
+	}); cut == nil {
+		t.Errorf("while the fill runs the joined comment arm cuts its %d candidates by no project at all, so another project's crowd takes them:\n%s",
+			searchWindowCandidates, planString(t, planJSON))
+	}
+	if owner := limit.find(func(node planNode) bool { return node.Relation == "comments" }); owner == nil {
+		t.Errorf("the joined comment arm reads no comments row inside its limit, so the project it cuts its candidates by is not the owner's:\n%s",
 			planString(t, planJSON))
 	}
 }
@@ -259,10 +279,13 @@ func seesEveryRow(nodeType string) bool {
 // planNode is the part of one EXPLAIN (FORMAT JSON) plan node these tests read. A keyword arm's
 // match can be written on any of the three condition fields - an index condition, the recheck a
 // bitmap heap scan makes, or a filter - and the issue arm's test below asks which, so all three
-// are read, with the join filter a node that names no relation of its own carries.
+// are read, with the join filter a node that names no relation of its own carries. Relation is
+// the table a scan reads, which is how a test asks what stands inside an arm's own limit
+// (TestTheScopedMeaningStatementReadsTheProjectIndex) rather than above it.
 type planNode struct {
 	NodeType    string     `json:"Node Type"`
 	Alias       string     `json:"Alias,omitempty"`
+	Relation    string     `json:"Relation Name,omitempty"`
 	IndexName   string     `json:"Index Name,omitempty"`
 	IndexCond   string     `json:"Index Cond,omitempty"`
 	RecheckCond string     `json:"Recheck Cond,omitempty"`

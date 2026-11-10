@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
@@ -285,5 +287,56 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	}
 	if !done {
 		t.Error("the fill that took the lease did not record itself finished, so every later boot would read the table again")
+	}
+}
+
+// The retry loop exists for a holder that dies mid-pass, and it stops on the one row that says
+// the labelling is over (store.EmbeddingProjectKeyFillDone). A database without that row
+// answers neither: the pass fails reading it, the loop's own check fails reading it, and the
+// process logged both errors and took the lease again every five minutes for the rest of its
+// life, for a row that is not coming back. Nothing deletes it - migration 20261109120100
+// inserts it and no statement of this release removes it - so such a database is one somebody
+// repaired by hand, and the loop says so once and stops.
+//
+// What it holds is the stopping and the saying once: the loop returns, and over many retry
+// intervals it writes one error line and no more. A loop that still tried would write one per
+// interval and never return.
+func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(ctx, "delete from embeddings_project_key_backfill"); err != nil {
+		t.Fatalf("remove the fill's progress row: %v", err)
+	}
+	const retry = 50 * time.Millisecond
+	fillRetryEvery(t, retry)
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+
+	leases := sweepLeases(t, database)
+	// Cancelled when the test ends, so a loop that did not stop stops with it rather than
+	// logging on against a closed pool for the rest of the package's run.
+	fillCtx, stopFill := context.WithCancel(ctx)
+	defer stopFill()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(20 * retry):
+		t.Fatal("the fill kept trying for a progress row that is gone, so it takes the lease every interval for the life of the process")
+	}
+
+	// Long enough for a loop that had not stopped to have tried again several times.
+	time.Sleep(10 * retry)
+	var failures []string
+	for _, record := range records.Records() {
+		if record.Level >= slog.LevelError {
+			failures = append(failures, record.Message)
+		}
+	}
+	if len(failures) != 1 {
+		t.Errorf("the fill logged %d errors for a progress row that is gone, want the one line that says so: %v", len(failures), failures)
 	}
 }

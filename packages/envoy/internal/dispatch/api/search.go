@@ -637,9 +637,11 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // id and covers, the blocks its vector holds, on to legs_unique and the page, which names the
 // one of them that matched (searchPageAndTailSQL).
 //
-// The comment arm is a named piece of its own (searchMeaningCommentArm): it takes its windows
-// through the index under the kind, model and project filters alone and joins the comment
-// above that limit, where the three window arms beside it join inside the ordered select.
+// The comment arm is a named piece of its own (searchMeaningCommentArm), and it is two arms:
+// scoped on the candidate row's own column or unscoped, it takes its windows through the index
+// under the kind, model and project filters alone and joins the comment above that limit, where
+// the three window arms beside it join inside the ordered select; scoped on the owner it joins
+// inside that select as they do, which is the arm the release before this change ran.
 //
 // Every arm's project filter is one predicate on the candidate row itself,
 // `e.project_key = $2` (meaningProjectScope), and the statement is composed three times: once
@@ -704,11 +706,13 @@ var (
 // column is the owner column the joined shape reads, one per arm, each of them a predicate on
 // a table the arm joins: the issue arm an "$2 is empty, or it matches" over issues.project_key,
 // the document arm the same over `p.key`, the ask arm over `coalesce(i.project_key, p.key)`,
-// the message arm over its issue's `i.project_key`, and the comment arm the same coalesce - but
-// above its candidate limit rather than inside it, which is the recall meaningOneProject
-// replaces (searchMeaningCommentArm). meaningOneProject ignores column: the candidate row
-// carries the project itself. Nothing else about an arm moves: each still joins q and carries
-// q's three filters (searchRowFilters), in all three shapes alike.
+// the message arm over its issue's `i.project_key`, and the comment arm the same coalesce,
+// inside its candidate limit as the others carry theirs - which for that arm means its joins go
+// below the limit too, since the column is theirs (searchMeaningCommentArmJoined). What
+// meaningOneProject replaces is the plan that costs, not the rows it finds.
+// meaningOneProject ignores column: the candidate row carries the project itself. Nothing else
+// about an arm moves: each still joins q and carries q's three filters (searchRowFilters), in
+// all three shapes alike.
 type meaningProjectScope int
 
 const (
@@ -841,13 +845,19 @@ totals as (
 ` + searchPageAndTailSQL("legs_unique")
 }
 
-// searchMeaningCommentArm is searchQueryMeaningBody's comment arm, written apart from the three
-// window arms beside it because its order differs from theirs and that order is the whole of
-// it: it takes the nearest comment windows through the index first - under `embedding is not
-// null`, which is embeddings_cosine's own partial predicate, and the kind, model and project
-// filters, which the scan applies as it walks, so the ordering stays the index's to serve -
-// and joins comments, issues, artifacts and projects above that limit, for the row's own
-// fields alone.
+// searchMeaningCommentArm is searchQueryMeaningBody's comment arm. It is two arms, not one,
+// and which of them is scope's: the arm this change buys, below, under meaningOneProject and
+// meaningEveryProject, and the arm the release before it ran under meaningOneProjectJoined
+// (searchMeaningCommentArmJoined). The two differ in where the comment's own tables are joined
+// and therefore in nearly every line, so the second is written out rather than switched inside
+// this one: a body that parameterised the join's place would read as neither arm.
+//
+// This arm is written apart from the three window arms beside it because its order differs
+// from theirs and that order is the whole of it: it takes the nearest comment windows through
+// the index first - under `embedding is not null`, which is embeddings_cosine's own partial
+// predicate, and the kind, model and project filters, which the scan applies as it walks, so
+// the ordering stays the index's to serve - and joins comments, issues, artifacts and projects
+// above that limit, for the row's own fields alone.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
@@ -861,19 +871,15 @@ totals as (
 // of the statement's 5,351 ms. The document arm, which does the same work the index can serve,
 // read 1,060 rows in 146.8 ms.
 //
-// Searching first and filtering after used to be paid in candidate depth, and that was this
-// arm's defect: the project filter was the join's, so it ran above the limit, and the windows
-// of every project consumed the candidate set a project-scoped search then filtered. A project
-// holding 800 windows was answered with 2 of them while another project's were nearer, however
-// deep the candidate set was made. The filter is now a predicate on the candidate row itself
-// (scope.candidateProject, migration 20261109120000), inside the ordered, limited select where
-// the other arms carry theirs: the limit is spent on the project that asked, and the planner
-// chooses between embeddings_kind_project for a small project and the HNSW scan with the
-// predicate inside it for a large one. Under meaningOneProjectJoined that filter is the join's
-// again, above the limit, and this arm is deliberately the old, worse-recall shape, because
-// until the fill labels every stored row a predicate on project_key loses the unlabelled ones
-// outright, which is worse than spending the candidate set on other projects; the switch to
-// `e.project_key` once the fill's row reads done is what retires it (meaningStatementFor).
+// Searching first and filtering after is paid in candidate depth, and that is why this arm
+// could not simply keep its project filter where the join is: with the filter above the limit,
+// the windows of every project consume the candidate set a project-scoped search then filters,
+// and a project holding 800 windows was answered with 2 of them while another project's were
+// nearer, however deep the candidate set was made. The filter is a predicate on the candidate
+// row itself here (scope.candidateProject, migration 20261109120000), inside the ordered,
+// limited select where the other arms carry theirs: the limit is spent on the project that
+// asked, and the planner chooses between embeddings_kind_project for a small project and the
+// HNSW scan with the predicate inside it for a large one.
 //
 // The depth asked for is still ten times the items the arm keeps (searchWindowCandidates), for
 // the reason that constant gives: one long thread's windows would otherwise fill the arm. What
@@ -887,25 +893,22 @@ totals as (
 //
 // Everything else is as the other window arms have it. The floor (searchMeaningFloor, $10) and
 // the per-item window dedup - `distinct on` over the comment, its nearest window first, carrying
-// that window's id and covers - run where they ran before, above the join rather than beside it,
-// and q's own three filters (searchRowFilters) run there too, since status, author and written
-// are columns of the comment and its issue, which only this select has joined. The project
-// predicate is the one filter that had to move down into the candidate CTE: it is the one a
-// search names on nearly every request, so it is the one whose absence from the index scan
-// spent the whole candidate set on other projects - and only where the candidate row carries
-// the project at all: under meaningOneProjectJoined the predicate reads the comment's issue
-// and document, which this select is the first to have joined, so it stands in that select
-// beside q's own three.
+// that window's id and covers - run above the join rather than beside it, and q's own three
+// filters (searchRowFilters) run there too, since status, author and written are columns of the
+// comment and its issue, which only that select has joined. The project predicate is the one
+// filter that had to move down into the candidate CTE: it is the one a search names on nearly
+// every request, so it is the one whose absence from the index scan spent the whole candidate
+// set on other projects.
 func searchMeaningCommentArm(scope meaningProjectScope) string {
-	candidate, aboveTheLimit := scope.candidateProject("coalesce(i.project_key, p.key)"), ""
 	if scope == meaningOneProjectJoined {
-		candidate, aboveTheLimit = "", candidate
+		return searchMeaningCommentArmJoined
 	}
 	return `meaning_comment_candidates as (
   select e.id as window_id, e.covers, ` + windowItemUUID + ` as comment_id,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
-   where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` + candidate + `
+   where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
+		scope.candidateProject(searchMeaningCommentProject) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -920,10 +923,74 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where meaning_comment_candidates.r >= $10` + aboveTheLimit + searchRowFilters("i.status", "c.author", "c.created_at") + `
+   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "c.created_at") + `
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
 }
+
+// searchMeaningCommentProject is the project a comment belongs to read off the tables the arm
+// joins: its issue's, or, for a comment anchored on a project document, that document's. It is
+// the column embeddings_owner_project_key labels a comment window with (migration
+// 20261109120000), so the joined arm and the labelled column answer the same project for the
+// same row - which is what makes the switch between the two shapes a change of plan and not of
+// answer. meaningOneProject and meaningEveryProject ignore it (candidateProject).
+const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
+
+// searchMeaningCommentArmJoined is the comment arm under meaningOneProjectJoined, and it is the
+// arm the release before this change ran, line for line: comments, issues, artifacts and
+// projects joined and the project predicate applied inside the ordered, limited candidate
+// select, with the `distinct on` and the floor above it. The predicate's own text is rendered
+// rather than written out (meaningOneProjectJoined.candidateProject), so it is the same string
+// every other arm takes under that scope; every other line is this arm as the default branch
+// held it at 5f86d6c949f9.
+//
+// It is that arm deliberately, and deliberately slower, for exactly as long as the fill runs.
+// Slower because its joins stand below the ordering, which is the 5,166 ms the measurement
+// above holds: `order by embedding <=> $9` is not embeddings_cosine's to serve once a join on
+// an expression of the window's id stands under it. What it buys is the rows: project_key is
+// nullable and every row stored before 20261109120000 carries null until
+// store.FillEmbeddingProjectKeys labels it, so `e.project_key = $2` hides every row the pass
+// has not reached, where the project read off the owner is there for every row whether the
+// pass has reached it or not.
+//
+// Keeping the predicate inside the limit is the whole of why this is written out rather than
+// made by moving one predicate: this arm's project predicate reads tables the candidate select
+// is the only place to have joined, so the predicate can only stay inside the limit if the
+// joins do. Hoisting both, which is what this arm did when the candidate predicate first
+// arrived here, spends the candidate limit on every project's windows again - the defect the
+// whole change exists to end. Measured through GET /api/v1/search with 1,001 comment windows
+// of another project at cosine 1.000 against three comments of the named project: the hoisted
+// shape answered four kinds with the comment gone, where this shape and a build of the default
+// branch both answered five, and the threshold is the candidate limit itself - 1,001 windows
+// lose it, 999 do not (INFRA-988,
+// TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling).
+//
+// The fill's row reading done is what retires it (meaningStatementFor): the plan the arm above
+// has is this change's whole point, and this is the price of serving every row until the pass
+// has labelled them.
+var searchMeaningCommentArmJoined = `meaning_comment_candidates as (
+  select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
+         coalesce(i.updated_at, c.created_at) as updated_at,
+         1 - (e.embedding <=> $9::vector) as r
+    from embeddings e
+    join comments c on c.id = ` + windowItemUUID + `
+    left join issues i on i.key = c.issue_key
+    left join artifacts a on a.id = c.artifact_id
+    left join projects p on p.key = a.project_key, q
+   where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
+	meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) +
+	searchRowFilters("i.status", "c.author", "c.created_at") + `
+   order by e.embedding <=> $9::vector
+   ` + searchWindowLimit + `
+),
+meaning_comment as (
+  select distinct on (meaning_comment_candidates.id) 'comment' as kind, 'meaning' as list, issue_key, artifact_id, coalesce(artifact_id, (anchor->>'artifact_id')::uuid), id::text, null::text,
+         window_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
+         false, r
+    from meaning_comment_candidates where r >= $10
+   order by meaning_comment_candidates.id, r desc, window_id
+)`
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -1214,18 +1281,44 @@ func meaningStatementFor(project string, filled bool) string {
 // A read that fails answers false, which serves the joined statement: that one finds a row
 // whether it is labelled or not, so of the two answers it is the one that cannot drop rows
 // from the page, where answering true over a half-labelled table would silently lose every
-// row the pass has not reached. A failure the server raised has also aborted this transaction,
-// so the statement that follows reports that failure rather than serving anything, and the
-// false is what covers a read that failed without poisoning the transaction - the row deleted,
-// or a value this process could not scan - where a worse plan is the right price for a
-// complete answer. Either way the failure is logged rather than swallowed: a progress row this
-// process cannot read is a fact about the deployment, not about this request.
+// row the pass has not reached. A worse plan is the right price for a complete answer, and the
+// failure is logged rather than swallowed: a progress row this process cannot read is a fact
+// about the deployment, not about this request.
+//
+// The read runs inside a savepoint of its own (pgx opens one per nested Begin) because a
+// failure the server raises aborts the transaction it is raised in, and that is the
+// transaction the meaning statement is about to run on: without the savepoint the promise
+// above is not kept, and the search answers 500 rather than the joined statement's page. Both
+// failures were measured that way at this change's head (INFRA-988) - the progress table
+// missing, which is a binary newer than its database, and a value this process cannot scan,
+// whose first search on each pooled connection met `cached plan must not change result type`
+// (SQLSTATE 0A000), which pgx does not retry inside a transaction. Rolling back to the
+// savepoint leaves the transaction exactly as it was.
+//
+// What it costs is two round trips on a connection the search already holds - the savepoint
+// and the rollback to it - for every project-scoped meaning search. The other way out was to
+// read the row before beginMeaningScan opens the transaction at all, which costs no savepoint
+// but a second acquisition from the pool per search, and the pool is the resource a deployment
+// under meaning-search load runs out of first (searchMeaningScan's own measurement of 219
+// backends holding it full). This way also keeps the read where both callers already make it,
+// on the transaction they pass in (runMeaningSearch, relatedMeaningSearch), rather than in two
+// places that could drift apart.
 func embeddingProjectKeysFilled(ctx context.Context, tx pgx.Tx) bool {
-	var done bool
-	if err := tx.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+	degraded := func(err error) bool {
 		slog.Warn("dispatch: a project-scoped meaning search could not read the embeddings project_key fill's progress, so it searched by each arm's own owner",
 			"error", err)
 		return false
+	}
+	read, err := tx.Begin(ctx)
+	if err != nil {
+		return degraded(err)
+	}
+	// Rolled back whether the read answered or failed: it wrote nothing either way, and the
+	// rollback is what hands the transaction back usable when it failed.
+	defer func() { _ = read.Rollback(ctx) }()
+	var done bool
+	if err := read.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+		return degraded(err)
 	}
 	return done
 }

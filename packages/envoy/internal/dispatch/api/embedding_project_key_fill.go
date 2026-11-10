@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -73,24 +76,30 @@ var embeddingProjectKeyFillRetry = 5 * time.Minute
 // What it logs is the fill's own lines (store.FillEmbeddingProjectKeys) and duty's "leased pass
 // skipped" for each try that found the lease held. A failure is logged and the process serves
 // on, for the reason cmd/dispatch/main.go gives, and is tried again at the next interval; a
-// shutdown is not a failure, since ctx ending is how every background pass stops.
+// shutdown is not a failure, since ctx ending is how every background pass stops. The one
+// failure it does not try again on is the progress row being gone (progressRowGone), which is
+// the loop's third way out.
 func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leases duty.Leases) {
 	for {
-		finished := false
+		finished, gone := false, false
 		duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
 			// The rows it had labelled are on the failure line: every batch before the one that
 			// failed is committed and the cursor records them, so the count says how much of the
 			// pass the next try has left rather than how much it lost.
 			labelled, err := database.FillEmbeddingProjectKeys(ctx)
 			if err != nil {
-				if ctx.Err() == nil {
-					slog.Error("dispatch: the embeddings project_key fill failed", "error", err, "rows", labelled)
+				if ctx.Err() != nil {
+					return
 				}
+				if gone = progressRowGone(err); gone {
+					return
+				}
+				slog.Error("dispatch: the embeddings project_key fill failed", "error", err, "rows", labelled)
 				return
 			}
 			finished = true
 		})
-		if finished || ctx.Err() != nil {
+		if finished || gone || ctx.Err() != nil {
 			return
 		}
 		// The try was skipped or it failed. Jittered, so two processes that booted together do
@@ -108,6 +117,9 @@ func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leas
 			if ctx.Err() != nil {
 				return
 			}
+			if progressRowGone(err) {
+				return
+			}
 			slog.Error("dispatch: reading whether the embeddings project_key fill is finished failed", "error", err)
 			continue
 		}
@@ -115,4 +127,25 @@ func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leas
 			return
 		}
 	}
+}
+
+// progressRowGone answers whether err is the one row of embeddings_project_key_backfill being
+// absent, and writes the line that says so when it is, which is why it is called in place of
+// each failure's own log line rather than beside it.
+//
+// It is a reason to stop rather than to try again. Nothing in this release deletes that row -
+// 20261109120100 inserts it and no statement removes it - so a database without it is one
+// somebody repaired by hand, and waiting does not bring it back: the pass cannot read the
+// cursor it starts from and the loop's own check cannot read its done, so both of them fail
+// every time. Left to try again, this process logged two errors and took the lease every
+// embeddingProjectKeyFillRetry for the rest of its life (INFRA-988). It says so once and
+// stops; a project-scoped meaning search answers by the owner each arm joins meanwhile, as it
+// does whenever that row cannot be read (api/search.go, embeddingProjectKeysFilled).
+func progressRowGone(err error) bool {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	slog.Error("dispatch: the embeddings project_key fill has no progress row to record its place in, so this process will not try to fill again",
+		"error", err, "table", "embeddings_project_key_backfill")
+	return true
 }
