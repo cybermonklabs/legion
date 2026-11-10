@@ -38,6 +38,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { text } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -216,16 +217,10 @@ async function keepPort(
     environment
   );
   // Both streams are read to their end, so a full pipe never stops the keeper; its stderr is the
-  // reason it failed. They are node streams, so they are collected by iteration rather than
-  // through `new Response(...)`, which takes no node stream.
-  const collect = async (stream: Readable): Promise<string> => {
-    stream.setEncoding("utf8");
-    let text = "";
-    for await (const chunk of stream as AsyncIterable<string>) text += chunk;
-    return text;
-  };
-  const stderr = collect(child.stderr).catch(() => "");
-  collect(child.stdout).catch(() => "");
+  // reason it failed. They are node streams, so `node:stream/consumers`' `text` collects them
+  // rather than `new Response(...)`, which takes no node stream.
+  const stderr = text(child.stderr).catch(() => "");
+  text(child.stdout).catch(() => "");
   const deadline = Date.now() + keeperBootMs;
   // The keeper writes the file through a rename once it serves its socket, so a file that exists
   // holds the whole port.

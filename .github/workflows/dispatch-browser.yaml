@@ -439,10 +439,10 @@ jobs:
         # drops this job to one Vite build. Safe because that build and this one are now the same
         # binary: `packages/dispatch` no longer has an E2E-only build flag (removed with its sole,
         # unconsumed consumer, the `window.__dispatchDocument` inspection probe). The run starts
-        # its own servers: `globalSetup` builds @legion/contracts, which is why this job carries
-        # no contracts step, starts this run's stacks on ports the OS chooses and writes them
-        # into the environment every worker inherits, and `globalTeardown` stops them
-        # (e2e/global-setup.ts, e2e/harness-pool.ts).
+        # its own servers: `globalSetup` starts this run's stacks on ports the OS chooses and
+        # writes them into the environment every worker inherits, and `globalTeardown` stops them
+        # (e2e/global-setup.ts, e2e/harness-pool.ts). The contracts step above is what
+        # Playwright's own Node runner needs, for the reason that step gives.
         #
         # `--workers 4` below is how many stacks this leg starts, one per Playwright worker, each
         # a harness, a bucket and a Postgres of its own, that last one an initdb and a pg_ctl out
@@ -793,10 +793,10 @@ jobs:
         # drops this job to one Vite build. Safe because that build and this one are now the same
         # binary: `packages/dispatch` no longer has an E2E-only build flag (removed with its sole,
         # unconsumed consumer, the `window.__dispatchDocument` inspection probe). The run starts
-        # its own servers: `globalSetup` builds @legion/contracts, which is why this job carries
-        # no contracts step, starts this run's stacks on ports the OS chooses and writes them
-        # into the environment every worker inherits, and `globalTeardown` stops them
-        # (e2e/global-setup.ts, e2e/harness-pool.ts).
+        # its own servers: `globalSetup` starts this run's stacks on ports the OS chooses and
+        # writes them into the environment every worker inherits, and `globalTeardown` stops them
+        # (e2e/global-setup.ts, e2e/harness-pool.ts). The contracts step above is what
+        # Playwright's own Node runner needs, for the reason that step gives.
         #
         # One stack here, not four: it is one per Playwright worker, and one worker is the
         # configuration's own default (`workers: 1`, e2e/playwright.config.ts), so this step

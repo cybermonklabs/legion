@@ -14,10 +14,7 @@ import {
 import { listing, retained } from "./playwright-listing";
 
 // Unlike e2e/__tests__/row-configurations.test.ts, this file imports no Playwright config: it
-// reads the suite from the specs' own source and the listings from subprocesses. So it needs no
-// `--list` on `process.argv` to keep an imported config from refusing a run with no harness port
-// set (`isListMode` and the unset-ports refusal after it, e2e/playwright.config.ts), and leaves
-// the command line alone for whatever test file this worker runs next.
+// reads the suite from the specs' own source and the listings from subprocesses.
 const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 
 // All three listings are read-only subprocesses, so they start here rather than in the test that

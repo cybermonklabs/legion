@@ -14,11 +14,8 @@ import {
 import { specFiles } from "../no-browser-rows";
 
 // Like e2e/__tests__/no-browser-rows.test.ts, this file imports no Playwright config: it reads
-// the suite from its own source. So it needs no `--list` on `process.argv` to keep an imported
-// config from refusing a run with no harness port set (`isListMode` and the unset-ports refusal
-// after it, e2e/playwright.config.ts), and leaves the command line alone for whatever test file
-// this worker runs next. It starts no subprocess either, so the whole file is a parse of the
-// suite and costs about a second.
+// the suite from its own source, and starts no subprocess either, so the whole file is a parse
+// of the suite and costs about a second.
 const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 
 const scannedFiles = suiteFiles(e2eDirectory);

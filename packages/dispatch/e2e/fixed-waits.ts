@@ -57,7 +57,8 @@
  * line of prose stands above a call, and a name is the whole of what a reader of the source sees.
  * Reading the name also fails the safe way: anything spelled `waitForTimeout` - a `Page`, a
  * `Frame`, a helper of this suite's own - is asked for its reason rather than skipped. No type
- * checker is needed for that, so the scan parses each file and builds no program.
+ * checker is needed for that, so the scan parses files and builds no program; which files it
+ * parses, and why a file it skips can hold no wait, is in `waitsOfFiles`.
  *
  * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/local-instance.ts` use
  * for a fixture's configured delay and a dev server's shutdown, neither of them a row's wait;
@@ -68,9 +69,11 @@
  * arguments: no environment, no network, no database and no server, so any process may call it.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
+
+import { sourceFiles } from "./source-files";
 
 /** One fixed wait of one file of the suite: a `waitForTimeout` or a timers `setTimeout` call. */
 export type FixedWait = {
@@ -96,30 +99,21 @@ export type RefusedWait = {
  *  it cannot do. A word is a run of non-space characters holding a letter, so `// 300` is none. */
 export const minimumReasonWords = 8;
 
-/** The files the walk below never reads, as their directory or their name says: `node_modules`
+/** The files `suiteFiles` never reads, as their directory or their name says: `node_modules`
  *  as Playwright's own default ignores it, `test-results` because that is the config's
  *  `outputDir` and holds traces and videos rather than source, `__tests__` because this layer's
  *  own tests and their planted controls are not the suite, and `harness-*.ts` for the reason
  *  WHAT IS READ gives - a starter's backoff is no row's wait. */
 const skippedDirectories = new Set(["__tests__", "node_modules", "test-results"]);
-const skippedFile = /^harness-[^/]*\.ts$/;
+const skippedFile = /^harness-.*\.ts$/;
 
 /** Every `.ts` file of the suite under `directory`, relative to it and sorted: the specs and the
  *  helpers they import alike, since a fixed wait is one wherever it is written. */
 export function suiteFiles(directory: string): string[] {
-  const files: string[] = [];
-  const walk = (relative: string): void => {
-    for (const entry of readdirSync(join(directory, relative), { withFileTypes: true })) {
-      const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
-      if (entry.isDirectory()) {
-        if (!skippedDirectories.has(entry.name)) walk(path);
-      } else if (entry.isFile() && entry.name.endsWith(".ts") && !skippedFile.test(entry.name)) {
-        files.push(path);
-      }
-    }
-  };
-  walk("");
-  return files.sort();
+  return sourceFiles(directory, {
+    directory: (name) => !skippedDirectories.has(name),
+    file: (name) => name.endsWith(".ts") && !skippedFile.test(name),
+  });
 }
 
 /** The module whose `setTimeout` is the suite's other spelling of a fixed wait. */
@@ -256,12 +250,19 @@ export function waitsOfFiles(directory: string, files: readonly string[]): Fixed
   const waits: FixedWait[] = [];
   for (const file of files) {
     const path = join(directory, file);
-    const sourceFile = ts.createSourceFile(
-      path,
-      readFileSync(path, "utf8"),
-      ts.ScriptTarget.Latest,
-      true
-    );
+    const text = readFileSync(path, "utf8");
+    // A call is read as a wait by one of two spellings and no other: the name `waitForTimeout`,
+    // and a name the file bound `node:timers/promises`' `setTimeout` to, which it can bind only
+    // through an import that writes that specifier. A file whose text holds neither can hold no
+    // wait, and most of this suite's files hold neither: the filter leaves 23 of the 271 files
+    // to parse and takes the scan from about 2.0 s to about 0.7 s. The parse still decides every
+    // file the filter keeps, because the text cannot tell a call from the word in a comment or
+    // a string - this module's own header holds a dozen. What the text alone could miss is
+    // either spelling written with a unicode escape, as in `page["waitForTimeou\u0074"](300)`,
+    // whose text the parser resolves and the file does not spell; no file of this suite writes
+    // one.
+    if (!text.includes("waitForTimeout") && !text.includes(timersModule)) continue;
+    const sourceFile = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
     const names = waitNames(sourceFile);
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && isFixedWait(node, names)) {

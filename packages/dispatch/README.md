@@ -459,8 +459,9 @@ to reuse one already listening rather than serve another checkout's build. And
 `DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
 one, which the nightly's re-record job uses so that it can see a committed recording no row
 writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
-the stubbed layer alone" to its workers; set by hand it waives every harness refusal and the
-preflight for the whole run, real-stack projects included.
+the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
+stack at all, for the whole run and real-stack projects included, which then find no server to
+address.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
 three the `-alone` projects below take and the stubbed layer's own
 (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list

@@ -130,13 +130,14 @@ async function refuseMissingBrowsers(projects: readonly FullProject[]): Promise<
 // other e2e scripts carry `build:contracts`, and every CI job that runs the suite itself carries
 // a `Build contracts for dispatch e2e` step (.github/workflows/dispatch-browser.yaml).
 
-/** The environment a process of `stack` reads: this process's, with that stack's own variables
- *  under the plain names and the manifest dropped, so every lookup answers this stack rather than
- *  the one `TEST_PARALLEL_INDEX` would select (`e2e/harness-ports.ts`). */
+/** The environment a reader of `stack` reads: this process's, with the index that selects that
+ *  stack's record out of the manifest. `TEST_PARALLEL_INDEX` is the one place a reader picks its
+ *  own stack (`e2e/harness-ports.ts`), so the helpers below answer for stack `i` here exactly as
+ *  they answer in the worker Playwright gives that index to. The manifest is in `process.env` by
+ *  the time this is called - `globalSetup` writes it as soon as the pool is up - and the record
+ *  at that index is the stack's own variables, since that is what was written from them. */
 function environmentOf(stack: Stack): NodeJS.ProcessEnv {
-  const env = { ...process.env, ...stack.env };
-  delete env[stacksVariable];
-  return env;
+  return { ...process.env, TEST_PARALLEL_INDEX: String(stack.index) };
 }
 
 /** Puts a session in the stack's fake Envoy, asks the stack's server for it, and empties the fake

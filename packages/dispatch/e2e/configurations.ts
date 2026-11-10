@@ -235,14 +235,15 @@ export function tagged(tag: string): RegExp {
  *  Playwright's `--project <project-name...>` is variadic, so one flag takes every value up to
  *  the next option: `--project stub chromium` names two. A reader that took one value per flag
  *  would see `stub` alone there and answer that the run is the stubbed layer by itself, which
- *  waives the harness refusals and the preflight for the `chromium` rows beside it. Playwright
- *  matches a project name without regard to case, so the names come back lower-cased and a
- *  caller compares them against its own lower-case list.
+ *  leaves the `chromium` rows beside it with no stack at all: `globalSetup` starts none for a
+ *  run of the stubbed layer alone (`e2e/global-setup.ts`). Playwright matches a project name
+ *  without regard to case, so the names come back lower-cased and a caller compares them
+ *  against its own lower-case list.
  *
  *  A value holding `*` is a pattern Playwright expands against the config's own projects, which
  *  this cannot see, so it comes back as it was written and a caller reads it as "projects I
  *  cannot name": the conservative answer in both directions is that such a run may hold any
- *  project, so nothing is waived for it.
+ *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every project of its mode. Every
  *  `--project` of the whole line is read, and a `--` ends one flag's values because it begins
