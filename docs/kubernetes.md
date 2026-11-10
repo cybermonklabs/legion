@@ -68,8 +68,9 @@ It carries:
 
 - the leak guard in front of those two, which is what makes a pod's own writes pass Legion's check before a byte reaches a remote:
   `/opt/legion/bin/git` and `/opt/legion/bin/jj`, root-owned wrappers that lead every pod's `PATH`, and `/opt/legion/githooks/pre-push`, root's hook in a root-owned directory no role can write (`packages/daemon/docker/git`, `docker/jj` and `docker/githooks/pre-push`).
-  The git wrapper runs the real git with the arguments it was given and nothing else, except for a push, which it runs with `-c core.hooksPath=/opt/legion/githooks` in front of every argument and with the push's own `--no-verify` taken out:
+  The git wrapper runs the real git with the arguments it was given and nothing else, except for a push, which it runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
+  git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
   The jj wrapper adds one check, and only before a `jj git push`:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
