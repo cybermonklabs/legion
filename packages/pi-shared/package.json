@@ -77,6 +77,10 @@
       "types": "./src/legion-claim-core.ts",
       "bun": "./src/legion-claim-core.ts"
     },
+    "./claim-first-turn-bound": {
+      "types": "./src/claim-first-turn-bound.ts",
+      "bun": "./src/claim-first-turn-bound.ts"
+    },
     "./phase-stall": {
       "types": "./src/phase-stall.ts",
       "bun": "./src/phase-stall.ts"
