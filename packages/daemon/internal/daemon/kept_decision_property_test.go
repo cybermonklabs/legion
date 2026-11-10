@@ -1308,11 +1308,12 @@ func (r *keptRun) owedRefs() map[string]bool {
 	return owed
 }
 
-// architectHears is whether an agent holds the tree's architect role now, so a decision made on
-// an issue of that tree reaches the tree itself and nothing is kept for it.
+// architectHears is whether the tree's architect claim has an agent that said it can be prompted
+// now, so a decision made on an issue of that tree reaches the tree itself and nothing is kept
+// for it.
 func (r *keptRun) architectHears(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
-	return found && supervise.TookRole(machine.Claim().State)
+	return found && supervise.SaidReady(machine.Claim().State)
 }
 
 // parkedOrWaiting is whether the root has no run of its own: parked out of the workflow, lingering
@@ -2417,10 +2418,10 @@ func (r *keptRun) ready(tree *keptTree) {
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	launch := machine.Claim().Generation
 	r.handle(machine, supervise.StreamHello{Claim: tree.token, Generation: launch})
-	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.TookRole(state) {
+	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.SaidReady(state) {
 		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"})
 	}
-	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.TookRole(state) {
+	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.SaidReady(state) {
 		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: "ses-architect"})
 	}
 	r.waitMachines()
@@ -2428,11 +2429,11 @@ func (r *keptRun) ready(tree *keptTree) {
 }
 
 // readyFactEnabled is whether a launch an architect's agent came up on is one the workflow has
-// not been told about yet: the claim holds its role, and the fact that launch's ready writes
-// (terminalEventID, one per launch) has not been applied.
+// not been told about yet: the claim has said it is ready, and the fact that launch's ready
+// writes (terminalEventID, one per launch) has not been applied.
 func (r *keptRun) readyFactEnabled(tree *keptTree) (string, uint64, bool) {
 	machine, found := r.sup.Machine(tree.token)
-	if !found || !supervise.TookRole(machine.Claim().State) {
+	if !found || !supervise.SaidReady(machine.Claim().State) {
 		return "", 0, false
 	}
 	launch := machine.Claim().Generation
