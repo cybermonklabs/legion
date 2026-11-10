@@ -152,8 +152,8 @@ func URL(t testing.TB) string {
 		// mset.delete(), which calls store.Delete() inline and ignores its error,
 		// stream.go:5234-5237). fileStore.Delete closes the stream's message blocks without
 		// removing them and renames streams/<name> to streams/.<name>
-		// (filestore.go:7769-7771, 7793-7797); only the removal of that .<name> runs in a
-		// goroutine (:7800-7815). So when an earlier delete of the same name is still removing
+		// (filestore.go:7769-7773, 7793-7797); only the removal of that .<name> runs in a
+		// goroutine (:7800-7817). So when an earlier delete of the same name is still removing
 		// its .<name>, this delete's rename fails onto that directory, the error is dropped, and
 		// streams/<name> stays where it is with its blocks, until the next create of that name
 		// loads it again. The test that create belongs to is then handed a stream whose own
