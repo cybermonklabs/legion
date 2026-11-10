@@ -33,7 +33,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload", async ({
+// @pr: A claim the server settles: the ask card names the claimant and the route, and a release drops the claimant with no reload.
+test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

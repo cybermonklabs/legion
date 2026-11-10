@@ -101,7 +101,8 @@ async function refusalOf(write: Promise<unknown>): Promise<{ code?: string; erro
 const definitionUnderline = "Text[^g].\n\n[^g]: other\n|-|-|\n    ===\n";
 const underlinedHeading = ["other |-|-|"];
 
-test("a footnote definition over a delimiter-like line and an indented underline draws one heading in the spec editor and in a comment", async ({
+// @pr: The one row of the read-alike family on the lane: the spec editor and a comment must draw the same markdown the same way.
+test("a footnote definition over a delimiter-like line and an indented underline draws one heading in the spec editor and in a comment @pr", async ({
   browser,
 }) => {
   const { commentId, key } = await seed({

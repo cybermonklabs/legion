@@ -449,8 +449,14 @@ the SDK `pulumi package add` generates. They take:
   `host/heldportwrapper/Dockerfile` on top of the smoke image (`packages/envoy/docker/Dockerfile`).
   A live test without it fails at once, printing both builds, and never builds one itself;
 - `ENVOY_INFRA_DOCKER_PLUGIN`, the path of the docker provider plugin tarball of
-  `pulumitest.DockerPluginVersion` for this machine's platform, whose SHA-256 the caller has
-  checked. The test binary refuses a tarball of another version, installs it into a `PULUMI_HOME`
+  `pulumitest.DockerPluginVersion` for this machine's platform.
+  The `pulumi-docker` row of `.github/ci-tools.yaml` pins both that version and the tarball's
+  SHA-256, and `.github/actions/install-docker-plugin` fetches it through
+  `.github/scripts/ci-tools.sh`, which checks that digest before the bytes reach the path it
+  hands on.
+  That row carries a second source as well, so an outage of GitHub's release assets does not stop
+  the job.
+  The test binary refuses a tarball of another version, installs it into a `PULUMI_HOME`
   it makes for itself in a temporary directory and removes when its tests end, so the CLI
   downloads no plugin and the caller's own Pulumi home is untouched.
 
@@ -468,8 +474,14 @@ it, and every test runs that build. A package whose tests use the harness calls
 `os.Exit(pulumitest.Main(m))` from its `TestMain`, which removes that `PULUMI_HOME` and that build.
 
 To run them, install the CLI as `.github/actions/install-pulumi` does and download the docker
-provider plugin as the `envoy-smoke` job's "Download the docker provider plugin the live tests pin"
-step does, each checked against the SHA-256 pinned there; then, from the repository root:
+provider plugin as `.github/actions/install-docker-plugin` does.
+The `pulumi-docker` row of `.github/ci-tools.yaml` pins the plugin's version and its SHA-256, that
+action fetches it through `.github/scripts/ci-tools.sh`, and the row carries a second source so a
+release-asset outage does not stop the job.
+That helper reads the row by parsing the manifest with `python3` and PyYAML, so a machine running
+either fetch by hand needs both; without PyYAML the fetch ends in an import traceback rather than
+a tarball.
+Then, from the repository root:
 
 ```sh
 docker buildx build --load -t legion-envoy-smoke:local -f packages/envoy/docker/Dockerfile .
