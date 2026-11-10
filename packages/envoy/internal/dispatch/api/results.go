@@ -244,9 +244,9 @@ type recordedCheckResult struct {
 // A check's words and its `when` live in the document, which for a document no room holds is a
 // cold read bounded by a minute (docs/read_cache.go); the version those words last changed in
 // and their digest live in document_blocks, which the same transaction as the version writes.
-// The index row is read first and the words after it (resolveCheck), so a version and digest
-// that still stand under the locks are the version and digest of the words in hand: no version
-// committed between those two reads, since one that had would have moved both. Either of them
+// The index row is read first and the words after it (resolveCheck), and the pair is read in one
+// statement and compared whole, so a version that moved either half of it is seen: a pair that
+// still stands under the locks is the version and digest of the words in hand. Either of them
 // moving makes the words in hand a version this transaction does not see, and the locked half
 // gives the locks back rather than reading the document again under them - that read is the slow
 // one, because a version landing in between is exactly what leaves the read cache cold, so the
@@ -635,12 +635,10 @@ func unknownCheck(value string) error {
 // its own. The version is changed_version, which every version that changes the block's text
 // moves, one that restores words an earlier version replaced included.
 //
-// Both are compared against the resolution's, because the digest alone cannot see a block that
-// moved twice: the index row is read at version 1 and its digest, version 2 rewords the block,
-// the words are read and are version 2's, version 3 restores version 1's text - and under the
-// locks the digest is version 1's again, so a digest-only comparison records version 2's words
-// as the check this transaction saw. The version says what the digest cannot, and they are read
-// in one statement, so the pair costs the same read as either of them.
+// Both are compared against the resolution's, though it is the version that catches every
+// rewording, since changed_version moves on each of them. The digest is the backstop for a
+// block whose text the index rewrote without that number moving. The two are read in one
+// statement, so the pair costs the same read as either of them.
 //
 // Neither is a read of the live document, which never happens under these locks: that read is
 // the slow one to hold the two issues' owner locks across (lockIssueOwners), since a document

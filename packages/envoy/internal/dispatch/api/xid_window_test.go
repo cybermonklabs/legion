@@ -621,9 +621,9 @@ func TestXidWindowIssueCloseWithOpenAsks(t *testing.T) {
 // transaction opens; the two issues' owner locks, which assign no transaction id
 // (store.LockOwner, lockIssueOwners); whether each issue is open; the screenshots the result
 // names; and the version and digest the index holds for the check, read under those locks - and
-// the one read of the live document a moved digest needs runs with those locks given back
-// (recordResultWithFreshWords), so no read of a document is inside this window or behind these
-// locks.
+// the one read of the live document a moved version or digest needs runs with those locks given
+// back (recordResultWithFreshWords), so no read of a document is inside this window or behind
+// these locks.
 func TestXidWindowResultRecorded(t *testing.T) {
 	f := newXidFixture(t, testServerOptions{}, "")
 	verification, _ := xidSpec(4)

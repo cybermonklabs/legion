@@ -20,10 +20,10 @@ import (
 // document no room holds is a cold read bounded by a minute (docs/read_cache.go). This file holds
 // the writer that must not wait behind that read.
 
-// slowCheckRead is how long this file's document service takes over the live read the route makes
-// once the check's digest has moved. It stands in for a cold read's minute, so the test measures a
-// fixed number instead of waiting one out, and it is far longer than any other statement either
-// request runs.
+// slowCheckRead is how long this file's document service takes over the live read the route
+// makes once the check's version or digest has moved. It stands in for a cold read's minute, so
+// the test measures a fixed number instead of waiting one out, and it is far longer than any
+// other statement either request runs.
 const slowCheckRead = 2 * time.Second
 
 // checkReadWait bounds every wait this file makes: the handshakes with the held request, and
@@ -65,10 +65,14 @@ type slowCheckReadKey struct{}
 
 // slowCheckReads is the document service with the marked request's reads of one document made
 // observable and slow. The first such read is the route's own resolve of the check, which runs
-// before the transaction opens: it is held there until the test has written the version that moves
-// the check's digest, so the route reaches its locks carrying words a version has replaced. Every
-// read after that one - the read a moved digest needs - says when it started and then takes
-// slowCheckRead, so the test can time a writer of the same issue against it.
+// before the transaction opens: it is held there until the test has written the version that
+// rewords the check, so the route reaches its locks carrying words a version has replaced. Every
+// read after that one - the read a moved version or digest needs - says when it started and then
+// takes slowCheckRead, so the test can time a writer of the same issue against it.
+//
+// Its own waits are bounded as the test's are. They run on the request's goroutine, which
+// cannot fail the test, so a gate nobody opens ends the read with an error the route answers
+// with instead of parking that goroutine for the rest of the package's run.
 type slowCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
@@ -76,7 +80,7 @@ type slowCheckReads struct {
 	// resolved is closed when the route's resolve reaches the document; release lets it go on.
 	resolved chan struct{}
 	release  chan struct{}
-	// reading is closed when the read a moved digest needs starts.
+	// reading is closed when the read a moved version or digest needs starts.
 	reading     chan struct{}
 	resolveOnce sync.Once
 	readingOnce sync.Once
@@ -90,7 +94,9 @@ func (d *slowCheckReads) Text(ctx context.Context, artifactID string) (string, e
 	d.resolveOnce.Do(func() { resolve = true })
 	if resolve {
 		close(d.resolved)
-		<-d.release
+		if err := awaitCheckGate(d.release); err != nil {
+			return "", err
+		}
 		return d.API.Text(ctx, artifactID)
 	}
 	d.readingOnce.Do(func() { close(d.reading) })
@@ -138,16 +144,16 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 	recorded := make(chan *httptest.ResponseRecorder, 1)
 	go func() { recorded <- recordResult(t, marked, issue.Key, resultBody("k1", "pass", headCommit, nil)) }()
 
-	// The route has read the digest the index holds for k1 and is reading the document for that
-	// digest's words, holding no lock of its own. This version replaces both, so the digest it
-	// read is stale before it reaches its locks.
+	// The route has read the version and digest the index holds for k1 and is reading the
+	// document for the words they name, holding no lock of its own. This version moves both, so
+	// what it read is stale before it reaches its locks.
 	awaitCheckRead(t, reads.resolved, "the route's resolve never reached the check's words")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecksReworded)
 	release()
 
-	// The read the moved digest needs has started. A PATCH of the same issue takes that issue's
-	// owner lock, the lock the results write takes too: it waits only if the write is holding it
-	// across this read.
+	// The read the moved version or digest needs has started. A PATCH of the same issue takes
+	// that issue's owner lock, the lock the results write takes too: it waits only if the write
+	// is holding it across this read.
 	awaitCheckRead(t, reads.reading, "the results write never re-read the check's words")
 	started := time.Now()
 	patch := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
@@ -180,6 +186,10 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 // (resolutionAttempts). Only the marked request's reads of that one document are held; every
 // other caller reads straight through, which is what lets the test write those versions. The
 // read counter is touched by the marked request alone, whose reads run one after another.
+//
+// Its own waits are bounded as the test's are. They run on the request's goroutine, which
+// cannot fail the test, so a handshake the test never makes ends the read with an error the
+// route answers with instead of parking that goroutine for the rest of the package's run.
 type contendedCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
@@ -196,8 +206,12 @@ func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (stri
 	}
 	d.reads++
 	if d.reads <= resolutionAttempts {
-		d.held <- d.reads
-		<-d.let
+		if err := offerCheckRead(d.held, d.reads); err != nil {
+			return "", err
+		}
+		if err := awaitCheckGate(d.let); err != nil {
+			return "", err
+		}
 	}
 	return d.API.Text(ctx, artifactID)
 }
@@ -314,6 +328,18 @@ func awaitCheckGate(gate <-chan struct{}) error {
 	}
 }
 
+// offerCheckRead bounds a handshake the held read itself makes, as awaitCheckGate bounds the
+// waits: it runs on the request's goroutine, so a value the test never takes ends the read with
+// an error rather than hanging.
+func offerCheckRead[T any](to chan<- T, value T) error {
+	select {
+	case to <- value:
+		return nil
+	case <-time.After(checkReadWait):
+		return fmt.Errorf("the test did not take the handshake of the held read of the check's words within %s", checkReadWait)
+	}
+}
+
 // A check whose words one version replaced and a later version restored is a resolution the
 // locks contradict, even though the digest they find is the one it was read against. The index
 // row is read at version 1 and its digest; version 2 rewords the check, and the words the route
@@ -323,7 +349,7 @@ func awaitCheckGate(gate <-chan struct{}) error {
 // reads the words again against the version and digest it found, and records the result against
 // those. Comparing the digest alone records version 2's words as the check the transaction saw,
 // under version 3's number - words the document held at neither.
-func TestAResultsWriteRefusesWordsOfAVersionWhoseDigestALaterOneRestored(t *testing.T) {
+func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *testing.T) {
 	reads := &restoredCheckReads{
 		resolving: make(chan struct{}),
 		moved:     make(chan struct{}),

@@ -33,6 +33,12 @@ import (
 //  4. redo    - a resolution the lock contradicts is taken once more, bounded, before the
 //               write answers with its own conflict.
 //
+// The listener is not the only read the shape is for. The results write resolves the check's
+// words out of the live Verification document this way, with no listener call in it at all
+// (recordResultWithFreshWords, results.go): that read is a cold read bounded by a minute, so
+// holding the two issues' owner locks across it would make every writer of either issue wait
+// it out.
+//
 // An outbound listener call (Envoy.Send) never runs inside a transaction at all, and this file
 // spells that half too:
 //
@@ -56,9 +62,11 @@ import (
 // than opening a second one. That attempt keeps the resolution those routes were decided on, for
 // whichever sender finishes it (deliverResolvedCommentMention).
 
-// errStaleResolution is how a locked write reports that a row the pre-transaction listener
-// resolution depended on had changed by the time it held the lock. It never reaches a client:
-// resolveThenLock either redoes the pair or answers with the caller's conflict.
+// errStaleResolution is how a locked write reports that a row the resolution it was handed
+// depended on had changed by the time it held the lock. That resolution is the pre-transaction
+// listener call for a delivery, and the check's words read out of the live document for the
+// results write (recordResultWithFreshWords). It never reaches a client: resolveThenLock
+// either redoes the pair or answers with the caller's conflict.
 var errStaleResolution = errors.New("listener resolution is stale")
 
 // resolutionAttempts is how many times resolveThenLock resolves before it gives up: the
