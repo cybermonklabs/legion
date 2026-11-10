@@ -811,9 +811,6 @@ SH
 
 # The request is the first argument that starts with http:// or https://, and its authority is
 # the text up to the first /, ? or #, with any user@ before that removed.
-# The cut at ? and # is made beside the cut at /, because a URL that carries a query or a
-# fragment and no path at all ends its authority at that ? or #, and its query would otherwise
-# stand in the host field of the line below.
 # Of the arguments, only the host of that URL reaches the log: never its path, query, fragment
 # or user, and no other argument. This helper is handed credentials as arguments — -u for a
 # ghcr token, an Authorization header for a blob — and .github/scripts/ci-tools.sh passes them
@@ -828,11 +825,16 @@ for argument in "$@"; do
   esac
 done
 authority=${url#*://}
-authority=${authority%%/*}
-authority=${authority%%[?#]*}
+authority=${authority%%[/?#]*}
 authority=${authority##*@}
 [ -n "$authority" ] || authority=none
-host=${authority%%:*}
+# A bracketed IPv6 literal carries colons inside its brackets, so a cut at the first colon
+# would leave `[` alone in the host field. The first arm keeps such a literal whole, with its
+# brackets, and drops the port after it.
+case $authority in
+  "["*"]"*) host=${authority%%]*}] ;;
+  *) host=${authority%%:*} ;;
+esac
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
 # (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
@@ -1540,6 +1542,15 @@ ladder_report() {
   local seconds decision host status bypass
   note "every fetch the stand-in curl of the shorten-ladder step measured"
   while read -r seconds decision host status bypass; do
+    # The reader takes its fields by position, so a field added to the writer's printf about
+    # 650 lines above, or moved inside it, would shift every value of this line with no error
+    # at all. Each key is therefore read before it is cut off, and a key this reader does not
+    # expect refuses the job.
+    [ "${seconds%%=*}" = seconds ] || die "ladder-report: this line of $curl_log holds '$seconds' where the writer's first field is seconds=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
+    [ "${decision%%=*}" = decision ] || die "ladder-report: this line of $curl_log holds '$decision' where the writer's second field is decision=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
+    [ "${host%%=*}" = host ] || die "ladder-report: this line of $curl_log holds '$host' where the writer's third field is host=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
+    [ "${status%%=*}" = exit ] || die "ladder-report: this line of $curl_log holds '$status' where the writer's fourth field is exit=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
+    [ "${bypass%%=*}" = full-ladder ] || die "ladder-report: this line of $curl_log holds '$bypass' where the writer's fifth field is full-ladder=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
     seconds=${seconds#*=}
     decision=${decision#*=}
     host=${host#*=}
