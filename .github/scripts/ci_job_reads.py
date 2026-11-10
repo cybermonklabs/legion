@@ -1521,8 +1521,6 @@ GATES = [
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
-        # TEMPORARY, with the two steps that call it: dispatch://INFRA-2605's measurement.
-        (".github/actions/step-bound-probe/**", at("tool-fallback", "./.github/actions/step-bound-probe")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
                                                ".github/actions/install-jj reads that same ARG, while the mise row "

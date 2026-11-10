@@ -2040,8 +2040,6 @@ jobs:
               - '.github/actions/install-uv/**'
               - '.github/actions/install-pulumi/**'
               - '.github/actions/install-docker-plugin/**'
-              # TEMPORARY, with the two steps that call it: dispatch://INFRA-2605's measurement.
-              - '.github/actions/step-bound-probe/**'
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
               - '.github/workflows/ci.yaml'
@@ -2392,6 +2390,10 @@ jobs:
   # BEFORE YOU PUT A BOUND ON A STEP OF THIS JOB: A BOUND BELONGS ONLY WHERE FIRING IT IS LOUD.
   # A step the runner ends at its `timeout-minutes` leaves the same `outcome` behind it as a
   # step that failed on its own, and GitHub gives a later step nothing that tells the two apart.
+  # That is measured and not assumed: on this change's own run a step with `continue-on-error`
+  # and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the step after
+  # it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
+  # assertion reads while the job's own result says nothing happened.
   # So on a step with no `continue-on-error` a bound is loud: it fails the job. On one of the
   # eight `continue-on-error` installs below, whose control passes a step whose `outcome` is
   # `failure`, a bound is silent: a hang would satisfy that control and leave the job green,
@@ -2457,29 +2459,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # TEMPORARY, and deleted in this same pull request: the measurement dispatch://INFRA-2605
-      # owes. The rule above says a bound on a `continue-on-error` step is silent because the
-      # runner leaves the same `outcome` behind as an ordinary failure. That sentence rests on
-      # a value nobody here has read: this pull request's earlier probe showed the composite
-      # action's own inner step at `outcome=failure`, which is not the caller's
-      # `steps.<id>.outcome`. These two steps read the caller's. The action sleeps 180 s against
-      # the minute declared here, and `continue-on-error` is what keeps the reading from failing
-      # the job.
-      - id: bound-probe
-        name: Measure what a continue-on-error step reports when its bound ends it
-        continue-on-error: true
-        timeout-minutes: 1
-        uses: ./.github/actions/step-bound-probe
-
-      - name: Read what the runner reported for the step it ended
-        env:
-          PROBE_OUTCOME: ${{ steps.bound-probe.outcome }}
-          PROBE_CONCLUSION: ${{ steps.bound-probe.conclusion }}
-        run: |
-          set -euo pipefail
-          echo "the runner ended that step at its bound, and a later step reads it as outcome='$PROBE_OUTCOME' conclusion='$PROBE_CONCLUSION'"
-          echo "the step record's own wall time and the log's 'The action has timed out.' are the other two readings of the same step"
 
       # The merge base, for the negative control below: a second tree of this same repository,
       # whose seven installs that control drives with nowhere left to go. The comment on those
