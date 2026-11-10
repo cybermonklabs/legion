@@ -1803,7 +1803,7 @@ describe("A long body parsed in the worker", () => {
       setParseDeadline();
       view.unmount();
     }
-  }, 40_000); // above the package's 30 s default: the 25 s wait must run out inside the test
+  }, 40_000); // the 25 s wait must run out inside the test; below the package's 60 s deadline
 
   // The other end of the same deadline. An element keeps its place on the parse the worker is
   // holding when it goes (`keepIfPosted`), which is how a streaming turn is shown the frame the

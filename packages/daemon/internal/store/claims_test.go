@@ -290,6 +290,44 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 	}
 }
 
+// The ladder a provider error puts a task on outlives the daemon that armed it: the count says
+// which step the next send waits, and the sentence is what that send puts in front of the task
+// (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
+// what the controller's notice is counted from, and neither a restart nor a re-put of the
+// delivery under a new id may lose either.
+func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-implementer")
+	c.ProviderErrorRun = 4
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	note := "Your previous turn on this task stopped because of a provider error (HTTP 529)."
+	queued := supervise.Delivery{ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, QueuedAt: at(1),
+		ProviderErrorRetries: 3, ProviderErrorNote: note}
+	if err := store.PutDelivery(ctx, c.Token, queued); err != nil {
+		t.Fatalf("put delivery: %v", err)
+	}
+
+	read := onlyClaim(t, store)
+	if read.ProviderErrorRun != 4 {
+		t.Errorf("the claim's run of provider errors read back as %d, want 4", read.ProviderErrorRun)
+	}
+	if p := read.Pending; p == nil || p.ProviderErrorRetries != 3 || p.ProviderErrorNote != note {
+		t.Fatalf("delivery read back = %+v, want three sends counted and the sentence %q", p, note)
+	}
+
+	// A task no provider error has taken back carries neither.
+	fresh := supervise.Delivery{ID: "delivery-2", Task: "test the change", Phase: phase.Testing, QueuedAt: at(2)}
+	if err := store.PutDelivery(ctx, c.Token, fresh); err != nil {
+		t.Fatalf("put the newer delivery: %v", err)
+	}
+	if p := onlyClaim(t, store).Pending; p == nil || p.ProviderErrorRetries != 0 || p.ProviderErrorNote != "" {
+		t.Fatalf("delivery read back = %+v, want a task no provider error has taken back", p)
+	}
+}
+
 func TestAClaimWithNothingOptionalRoundTripsAsNothing(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -346,6 +384,31 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 
 	want.PluginContract = 24
 	want.PluginRelaunchFor = 0
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// What the daemon charged for the death of the process a claim records round-trips: a restart
+// builds every claim from this table and has charged nothing of its own, so a claim restored
+// without this is charged a second death for the one dead process it stands over, which costs
+// that claim what supervise.Claim.DeathCharged states (INFRA-956). It round-trips with the
+// deaths it charged, which the same write carries.
+func TestWhatAClaimsDeathWasChargedRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-deathcharged")
+	want.State = supervise.StateWorking
+	want.DeathCharged = true
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	// The launch that replaces that process clears it with the process it lets go (supervise's
+	// letGo), and the claim it writes records a process charged nothing.
+	want.DeathCharged = false
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put claim again: %v", err)
 	}

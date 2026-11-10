@@ -646,10 +646,13 @@ export type DeliveryCapability = (typeof DELIVERY_CAPABILITIES)[number];
  * promise that a same-mode Retry "won't deliver it twice". This comment is where that promise is
  * stated; every other place that relies on it points here.
  *
- * Dispatch keys a send by message and mode (`<message>:<mode>`, `<comment>:<target>:<mode>`), the
- * same for every attempt, and the listener makes that key, scoped to the recipient
- * (`agent.<session>.<key>`), the envelope's `dedupe_key`. A same-mode Retry of a send that already
- * landed therefore repeats that frame's dedupe key, and only that: the listener mints a new
+ * Dispatch keys a targeted message's send by message and mode (`<message>:<mode>`) and a comment
+ * mention's by comment, target and the mode the comment recorded on that mention
+ * (`<comment>:<target>:<the mention's mode>`, whatever mode each attempt went in), the same for
+ * every attempt, and the listener makes that key, scoped to the recipient
+ * (`agent.<session>.<key>`), the envelope's `dedupe_key`. A Retry of a send that already landed -
+ * in the same mode, or in any mode at all for a mention - therefore repeats that frame's dedupe
+ * key, and only that: the listener mints a new
  * `event_id` for every send. Two things recognise the repeat inside this window, both only for a
  * key that names its event (`dedupeKeyNamesItsEvent` in `envelope.ts`, which every Dispatch key
  * does), and a recipient is protected by whichever of them sits between it and the bus:
@@ -677,7 +680,9 @@ export type DeliveryCapability = (typeof DELIVERY_CAPABILITIES)[number];
  * one a session runs. The stream stores a re-send of an attempt the session answered with an
  * error no more than any other repeat, so a session the listener pushes to never receives it, and
  * its attempt reads as a duplicate. The dashboard therefore offers no same-mode Retry for such an
- * attempt and points at a mode change, which is a new key; sending that Retry under a new key is
+ * attempt and points at a mode change, which is a new key for a targeted message - a comment
+ * mention's mode change repeats the mention's one key, so it delivers nothing once an attempt of
+ * that mention reached the session; sending that Retry under a new key is
  * LEGION-431. And a host keeps at most `DELIVERY_DEDUPE_KEY_LIMIT` keys, forgetting the oldest
  * past it, so a re-send of a key it was handed before that many later ones reaches the agent
  * again. The limit is two and a half times what the whole stream stored in
@@ -812,6 +817,47 @@ export type SearchResultsPageAbsentAs<V> = { readonly [K in keyof SearchResultsP
  * `contracts.SearchDegradedEmbedderUnavailable` so the string Dispatch writes and the string
  * `search-answer.ts` compares against cannot drift apart. */
 export const SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE = "embedder_unavailable";
+
+/** The operator forms `GET /api/v1/search` reads in the words a person wrote: a `"phrase"` in
+ *  quotes, the `OR` between two words, and a `-word` the search leaves out. Each is generated
+ *  into Go as `contracts.SearchOperatorPhrase`, `SearchOperatorOr` and `SearchOperatorExclude`,
+ *  so the string Dispatch answers and the string a client reads it by cannot drift apart. */
+export const SEARCH_OPERATOR_PHRASE = "phrase";
+export const SEARCH_OPERATOR_OR = "or";
+export const SEARCH_OPERATOR_EXCLUDE = "exclude";
+export const SEARCH_OPERATORS = [
+  SEARCH_OPERATOR_PHRASE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_EXCLUDE,
+] as const;
+export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
+
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
 
 // GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
 // `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block

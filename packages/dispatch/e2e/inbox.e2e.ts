@@ -432,7 +432,8 @@ test("a quote-anchored inbox ask names and opens its document", async ({ browser
 
 // SLOW(>=2s): three seeded asks and a live session's interests waited for on the issue's event
 // list, an Inbox of three rows screenshotted, and the margin answer that empties one of them.
-test("inbox shows current asks and answers issue asks in the margin", async ({
+// @pr: Create through answer to close: the Inbox lists the current asks and answers one in the margin, which is the path a person uses most.
+test("inbox shows current asks and answers issue asks in the margin @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -558,7 +559,8 @@ test("inbox shows current asks and answers issue asks in the margin", async ({
   await alice.close();
 });
 
-test("a clarification moves an ask under Waiting on agents until the asker hands the turn back", async ({
+// @pr: Create through answer to close: a clarification hands the turn to the agents and back, which is how an ask gets answered at all.
+test("a clarification moves an ask under Waiting on agents until the asker hands the turn back @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1070,9 +1072,10 @@ test.describe("credential record path", () => {
   });
 });
 
-// No Dispatch event names a credential request (the broker holds no Dispatch credential by
-// design), so an Inbox already open can only learn of one, or that one is gone, from the
-// credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`, `features/credentials/pending.ts`).
+// No Dispatch event names a credential request (the broker writes nothing in Dispatch by design;
+// its model judge only reads an issue there), so an Inbox already open can only learn of one, or
+// that one is gone, from the credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`,
+// `features/credentials/pending.ts`).
 // `page.clock` fast-forwards past that interval without disturbing the event feed: its socket is
 // replaced only after 45 s with no frame (`LIVE_SOCKET_SILENT_MS`, `api/live-socket.ts`), well
 // past the 15.5 s advanced here, so the feed never has a gap and the poll is the only thing that

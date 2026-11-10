@@ -4,8 +4,10 @@
 // they get and of which S answers a WebSocket upgrade at /socket; the stand-in GitHub and
 // Google endpoints a github-app and a google-login secret are minted at; the stand-in
 // Microsoft authority the azure kind reads a tenant's OpenID configuration from and exchanges
-// at; and a stand-in AWS service that verifies Signature Version 4 with the real test key and
-// the real session token. Every one of them is internal/broker/airlock/airlocktest's, which is
+// at; a stand-in AWS service that verifies Signature Version 4 with the real test key and
+// the real session token; and the three the broker's model judge calls - a model endpoint, a
+// Dispatch holding a few issues, and the Compute Engine metadata server the broker mints its
+// own identity token at. Every one of them is internal/broker/airlock/airlocktest's, which is
 // why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
@@ -26,10 +28,18 @@
 // (probe.go) and `load` (load.go), which are here so that CI compiles and vets them. With no
 // subcommand it serves the stands, which is what the rest of this comment is about.
 //
-// A stand is named s, t, github, google, microsoft or aws. Each binds 127.0.0.1 on a port the
-// operating system picks unless --address names one, and each HTTPS stand's certificate names
-// 127.0.0.1 and localhost unless --host adds names of its own - the name a rules file binds a
-// secret to, which the command's own TLS verification reads out of the certificate.
+// A stand is named s, t, github, google, microsoft, aws, model, dispatch or metadata. Each
+// binds 127.0.0.1 on a port the operating system picks unless --address names one, and each
+// HTTPS stand's certificate names 127.0.0.1 and localhost unless --host adds names of its own
+// - the name a rules file binds a secret to, which the command's own TLS verification reads
+// out of the certificate.
+//
+// The model stand answers one call at a time and what it answers is set while it runs, since
+// one check drives several cases against one stack: POST <records URL>/answers/model, whose
+// body is {"verdict": "approve"|"refer", "reason": "…"} for a structured reply, {"text": "…"}
+// for a reply that is no such object, and {"delay": "30s"} for an answer held back past the
+// caller's own time bound. The report names that address (model_answer_url), and until a check
+// calls it the model approves.
 //
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
@@ -40,11 +50,12 @@
 // every file it wrote - the authority's certificate and key, which
 // BROKER_AIRLOCK_CA_CERT_FILE, BROKER_AIRLOCK_CA_KEY_FILE and
 // BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE name, and each HTTPS stand's own certificate - the AWS
-// key pair the AWS stand verifies against, which the script signs its calls with, and the
-// GitHub App key the GitHub stand mints for, which the local stack's fake secret store holds as
-// that App's stored value. It then logs "stands listening records=<records URL>" and serves
-// until it is interrupted. Every key here is made at each start and is a stand-in's: nothing it
-// prints opens anything.
+// key pair the AWS stand verifies against, which the script signs its calls with, the GitHub
+// App key the GitHub stand mints for, which the local stack's fake secret store holds as that
+// App's stored value, and the two Dispatch issues the dispatch stand holds, one open and one
+// done. It then logs "stands listening records=<records URL>" and serves until it is
+// interrupted. Every key here is made at each start and is a stand-in's: nothing it prints
+// opens anything.
 package main
 
 import (
@@ -76,7 +87,7 @@ import (
 const exitUsageError = 2
 
 // The stands this command serves. s and t are the two services a call behind the airlock
-// reaches; the other four stand in for the endpoints the broker itself calls.
+// reaches; the other seven stand in for the endpoints the broker itself calls.
 const (
 	standS         = "s"
 	standT         = "t"
@@ -84,16 +95,27 @@ const (
 	standGoogle    = "google"
 	standMicrosoft = "microsoft"
 	standAWS       = "aws"
+	standModel     = "model"
+	standDispatch  = "dispatch"
+	standMetadata  = "metadata"
 )
 
 // stands is every stand's name, in the order the JSON lists them.
-var stands = []string{standS, standT, standGitHub, standGoogle, standMicrosoft, standAWS}
+var stands = []string{
+	standS, standT, standGitHub, standGoogle, standMicrosoft, standAWS,
+	standModel, standDispatch, standMetadata,
+}
 
-// plainStands are the two served over http rather than https: the broker mints a kind's value
+// plainStands are the five served over http rather than https. The broker mints a kind's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
-// behind TLS would need a root in the pod's trust store. Every other stand is reached through
-// the proxy, whose extra roots BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names.
-var plainStands = map[string]bool{standGitHub: true, standGoogle: true}
+// behind TLS would need a root in the pod's trust store, and the three the model judge calls
+// are reached by that same sort of client; the metadata server could be nothing else, since
+// internal/googleidentity asks it over http and no other scheme. Every other stand is reached
+// through the proxy, whose extra roots BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names.
+var plainStands = map[string]bool{
+	standGitHub: true, standGoogle: true,
+	standModel: true, standDispatch: true, standMetadata: true,
+}
 
 // upgradePath is the one path S answers a WebSocket upgrade at, and the path a check drives
 // an upgrade through the airlock on. It is a path of its own rather than every path of S, so
@@ -126,6 +148,39 @@ func writeGitHubAppKey(dir string) (string, error) {
 		return "", fmt.Errorf("write the stand-in GitHub App key: %w", err)
 	}
 	return path, nil
+}
+
+// The two issues the dispatch stand holds: one being worked and one that is over, so a check
+// drives both the issue a reader may act on and the issue it must not. Every other key is a
+// 404, which is the third case and needs no fixture.
+const (
+	standInOpenIssue = "INFRA-1353"
+	standInDoneIssue = "INFRA-1200"
+)
+
+// standInSpec is the open issue's spec document. It is written to the house outline, because a
+// reader of a spec takes its Summary and Requirements sections out of it and shows those alone.
+const standInSpec = `## Summary
+
+The secrets broker asks one model whether a pending human-tier credential request should be
+approved in the place of the person who decides it today.
+
+## Requirements
+
+- The judge decides a request the airlock rules give it seconds for, and refers every other.
+- The judge never denies: a request it does not approve waits for its person exactly as it does
+  today.
+- Every verdict is recorded against the request, with what the model was asked and answered.
+`
+
+// standInIssues is the fixture the dispatch stand answers from. The done issue carries no spec
+// document, which is the other answer a spec read gives: an issue is judged on what Dispatch
+// holds of it, and an issue with no spec is one of them.
+func standInIssues() []airlocktest.DispatchIssue {
+	return []airlocktest.DispatchIssue{
+		{Key: standInOpenIssue, Title: "The secrets broker's model judge", Status: "in_progress", Spec: standInSpec},
+		{Key: standInDoneIssue, Title: "The airlock's own local stack", Status: "done"},
+	}
 }
 
 func main() {
@@ -299,6 +354,15 @@ type report struct {
 	CAKeyFile  string `json:"ca_key_file"`
 	// RecordsURL is where every stand's recording route is served.
 	RecordsURL string `json:"records_url"`
+	// ModelAnswerURL is where a check sets what the model stand answers next, POST
+	// <records URL>/answers/model, whose body the command's own comment spells out.
+	ModelAnswerURL string `json:"model_answer_url"`
+	// DispatchOpenIssue and DispatchDoneIssue are the two issues the dispatch stand holds,
+	// which is what a check names in a request's reason: the open one for a reason a judge
+	// may act on, the done one for a reason it must not, and any other key for no issue at
+	// all.
+	DispatchOpenIssue string `json:"dispatch_open_issue"`
+	DispatchDoneIssue string `json:"dispatch_done_issue"`
 	// AWSKeyID and AWSSecretKey are the pair the AWS stand verifies a call against, which a
 	// script signs its calls with and the broker's fake secret store holds as the real key.
 	AWSKeyID     string `json:"aws_key_id"`
@@ -355,6 +419,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		Dir: dir, CACertFile: certFile, CAKeyFile: keyFile,
 		AWSKeyID: o.awsKeyID, AWSSecretKey: o.awsSecretKey,
 		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile,
+		DispatchOpenIssue: standInOpenIssue, DispatchDoneIssue: standInDoneIssue,
 		Stands: map[string]standReport{},
 	}
 	for _, name := range stands {
@@ -382,7 +447,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		out.Stands[name] = entry
 	}
 	// S answers an upgrade on one path of its own and its own body everywhere else, and T its
-	// own body and nothing more; the other four answer as the service they stand in for. Every
+	// own body and nothing more; the other seven answer as the service they stand in for. Every
 	// one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
 	services[standGitHub].AnswerWith(airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations}).Answer)
@@ -396,15 +461,26 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standAWS].AnswerWith(airlocktest.NewAWSStand(airlocktest.AWSOptions{
 		KeyID: o.awsKeyID, SecretKey: o.awsSecretKey, SessionToken: o.awsSessionToken,
 	}).Answer)
+	// The model stand approves until a check sets another answer, so a stack driven with no
+	// call to the answer route judges a request through to a grant.
+	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "approve"})
+	if err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands: the model stand's first answer: %v\n", err)
+		return 1
+	}
+	model := airlocktest.NewModelStand(airlocktest.ModelOptions{Answer: firstAnswer})
+	services[standModel].AnswerWith(model.Answer)
+	services[standDispatch].AnswerWith(airlocktest.NewDispatchStand(airlocktest.DispatchOptions{Issues: standInIssues()}).Answer)
+	services[standMetadata].AnswerWith(airlocktest.NewMetadataStand(airlocktest.MetadataOptions{}).Answer)
 
-	records := &http.Server{Handler: recordsHandler(services), ReadHeaderTimeout: 30 * time.Second}
+	records := &http.Server{Handler: recordsHandler(services, model), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
 		return 1
 	}
 	defer stopRecords()
-	out.RecordsURL = recordsURL
+	out.RecordsURL, out.ModelAnswerURL = recordsURL, recordsURL+modelAnswerPath
 	for name, entry := range out.Stands {
 		entry.Records = recordsURL + "/records/" + name
 		out.Stands[name] = entry
@@ -434,10 +510,12 @@ func serveRecords(server *http.Server, addr string) (string, func(), error) {
 	return "http://" + listener.Addr().String(), func() { _ = server.Close() }, nil
 }
 
-// recordsHandler is GET /records/<stand>: the JSON array of every request that stand was sent,
-// each record's method, path, query, host, header and body, which is what a check script reads
-// a result back from.
-func recordsHandler(services map[string]*airlocktest.Service) http.Handler {
+// recordsHandler is the two things the recording server answers: GET /records/<stand>, the
+// JSON array of every request that stand was sent, each record's method, path, query, host,
+// header and body, which is what a check script reads a result back from; and the model stand's
+// answer route, which is served here because a check that drives one case after another needs
+// one address to set them at and the recording server is the address it already has.
+func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest.ModelStand) http.Handler {
 	mux := http.NewServeMux()
 	for _, name := range slices.Sorted(maps.Keys(services)) {
 		service := services[name]
@@ -448,5 +526,76 @@ func recordsHandler(services map[string]*airlocktest.Service) http.Handler {
 			_ = encoder.Encode(service.Requests())
 		})
 	}
+	mux.HandleFunc("POST "+modelAnswerPath, func(w http.ResponseWriter, r *http.Request) {
+		var body modelAnswerRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxModelAnswerBody)).Decode(&body); err != nil {
+			http.Error(w, "the answer is no JSON object: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		answer, err := modelAnswerOf(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		model.Answers(answer)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"text": answer.Text, "delay": answer.Delay.String()})
+	})
 	return mux
+}
+
+// modelAnswerPath is where a check sets what the model stand answers from there on, and
+// maxModelAnswerBody what one such request is read of: a reply is a sentence or two, and a body
+// past this is a mistake rather than an answer.
+const (
+	modelAnswerPath    = "/answers/model"
+	maxModelAnswerBody = 1 << 20
+)
+
+// modelAnswerRequest is the body POST <records URL>/answers/model takes.
+type modelAnswerRequest struct {
+	// Verdict and Reason are the structured reply: the answer's text is the JSON object
+	// {"verdict": …, "reason": …}, which is the shape a caller asking for a structured reply
+	// reads back out of a Messages API reply. A verdict with no reason is given one.
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+	// Text is the whole of the answer's text, for an answer that is no such object at all:
+	// the way a check drives a reply its caller cannot read.
+	Text string `json:"text"`
+	// Delay holds the answer back for that Go duration, which is how a check spends a
+	// caller's own time bound: "30s" against a caller bounded at 20 seconds is an answer it
+	// never sees, so the text beside it is never read.
+	Delay string `json:"delay"`
+}
+
+// modelAnswerOf is one such request as the answer it sets, and what is wrong with a request
+// that sets none.
+func modelAnswerOf(body modelAnswerRequest) (airlocktest.ModelAnswer, error) {
+	var answer airlocktest.ModelAnswer
+	switch {
+	case body.Verdict != "" && body.Text != "":
+		return answer, errors.New("the answer names both a verdict and a text, and it is one or the other")
+	case body.Verdict == "" && body.Text == "" && body.Delay == "":
+		return answer, errors.New("the answer names no verdict, no text and no delay")
+	case body.Verdict != "":
+		reason := body.Reason
+		if reason == "" {
+			reason = "the stand-in model answered " + body.Verdict
+		}
+		encoded, err := json.Marshal(map[string]string{"verdict": body.Verdict, "reason": reason})
+		if err != nil {
+			return airlocktest.ModelAnswer{}, fmt.Errorf("the verdict could not be encoded: %w", err)
+		}
+		answer.Text = string(encoded)
+	default:
+		answer.Text = body.Text
+	}
+	if body.Delay != "" {
+		delay, err := time.ParseDuration(body.Delay)
+		if err != nil || delay < 0 {
+			return airlocktest.ModelAnswer{}, fmt.Errorf("the delay %q is no duration to hold an answer back by", body.Delay)
+		}
+		answer.Delay = delay
+	}
+	return answer, nil
 }

@@ -35,6 +35,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "failed"}},
 		}},
+		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
+			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
@@ -325,6 +327,27 @@ func TestAnIssueSuspensionCarriesNoReleaseField(t *testing.T) {
 	}
 }
 
+// A start the release before this one wrote still decodes. Nothing writes SuperviseRequest's
+// Relaunch mark now — a phase worker's start is one row that carries its task
+// (workflow.StartOrOwe) — but the previous release wrote the task-less half of a pair with the
+// mark on it, and such a row can still be in the outbox when this release deploys. The outbox
+// decodes strictly (DisallowUnknownFields) and a refused payload is a row that retries for
+// ever, so the field and the validation rule that reads it are kept for one release: the row
+// decodes, and the executor acts on the mark nowhere.
+func TestAStartTheReleaseBeforeWroteWithTheRelaunchMarkStillDecodes(t *testing.T) {
+	row := OutboxRow{ID: 42, Kind: OutboxKindSupervise, Issue: "LEGION-208",
+		Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"phase":"implementing","relaunch":true}`)}
+	got, err := DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decoding the start the previous release wrote = %v, want it accepted: a refused payload retries for ever", err)
+	}
+	want := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
+		Phase: phase.Implementing, Relaunch: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload = %#v, want %#v", got, want)
+	}
+}
+
 // A tick notice carries the names of the deployment capabilities with no decision through the
 // outbox row and back, and a notice with none carries no such field: the controller's payload
 // reads `openCapabilities` only when there is a gap to name.
@@ -561,8 +584,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
 	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
-	// account of the tree, a waiting-for-slot the wait it was written for, the three spec
-	// decisions the person who decided and the reference, and no other kind carries any of those.
+	// account of the tree, the three spec decisions the person who decided and the reference,
+	// and no other kind carries either of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
 	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
 	//
@@ -607,8 +630,6 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
-		{Kind: "waiting-for-slot", Role: claim.RoleArchitect, Reason: "a person answered the root's ask, and the admission cap has no free slot now",
-			WaitingForSlot: &WaitingForSlot{AnsweredAt: answered}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))
@@ -644,14 +665,14 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				t.Fatalf("the re-held copy of a published %s notice is refused, so its architect is never told: %v", notice.Kind, err)
 			}
 
-			// Valid is not the same as unchanged. The validation refuses a field a kind requires
-			// and does not hold — a wait with no moment at all — while the daemon compares what
-			// the published row carries against the record exactly (the daemon's
-			// stillWaitsForSlot), so a publish that moved the moment rather than dropping it
-			// would pass every check above and leave the copy unpublishable all the same. The
-			// comparison runs over the wire form the re-hold reads the copy back from, decoded
-			// the way the daemon's exceptionNotice decodes the listener's report, with unknown
-			// fields refused, so a field the publish renames or invents is caught here too.
+			// Valid is not the same as unchanged. The validation refuses only a field a kind
+			// requires and does not hold — a catch-up without its account of the tree — so a
+			// publish that moved a field rather than dropping it would pass every check above
+			// and leave the re-held copy carrying something its architect was never owed. The
+			// comparison below runs over the wire form the re-hold reads the copy back from,
+			// decoded the way the daemon's exceptionNotice decodes the listener's report, with
+			// unknown fields refused, so a field the publish renames or invents is caught here
+			// too.
 			wire, err := json.Marshal(published)
 			if err != nil {
 				t.Fatalf("the published %s notice does not marshal, so no listener could carry it: %v", notice.Kind, err)

@@ -49,7 +49,6 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		Project:        "LEGION",
 		Steps:          config.DesignGateOff.Steps(),
 		ReviewRoundCap: 3,
-		MaxFixAttempts: 3,
 		Linger:         time.Hour,
 		Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, nil)
@@ -79,12 +78,11 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		t.Fatalf("gate = latest %d approved %v, want version 4 open", latest, approved)
 	}
 
-	// The relaunch half of the planner's start is left out, as every other assertion of the
-	// outbox's shape leaves it out (assertOutboxKinds): a start is two rows now, and this is
-	// about the one that carries the task.
-	rows, err := pool.Query(ctx, `select kind, payload from outbox
-		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
-		order by id`)
+	// Every row the registration left, with no start passed over: in this package every start
+	// carries a task — the architect's (awaiting_reconcile.go), the wake's (wake.go) and every
+	// phase start through StartOrOwe — and the task-less starts admission brings back beside a
+	// phase worker are written in internal/admit, never here.
+	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -209,19 +207,16 @@ func TestReadyRefusedWithNoDesignGateCommitsAndRecordsNoPendingVersion(t *testin
 	}
 }
 
-// A pull request GitHub reopens is the same pull request. Its fix attempts and blocked attempts
-// are what bound the review rounds, and rebuilding the record from the reopen zeroed them: closing
-// and reopening a pull request bought a fresh set of attempts, which is the cap the workflow has.
-// The head the count last counted is carried with them, since the fix-attempt cap holds a red at
-// the attempt it marks (classify.FixAttemptCapHolds) and a reopen judges no head green.
-func TestAReopenedPullRequestKeepsItsAttemptCounters(t *testing.T) {
+// A pull request GitHub reopens is the same pull request: the record is not rebuilt from the
+// reopen, and the head the reopen names becomes the pull request's.
+func TestAReopenedPullRequestKeepsItsRecord(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{
 		Issue: "LEGION-208", Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: "old",
 		HeadUpdatedAt: time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC), Failing: []string{},
-		FixAttempts: 2, BlockedAttempts: 1, HeadCounted: "old", State: record.PullRequestOpen,
+		State: record.PullRequestOpen,
 	})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -232,13 +227,9 @@ func TestAReopenedPullRequestKeepsItsAttemptCounters(t *testing.T) {
 		t.Fatalf("ApplyFact reopened: %v", err)
 	}
 
-	var fix, blocked int
-	var head, counted string
-	if err := pool.QueryRow(ctx, "select fix_attempts, blocked_attempts, head_sha, head_counted from pull_requests where issue = $1", "LEGION-208").Scan(&fix, &blocked, &head, &counted); err != nil {
+	var head string
+	if err := pool.QueryRow(ctx, "select head_sha from pull_requests where issue = $1", "LEGION-208").Scan(&head); err != nil {
 		t.Fatalf("read the reopened pull request: %v", err)
-	}
-	if fix != 2 || blocked != 1 || counted != "old" {
-		t.Fatalf("reopened pull request counters = %d/%d, counted head %q, want the 2/1 and %q it carried", fix, blocked, counted, "old")
 	}
 	if head != "new" {
 		t.Fatalf("reopened pull request head = %q, want the head the reopen named", head)
@@ -351,7 +342,7 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "CAPTURE-4", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "CAPTURE-4", Project: "CAPTURE", Title: "captured gate", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, MaxFixAttempts: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
+	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "register-captured-gate", intake.GateRegistered{Issue: "CAPTURE-4", ArtifactID: "0544d460-0931-4374-b20b-790408519edd", Version: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("register gate: %v", err)
 	}
@@ -668,14 +659,13 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 	}
 }
 
-// superviseRequests counts the enqueued supervise requests of one operation by issue/role, with
-// the relaunch half of a phase-worker start left out: a start is two rows (StartOrOwe), and the
-// one these counts are about is the row that carries the task.
+// superviseRequests counts the enqueued supervise requests of one operation by issue/role. A
+// phase worker's start is one row, which carries the worker's task (StartOrOwe), and every start
+// this package writes carries one.
 func superviseRequests(t *testing.T, pool *pgxpool.Pool, op string) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select issue, payload->>'role' from outbox
-		where kind = 'supervise' and payload->>'op' = $1
-			and not (payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`, op)
+		where kind = 'supervise' and payload->>'op' = $1`, op)
 	if err != nil {
 		t.Fatalf("read %s requests: %v", op, err)
 	}
@@ -708,14 +698,11 @@ func sameCounts(got, want map[string]int) bool {
 	return true
 }
 
-// assertOutboxCount counts the rows of one kind, with the relaunch half of a phase-worker start
-// left out: a start is two rows (StartOrOwe) and the one these counts are about is the row that
-// carries the task.
+// assertOutboxCount counts the rows of one kind.
 func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) {
 	t.Helper()
 	var got int
-	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1
-		and not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`, kind).Scan(&got); err != nil {
+	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1`, kind).Scan(&got); err != nil {
 		t.Fatalf("count %s rows: %v", kind, err)
 	}
 	if got != want {
@@ -1001,21 +988,16 @@ const testReviewApp = "legion-reviewer[bot]"
 // logging to log (the default logger when nil).
 func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, MaxFixAttempts: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
 
-// assertOutboxKinds is every row the transition left, by kind and in the order it wrote them,
-// with the relaunch half of each phase-worker start left out: a start is two rows now
-// (StartOrOwe), one that brings the role's session back carrying no task and one that carries
-// the task and waits for the issue's slot, and it is the second that every one of these
-// assertions is about. A test that is about the relaunch row itself reads it by name.
+// assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
+// phase worker's start is one of them: one row, which carries the task (StartOrOwe).
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox
-		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
-		order by id`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}

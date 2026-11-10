@@ -437,6 +437,28 @@ export function recordCheckResult(
   return post("/api/v1/issues/{key}/results", { body: input, params: { key: issue } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
+ *  document order, each with the results recorded against it. */
+export function getIssueResults(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/results", { params: { key: issue } }, options);
+}
+
+/** `POST /api/v1/settings/new-issue/_test`: what the bar files a person's unmatched typed words
+ *  as, in place of what the server's environment set. Test-only endpoint (mounted when
+ *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
+ *  deployment setting can change while it runs. */
+export function setNewIssueSettings(
+  input: { label: string; session: string },
+  options: ApiOptions = {}
+): Promise<{ label: string; session: string }> {
+  return request<{ label: string; session: string }>(
+    "/api/v1/settings/new-issue/_test",
+    "POST",
+    input,
+    options
+  );
+}
+
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
 export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/coverage", { params: { key: issue } }, options);
@@ -990,7 +1012,7 @@ export function getMyState(login = "alice") {
 /**
  * Forces every open live socket on the server closed, as if it had restarted.
  * Test-only endpoint (mounted when DISPATCH_TEST_HOOKS=1, see run-server.sh) that
- * proves the page resumes every subscription after an unplanned gap.
+ * proves the page resumes every subscription after an unplanned gap, on demand.
  */
 export function disconnectLiveSockets(options: ApiOptions = {}) {
   return post("/api/v1/live/_test/disconnect", {}, { as: "agent", ...options });

@@ -45,30 +45,40 @@ expect.extend(reportableJestDomMatchers());
 // flag of `package.json`'s test scripts rather than a line of this file, and both are explained
 // here, since this file is what every `web/src` test loads.
 //
-// The per-test deadline is `--timeout 30000`, carried by both command lines that run tests: the
+// The per-test deadline is `--timeout 60000`, carried by both command lines that run tests: the
 // `test:web` script for `web/src`, and the `bun test --parallel e2e/__tests__` run beside it.
 // Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
 // ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
 // pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
 // `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
-// 30 s is the round number above twice that reading, and it is kept as small as that rule
-// allows, because every hung test costs the whole budget on CI as well as in a pod. The flag
-// carries it rather than a `jest.setTimeout` here, for two measured reasons: a preload's
-// deadline is not dependable, since a 6 s probe in a directory run started by hand ended "this
-// test timed out after 5000ms" three times of three with two scratch files beside it and passed
-// with one, and what file of a run kept it and what file lost it did not reproduce the same way
-// twice; and the `e2e/__tests__` lane loads no preload at all, so there the flag is the only
-// deadline those files get. It cuts no larger deadline a file sets for itself (MarkdownBody
-// 54 pass, harness-lanes 8 pass).
+// The number is twice the slowest loaded test, and it is sized on the slower of the two pod
+// shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
+// differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
+// a factor of 2.15, which puts that same test at about 29.7 s there - inside a 30 s deadline by
+// 0.3 s, which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is
+// 59.4 s, so 60 s, and it is kept as small as that rule allows, because every hung test costs
+// the whole budget on CI as well as in a pod. The flag carries it rather than a
+// `jest.setTimeout` here, for two measured reasons: a preload's deadline is not dependable,
+// since a 6 s probe in a directory run started by hand ended "this test timed out after 5000ms"
+// three times of three with two scratch files beside it and passed with one, and what file of a
+// run kept it and what file lost it did not reproduce the same way twice; and the
+// `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
+// files get. It cuts no larger deadline a file sets for itself: the largest is
+// `MarkdownBody.test.tsx`'s own 40 s, below this number and still above the 25 s wait that row
+// must let run out.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed
 // `settings.test.tsx`'s own heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30
 // loaded runs, each time a different row, which is why the budget is the suite's and not a
-// deadline per row. 10 s is above every per-call budget this tree keeps but one, and a third of
+// deadline per row. 10 s is above every per-call budget this tree keeps but one, and a sixth of
 // the per-test deadline, so a wait that runs out reports as the wait that failed and names what
 // it waited for, rather than as a bare test timeout. The slowest test of a loaded run that
-// drives no subprocess reads 5.80 s whole.
+// drives no subprocess reads 5.80 s whole. This number is not re-sized for the slower pod shape
+// as the deadline above is, because a wait is not a test: the longest single wait measured
+// loaded here is `mermaid-diagrams.test.tsx`'s shadow-root draw at 1.2 to 1.4 s, which the 2.15
+// factor puts at about 3 s there, against 10 s. dispatch://INFRA-1405 sets this same number in
+// this same file, so changing it is that tree's to agree to as well.
 //
 // Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
 // Testing Library advances the held clock by its polling interval until the wait succeeds or the
