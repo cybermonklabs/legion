@@ -22,12 +22,19 @@ so what a test binary grows to in its last seconds is never seen: the next walk 
 
 Usage: race_memory.py <command> [args...], for example
 
-    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 54m ./internal/dispatch/docs/
 
 It has no options of its own: everything after the script name is the command. RACE_MEM_LIMIT_KB
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
 line by line, so a `go test -json` stream is unwrapped back into the test log it carries and the
 running tests are known; the command's stderr is not touched and goes straight to this script's.
+
+RACE_MEM_JSON_PATH, when it is set and not empty, is a file every line of that stdout is also
+written to, byte for byte, as the command wrote it. The log keeps the unwrapped text either way:
+the copy is the stream itself, which the job uploads as its artifact and
+.github/scripts/go-test-times.py ranks the packages and tests of (dispatch://INFRA-1075). A path
+that cannot be opened for writing ends the run before the command starts, with the message the
+open failed with.
 """
 
 import json
@@ -39,6 +46,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 # Half of a 16 GiB runner, so a run that grows past it but still fits on the runner turns the
 # step red after it ends, with the peak and the tests named, rather than passing unnoticed.
@@ -198,15 +206,21 @@ class Log:
         self.write(text + "\n")
 
 
-def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
+def pump(stream: Iterable[str], tests: RunningTests, log: Log, copy: TextIO | None = None) -> None:
     """Pass the command's stdout through, unwrapping a `go test -json` stream as it goes.
 
     A line that parses as a JSON object with an `Action` key is a -json event: its `Output`, when
     it has one, is written as it stands (it carries its own newline) so the test log reads as it
     would without -json, and the event itself tells the sampler which tests are running. Any other
     line is the command's own and is written whole.
+
+    `copy`, when there is one, takes every line of that stdout as it stands, before anything is
+    read out of it: the file is the stream, not the log, so what a reader of the artifact gets is
+    what the command wrote. This thread is its only writer, and it is flushed where it is opened.
     """
     for line in stream:
+        if copy is not None:
+            copy.write(line)
         event = None
         try:
             parsed = json.loads(line)
@@ -260,6 +274,23 @@ def decision_line(peak_kb: int, field: str, limit_kb: int, highest: Sample | Non
     return line
 
 
+def stream_copy_from_env(environ: Mapping[str, str]) -> TextIO | None:
+    """The file every line of the command's stdout is copied to, or None when RACE_MEM_JSON_PATH
+    is unset or empty.
+
+    newline="" so each line reaches the file as the command wrote it, and line buffering so a run
+    the kernel kills leaves behind what it had written by then, which is the same reason the
+    sampler writes as it goes. An OSError names the path, which is the message the caller prints.
+    """
+    path = environ.get("RACE_MEM_JSON_PATH", "").strip()
+    if not path:
+        return None
+    try:
+        return open(path, "w", encoding="utf-8", newline="", buffering=1)  # noqa: SIM115 - closed by main
+    except OSError as error:
+        raise OSError(f"cannot write RACE_MEM_JSON_PATH {path}: {error}") from None
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(
@@ -272,6 +303,11 @@ def main(argv: list[str]) -> int:
     except ValueError as problem:
         print(f"race memory: {problem}", file=sys.stderr)
         return 2
+    try:
+        copy = stream_copy_from_env(os.environ)
+    except OSError as problem:
+        print(f"race memory: {problem}", file=sys.stderr)
+        return 2
 
     log = Log()
     log.line(f"race memory: the limit is {limit_kb} kB ({source})")
@@ -279,11 +315,13 @@ def main(argv: list[str]) -> int:
     try:
         process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, bufsize=1)
     except OSError as error:
+        if copy is not None:
+            copy.close()
         print(f"race memory: cannot run {argv[0]}: {error}", file=sys.stderr)
         return 127
 
     tests = RunningTests()
-    reader = threading.Thread(target=pump, args=(process.stdout, tests, log), daemon=True)
+    reader = threading.Thread(target=pump, args=(process.stdout, tests, log, copy), daemon=True)
     reader.start()
 
     # The peak and the highest sample are folded in walk by walk rather than kept as every text
@@ -315,6 +353,8 @@ def main(argv: list[str]) -> int:
         break
 
     reader.join()
+    if copy is not None:
+        copy.close()
     if process.stdout is not None:
         process.stdout.close()
     status = process.wait()
