@@ -312,9 +312,9 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 			var asked []string
 			record := filepath.Join(t.TempDir(), "record")
 			guard := New(Options{
-				Check:      leakguardtest.Write(t, t.TempDir(), "cat >/dev/null 2>&1\ntouch \"${STANDIN_RECORD}\"\nexit 0\n"),
+				Check:      leakguardtest.Write(t, t.TempDir(), leakguardtest.Recording(leakguardtest.Passes)),
 				Visibility: answers(visibility, &asked),
-				Env:        append(fixtureenv.Isolated(t.TempDir()), "STANDIN_RECORD="+record),
+				Env:        append(fixtureenv.Isolated(t.TempDir()), "LEAK_CHECK_RECORD="+record),
 			})
 			text := "a title naming " + theHost + "\n"
 			if err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: text}); err != nil {

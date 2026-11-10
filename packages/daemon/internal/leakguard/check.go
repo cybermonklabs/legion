@@ -38,8 +38,9 @@ const whyNoCheck = "the shared public leak check could not be found"
 // looks. It is exported because the daemon tells a pane the check it resolved under this name
 // (runtime/tmux's panePairs), the Kubernetes runtime tells every role's container the installed
 // copy under it (runtime/sandbox's mainEnvironment, which owns the name against an operator's
-// own value), and a second copy of the string in either is one an edit here would silently part
-// from. internal/shim keeps a copy of its own on purpose, for the reason its comment gives.
+// own value), the shim names its own install under it for everything it starts where the
+// environment names none (internal/shim's spawnOnce), and a second copy of the string in any of
+// them is one an edit here would silently part from.
 const CheckVar = "PUBLIC_LEAK_CHECK"
 
 // checkName is the shared check's file name, which is how it is found on PATH.

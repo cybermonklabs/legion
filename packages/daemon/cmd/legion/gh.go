@@ -193,10 +193,16 @@ func ghVisibilityRead(argv []string, env map[string]string) bool {
 // which nothing here would catch, would kill this process where it stood and leave gh running.
 // Each goes to child.Process, the pid and not the group: the group is the terminal's to signal,
 // and a process-group signal from here would hit this process again and every sibling of it.
+// SIGHUP is armed only where this process was not started with that signal ignored, because
+// arming it would undo a `nohup gh …` (the comment on the signal.Notify below).
+//
 // The forwarding is armed before the child is started, so that a signal arriving in the moment
 // between the fork and the wait is held in the channel rather than lost: until this process
 // holds a pid there is nothing to forward to, and the two names would otherwise be the
-// swallowed SIGTERM and the fatal SIGHUP again, in a window a loaded machine makes wide.
+// swallowed SIGTERM and the fatal SIGHUP again, in a window a loaded machine makes wide. A
+// signal that came before that arming is in no channel at all, and is read from this context's
+// cause instead (endedBySignal): it ends the command with 128+<signal> and gh is never
+// started, where before it was swallowed whole and gh ran on as if nothing had been sent.
 //
 // Its context is this process's with the cancellation taken off (context.WithoutCancel): the
 // cancellation is not wanted — a signal that ends this process's context reaches gh as the
@@ -212,9 +218,41 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	}
 	// The forwarding is armed here, before the fork, and a signal that arrives before there is
 	// a pid to send it to waits in this channel (forwardTo).
+	//
+	// SIGHUP is armed only where this process was not started with it ignored. signal.Notify
+	// installs a handler for every name it is given — the signal "will no longer be ignored",
+	// as os/signal's own doc puts it — and execve resets a caught signal to its default action
+	// in the child, so under `nohup gh …`, which execs through the wrapper into this command
+	// with SIGHUP ignored, arming it would hand gh a SIGHUP that kills it: the one thing nohup
+	// was asked to prevent. Left unarmed, the ignoring is gh's as it is this process's, both
+	// inherited across the exec, and there is nothing to forward because nothing reaches
+	// either. SIGTERM is armed either way: main's own signal.NotifyContext (main.go) has
+	// caught it since before this ran, whatever this process was started with.
+	//
+	// signal.Ignored answers for SIGHUP because the runtime records it: initsig leaves SIGHUP
+	// and SIGINT alone where they were inherited as SIG_IGN and marks them ignored
+	// (runtime's sigInitIgnored). agent-secrets asks the same question of the job-control
+	// signals with a raw sigaction, for which that bookkeeping holds no answer
+	// (packages/envoy/cmd/agent-secrets/secret_signal_linux.go's promptSignalIgnored).
+	forwarded := []os.Signal{syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		forwarded = append(forwarded, syscall.SIGHUP)
+	}
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(signals, forwarded...)
 	defer signal.Stop(signals)
+	// A signal that came before the arming above left nothing in that channel: main's
+	// signal.NotifyContext took it, cancelled this context with a cause naming it and raised it
+	// no further, and the child's context drops the cancellation. gh is not started for it.
+	if cause := context.Cause(ctx); cause != nil {
+		if status, ok := endedBySignal(cause); ok {
+			return status
+		}
+		// A cancellation this command cannot name a signal for is no death a shell reads as a
+		// status: it is gh not started, and that is what it answers with.
+		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, cause)
+		return 1
+	}
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
@@ -236,6 +274,30 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	return exited.ExitCode()
 }
 
+// mainNotified are the signals main's context is cancelled by (main.go's signal.NotifyContext),
+// which are the only ones a cause of this process's context can name.
+var mainNotified = []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}
+
+// endedBySignal is the status for a context whose cause is one of those signals, and whether it
+// is one: 128+<signal>, the status a shell reads a death by that signal as, which is what
+// runGhChild answers for a gh a signal killed and what this command answers for a signal that
+// came before gh was started at all.
+//
+// The cause is where that signal is left: signal.NotifyContext's own goroutine takes the signal,
+// cancels with a cause naming it and raises it no further. Each name is matched against the
+// cause os/signal makes of that signal, the signal's own name and " signal received" (its
+// signalCtx), built here from the signal rather than written out again: the error it makes
+// carries no signal to read, so the words are the only way back to the name, and the two
+// spellings of them are one edit of os/signal apart.
+func endedBySignal(cause error) (status int, ok bool) {
+	for _, sig := range mainNotified {
+		if cause.Error() == sig.String()+" signal received" {
+			return 128 + int(sig), true
+		}
+	}
+	return 0, false
+}
+
 // forwardTo sends each signal it reads from signals on to process, until the returned stop is
 // called. Its caller arms that channel (signal.Notify) before it starts the child and calls
 // this once there is a pid: a signal that arrived in between is in the channel and goes on as
@@ -244,9 +306,12 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 // The signal goes to the one pid, never to the group: gh shares this process's group, and a
 // signal sent to the group would come back to this process and reach every sibling in it. The
 // two names are what an exec'd gh ended on and what this process is itself ended by — a pane's
-// server sends SIGHUP to everything in it when the pane goes, and a stop sends SIGTERM — and
-// SIGINT is not among them: the terminal sends that to the whole foreground group, gh included,
-// so forwarding it would send gh a second one.
+// server sends SIGHUP to everything in it when the pane goes, and a stop sends SIGTERM. Where
+// the sender reached gh as well, the forwarded copy is a second signal, which costs nothing: gh
+// died on the first, and the second finds a pid that is gone, as a closing pane's SIGHUP does.
+// SIGINT is left out for a reason of its own rather than that one: the terminal is its sender
+// here, and it sends it to the whole foreground group every time, so there is no SIGINT this
+// forwarding would be gh's only way of hearing.
 //
 // It is for a process its caller waits for: stop ends the forwarding once that wait is over,
 // and a signal that arrives between the child's exit and stop is sent to a pid that is gone,

@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -68,12 +69,6 @@ const (
 	// `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load
 	// (internal/config).
 	MinStopGrace = DefaultGrace + DrainTimeout + MinWarmUpDrain
-	// leakCheckVariable is the name every write path of a role resolves the shared public leak
-	// check from first (internal/leakguard's Resolve), and the one the shim sets from its own
-	// install where its environment names none (spawnOnce). The name is a string here rather
-	// than a constant of that package because this package runs no check: it carries the
-	// installer's answer to the processes it starts, and nothing else of the guard reaches it.
-	leakCheckVariable = "PUBLIC_LEAK_CHECK"
 )
 
 // warmUpDrain is how long Run waits for an in-flight CodeGraph warm-up once the shim's loop has
@@ -432,9 +427,9 @@ func (s *shim) spawnOnce() bool {
 			s.finish(1, err)
 			return false
 		}
-		if check != "" && envValue(s.cfg.Env, leakCheckVariable) == "" {
-			s.log.Printf("[worker-shim] %s is unset, so the installed check %s is what this role's writes are checked against", leakCheckVariable, check)
-			s.cfg.Env = append(slices.Clone(s.cfg.Env), leakCheckVariable+"="+check)
+		if check != "" && envValue(s.cfg.Env, leakguard.CheckVar) == "" {
+			s.log.Printf("[worker-shim] %s is unset, so the installed check %s is what this role's writes are checked against", leakguard.CheckVar, check)
+			s.cfg.Env = append(slices.Clone(s.cfg.Env), leakguard.CheckVar+"="+check)
 		}
 	}
 	cmd := exec.Command(s.cfg.Argv[0], s.cfg.Argv[1:]...)
