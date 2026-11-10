@@ -77,7 +77,8 @@ async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
   return response;
 }
 
-test("a picture pasted into an issue message shows inline in the conversation", async ({
+// @pr: Upload and download: a picture pasted into a message is uploaded and drawn inline in the conversation.
+test("a picture pasted into an issue message shows inline in the conversation @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

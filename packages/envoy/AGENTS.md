@@ -114,7 +114,9 @@ Each item below names a task and where its code is, then notes on it.
   `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
 
   The `ENVOY_NOTIFICATIONS` stream's consumer cap is compiled in rather than read from a setting:
-  `streamMaxConsumers`, 24000, which bounds how many sessions can hold a session consumer of their own.
+  `streamMaxConsumers`, 24000, the most session consumers the stream holds at once.
+  What keeps the count under it is the two deletes ("Session consumers" below): the population is the live sessions, those that ended without deregistering within about the gone horizon plus one reap interval plus one sweep interval, and the consumers a hub holds from before that sweep.
+  The server's inactive threshold only backs those deletes up, and each listener derives it to stand above that bound (`bus.InactiveThresholdFor`).
   A start and the keeper raise a smaller deployed cap to it and never lower one, as for the copies and the byte limit.
   A deployed `-1` or `0`, a stream that sets no cap, is raised only where the connected server is nats-server 2.15.0 or later (`serverDefaultsAnUnsetCap`, read from `ConnectedServerVersion`):
   only from 2.15 does the server cap such a stream itself, at its own default of 1000 (`JSDefaultMaxConsumersPerStream`), and every server before that leaves it unlimited, so there the raise would write a cap no deployment asked for.
@@ -4272,7 +4274,8 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - A registration may carry `delivery`, `{"consumer": true, "epoch": "<a random string per plugin NATS connection>", "resume": {"stream_id": "<envoy_stream_id>", "seq": <n>}}` (`resume` optional).
   One that asks for a consumer, and every registration with a `port` above 0, gets the session's consumer created, or its filter set to the session's agent subject and stored topics, before the registration answers, so a message published on a newly followed stored topic after the answer is the consumer's to deliver;
-  the answer then carries `delivery`: `{"mode": "consumer", "subject": "notifications.envoy.deliver.<session id>", "stream_id": "<envoy_stream_id>", "gap": <bool>}`, or `{"mode": "core", "reason": "<no_grant | invalid_session_id | consumer_error | not_requested>"}` for a session left on the core path.
+  the answer then carries `delivery`: `{"mode": "consumer", "subject": "notifications.envoy.deliver.<session id>", "stream_id": "<envoy_stream_id>", "gap": <bool>, "consumer_start": <stream sequence>}`, or `{"mode": "core", "reason": "<no_grant | invalid_session_id | consumer_error | not_requested>"}` for a session left on the core path.
+  `consumer_start` is the stream sequence the consumer starts at (`deliveryAnswer.ConsumerStart`, from `bus.SessionConsumers.Ensure`; left out when it is 0, as a listener of an earlier release leaves it out), and the plugin keeps it as the floor of its resume point, so a session that has received nothing still comes back at its consumer's start rather than at the stream's end (`packages/envoy-client/src/consumer-delivery.ts`).
   A registration with neither gets no `delivery` field, which is also what a listener of an earlier release answers;
   a client reads a missing field as `core` ("Session consumers" below).
 
@@ -4494,14 +4497,36 @@ The listener has acknowledged a stored message without delivering it to a self-s
 
 A session that registers with `delivery.consumer` set (pi-envoy and claude-envoy ask at every registration) gets a durable JetStream pull consumer of its own on `ENVOY_NOTIFICATIONS`, `s-<session id>` (`bus.SessionConsumerName`).
 A session id that is empty or holds `.`, `*`, `>`, whitespace, `/` or `\` names no consumer, and its registration is answered `core` with `invalid_session_id`.
+The consumer lives from that registration until the session's registration ends or the listener's sweep finds the session gone, each of which deletes it ("Deleted" below);
+the server removes one neither reached after its inactive threshold.
 Only the listener's NATS user manages the consumer: it creates, reads, pulls, acknowledges and deletes it (`packages/envoy/infra/README.md`, "Permission sets").
 The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`, gets no JetStream API.
 
 - **Settings** (`bus.SessionConsumers`):
-  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, `InactiveThreshold` 72 hours (the stream's retention, `contracts.DeliveryDuplicateWindow`), and the stream's replica count.
-  A new consumer starts at the sequence after the stream's last, which delivers what `DeliverNew` delivers, and that start is recorded on the session's entry (`consumer_start`), which is what the durable path skips by.
-  When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the consumer starts at `resume.seq + 1` instead, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
-  A `resume` without `seq`, or naming another `envoy_stream_id`, leaves the start at the stream's end.
+  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, the stream's replica count, and an `InactiveThreshold` the listener derives at start.
+  That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
+  It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
+  A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
+  That start is recorded on the session's entry and carried in the registration's answer, both as `consumer_start`: the entry's is what the durable path skips by, the answer's is the floor the plugin keeps for its resume point.
+  When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the consumer starts at `resume.seq + 1`, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
+  A `resume` without `seq`, or naming another `envoy_stream_id`, leaves the start to the session's resume record, and to the stream's end where the stream holds no record of this stream's identity for the session.
+
+- **Deleted** (`bus.SessionConsumers.Delete`):
+  the listener deletes a session's consumer in two places, so it holds a slot of the stream's consumer cap no longer.
+  A deregistration takes the consumer with the registration it removed (`deleteSessionHandler`, `sessionDelivery.deleteConsumer`): after the unconditional `DELETE /v1/sessions/<id>`, and after a conditional one answered `session.EntryDeleted`.
+  Every outcome that leaves a registration standing keeps the consumer, since a live registration stands behind it.
+  A session whose pane closed or whose box went deregisters nothing, so a sweep deletes the consumer of every session the session registry judges gone, confirmed against the `envoy_sessions` bucket itself (only `nats.ErrKeyNotFound` confirms it), at most 256 a pass (`sessionConsumerSweepCap`), every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5m by default), and only on the task that holds its machine's durable binding and over a session cache that is ready, servable and needs no read (`cmd/listener/session_consumer_sweep.go`).
+  Either delete runs under the session's lock, which a registration holds from its consumer call through its entry's `PutWithin`.
+  Under that lock it reads the session's record again from the `envoy_sessions` stream's leader (`session.SessionRegistry.RefreshFromLeader`: a `$JS.API.STREAM.MSG.GET.KV_envoy_sessions` with `last_by_subj`, not the KV direct get, which a follower of a replicated bucket can answer before it has applied a write), and deletes only on `nats.ErrKeyNotFound`.
+  Across two listener tasks the lock and that read narrow the window without closing it: the next registration creates a consumer lost there again, at the floor the delete recorded.
+  The sweep is the bound: a consumer goes within one sweep interval of the moment its session's record has left the `envoy_sessions` bucket, since the pass deletes only once the bucket holds no record.
+  That is the session reaper's first pass after `ENVOY_SESSION_GONE_HORIZON` (within one `ENVOY_SESSION_REAP_INTERVAL` of the horizon, 1m by default), or the bucket's own `MaxAge` (`ENVOY_SESSION_MAX_AGE`) when that drops the record first, each counted from the session's last registration.
+  It is also what retires the consumers a hub holds from before the sweep existed, 256 a pass.
+  Before each delete the listener records the consumer's ack floor and the stream's identity on the session's resume lane, `notifications.envoy.resume.<session id>` (`bus.SessionResumeSubject`), one message per session:
+  the stream carries that prefix (`bus.StreamCarriedSubjects`) where no consumer filter takes it (`bus.StreamSubjects`, and `consumerFilterSubjects` for a legacy durable's), no session may register a topic reaching it (`bus.ReachesPrivateStreamSubject`), and `POST /v1/messages/publish` refuses a topic under it `400`.
+  A consumer created for a session that carries no resume point of its own starts at that floor plus one rather than at the stream's end, so the session loses nothing it had not acked;
+  a record naming another `envoy_stream_id` is ignored, and a record expires with the stream's own 72-hour retention, by when its floor would name a sequence the stream no longer holds.
+  A delete whose resume record could not be published deletes nothing and leaves that consumer to the next pass.
 
 - **Filter:** the session's agent subject and each followed topic the stream stores (`bus.StreamCaptures`), reduced so that no two filters overlap (`bus.ReduceFilterSubjects`:
   a subject another contains is dropped, two that partly overlap become their common token prefix and `>`, and `X` and `X.>` both stay).
@@ -4522,7 +4547,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   it updates the filter and settings in place and sends no delete or create, which leaves no window without a consumer and writes nothing to the server's store.
   Once a restart that deletes has read the floor, the start after it stays pending on the listener's session-consumer connection until a create at it is confirmed:
   a delete or create that failed (a timeout included, and a delete the server applied whose answer was lost) leaves the consumer to the relay's retry, after 1 s doubling to 30 s while the listener owns the session, which creates a consumer it finds missing at that start, and a registration that finds it missing meanwhile creates it there too, not at its resume point or the stream's end.
-  Only a consumer missing with no pending start (never created, removed after its inactive threshold) pauses the relay until the next registration.
+  Only a consumer missing with no pending start (never created, deleted with the session's registration or by the sweep, or removed by the server after its inactive threshold) pauses the relay until the next registration, which creates it again at the resume point that registration carries, or at the session's resume record ("Deleted" above).
   The rule holds under the listener's per-session lock;
   a second listener knows nothing of the pending start, nor does a listener killed between the delete and the create.
   At most 32 relays of one listener restart at once (`relayRestartLimit`);
@@ -4564,10 +4589,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   a dedupe key written for a message this listener handed to nobody would have the next copy of the same event skipped as one the session already has, and an attempt record would have a redelivery of it skipped as one already on its way, so the fan-out records nothing for such a session, its own refusals included.
   The fan-out decides that once per recipient, from the session's entry, which `judgeFollowedTopic` reads for every verdict and not only the ones it judges against that entry, so a delivery mode it cannot read unambiguously -- a mode no session can be shown to advertise, and one any publisher can send on a followed topic -- is judged for such a session too rather than left to a resolution that only skips it.
   The relay publishes every frame unjudged (`sessionRelays.relayNATS`), and the plugin drops a frame whose delivery mode it cannot read without a word, so the fan-out publishes that session's `delivery_failed` itself -- and records no attempt for it, because this path records nothing for a session whose own consumer relays the message (above).
-  It records none of its own refusals where its resolution of the recipient failed either (`session.ErrNoSessionRecord`, a session whose entry has lapsed while its interest stays for at least ten minutes and its consumer for three days, so the fan-out still judges messages for it).
+  It records none of its own refusals where its resolution of the recipient failed either (`session.ErrNoSessionRecord`, a session whose entry has lapsed while its interest stays for at least ten minutes and its consumer until the sweep's next pass finds the session gone, so the fan-out still judges messages for it).
   So an attempt record names a delivery this path made, or a refusal it resolved and reported, and never a message it left to a relay or a session it could not read.
   What those two branches cost is the exception dedupe: each further copy of the event, and each redelivery of it, is reported again rather than skipped as an attempt already made.
-  The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`), and only a message at or after it is the consumer's:
+  The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`, the same number that registration's answer carries), and only a message at or after it is the consumer's:
   one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, so the durable path delivers it as it would for a session with none.
   An entry an earlier release wrote carries no start, which reads as today: the consumer holds every stored message of it.
 

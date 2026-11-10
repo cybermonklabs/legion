@@ -82,6 +82,10 @@ const DeliveryAnswerWireSchema = z.discriminatedUnion("mode", [
     subject: z.string().min(1),
     stream_id: z.string(),
     gap: z.boolean(),
+    // The stream sequence the session's consumer starts at, which the session keeps as the floor
+    // of its resume point (`consumer-delivery`'s `answered`). Optional: a listener of an earlier
+    // release answers none, and such an answer must still parse.
+    consumer_start: z.number().int().nonnegative().optional(),
   }),
   z.object({ mode: z.literal("core"), reason: z.string() }),
 ]);

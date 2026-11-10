@@ -18,11 +18,9 @@ import (
 // branch.go owns every answer about whether one branch of one repository carries one commit,
 // and about whether the App can read the repository at all. One place holds the GitHub reads,
 // the branch_commits table and how long each answer is believed, so a change to any of the
-// three is a change here and nowhere else. Nothing here reads or writes default_branch_commits,
-// the table of the release before this one, which this release leaves exactly as it is: its
-// drop is a contracting migration of a later release (dispatch://INFRA-1700). Its one caller is
-// the results read (api/results_currency.go), which picks the branch each check is measured
-// against and keeps a memo for the span of one request, and holds no policy of its own.
+// three is a change here and nowhere else. Its one caller is the results read
+// (api/results_currency.go), which picks the branch each check is measured against and keeps a
+// memo for the span of one request, and holds no policy of its own.
 
 // DefaultBranch is the branch argument that means "the repository's own default branch, which
 // delivery resolves": a caller holding no branch name of its own passes it, and CommitOnBranch
@@ -530,15 +528,14 @@ func cannotSeeRepository(err error) bool {
 // (UpsertPullRequestHead).
 //
 // It is lowercased on the way in rather than compared with `lower(repo)`, which is how
-// HeadStoredAt meets the same split one table over, because the two tables are in different
-// positions. pull_request_heads is a table of the release before this one, holding rows under
-// GitHub's spelling already and an index built on `(lower(repo), head_sha)` to read them by;
-// branch_commits is new in this unreleased change and holds no row in any deployment, so it
-// can be keyed once instead. One spelling per row is what keeps its primary key
-// (repo, branch, sha) the whole of its identity: two spellings would make two rows the
-// writer's `on conflict` could not fold together, and a case-insensitive read of them would
-// want a functional index — a migration — where this wants none, since `repo = lower($1)` is
-// an exact lookup on the primary key.
+// HeadStoredAt meets the same split one table over, because the two tables were in different
+// positions when each was keyed. pull_request_heads already held rows under GitHub's spelling,
+// with an index built on `(lower(repo), head_sha)` to read them by; branch_commits was new and
+// held no row in any deployment, so it could be keyed once instead. One spelling per row is
+// what keeps its primary key (repo, branch, sha) the whole of its identity: two spellings
+// would make two rows the writer's `on conflict` could not fold together, and a
+// case-insensitive read of them would want a functional index — a migration — where this
+// wants none, since `repo = lower($1)` is an exact lookup on the primary key.
 //
 // The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
 // and `release` are two branches and a compare read of one says nothing about the other.

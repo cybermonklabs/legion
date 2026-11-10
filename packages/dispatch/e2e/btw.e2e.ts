@@ -41,7 +41,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("/btw with a surviving mention strips its token and sends one comment-level mode", async ({
+// @pr: The /btw delivery mode's own row: the token is stripped and one comment-level delivery goes out.
+test("/btw with a surviving mention strips its token and sends one comment-level mode @pr", async ({
   browser,
 }) => {
   await setLiveSessions([planner]);

@@ -134,7 +134,8 @@ async function expectWordsKept(
 // SLOW(>=2s): the crossing itself - two editor mounts, a severed transport each and the
 // y-prosemirror merge - which no write path can seed, since Dispatch refuses such a block
 // (400 INVALID_ASK_BLOCK on every write path).
-test("two editors that each add an option list to an ask while their edits cross keep the question and both options", async ({
+// @pr: A two-context race: two editors add an option list to one ask while their edits cross, and the question and both options survive.
+test("two editors that each add an option list to an ask while their edits cross keep the question and both options @pr", async ({
   browser,
 }) => {
   const issue = await seedDecision();
