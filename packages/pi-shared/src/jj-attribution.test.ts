@@ -477,13 +477,15 @@ describe("userConfigChain", () => {
     const env = await withJj(
       `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
     );
-    // The production default, as in the row above: this row's subject is that the detached child
-    // is killed after jj answers, and `killGroup` runs off the child's own exit, so the bound
-    // decides nothing the row is about. It is a hang guard on jj itself — what can hang is a
-    // `jj` that never prints — far above the work a loaded machine has to do here and far below
-    // this row's 60 s limit, so the runner's limit stays the discriminator. Only the row that
-    // gives up on jj keeps 200 ms, because its subject is that bound firing and it needs no fork.
-    const paths = await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env);
+    // This row's subject is that the detached child is killed after jj answers, and `killGroup`
+    // runs off the child's own exit, so the bound is no part of it. The production default of
+    // 10 s was tried here: a starved host fired it before the fake jj printed, failing a correct
+    // run 1 time in 20 at 240 busy loops on this two-CPU pod, and reproducibly when the fake jj
+    // answers one second late. So the budget below sits above this row's own 60 s limit, where
+    // it can never fire inside a run the runner allows, and the runner's limit is what ends a
+    // `jj` that never prints. The row above keeps the production default because there the bound
+    // firing is the subject.
+    const paths = await userConfigChain(120_000, env);
     const pid = await pidFrom(pidFile);
     try {
       expect(paths).toBe("/u/a.toml");
