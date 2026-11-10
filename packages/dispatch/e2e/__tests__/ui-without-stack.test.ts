@@ -102,3 +102,18 @@ test(
   },
   probeTimeout
 );
+
+test(
+  "an option's value that reads as a UI flag is no UI session",
+  async () => {
+    // `--grep --ui` hands Playwright `--ui` as THAT OPTION'S VALUE, so the run is an ordinary
+    // one and must load. Measured against a configuration that refuses nothing, `bunx playwright
+    // test --grep --ui --list` lists rows, exits and starts no UI server, and `--grep --ui-port`
+    // does the same. A flat read of `process.argv` cannot tell an option from its value, which
+    // is the trap the deleted `--list` reading carried: Playwright reads the `--list` of `--grep
+    // --list` as that option's value too (dispatch://INFRA-1410).
+    const { code, stderr } = await loadConfig(["--project=chromium", "--grep", "--ui"]);
+    expect(code, stderr).toBe(0);
+  },
+  probeTimeout
+);
