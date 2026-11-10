@@ -156,6 +156,13 @@
 #       holds, so a case about the bytes mise installed would spend the outage downloading
 #       through a 504, and the job that proves the outage survivable would fail in it.
 #
+#   install-bound
+#       The seconds no install of this job may reach, printed and nothing else.
+#       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
+#       job's control over its eight installs with nowhere to go reads it through this verb, so
+#       the bound the rig holds the sixteen corrupted cases to and the bound that step holds
+#       those eight installs to cannot drift apart.
+#
 #   report <case> --outcome <the step's outcome> --row <row>
 #          [--expect-source <name>] [--expect-untried <name>]
 #       Prints the case, the outcome the install step reached, the lines the origin logged for
@@ -242,6 +249,10 @@ PROBE_BOUND=15
 # over 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z is 326 s (`install-jj`
 # on slow runs), so this leaves 274 s over the slowest healthy install and at least 60 s under
 # the fastest a held step can be, and it reads no ladder's length.
+# It is the one bound of the whole job, and this line is the one place it is written: the
+# `tool-fallback` job holds its eight installs with nowhere to go to the same seconds, and its
+# control step reads them from here through the `install-bound` verb rather than writing a
+# second number that nothing keeps equal to this one.
 INSTALL_BOUND=600
 
 # shellcheck source=.github/scripts/ci-tools.sh
@@ -1225,6 +1236,15 @@ seed_mise_jj() {
   sha256sum -- "$dir/jj"
 }
 
+# ---------------------------------------------------------------- install-bound
+
+# install_bound: the bound above, printed and nothing else, for the one reader outside this
+# script: the step of the `tool-fallback` job that holds the eight installs with nowhere to go
+# to the same seconds `report` holds a case's install to.
+install_bound() {
+  printf '%s\n' "$INSTALL_BOUND"
+}
+
 # ---------------------------------------------------------------- report
 
 # case_lines <log> <key>: the lines that log gained since this case's `corrupt` marked it.
@@ -1373,7 +1393,7 @@ report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|install-bound|report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
@@ -1389,6 +1409,7 @@ case $verb in
   flip-last-byte) flip_last_byte "$@" ;;
   payload-path) payload_path "$@" ;;
   seed-mise-jj) seed_mise_jj "$@" ;;
+  install-bound) install_bound "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, install-bound, report)" ;;
 esac

@@ -2395,20 +2395,24 @@ jobs:
   # it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
   # assertion reads while the job's own result says nothing happened.
   # So on a step with no `continue-on-error` a bound is loud: it fails the job. On one of the
-  # eight `continue-on-error` installs below, whose control passes a step whose `outcome` is
-  # `failure`, a bound is silent: a hang would satisfy that control and leave the job green,
-  # where the job's own ceiling would have cancelled it and failed ci-ok. That is why the
-  # control reads the clock as well, and why a new bound on a step some later assertion accepts
-  # the failure of needs the same treatment or none at all (dispatch://INFRA-2605).
+  # twenty-four installs below whose control passes a step whose `outcome` is `failure`, a bound
+  # is silent: a hang would satisfy that control and leave the job green, where the job's own
+  # ceiling would have cancelled it and failed ci-ok. That is why each of those installs is
+  # timed as well as read - the eight with nowhere to go by the control step below, the sixteen
+  # corrupted cases by `report` itself - and why a new bound on a step some later assertion
+  # accepts the failure of needs the same treatment or none at all (dispatch://INFRA-2605).
   tool-fallback:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     # The budget, added up from the slowest this job has been rather than from the ladder
-    # arithmetic it was once derived from. Every figure is the greatest that step reached over
-    # the 56 green runs of this job between 2026-11-09T19:38Z and 2026-11-10T10:51Z, read with
-    # `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs?filter=all` over the 250 most recent
-    # ci.yaml runs (dispatch://INFRA-2605).
+    # arithmetic it was once derived from. Each figure below is the greatest that step reached
+    # over the 56 green runs of this job between 2026-11-09T19:38Z and 2026-11-10T10:51Z, read
+    # with `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs?filter=all` over the 250 most
+    # recent ci.yaml runs, EXCEPT the two rows this change itself added, the marks and the
+    # machine watch: no run of that window carries them, so their figures are the greatest they
+    # reached over this pull request's own green runs of this job, jobs 130015112773,
+    # 129940828354 and 129966328215 (dispatch://INFRA-2605).
     # EVERY STEP OF THIS JOB IS IN EXACTLY ONE ITEM, so a reader checks two sums rather than
     # one: the seconds add to the stated total, and the step counts add to the steps this job
     # declares.
@@ -2417,22 +2421,26 @@ jobs:
     #                   manifest, `stage`, which moves about 341 MB of payloads over the
     #                   network, and the origin's own start
     #       7    866 s  the merge base's seven installs, each with nowhere to go: a ladder of
-    #                   `--retry-max-time 60` against each of its two sources, which is this
-    #                   issue's 126 s at the manifest's `max_time` of 60, with its Bun at 104 s
-    #                   (127+127+127+104+127+127+127)
+    #                   `--retry-max-time 60` against each of its two sources, which is about
+    #                   126 s at the manifest's `max_time` of 60, with its Bun at 104 s. The
+    #                   sum prices each of the other six at 127 s, the greatest any of them
+    #                   reached in the window: 126 s is what the ladder costs, 127 s is what it
+    #                   has cost (127+127+127+104+127+127+127)
     #       1    255 s  the head's docker plugin, the eighth install with nowhere to go
     #       8   1141 s  the head's own eight installs, each reading the origin after one
     #                   ladder; the Pulumi CLI is one of them, at 131 s
     #      16   1142 s  the sixteen corrupted cases' installs
-    #       8      8 s  the eight marks the control below reads, one before each install with
-    #                   nowhere to go; each is one `echo`
-    #       2     60 s  the machine watch's start and its report
+    #       8      0 s  the eight marks the control below reads, one before each install with
+    #                   nowhere to go; each is one `echo`, and all eight measured 0 s in each
+    #                   of the three runs above
+    #       2      5 s  the machine watch's start, at 5 s, and its report, at 0 s
     #      48     49 s  everything else: the fault and its probe, whose two requests are
-    #                   bounded at 15 s each, the sixteen readings, the corrupt steps, the
-    #                   removals and the jj seed, the version check, the print step, the
-    #                   control of the eight, the stop-fault step and the ci-ok report
-    # 96 steps and 3566 s, so 60 minutes, and a job its own limit cuts off reports `cancelled`,
-    # which ci-ok fails, so the limit carries fifteen minutes over it.
+    #                   bounded at 15 s each, the sixteen readings, the corrupt steps, the step
+    #                   that changes the last byte of the installed Bun, the removals and the
+    #                   jj seed, the version check, the print step, the control of the eight,
+    #                   the stop-fault step and the ci-ok report
+    # 96 steps and 3503 s, so 59 minutes, and a job its own limit cuts off reports `cancelled`,
+    # which ci-ok fails, so the limit carries sixteen minutes over it.
     # THREE STEPS, NOT TWO, run a ladder against a dead port rather than against the faulted
     # host: the `pulumi-cli` row is the one row whose primary is get.pulumi.com, and the rig
     # points that seam at a port nothing listens on. They are the merge base's Pulumi install
@@ -2669,12 +2677,12 @@ jobs:
       # steps is deleting that caller too and should move the rule's exercise rather than lose
       # it.
 
-      # When the eight steps below started. The control step after them reads it, because a
-      # bound that fires on one of them is otherwise silent: each carries `continue-on-error`
-      # and the control accepts a step whose `outcome` is `failure`, which is exactly what the
-      # runner leaves behind when it ends a step at its bound. The clock is the one signal that
-      # tells the two apart, since GitHub gives a later step nothing that says an earlier one
-      # was cut.
+      # When the install below started. Each of the eight with nowhere to go carries a mark step
+      # of its own, and the control step after them reads every one, because a bound that fires
+      # on one of them is otherwise silent: each carries `continue-on-error` and the control
+      # accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
+      # behind when it ends a step at its bound. The clock is the one signal that tells the two
+      # apart, since GitHub gives a later step nothing that says an earlier one was cut.
       # $GITHUB_OUTPUT rather than $GITHUB_ENV: a step of a job that writes $GITHUB_ENV or
       # $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for the whole job.
       - id: mark-base-crane
@@ -2838,18 +2846,30 @@ jobs:
             exit 1
           fi
           # Each install's own window: from its own mark to the mark of the install after it,
-          # and for the last of them to this step's own time. No install of this job may take
-          # 600 seconds. A step the runner ends at its bound takes about 660 to 672 s, and the
-          # longest single install measured over 2422 executions between 2026-11-09T19:38Z and
-          # 2026-11-10T10:51Z is 326 s, so 600 s leaves room on either side and reads no retry
-          # ladder's length, which a clock over the group did not. A window also names the
-          # install that hung, which a clock over the group cannot.
+          # and for the last of them to this step's own time. No install here may reach the
+          # seconds .github/scripts/ci-tools-proof.sh holds every install of this job to, which
+          # this step reads from that script rather than writing the number again: the rig holds
+          # the sixteen corrupted cases below to that same bound, and a bound written in two
+          # places is a bound that drifts, with the job then refusing two different things.
+          # INSTALL_BOUND in that script is where the number lives, and the comment on it says
+          # why it is the number it is. A window also names the install that hung.
           # A mark this step cannot read as a number is refused before any arithmetic, the way
           # `report` refuses a case whose mark holds no `started=`: a window read with no clock
           # is exactly the window the clock exists to catch, so it may not pass quietly. Left to
           # the arithmetic below, an empty mark reads as a large negative number, which is under
           # the bound, and then stops the loop on the empty operand with the step exiting 0 and
           # seven of the eight windows never read.
+          # A bound this step cannot read is refused in the same breath and for the same reason:
+          # an empty or unset bound is no bound at all, and `[ "$seconds" -lt "" ]` would stop
+          # the loop on that operand with the windows unread.
+          bound=$(.github/scripts/ci-tools-proof.sh install-bound)
+          case "$bound" in
+            '' | *[!0-9]*)
+              echo "::error::.github/scripts/ci-tools-proof.sh install-bound answered '${bound:-nothing}', which is no whole number of seconds, so this step has no bound to hold these eight installs to; the bound is INSTALL_BOUND in that script, written there once and read here, and this step holds no number of its own to fall back on" >&2
+              exit 1
+              ;;
+          esac
+          echo "no install with nowhere to go may reach the ${bound}s .github/scripts/ci-tools-proof.sh holds every install of this job to"
           previous=""
           slow=""
           unreadable=""
@@ -2866,12 +2886,12 @@ jobs:
             if [ -n "$previous" ]; then
               seconds=$(( ${pair#*:} - ${previous#*:} ))
               echo "  the install with nowhere to go for ${previous%%:*} took ${seconds}s"
-              [ "$seconds" -lt 600 ] || slow="$slow ${previous%%:*}"
+              [ "$seconds" -lt "$bound" ] || slow="$slow ${previous%%:*}"
             fi
             previous=$pair
           done
           if [ -n "$slow" ]; then
-            echo "::error::the install with nowhere to go for$slow took 600 seconds or more, which no install of this job does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
+            echo "::error::the install with nowhere to go for$slow took ${bound} seconds or more, which no install of this job does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
             exit 1
           fi
 
@@ -3396,13 +3416,12 @@ jobs:
     # 68 s. The budget stays a worst case all the same, because a slow day on the 107 MB
     # tarball is what it is there for.
     # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
-    # tool-fallback job's comment gives. THAT JOB'S CAVEAT DOES NOT CARRY HERE: there a held
-    # step still leaves a job that finishes and uploads its log, while here one held install is
-    # 11 minutes against its own 4-minute item, so 22 against a limit of 16, and THIS JOB'S OWN
-    # LIMIT FIRES FIRST. The bound still ends the step sooner than the limit would, and what
-    # the reader sees is a cancelled job, which keeps its log.
-    # Neither of this job's two installs is read by anything that accepts a failure, so no
-    # clock is needed beside them, unlike the twenty-four of tool-fallback.
+    # tool-fallback job's comment gives. Neither of them carries `continue-on-error`, so a held
+    # install here is loud by itself: the bound fails the job at about 11.5 minutes, the steps
+    # after it are skipped, and the job uploads its log. This job's own 16-minute limit reaches
+    # that install first only when the steps before it took more than about five minutes, which
+    # the 68 s above says they do not. The reading either way is a job with a log, which is what
+    # the twenty-four installs of tool-fallback cannot give and why their clock exists.
     timeout-minutes: 16
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other

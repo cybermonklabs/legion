@@ -17,7 +17,7 @@ Two steps of the job run it, around the steps being measured:
 
 `start` prints what each file system the job writes to holds and has free - the watched path's,
 the Go caches', Docker's data root's - writes the watched file system's free kB into the state
-file as the run's "before" number, and leaves a detached sampler behind it. Every second the
+file as the run's "before" number, and leaves a detached sampler behind it. Once a second the
 sampler reads the three numbers, keeps the worst each has reached with the time it was read, and
 appends that second to a series file, the state file's path with `.series` after it:
 
@@ -34,10 +34,13 @@ with at least twice the disk it went on to need.
 
 Each line of the series carries the second it was read in, and the job record times every step
 boundary, so a reader lines the two up: what the machine had when a step began, and what it had
-while that step ran. It does not show a runner being lost: the series reaches a reader only
-through the report step's output, and a run whose runner stopped answering stores no log at all.
-It is the headroom of every run that does store one, and the reading for a command that hangs
-while the runner is alive.
+while that step ran. A second with no line of its own is a second the sampler was not run in:
+no line is ever written for a second that has gone by, so a hole in the stamps is the record of
+a machine too busy to schedule a process waking from a sleep, not a hole in what was measured.
+It does not show a runner being lost: the series reaches a reader only through the report
+step's output, and a run whose runner stopped answering stores no log at all. It is the
+headroom of every run that does store one, and the reading for a command that hangs while the
+runner is alive.
 
 The state crosses the two steps in a file rather than in $GITHUB_ENV because a step of this job
 that writes $GITHUB_ENV or $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for
@@ -62,11 +65,11 @@ import subprocess
 import sys
 import time
 
-# How often the sampler re-reads the machine, in whole seconds, and the step between one tick's
-# own second and the next. The steps it watches run for minutes, so a second is often enough to
-# catch the trough and fine enough to put a reading either side of every step boundary. It costs
-# one line of the series; the state file is written only when a reading is worse than one
-# already held, which most seconds are not.
+# How often the sampler re-reads the machine, in whole seconds, and the least step between one
+# tick's own second and the next. The steps it watches run for minutes, so a second is often
+# enough to catch the trough and fine enough to put a reading either side of every step
+# boundary. It costs one line of the series; the state file is written only when a reading is
+# worse than one already held, which most seconds are not.
 SAMPLE_SECONDS = 1
 
 # The sampler gives up after this long on its own, so a job that is cancelled between the two
@@ -321,14 +324,24 @@ def keep_worst(state: dict, name: str, value: int | str, when: str, *, greater: 
 
 
 def sample(path: str, state_path: str) -> int:
-    """The detached sampler: write the machine to the series once a second, and keep the worst
-    each reading has reached in the state, until the report stops this process or the deadline
-    above passes."""
+    """The detached sampler: write the machine to the series once in each second it is given,
+    and keep the worst each reading has reached in the state, until the report stops this
+    process or the deadline above passes."""
     deadline = time.monotonic() + SAMPLE_SECONDS + SAMPLER_MAX_SECONDS
     # The second this tick belongs to, kept rather than read again at the end of the loop: the
     # stamp and the wait are then two readings of one number, so neither can drift from the
     # other.
     tick = int(time.time())
+    # The worst of each reading this sampler has seen, held here as well as in the state file.
+    # The write below is allowed to fail - the disk filling up is the thing being measured - and
+    # what never reached the file would otherwise be lost with the pass that read it, because
+    # the next pass reloads the older state from disk and merges only its own readings into it:
+    # on a full disk, the exact case that error is swallowed for, the worst reading of the run
+    # could be missing from the report. Held here, it is offered again every tick until a write
+    # takes it. The file stays what `report` reads and what `start` seeds, so a pass merges this
+    # into the state read back from disk rather than writing it over, and keep_worst only ever
+    # replaces a reading with a worse one: a number another writer put there outlives the merge.
+    worst: dict = {}
     while time.monotonic() < deadline:
         when = now_utc(tick)
         try:
@@ -337,19 +350,28 @@ def sample(path: str, state_path: str) -> int:
             free = None
         memory = available_memory_kb()
         load = one_minute_load()
-        # The tick is written whatever the kernel gave, and before the state is read: a reader
-        # counts the seconds the machine answered out of this file, so a second left out of it
-        # would read as a second the machine was gone.
+        # The tick is written whatever the kernel gave, and before the state is read: a reading
+        # the kernel would not give is `unknown` rather than a line left out, because a reader
+        # counts the seconds out of this file and a second missing from it says the sampler
+        # itself was not run in that second.
         append_series(state_path, series_line(when, free, memory, load))
+        if free is not None:
+            keep_worst(worst, "least_kb", free, when, greater=False)
+        if memory is not None:
+            keep_worst(worst, "least_memory_kb", memory, when, greater=False)
+        if load is not None:
+            keep_worst(worst, "greatest_load", load, when, greater=True)
         state = read_state(state_path)
         if state is not None:
             changed = False
-            if free is not None:
-                changed |= keep_worst(state, "least_kb", free, when, greater=False)
-            if memory is not None:
-                changed |= keep_worst(state, "least_memory_kb", memory, when, greater=False)
-            if load is not None:
-                changed |= keep_worst(state, "greatest_load", load, when, greater=True)
+            for name, greater in (
+                ("least_kb", False),
+                ("least_memory_kb", False),
+                ("greatest_load", True),
+            ):
+                if name in worst:
+                    at = worst[f"{name}_at"]
+                    changed |= keep_worst(state, name, worst[name], at, greater=greater)
             # Nearly every tick finds the state already saying all three, and the state file is
             # on the very file system being measured, so a tick that would rewrite the same
             # bytes writes nothing.
@@ -358,22 +380,27 @@ def sample(path: str, state_path: str) -> int:
                     write_state(state_path, state)
                 except OSError:
                     # The disk this tool measures filling up is the one failure that must not
-                    # stop it: the next tick is the reading a person came for.
+                    # stop it: the next tick is the reading a person came for, and what this
+                    # write dropped is still held above for that tick to offer again.
                     pass
         # The read comes before the sleep, so the series begins in the second `start` spawned
         # this process in rather than a second later: the first step being measured begins at
         # the boundary `start` ends on, and a reader lines that boundary up against a tick. The
         # state file may not be written yet on this first pass, which costs nothing: `start`
         # seeds all three worst readings itself, and the series line is written either way.
-        # THE WAIT IS TO THE NEXT SECOND THIS SAMPLER HAS NOT TICKED, and the tick carries that
-        # second rather than whatever the clock says when the sleep returns. A fixed sleep after
-        # the work runs a little long and skips a wall-clock second; a sleep to the next whole
-        # second can wake a few milliseconds early and stamp two ticks with one second, leaving
-        # the next with none. Either way the series grows a hole, and a hole here is the shape a
-        # reader is asked to read as a machine that stopped answering, so a sampler that makes
-        # one is making that mark itself. The margin is what keeps an early wake on the right
-        # side of the second.
-        tick += SAMPLE_SECONDS
+        # THE NEXT TICK IS THE NEXT SECOND THAT HAS NOT GONE BY, which is why the step is taken
+        # against the clock rather than counted. A sampler held off the CPU from 20:30:33Z to
+        # 20:30:36Z used to come back and write those three seconds one after another, each
+        # stamped with a second that had already passed and each carrying readings taken in the
+        # second it returned in; with every pass a little slow - 1.4 s a pass does it - that
+        # back-filling keeps the series unbroken while every stamp falls further behind its own
+        # reading, and a starved machine prints as a healthy one. The hole is the honest record:
+        # a second with no line is a second this process was not scheduled in, which is what
+        # starvation looks like from inside it and is one of the things the series is read for.
+        # The stamp and the wait stay two readings of one number, so neither can drift from the
+        # other, and the margin keeps a sleep that wakes a few milliseconds early on the right
+        # side of the second it waited for.
+        tick = max(tick + SAMPLE_SECONDS, int(time.time()))
         time.sleep(max(0.0, tick + 0.05 - time.time()))
     return 0
 
