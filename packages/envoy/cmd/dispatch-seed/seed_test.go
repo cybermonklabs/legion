@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,15 +30,19 @@ const testScale = 0.01
 // everything the seed promises. Both runs are in one test because each one takes most of a
 // minute: a test of its own for each check would seed six databases to read one data set.
 //
-// The two seeds run one after the other, since the second is the first's control, but every
-// test of this package runs beside the others: a run's block ids come from a counter the run
-// itself holds and passes to the parse that stores them (seedRun.blockIDs, run.go), and its
-// database is its own (storetest.Open), so nothing a run writes is another run's
+// The two seeds run side by side. The second is the first's control - an independent repeat
+// the pair's row counts and checksums are compared against (assertSameRowCounts,
+// assertSameChecksums) - and it reads nothing the first left: every row of a run is a function
+// of the one random seed and the one base time alone (ids.go), so neither run needs the other
+// to have finished and only the comparison between them does. Nothing a run writes is another
+// run's, here or across the package's tests, which all run beside each other too: a run's block
+// ids come from a counter the run itself holds and passes to the parse that stores them
+// (seedRun.blockIDs, run.go), and its database is its own (storetest.Open)
 // (dispatch://INFRA-1075).
 func TestSeedAtASmallScale(t *testing.T) {
 	t.Parallel()
-	first, firstRun := seedTestDatabase(t)
-	second, _ := seedTestDatabase(t)
+	databases, runs := seedTestDatabases(t, 2)
+	first, second, firstRun := databases[0], databases[1], runs[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -69,17 +74,36 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 }
 
-// seedTestDatabase seeds a database of its own and answers it with the run that filled it.
-func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
+// seedTestDatabases seeds count databases of their own, all at once, and answers them with the
+// runs that filled them. The seeds share nothing - each fills a database storetest opened for it
+// alone and draws its block ids from the counter its own run holds (seedRun.blockIDs, run.go) -
+// so a test that wants a control pays one seed's wall rather than two.
+//
+// The databases are opened, and a seed that failed reported, on the test's own goroutine: only
+// it may call storetest.Open's t.Skip or t.Fatalf (testing.T.FailNow).
+func seedTestDatabases(t *testing.T, count int) ([]*store.Store, []*seedRun) {
 	t.Helper()
-	database := storetest.Open(t)
-	started := time.Now()
-	run, err := seed(context.Background(), database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v: %v", testScale, err)
+	databases := make([]*store.Store, count)
+	for index := range databases {
+		databases[index] = storetest.Open(t)
 	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	return database, run
+	runs := make([]*seedRun, count)
+	failures := make([]error, count)
+	started := time.Now()
+	var seeds sync.WaitGroup
+	for index, database := range databases {
+		seeds.Go(func() {
+			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
+		})
+	}
+	seeds.Wait()
+	for _, err := range failures {
+		if err != nil {
+			t.Fatalf("seed at scale %v: %v", testScale, err)
+		}
+	}
+	t.Logf("seeded %d databases at scale %v in %s", count, testScale, time.Since(started).Round(time.Millisecond))
+	return databases, runs
 }
 
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"
