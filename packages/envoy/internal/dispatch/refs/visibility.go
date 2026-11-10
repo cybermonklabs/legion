@@ -140,7 +140,31 @@ func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
 // that walks the store's own table (loadStoreNodes): the same test, with no second read of the
 // table to make it.
 func VisibleRow(alias, param string) string {
-	return VisibilityMarker + `the row's own kind */(` + alias + `.visibility <> '` + graphstore.VisibilityAuthor +
+	return VisibilityMarker + `the row's own kind */` + visibleHeldRow(alias, param)
+}
+
+// VisibleKindRow is one node kind's predicate over a `graph_nodes` row a read already holds:
+// the test VisibleKind makes, over the row a read's own join or `exists` has already found, so
+// a read that must read the node's row anyway makes both tests out of one read of it - the
+// count's tuple arms, which answer no edge of a node whose state is gone, are that read
+// (backlink_counts.go's liveVisibleNode). A kind the registry does not hold answers false,
+// exactly as VisibleKind refuses it, so a read over a kind with no predicate counts nothing
+// rather than everything.
+//
+// The rule VisibleKind states for a node the store holds no row for - that it is visible - is
+// the one difference, and it is the caller's to keep: a test over a row is a test of a row that
+// is there, and a read binds this only where it answers nothing for a node that has none.
+func VisibleKindRow(kind, alias, param string) string {
+	if _, held := visibilityPredicates[kind]; !held {
+		return "false"
+	}
+	return VisibilityMarker + kind + ` */` + visibleHeldRow(alias, param)
+}
+
+// visibleHeldRow is the body both of those render: the row itself says whether the acting
+// person may see the node, with no read of the table to find it.
+func visibleHeldRow(alias, param string) string {
+	return `(` + alias + `.visibility <> '` + graphstore.VisibilityAuthor +
 		`' or ` + graphstore.AuthorIsSQL(alias+`.made_by`, param) + `)`
 }
 

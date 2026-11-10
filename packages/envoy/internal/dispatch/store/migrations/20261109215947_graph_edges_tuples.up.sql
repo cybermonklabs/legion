@@ -7,7 +7,14 @@
 -- (from_kind, from_id, kind, to_kind, to_id) the newest tuple, which is an edge only while that
 -- newest one asserts. `to_kind <> 'value'` keeps an attribute's value out, since a value is no
 -- node and is the far end of no edge, and it is also the predicate three of the store's indexes
--- are partial on, so the arm's `distinct on` walks `graph_tuples_current` in its own order.
+-- are partial on. The `distinct on` names those five columns in the order
+-- `graph_tuples_inbound` keys them - the far end, the kind, then the near end - and the `order
+-- by` repeats that order and ends at `seq desc`, which is that index's own last column, so the
+-- arm walks the index and sorts nothing. The set of columns is what the newest tuple of a
+-- relation is picked by, and naming them in another order would pick the same row off a sort of
+-- every tuple into the node: on a node with 5,000 inbound tuples that sort is the arm's largest
+-- cost. A read keyed on the far end - the edges into one node - is the read that walks this
+-- index, and a read keyed on the near end pushes its own filter in and sorts what that leaves.
 --
 -- It renders a stated list and nothing else: a block's `in_document`, rendered as the `part_of`
 -- to its document the view has always answered; a block's `mentions` and its pointer kinds, the
@@ -27,6 +34,18 @@
 -- completes a kind the tuple arm answers that kind's rows and the old arm answers none, and the
 -- view answers each row exactly once at every instant. The four `comments` arms that thread a
 -- reply are untouched: a later child writes those relations.
+--
+-- Both halves of that test are written as the four old arms write theirs, as a subquery over
+-- the three-row cutover table that is correlated with nothing, which the planner reads once for
+-- the whole statement as an InitPlan rather than once a row. The first names no column of the
+-- arm at all - it asks whether any kind this arm carries has moved - so the planner gates the
+-- whole arm on it before it reads a tuple: while the three rows read false this arm is a
+-- one-time filter and its tuples, its node join and its types test are never executed, which is
+-- what this arm costs a deployment that has not backfilled. The second picks the row's own kind
+-- out of the three. Written instead as a join to `graph_store_cutover`, the test is a join the
+-- planner can only make after the arm has produced its rows: with the cutover rows off the arm
+-- still read every tuple into the node and sorted them, 20 to 35 ms on a node with 5,000 of
+-- them, for a join that then discarded every row.
 --
 -- Two rules the arm carries.
 --
@@ -172,7 +191,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
-    select distinct on (tuple.from_kind, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id)
+    select distinct on (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id)
            tuple.from_kind,
            tuple.from_id,
            case when tuple.kind = 'in_document' then 'part_of' else tuple.kind end as kind,
@@ -189,10 +208,16 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
            end as cutover
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
-    order by tuple.from_kind, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id, tuple.seq desc
+    order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
   ) edge
-  join graph_store_cutover cutover on cutover.kind = edge.cutover and cutover.complete
   join graph_nodes node on node.kind = edge.from_kind and node.id = edge.from_id
   where edge.asserted and node.state <> 'gone'
+    and (select bool_or(moved.complete) from graph_store_cutover moved
+         where moved.kind in ('block', 'block_ref', 'comment'))
+    and case edge.cutover
+          when 'block' then (select complete from graph_store_cutover where kind = 'block')
+          when 'block_ref' then (select complete from graph_store_cutover where kind = 'block_ref')
+          when 'comment' then (select complete from graph_store_cutover where kind = 'comment')
+        end
     and (edge.cutover <> 'block_ref' or edge.stated = 'mentions'
          or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id));

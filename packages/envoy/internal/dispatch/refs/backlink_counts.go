@@ -230,15 +230,31 @@ func currentTuple(alias string) string {
 			and later.to_id = ` + alias + `.to_id and later.seq > ` + alias + `.seq)`
 }
 
-// liveNode is the test the view's tuple arm makes of the node an edge comes from: the store
-// answers an edge only for a node it holds whose current state is not gone, which is what
-// keeps the tuples level with a projection row that is really deleted - a block a version no
-// longer holds. The state is the node row's, the projection of its own state tuples, so a
-// block a later version restores holds its edges again. It is written as the view's join is,
-// over the node's own primary key, so the count and the view cannot read one tuple differently.
-func liveNode(kind, address string) string {
+// liveVisibleNode is the two tests a tuple arm makes of the node an edge comes from, answered
+// by one read of that node's row.
+//
+// The first is the view's: the store answers an edge only for a node it holds whose current
+// state is not gone, which is what keeps the tuples level with a projection row that is really
+// deleted - a block a version no longer holds. The state is the node row's, the projection of
+// its own state tuples, so a block a later version restores holds its edges again. The second
+// is that node kind's predicate from the registry, which keeps an edge whose source the acting
+// person may not see out of the count exactly as it is out of the list (visibility.go).
+//
+// Written apart - an `exists` over the node's primary key for the state, and the predicate's
+// own scalar subquery over the same key - the arm read that one row twice for every candidate
+// tuple: two index probes and eight buffer hits a row, which on a node with 5,000 inbound
+// tuples is 10,000 probes and 40,000 hits for 5,000 edges. The row the predicate needs is the
+// row the state test has already found, so both tests are made of one read of it. A node the
+// store holds no row for answers false here, as it did before: the state test refuses it, and
+// the registry's rule that such a node is visible is never reached for an edge this arm can
+// answer, since the tuples are the store's own and a node of the store has a row.
+//
+// It is keyed as the view's join is, over the node's own primary key, so the count and the
+// view cannot read one tuple differently.
+func liveVisibleNode(kind, address string) string {
 	return `exists (select 1 from graph_nodes live
-		where live.kind = '` + kind + `' and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `')`
+		where live.kind = '` + kind + `' and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
+			and ` + VisibleKindRow(kind, "live", backlinkSeen) + `)`
 }
 
 // backlinkArm is one arm of graph_edges whose edge kind is a SQL literal rather than a column:
@@ -310,9 +326,10 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 // tupleSQL is the arm's reading of the store, which answers once the kind's cutover row reads
 // true: the current tuples of this arm's kind pointing at the addresses bound as $1, read
 // through graph_tuples_inbound, whose columns are the to side, the kind and then the from side.
-// It carries the same visibility predicate the table's reading carries, over the node the
-// tuple comes from, and the view's own two rules: an edge is the newest tuple of its own while
-// that one asserts, and a node whose state is gone holds none.
+// Its last test is the view's own two rules over the node the tuple comes from, taken with the
+// registry's predicate for that node kind out of one read of its row (liveVisibleNode): an edge
+// is the newest tuple of its own while that one asserts, a node whose state is gone holds none,
+// and a node the acting person may not see raises no count.
 func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 	counted, join, keyed, address := target.read(`tuple.to_id`)
 	where := `tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.tupleKind +
@@ -321,8 +338,8 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 		where += ` and ` + address + a.addressIs
 	}
 	return `select ` + counted + ` from graph_tuples tuple` + join + ` where ` + where +
-		` and ` + keyed + ` and ` + currentTuple("tuple") + ` and ` + liveNode(a.fromKind, `tuple.from_id`) +
-		` and ` + afterCutover(a.cutover) + ` and ` + VisibleKind(a.fromKind, `tuple.from_id`, backlinkSeen)
+		` and ` + keyed + ` and ` + currentTuple("tuple") +
+		` and ` + afterCutover(a.cutover) + ` and ` + liveVisibleNode(a.fromKind, `tuple.from_id`)
 }
 
 // backlinkArms is, for each node kind nodeLoaders resolves, every arm of graph_edges whose edge
@@ -506,13 +523,14 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// which is the artifact's own part_of arm, and its placement under the block holding it,
 		// which is no edge of the view. The types test is the same one with the attribute node's
 		// targets as its input, as the view's tuple arm makes it (migration 20261109215947), and
-		// a mention is no attribute of any block type, so it is listed without the lookup.
+		// a mention is no attribute of any block type, so it is listed without the lookup. Its
+		// own test of the citing block is the view's state rule and this registry's predicate
+		// made out of one read of that block's node row (liveVisibleNode).
 		arm(`graph_tuples r`, ` and r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
-			and `+liveNode("block", `r.from_id`)+`
 			and (r.kind = 'mentions' or block_ref_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
 			and `+afterCutover("block_ref"),
-			VisibleKind("block", `r.from_id`, backlinkSeen)),
+			liveVisibleNode("block", `r.from_id`)),
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to
 	// (to_kind, to_id, (<item>::text)), then the blocks table's primary key for the join. The
