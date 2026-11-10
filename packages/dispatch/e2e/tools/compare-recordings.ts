@@ -115,8 +115,12 @@ console.error(
     "artifact in its place - and read the diff. A copy over the directory would leave behind " +
     "every recording named above as written by no row any more, and the next run would report " +
     "them again.\n\nRead the recording step first, because this comparison runs even where it " +
-    "failed. A row that threw wrote no recording, so it is named above as one no row writes " +
-    "any more while its committed copy is sound: fix the row and record again rather than " +
-    "replacing the directory, which would delete it."
+    "failed, and a row that failed leaves one of two things. A row that threw while seeding " +
+    "wrote no recording at all, so it is named above as one no row writes any more while its " +
+    "committed copy is sound. A row that threw in its body wrote one all the same - record " +
+    "mode writes the file after the row for every outcome but a skip - so that recording " +
+    "holds whatever the row reached before it failed. In either case fix the row and record " +
+    "again rather than replacing the directory, which would delete the first and commit the " +
+    "second."
 );
 process.exit(1);

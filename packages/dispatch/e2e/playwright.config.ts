@@ -601,10 +601,13 @@ const visualProjects = [
  * the project takes the harness's base URL, the static server is not started, and each row writes
  * what it fetched (e2e/stub/stub-test.ts).
  *
- * `retries: 0` on both, for two reasons of this layer's own. A stubbed row reaches no server,
- * no database and no fake: its answers come from a committed file, so a row that fails once
- * and passes once is not a flake to be retried past but a defect of the recording, the page or
- * the row, and the lane should say so. And the dead-recording guard
+ * `retries: 0` on both, for two reasons of this layer's own. On replay a stubbed row reaches
+ * no server, no database and no fake: its answers come from a committed file, so a row that
+ * fails once and passes once is not a flake to be retried past but a defect of the recording,
+ * the page or the row, and the lane should say so. A recording run does reach the real
+ * harness, and it takes no retry either, deliberately: it is the run that writes what every
+ * later replay reads, so a row that only passed on a second attempt would commit whatever
+ * that attempt happened to fetch. And the dead-recording guard
  * (`deadRecordingGuard`, e2e/stub/stub-test.ts) would otherwise be retried away: measured in
  * this issue's pod, Playwright re-runs a row that called `test.skip` without running its
  * fixtures at all, so the guard's refusal is raised on the first attempt and never on the
@@ -660,9 +663,9 @@ export default defineConfig({
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
-  // at, and `bun run e2e` is read as pass or fail. This is the sharded projects' value: the
-  // three `-alone` projects and the multiprocess one each set `retries: 0`, each for a reason
-  // its own comment gives.
+  // at, and `bun run e2e` is read as pass or fail. This is the sharded projects' value alone:
+  // the three `-alone` projects, the two `visual` ones, the two stubbed ones and the
+  // multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the
   // list reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.

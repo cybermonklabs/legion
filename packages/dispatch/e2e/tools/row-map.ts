@@ -117,27 +117,36 @@ if (strayNotes.length > 0) {
   );
 }
 
-// Every committed recording belongs to a row the listing still names. Nothing else on a pull
-// request checks this: record mode writes the path of the row it is running and deletes
-// nothing, so a row that is renamed or removed leaves its `.har` and `.scene.json` behind, the
-// contract test goes on reading them because they are still valid bodies, and the pull request
-// merges green. The first nightly on `main` then re-records, finds a committed file no row
-// wrote, and fails - with the full lane in that same run red beside it. This is the one-way
-// half of that comparison, and it needs no harness: the listing names the rows, and
-// `recordingFor` is the same rule the fixture writes by.
+// Every committed recording belongs to a row the listing still names and expects to run.
+// Nothing else on a pull request checks this: record mode writes the path of the row it is
+// running and deletes nothing, so a row that is renamed or removed leaves its `.har` and
+// `.scene.json` behind, the contract test goes on reading them because they are still valid
+// bodies, and the pull request merges green. The first nightly on `main` then re-records,
+// finds a committed file no row wrote, and fails - with the full lane in that same run red
+// beside it. This is the one-way half of that comparison, and it needs no harness: the
+// listing names the rows, and `recordingFor` is the same rule the fixture writes by.
 //
-// A listing cannot see the other two shapes of the same fault, because a row that skips itself
-// and a row that has stopped taking `scene` are both still listed and so still own their file.
-// Those are the replay's to refuse, after the row, where its status is known
-// (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
-const owned = new Set(moved.map((row) => recordingFor(row, ".har")));
+// A row the listing marks `skipped` owns nothing, because it will not run: that is a row
+// skipped where it is declared - `test.fixme`, which is how a flaky row is parked,
+// `test.skip(title, fn)`, a `describe.skip`, or a describe-level modifier, which Playwright
+// runs as a `beforeAll` and so before any test-scoped fixture. The replay's own guard cannot
+// see such a row at all, for that reason, and this is where it is caught instead.
+//
+// What is left to the replay is the row the listing cannot read: one that skips itself inside
+// its body, and one that has stopped taking `scene`. Both are listed and expected to run, so
+// they own their file here, and only the run knows otherwise (`deadRecordingGuard`,
+// `e2e/stub/stub-test.ts`).
+const owned = new Set(
+  moved.filter((row) => row.expectedStatus !== "skipped").map((row) => recordingFor(row, ".har"))
+);
 const unowned = recordingsUnder(committedRecordings).filter((path) => !owned.has(path));
 if (unowned.length > 0) {
   throw new Error(
-    "These committed recordings belong to no row the listing names, so the next re-record run " +
-      "would report each of them as written by no row any more. Delete each, with the " +
-      "`.scene.json` beside it, or restore the row that wrote it:" +
-      `\n  ${unowned.join("\n  ")}`
+    "These committed recordings belong to no row that the listing names and expects to run, " +
+      "so the next re-record run would report each of them as written by no row any more. " +
+      "Delete each, with the `.scene.json` beside it, or restore the row that wrote it - a " +
+      "row the listing marks skipped, `test.fixme` among them, writes nothing while it stays " +
+      `so:\n  ${unowned.join("\n  ")}`
   );
 }
 

@@ -16,17 +16,16 @@
  *    setup are about a harness it does not want, and it is exempt from them. Every refusal
  *    keeps its sentence for every other run, so a person who forgets the harness still gets the
  *    line that fixes it.
+ *  - **Are the stub projects declared at all?** The config leaves them out of a deployed run
+ *    and out of two-process mode. It is not the second question's answer - a run naming
+ *    `--project chromium` declares them and holds no stubbed row - but both are read here, so
+ *    that neither a project declared with no server to answer it nor a server started for a
+ *    project the config left out can arise from two readings disagreeing.
  *
  *  A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) holds no stubbed row whatever
  *  it names. The stubbed layer replays a recording against a build this checkout made, so
  *  running it against a deployed server would prove something about neither: the config leaves
  *  the stub projects out of such a run and declares no server for it.
- *
- *  A fourth question is asked of this module too, so that it cannot drift from the second:
- *  **are the stub projects declared at all?** It is not the same answer - a run naming
- *  `--project chromium` declares them and holds no stubbed row - but the two are read from one
- *  place, and declaring a project with no server, or starting a server for a project that is
- *  not declared, is the pair of faults that prevents.
  */
 import { projectsOnCommandLine } from "../configurations";
 

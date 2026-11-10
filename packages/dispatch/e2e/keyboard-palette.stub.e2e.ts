@@ -164,11 +164,8 @@ test("g d opens the route's project Documents, from an issue key or a project pa
   const input = page.getByRole("combobox", { name: "Search" });
   // `g p` opens the one bar, where a project is a row the reader types their way to, and
   // Enter opens the row it highlights - main's own assertions. The count is the Projects
-  // group's rather than main's dialog-wide one, because this row runs in two modes: on replay
-  // the bar's search is aborted (no recording answers `/api/v1/search`) and `Operations` is
-  // the only row, while a recording run against the real harness also offers
-  // `Make a new issue from "operations"`, measured in this pod. The Projects group holds one
-  // row either way, which is the claim.
+  // group's rather than main's dialog-wide one, for the reason this row's entry in
+  // `e2e/stub/moved-row-notes.ts` gives, which `e2e/row-map.md` publishes.
   await input.fill("operations");
   const projects = dialog.getByRole("group", { name: "Projects" });
   await expect(projects).toBeVisible();

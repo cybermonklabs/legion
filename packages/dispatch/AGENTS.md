@@ -2573,13 +2573,18 @@ The job uploads the re-recorded set, and applying it is a replacement of
 every recording the job named as written by no row any more.
 It finds those too - which it could not while it re-recorded over the committed set - and a
 pull request refuses one before a nightly meets it, in two halves, because no one reading can
-see them all: `bun e2e/tools/row-map.ts` refuses a recording no listed row owns, and the
-replay refuses one whose row is listed and writes nothing all the same, which is a row that
-skips itself in that project or has stopped taking `scene`
+see them all. `bun e2e/tools/row-map.ts` reads the listing: it refuses a recording no listed
+row owns, and a row the listing marks `skipped` owns none, which is every row skipped where it
+is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip` or a describe-level
+modifier, none of which runs a test-scoped fixture at all. The replay refuses what a listing
+cannot read: a row that skips itself inside its body, and one that ran and set no `scene`
 (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
 Read the recording step before you apply the artifact: the comparison runs even where that
-step failed, and a row that threw wrote nothing, so it is named as one no row writes while its
-committed copy is sound.
+step failed, and a failed row leaves one of two things. One that threw while seeding wrote
+nothing, so it is named as a recording no row writes while its committed copy is sound; one
+that threw in its body wrote its `.har` all the same, holding whatever it reached before it
+failed. Fix the row and record again rather than replacing the directory, which would delete
+the first and commit the second.
 
 The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
 pull-request lane runs `--grep=(^|\s)@pr(\s|$)` over `chromium`, `iphone`, `stub` and

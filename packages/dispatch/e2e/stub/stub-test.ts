@@ -120,12 +120,15 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
         if (stubRecording()) return;
         const har = recordingPath(test, ".har");
         if (!existsSync(har)) return;
+        // The no-scene branch reads a row that passed and nothing else: a row whose `page` or
+        // `context` failed before `scene` was set up has written no scene either, and telling
+        // it to delete a recording it does write would be wrong.
         const why =
           test.status === "skipped"
             ? "this row skipped itself in this project"
-            : scened.has(test.testId)
-              ? ""
-              : "this row takes no `scene` and replays nothing";
+            : test.status === "passed" && !scened.has(test.testId)
+              ? "this row takes no `scene` and replays nothing"
+              : "";
         if (why === "") return;
         throw new Error(
           `${har} is committed and ${why}, so no row writes it any more. Delete it, with the ` +
@@ -200,9 +203,12 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       await context.close();
       // A row this project's own `test.skip` took out wrote nothing worth keeping: its scene
       // was seeded before the body ran, and its recording would hold the page's first requests
-      // or nothing at all. Both go, so the committed set is exactly the rows that run.
+      // or nothing at all. Both go, the committed `.har` with them, so the set is exactly the
+      // rows that run - a `.har` left without its scene would fail the next replay on the
+      // scene's own ENOENT, which names neither the row nor the cause.
       if (test.status === "skipped") {
         rmSync(scene, { force: true });
+        rmSync(recordingPath(test, ".har"), { force: true });
         return;
       }
       const recorded = JSON.parse(readFileSync(fresh, "utf8")) as Har;

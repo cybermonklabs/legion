@@ -14,6 +14,11 @@
 
 /** A row of `playwright test --list --reporter=json`: one test of one project. */
 export type ListedRow = {
+  /** Whether Playwright expects to run the row at all: `skipped` for a row that is skipped
+   *  where it is declared - `test.skip(title, fn)`, `test.fixme`, a `describe.skip`, or a
+   *  describe-level modifier - which the listing answers before anything runs. A row skipped
+   *  inside its own body is `passed` here, because only the run can know. */
+  expectedStatus: string;
   /** The spec file, as the listing names it: relative to the config's root directory. */
   file: string;
   /** The project that runs the row, by `name` in the config. */
@@ -69,7 +74,7 @@ type ListingSuite = {
 
 type ListingSpec = {
   file: string;
-  tests?: readonly { projectName?: string }[];
+  tests?: readonly { expectedStatus?: string; projectName?: string }[];
   title: string;
 };
 
@@ -156,7 +161,12 @@ function collectRows(suite: ListingSuite, titles: readonly string[], rows: Liste
       if (test.projectName === undefined) {
         throw new Error(`a listed row of ${spec.file} names no project: ${title}`);
       }
-      rows.push({ file: spec.file, project: test.projectName, title });
+      rows.push({
+        expectedStatus: test.expectedStatus ?? "passed",
+        file: spec.file,
+        project: test.projectName,
+        title,
+      });
     }
   }
   for (const child of suite.suites ?? []) {
