@@ -276,7 +276,8 @@ for (const colorScheme of ["light", "dark"] as const) {
   });
 }
 
-test("a reply under a decision inside a document shows the checkboxes with no bullet", async ({
+// @pr: The task-item family's one row on the lane: a reply under a document's decision draws its checkboxes with no bullet.
+test("a reply under a decision inside a document shows the checkboxes with no bullet @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

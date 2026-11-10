@@ -1602,6 +1602,20 @@ type streamEnd struct {
 	err error
 }
 
+// eventsStartWait bounds the whole wait for a live subscription's events_start, and
+// eventsStartFrameWait one read inside that wait. Both are far longer than the rest of this
+// file's waits because neither waits on Dispatch: the relay's first cursor waits for an event
+// horizon proven after the call, and so for every transaction that holds a transaction id
+// anywhere on the Postgres instance, another database's job or another package's test on a shared
+// instance included. The socket stays open and heartbeats (fifteen seconds, the api package's
+// defaultStreamHeartbeat) for as long as that lasts, so each read is given its own deadline: a
+// heartbeat that arrives renews it and shows the socket alive, while eventsStartWait, as patient
+// as the api package's eventFeedWait, still bounds the whole wait.
+const (
+	eventsStartWait      = 60 * time.Second
+	eventsStartFrameWait = 30 * time.Second
+)
+
 // openLiveEvents opens GET /ws/live as a signed-in tab does and subscribes it to the event feed,
 // from the head, returning once Dispatch has started the subscription (its events_start frame) with
 // the socket the feed's frames arrive on. The socket closes when the test ends.
@@ -1621,11 +1635,19 @@ func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "events", "view": map[string]string{"kind": "events"}}); err != nil {
 		t.Fatalf("subscribe the live socket to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	subscribed := time.Now()
+	giveUp := subscribed.Add(eventsStartWait)
 	for {
+		deadline := time.Now().Add(eventsStartFrameWait)
+		if deadline.After(giveUp) {
+			deadline = giveUp
+		}
+		_ = conn.SetReadDeadline(deadline)
 		var frame struct{ Type, Sub string }
 		if err := conn.ReadJSON(&frame); err != nil {
-			t.Fatalf("read the event feed's events_start: %v\n%s", err, p.Output.String())
+			t.Fatalf("the event feed's subscription sent no events_start in %v: it waits on the event horizon,"+
+				" which any transaction holding a transaction id on this Postgres instance holds up, and not on"+
+				" shutdown: %v\n%s", time.Since(subscribed).Round(time.Millisecond), err, p.Output.String())
 		}
 		if frame.Type == "events_start" && frame.Sub == "events" {
 			break

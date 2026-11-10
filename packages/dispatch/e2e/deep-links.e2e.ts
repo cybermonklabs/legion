@@ -304,7 +304,10 @@ async function expectSelectedMarginItem(page: Page, id: string) {
 
 // SLOW(>=2s): four anchored writes, each seeded on its own transaction, and the four links the
 // row lands on in turn, in WebKit.
-test("emitted document item hrefs select and scroll their anchored thread", async ({ browser }) => {
+// @pr: The deep-link family's one row on the lane: an emitted document item href selects and scrolls its anchored thread.
+test("emitted document item hrefs select and scroll their anchored thread @pr", async ({
+  browser,
+}) => {
   const { issue } = await seedIssue();
   // Anchored writes are seeded one at a time. Each holds its transaction across the document
   // work that stamps the mark, so concurrent ones queue on the server's connection pool

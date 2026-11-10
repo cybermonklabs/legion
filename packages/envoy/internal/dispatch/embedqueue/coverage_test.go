@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -1123,6 +1124,92 @@ func TestCoverageOfAnEmptyBacklogHasNoOldestAge(t *testing.T) {
 		if counts != want {
 			t.Errorf("%s items = %d, want %d", kind, counts, want)
 		}
+	}
+}
+
+// notIndexedCountsOf is the report's uncovered kinds as kind to items, holding the list to
+// notIndexedKinds: every one of them, once, in the order the report declares.
+func notIndexedCountsOf(t *testing.T, report model.SearchCoverage) map[string]int64 {
+	t.Helper()
+	if len(report.NotIndexed) != len(notIndexedKinds) {
+		t.Fatalf("not_indexed = %+v, want one row for each of the %d kinds the report covers nothing of",
+			report.NotIndexed, len(notIndexedKinds))
+	}
+	counts := make(map[string]int64, len(report.NotIndexed))
+	for position, row := range report.NotIndexed {
+		if want := notIndexedKinds[position].kind; row.Kind != want {
+			t.Fatalf("not_indexed[%d] names %q, want %q: %+v", position, row.Kind, want, report.NotIndexed)
+		}
+		counts[row.Kind] = row.Items
+	}
+	return counts
+}
+
+// The report names every kind of node it covers nothing of - a component, a session, a document
+// version, a result and a handoff - with how many of that kind the database holds, read from
+// the table that holds it. A kind the database holds none of is named at 0 rather than left
+// out: on a database where every covered kind is complete, as this one is, a reader of a report
+// carrying the covered kinds alone cannot tell a kind nothing indexes from a covered kind with
+// nothing left to embed. None of them is in a total, and none changes a covered kind's counts.
+func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
+	database := storetest.Open(t)
+	seeded := seedEveryKind(t, database.Pool, "NIDX")
+	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
+	ctx := context.Background()
+
+	report, err := Coverage(ctx, database, configuredIdentity)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if got := report.Total; got.Items != int64(seeded) || got.Current != got.Items || got.Lacking != 0 || got.Failed != 0 {
+		t.Fatalf("total %+v, want the %d seeded items all current, so an uncovered kind is the only gap", got, seeded)
+	}
+	empty := notIndexedCountsOf(t, report)
+	for _, kind := range []string{"component", "session", "result", "handoff"} {
+		if empty[kind] != 0 {
+			t.Errorf("not_indexed %s = %d before one is written, want it named at 0 rather than left out", kind, empty[kind])
+		}
+	}
+	// The seeded project document holds two versions, and neither is an item of a covered kind:
+	// the index holds windows of a document's current blocks alone.
+	if empty["document_version"] != 2 {
+		t.Errorf("not_indexed document_version = %d, want the 2 versions the seeded document holds", empty["document_version"])
+	}
+
+	var document string
+	if err := database.Pool.QueryRow(ctx, `select id::text from artifacts where project_key = 'NIDX'`).Scan(&document); err != nil {
+		t.Fatalf("read the seeded document: %v", err)
+	}
+	mustExec(t, database.Pool, `insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
+		values ('NIDX', 1, 'ship/arch', 'main', 1, '{"kind":"system","id":"test"}')`)
+	mustExec(t, database.Pool, `insert into architecture_snapshots (id, project_key, commit, files) values (900, 'NIDX', 'c1', '{}')`)
+	mustExec(t, database.Pool, `insert into components (project_key, id, title, prose, snapshot_id, source_id)
+		values ('NIDX', 'navigation', 'Navigation', 'The instruments the ship steers by.', 900, 1)`)
+	mustExec(t, database.Pool, `insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, '[{"session_id":"s-navigator"},{"session_id":"s-helm"}]'::jsonb, now(), now() + interval '5 seconds')`)
+	mustExec(t, database.Pool, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+			check_version, check_sha256, role, commit_sha, verdict, actor)
+		values ('NIDX-1', 'NIDX-1', $1::uuid, 'k1', 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass',
+		        '{"kind":"user","id":"alice"}'::jsonb)`, document)
+	mustExec(t, database.Pool, `insert into handoffs (issue_key, phase, version, body, author)
+		values ('NIDX-1', 'implement', 1, '{}', '{"kind":"user","id":"alice"}'::jsonb)`)
+
+	after, err := Coverage(ctx, database, configuredIdentity)
+	if err != nil {
+		t.Fatalf("Coverage after the writes: %v", err)
+	}
+	for kind, want := range map[string]int64{
+		"component": 1, "session": 2, "document_version": 2, "result": 1, "handoff": 1,
+	} {
+		if got := notIndexedCountsOf(t, after)[kind]; got != want {
+			t.Errorf("not_indexed %s = %d, want the %d its own table holds", kind, got, want)
+		}
+	}
+	if after.Total != report.Total {
+		t.Errorf("total %+v, want the %+v it was: a kind the report covers nothing of is in no total", after.Total, report.Total)
+	}
+	if after.Kinds != report.Kinds {
+		t.Errorf("kinds %+v, want the %+v they were", after.Kinds, report.Kinds)
 	}
 }
 

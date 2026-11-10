@@ -184,6 +184,9 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const heartbeatOutage = Promise.withResolvers<string>();
   const registrations: { readonly session_id: string; readonly topics: readonly string[] }[] = [];
   const heartbeatRegistration = Promise.withResolvers<void>();
+  // The registration the role claim refreshes right after it takes the role: the claim runs at
+  // the session's first turn, and nothing of the host awaits it.
+  const roleClaimed = Promise.withResolvers<void>();
   const tree = "REPO-42";
   const sessionID = "ses_legion_root";
   const role = roleToken("omp", tree, "architect");
@@ -215,6 +218,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
         readonly topics: readonly string[];
       };
       registrations.push(body);
+      if (registrations.length === 2) roleClaimed.resolve();
       if (registrations.length === 3) heartbeatRegistration.resolve();
       return Response.json({
         session_id: body.session_id,
@@ -293,14 +297,26 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   }
   await sessionStart({}, context);
 
-  // Two managed intervals: the role claimant's own heartbeat, armed first by the claim
-  // bootstrap, and the session activity report every claimed session sends on change
-  // (INFRA-945). The heartbeat is the one this test drives.
+  // The boot is over and the name is not taken (INFRA-1573): the claim runs at the session's
+  // first turn, so nothing has reached the listener yet and the only managed interval is the
+  // session activity report every claimed session sends on change (INFRA-945).
+  expect(registrations).toHaveLength(0);
+  expect(intervals).toHaveLength(1);
+
+  // The first turn: `legion.ts` answers `agent_start` by telling the claim session its turn has
+  // started, and the claim runs behind that signal, awaited by nothing of the host.
+  const agentStart = handlers.get("agent_start")?.[0];
+  if (agentStart === undefined) throw new Error("Legion's agent_start handler was not registered");
+  await agentStart({}, context);
+  await roleClaimed.promise;
+
+  // Two managed intervals now: the activity report the boot armed, and the role claimant's own
+  // heartbeat, armed by the claim. The heartbeat is the one this test drives.
   expect(intervals).toHaveLength(2);
   // Establishing the role claimant registers before the role is applied, then
   // refreshes it after the claim.
   expect(registrations).toHaveLength(2);
-  intervals[0]?.();
+  intervals[1]?.();
   await heartbeatRegistration.promise;
   expect(registrations).toHaveLength(3);
   expect(registrations[2]).toMatchObject({
