@@ -217,7 +217,7 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 			name:   "messages with a deleted sequence between them",
 			stream: "ALREADY_GAPPED",
 			leave: func(t *testing.T, stream jetstream.Stream) {
-				// Twelve messages with sequence 2 deleted leave eleven stored, two more than the
+				// Twelve messages with sequence 2 deleted leave eleven stored, one more than the
 				// failure names one by one. A loop that stepped sequence by sequence would stop
 				// ten sequences in, at the stored message 10 rather than 11, and a remainder
 				// counted over the range rather than over the messages named would print one
