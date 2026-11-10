@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -1617,11 +1616,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, natsURL)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -1724,11 +1719,7 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
