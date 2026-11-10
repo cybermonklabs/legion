@@ -94,8 +94,6 @@ export function IssueTree({
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
   // second level, then everything.
   const [cycle, setCycle] = useState(0);
-  // What a key reports when it has nowhere to go is the page's own status, drawn at the top of
-  // the body (`IssueBody`): the tree raises it and does not draw it.
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
   const zoomed = useMediaQuery(ZOOMED_TREE_QUERY);
@@ -218,6 +216,9 @@ export function IssueTree({
       // parent: the node itself is then one of the rows, whatever the zoom was and however
       // deep it sits. Leaving the zoom where it stood drew the second open question nowhere,
       // and the key reported nothing because the row it asked for was never on the page.
+      // Zooming out of a node the target sits outside of holds the issue's own id rather than
+      // nothing chosen: nothing chosen falls back to where the tree opened (`on`, above), not
+      // to the whole issue.
       setZoom((held) =>
         zoomed
           ? (above.at(-1) ?? root.id)
@@ -229,9 +230,6 @@ export function IssueTree({
     },
     [root, zoomed]
   );
-  // Zooming to the issue is zooming out of everything, and it is held as the issue's own id
-  // rather than as nothing chosen (`setZoom` below), so the zoomed tree stays on the whole
-  // issue instead of falling back to where it opened.
 
   useEffect(() => {
     if (wanted === undefined) return;

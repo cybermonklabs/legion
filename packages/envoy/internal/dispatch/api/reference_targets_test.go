@@ -44,10 +44,12 @@ func referenceTargets(t *testing.T, handler http.Handler, references []string) (
 	return decodeBody[model.ReferenceTargets](t, response).Targets, etag
 }
 
-// One request resolves a whole set: a block that exists, a block a later version deleted, and an
-// issue of its own. Each member carries the kind its reference names, the words a reader is shown
-// for its target, and whether that target is gone — the deleted block answered, not refused,
-// since a chip whose target is gone still has to draw.
+// One request resolves a whole set: a block that exists, a block a later version deleted, an
+// issue of its own, and that same issue written with whitespace around it. Each member carries
+// the kind its reference names, the words a reader is shown for its target, and whether that
+// target is gone — the deleted block answered, not refused, since a chip whose target is gone
+// still has to draw — and each echoes its reference as the request wrote it, so a caller that
+// matches the answer against the strings it sent finds every one of them.
 func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -62,8 +64,9 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	}
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "delete", "find": "Second paragraph."}})
 
-	targets, _ := referenceTargets(t, handler, []string{held, gone, "dispatch://" + other.Key})
-	if len(targets) != 3 {
+	padded := "  dispatch://" + other.Key + "  "
+	targets, _ := referenceTargets(t, handler, []string{held, gone, "dispatch://" + other.Key, padded})
+	if len(targets) != 4 {
 		t.Fatalf("the read answered %#v, want one member per reference", targets)
 	}
 	if want := (model.ReferenceTarget{Ref: held, Kind: "block", Name: "First paragraph."}); targets[0] != want {
@@ -74,6 +77,9 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	}
 	if want := (model.ReferenceTarget{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title}); targets[2] != want {
 		t.Errorf("the other issue answered %#v, want %#v", targets[2], want)
+	}
+	if want := (model.ReferenceTarget{Ref: padded, Kind: "issue", Name: other.Title}); targets[3] != want {
+		t.Errorf("the padded reference answered %#v, want it resolved and echoed as it was written: %#v", targets[3], want)
 	}
 }
 

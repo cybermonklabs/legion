@@ -5,10 +5,9 @@ import type { NodeType } from "./page-words";
 /**
  * What the reader's focus is on, which the panel draws the facts of (dispatch://INFRA-1196 R12).
  *
- * The tree that moves the focus is a later task (`dispatch://INFRA-1196/artifact/plan-md#b-t14`);
- * this is the seam it writes through. Until it lands the issue itself is the focused node, so
- * the panel draws the facts of something rather than an empty box, and the day the tree lands it
- * calls `useSetFocusedNode` on every move and nothing else changes.
+ * The tree moves the focus: `IssueTree` calls `useSetFocusedNode` on every move, and hands back
+ * `undefined` when the focus leaves the tree, which leaves the issue itself focused, so the
+ * panel draws the facts of something rather than an empty box.
  */
 export interface FocusedNode {
   /** Who made it, where the model holds an author: the author's own name. */

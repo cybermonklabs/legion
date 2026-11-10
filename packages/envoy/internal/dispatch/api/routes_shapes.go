@@ -215,9 +215,10 @@ type issueReferencesQuery struct {
 	// a repeat is 400 INVALID_QUERY.
 	Versions string `query:"versions"`
 	// Own, `1`, answers the issue's own documents as members too, each with the blocks citing
-	// it; absent, empty or `0` answers only the artifacts the issue reaches outside itself,
-	// and any other value or a repeat is 400 INVALID_QUERY. It is `0`/`1` rather than a
-	// boolean because ownRequested (references.go) reads those two spellings alone.
+	// it; absent or `0` answers only the artifacts the issue reaches outside itself, and any
+	// other value - an own with no value, or a repeat - is 400 INVALID_QUERY. It is `0`/`1`
+	// rather than a boolean because ownRequested (references.go) reads those two spellings
+	// alone, which is what this enum declares.
 	Own string `query:"own" enum:"0,1"`
 }
 

@@ -17,8 +17,9 @@ import type { Box } from "./layout";
  * - **The page root** `[data-issue-page]`. Every check reads it, because every test asserts the
  *   page drew at all before it reads anything inside it.
  * - **The identity block** `header[data-issue-header]`: today's attribute, kept, because the
- *   keyboard scope finds the Status, priority, labels, title and pin controls through it
- *   (`web/src/features/issue/IssueHeader.tsx:370-378`). c-properties, c-nothing-lost, c-keyboard.
+ *   keyboard scope finds the Status, priority, labels, title and pin controls through it, which
+ *   `web/src/features/issue/IssueHeader.tsx` says of the attribute in its own doc comment.
+ *   c-properties, c-nothing-lost, c-keyboard.
  * - **The head of the page** `[data-testid="issue-three-things"]`, holding the spec summary's
  *   sentences as `[data-author-text]` and two rows, `[data-testid="issue-plan-row"]` and
  *   `[data-testid="issue-checks-row"]`. c-three-things.

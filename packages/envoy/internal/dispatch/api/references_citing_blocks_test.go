@@ -2,6 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -100,12 +104,70 @@ func TestTheReferencesETagCoversTheBlocksCitingAMember(t *testing.T) {
 	}
 	tag := func(blocks ...string) string {
 		member.ViaBlocks = blocks
-		return referencesETag(7, []model.ReferenceMember{member}, false, false)
+		return referencesETag(7, []model.ReferenceMember{member}, false, false, false)
 	}
 	cited, atOneBlock, atAnother := tag(), tag("b2"), tag("b3")
 	if cited == atOneBlock || cited == atAnother || atOneBlock == atAnother {
 		t.Fatalf("the ETags of no block (%s), b2 (%s) and b3 (%s) are not three distinct tags",
 			cited, atOneBlock, atAnother)
+	}
+}
+
+// The ETag names the shape of the answer it stands for: the format of the hash itself, the
+// ?versions variant and the ?own variant. Two answers of one issue that differ in any of those
+// are two different bodies, and a tag they shared would tell a client holding one 304 for the
+// other. The format is in the tag because the fields the hash covers have grown: the build
+// before via_blocks hashed a member no block cites to the very same bytes, so over a rollout
+// the two builds answered one tag for two bodies, the older of which names no via_blocks at
+// all, and a conditional read that crossed builds was answered 304 for a body the page did not
+// hold.
+func TestTheReferencesETagNamesTheShapeOfItsAnswer(t *testing.T) {
+	members := []model.ReferenceMember{{
+		Artifact: model.Artifact{
+			ID:       "4a2b4e8c-6d0a-4f44-9a7e-2f6c6d9a1b23",
+			Versions: []model.Version{{Number: 3}},
+		},
+		Depth: 2,
+		Via:   model.ReferenceVia{Kind: "artifact", ID: "9f1c8b7a-2d34-4c55-8e66-7a8b9c0d1e2f"},
+	}}
+	// legacy is referencesETag as the build before via_blocks wrote it, for these members:
+	// last_seq and truncated, `versions=latest` on the trimmed answer alone, and a line per
+	// member of its document and its latest version.
+	legacy := func(latestOnly bool) string {
+		hash := sha256.New()
+		_, _ = fmt.Fprintf(hash, "%d\n%t\n", 7, false)
+		if latestOnly {
+			_, _ = io.WriteString(hash, "versions=latest\n")
+		}
+		for _, member := range members {
+			_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[0].Number)
+		}
+		return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+	}
+
+	shapes := []struct {
+		name       string
+		latestOnly bool
+		own        bool
+	}{
+		{"versions=all own=0", false, false},
+		{"versions=all own=1", false, true},
+		{"versions=latest own=0", true, false},
+		{"versions=latest own=1", true, true},
+	}
+	tags := map[string]string{}
+	for _, shape := range shapes {
+		tag := referencesETag(7, members, false, shape.latestOnly, shape.own)
+		if older := legacy(shape.latestOnly); tag == older {
+			t.Errorf("%s hashes to %s, the tag the build before via_blocks wrote for a body "+
+				"carrying none, so a conditional read across a rollout is answered 304 for "+
+				"the other build's body", shape.name, tag)
+		}
+		if shared, found := tags[tag]; found {
+			t.Errorf("%s and %s share the ETag %s, so a client asking for one is told 304 for "+
+				"the other", shape.name, shared, tag)
+		}
+		tags[tag] = shape.name
 	}
 }
 
@@ -127,7 +189,10 @@ func createIssueDocument(t *testing.T, handler http.Handler, issueKey, name, con
 // the issue reaches outside itself, which is the answer every caller before the parameter got;
 // with 1 it answers the issue's own documents too, each with the blocks of its citer, which is
 // what a reader drawing a document under the block citing it needs and what spares it a read of
-// every document's stored text. Any other value is refused rather than read as one of the two.
+// every document's stored text. Any other value is refused rather than read as one of the two,
+// an own given with no value among them: the two spellings the server takes are the two the
+// OpenAPI document declares (issueReferencesQuery.Own), so a client built from it can write
+// nothing this refuses and ask nothing this answers narrowly by surprise.
 func TestIssueReferencesAnswerTheIssuesOwnDocumentsOnlyWhenAsked(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -172,7 +237,7 @@ func TestIssueReferencesAnswerTheIssuesOwnDocumentsOnlyWhenAsked(t *testing.T) {
 		t.Errorf("the narrow and the wide answer share the ETag %q, so a client asking for one would be told 304 for the other", wide.Header().Get("ETag"))
 	}
 
-	for _, value := range []string{"2", "true", "yes"} {
+	for _, value := range []string{"", "2", "true", "yes"} {
 		refused := issueReferencesQueryRequest(t, handler, issue.Key, "own="+value, "")
 		if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"INVALID_QUERY"`) {
 			t.Errorf("?own=%s: status=%d body=%s, want 400 INVALID_QUERY", value, refused.Code, refused.Body.String())

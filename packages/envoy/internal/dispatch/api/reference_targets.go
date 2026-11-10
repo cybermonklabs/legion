@@ -68,6 +68,11 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // resolves to (refs.TargetOf stores a block of an ask, a comment or a message under its item's
 // block kind, and those resolve to nodes of kind block), so a gone target is answered under its
 // kind too.
+//
+// A reference is read past the whitespace around it, and echoed as the request wrote it, that
+// whitespace included: the answer is read by index or by reference, and a caller matching the
+// members against the strings it sent finds none of them under a reference this read had
+// rewritten.
 func (s *server) referenceTargets(r *http.Request) ([]model.ReferenceTarget, error) {
 	raw := r.URL.Query()["ref"]
 	if len(raw) == 0 {
@@ -81,8 +86,7 @@ func (s *server) referenceTargets(r *http.Request) ([]model.ReferenceTarget, err
 	targets := make([]refs.Target, 0, len(raw))
 	seen := make(map[refs.Target]struct{}, len(raw))
 	for index, value := range raw {
-		value = strings.TrimSpace(value)
-		ref, err := parseRequestRef(value, s.deps.ServerURL)
+		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.ServerURL)
 		if err != nil {
 			return nil, err
 		}
