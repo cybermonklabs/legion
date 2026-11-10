@@ -69,6 +69,9 @@ jobs:
       - name: Check the saved gh help is the worker image's gh
         run: .github/scripts/check-gh-version.sh
 
+      - name: Check the gitleaks the release lane fetches is the one the daemon links
+        run: .github/scripts/check-gitleaks-version.sh
+
       - name: Check image triggers cover every image input
         run: .github/scripts/check-image-trigger-paths.sh
 

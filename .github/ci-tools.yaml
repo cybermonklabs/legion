@@ -98,11 +98,13 @@
 # test's fixture, no row already covers its repository, and its `why` is a sentence.
 # WHETHER THAT REASON IS TRUE IS THE REVIEWER'S JUDGEMENT, not the gate's; the rules before it
 # are the whole of what a program can check.
-# THE LIST IS EMPTY TODAY. It held elan, uv and the docker provider plugin, and
-# dispatch://INFRA-1986 gave each of the three a row with a second source, which is what made
-# each of those entries false and deleted it. The next entry is for the next install whose bytes
-# one publisher serves and no other: it is written when that install lands, and it is deleted the
-# day a second address for those bytes is found, as these three were.
+# THE LIST HOLDS ONE ENTRY TODAY, the release lane's gitleaks. It held elan, uv and the docker
+# provider plugin as well, and dispatch://INFRA-1986 gave each of those three a row with a second
+# source, which is what made each of those entries false and deleted it. The one that is left
+# waits on something else: not a copy of those bytes, but a way for a job holding the release
+# credentials to read one, which its own `why` sets out. The next entry is for the next install
+# whose bytes one publisher serves and no other: it is written when that install lands, and it is
+# deleted the day a second address for those bytes is found and can be reached, as the three were.
 
 # The package every ghcr-mirror copy lives in: the one .github/ci-images.yaml publishes, which is
 # public and which a job pulls with no login (sjawhar/legion#2512).
@@ -346,3 +348,23 @@ tools:
 # The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
 # allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.
 no_second_source:
+  # gitleaks, the engine .github/scripts/release-push.sh runs this repository's own private-name
+  # rules with before each of its six writes to a public GitHub repository. The version is the one
+  # packages/daemon/go.mod holds for github.com/zricethezav/gitleaks/v8, so the binary that lane
+  # runs and the library the daemon links are one release.
+  - # The URL exactly as the file that fetches it writes it.
+    url: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    # The 64-hex sha256 that file checks the bytes against, written bare.
+    digest: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    # The file that pins them. The gate refuses an entry whose digest that file does not hold.
+    pinned_in: .github/scripts/release-push.sh
+    # Which second source was looked for, why there is none today, and what building one takes.
+    why: >-
+      Nothing copies these bytes anywhere else today, and a copy alone would not be reachable
+      from the job that fetches them: that job is a publish job holding the release credentials,
+      and .github/scripts/check-release-credentials.sh lets such a job run no scripts/ program
+      but release-push.sh itself and no `uses:` outside its five-action allow-list, so it can
+      read neither .github/scripts/ci-tools.sh nor an install action, which is how every second
+      source in this manifest is read. release-push.sh fetches and checks these bytes itself,
+      with curl, sha256sum and tar, which are not dependency commands. A second source here is
+      therefore a ghcr copy and a way for a credentialed job to read it without the helper.

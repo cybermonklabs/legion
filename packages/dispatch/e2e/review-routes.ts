@@ -311,7 +311,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "project-issues",
     path: (seed) => `/projects/${seed.project}/issues`,
     pattern: "/projects/:key/issues",
-    ready: (page) => [page.locator("#project-issues-panel li[data-issue-row]").first()],
+    ready: (page) => [page.locator("#project-issues-panel tr[data-issue-row]").first()],
   },
   {
     kind: "reviewed",
