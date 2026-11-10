@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
@@ -45,6 +46,31 @@ var paneEnvAllowList = []string{
 // never the operator's (LEGION-206 P1 — a pane that read the operator's XDG_CONFIG_HOME would run
 // with their jj, gh, and mise configuration).
 func xdgHome(stateDir string) string { return filepath.Join(stateDir, "home") }
+
+// resolveLeakCheck is the shared public leak check of the machine this daemon runs on, found the
+// way the check itself says to find it and in the daemon's own environment (Options.Environ, the
+// `os.Environ()` form this process was started with): PUBLIC_LEAK_CHECK, then
+// public-leak-check.sh on PATH, then the pointer file under the configuration home. It is the
+// guard's own resolution (leakguard's Resolve) rather than a second copy of those three places,
+// and it is given the daemon's environment through the one seam the guard has for a caller that
+// holds its own (leakguard.Options.Env).
+//
+// The daemon resolves it because a pane cannot: PUBLIC_LEAK_CHECK is no allow-listed name
+// (paneEnvAllowList), a pane's XDG_CONFIG_HOME is the daemon's own rather than the operator's
+// (xdgHome, deliberately), and the check's installer puts its files on no PATH a pane has — so
+// all three places are closed in a pane, and every `legion gh` and every rescue push from one
+// would be refused with the setup error naming the missing check. A launch resolves again rather
+// than reading an answer taken at boot: the check is installed, moved and republished on an
+// operator's machine while the daemon runs, and the pane is told where it is now.
+//
+// A machine that carries none answers an error, which is no launch failure: the pane is told no
+// PUBLIC_LEAK_CHECK and every public write from it is refused with the setup error naming the
+// check, which is the honest answer on a machine that writes to public repositories with no
+// check. Legion installs none there — the pinned install is the pod's (leakguard.Install) — so
+// the cure is the check's own installer, on the machine the daemon runs on.
+func resolveLeakCheck(environ []string) (string, error) {
+	return leakguard.New(leakguard.Options{Env: environ}).Resolve()
+}
 
 // readProviderKeyNames is the key names in the provider-env directory, which the runtime reads once
 // at construction — boot, before any pane. Every entry must be a file named for an environment
