@@ -1,0 +1,38 @@
+-- 20261110004829_drop_default_branch_commits.up.sql
+--
+-- INFRA-1700: 20261102122400_default_branch_commits created default_branch_commits as the cache
+-- of what Dispatch's GitHub App answered about one commit of one repository: does the
+-- repository's default branch carry it? The answer is read when an issue's results are read, a
+-- yes kept for good and a no re-read after five minutes. 20261107234701_branch_commits holds
+-- that answer now, keyed by the branch as well as the repository and the commit.
+--
+-- The release carrying 20261107234701 reads and writes the old table nowhere. Production ran
+-- fleet_commit 05b61565b99556f5ab71a347eb9db0c60a8e9da5 with schema_version 20261107234701 when
+-- this migration was written, which is why no running build loses a table it reads. A deploy
+-- that carries this drop can no longer roll back to a build from before 20261107234701's
+-- release, whose results read writes the table. That is the shape of
+-- 0141_drop_broadcast_idempotency_keys (cmd/dispatch/README.md, "Database migrations").
+--
+-- No `if exists`: 20261102122400 creates the table unconditionally, so every database recording
+-- that version holds it, and `if exists` would pass over a schema that is not the one we think
+-- it is.
+--
+-- The table has no foreign key in or out and no index but its primary key (repo, sha), so the
+-- drop takes ACCESS EXCLUSIVE on that table alone - unlike 0141, whose foreign key put triggers
+-- on broadcasts and so took that table's lock too. It reads no row, so it holds that lock for
+-- the instant the migration's transaction lasts.
+--
+-- A drop table is one of the census's touched-table patterns and the catalog-only size exemption
+-- excludes a table drop, so `envoy-dispatch census` refuses the deploy if default_branch_commits
+-- with its indexes and TOAST exceeds the 1 GiB bound (pgmigrate.CensusTableLimit). Measured on
+-- PostgreSQL 18.6 on the table as 20261102122400 creates it, 1,000,001 rows cost
+-- pg_total_relation_size 276,676,608 bytes, about 277 bytes a row at a 64-character sha; a
+-- production row's sha is 40 characters and costs less, so the bound bites at about 3.9 million
+-- rows. Production's own figure is unread: no session working this issue holds a login on the
+-- production database, and the pre-deploy census measures it for real at the deploy that carries
+-- this migration.
+--
+-- The census run of this migration over a fixture database on 2026-11-10 read "touches
+-- default_branch_commits: 1 row, 32.0 KiB (limit 1.0 GiB); locks held by other sessions: none",
+-- and the census itself answered 0.
+drop table default_branch_commits;
