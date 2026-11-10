@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
@@ -30,14 +31,16 @@ func TestMain(m *testing.M) {
 
 // behaviour is how the stand-in answers a run: its stdout (or the response for its exact arguments,
 // joined by spaces), its stderr, how long it sleeps first and its exit status; HelpDir is the saved
-// help it answers --help from.
+// help it answers --help from. Visibility is what it answers the leak guard's own read of a
+// repository's visibility with, "public" where a behaviour names none.
 type behaviour struct {
-	Stdout    string
-	Stderr    string
-	Responses map[string]string
-	Sleep     time.Duration
-	Exit      int
-	HelpDir   string
+	Stdout     string
+	Stderr     string
+	Responses  map[string]string
+	Sleep      time.Duration
+	Exit       int
+	HelpDir    string
+	Visibility string
 }
 
 // invocation is one run of the stand-in: its arguments, and for a run that is no help read, its
@@ -49,6 +52,15 @@ type invocation struct {
 	Env   []string
 	Cwd   string
 	Empty map[string]bool
+}
+
+// guardRead is whether this run is the leak guard's own read of a repository's visibility rather
+// than a call of the tool's: the guard names the repository it reads in its child's environment
+// (leakguard.VisibilityReadVar), which is how `legion gh` tells the two apart as well.
+func (i invocation) guardRead() bool {
+	return slices.ContainsFunc(i.Env, func(pair string) bool {
+		return strings.HasPrefix(pair, leakguard.VisibilityReadVar+"=")
+	})
 }
 
 func standIn() int {
@@ -81,6 +93,16 @@ func standIn() int {
 	}
 	inv.Empty["cwd"] = isEmptyDir(cwd)
 	record(dir, inv)
+	// The guard's own visibility read is answered with the visibility and nothing else: the
+	// run's stdout, sleep and exit are a call's, and this read is no call of the tool's.
+	if inv.guardRead() {
+		visibility := b.Visibility
+		if visibility == "" {
+			visibility = "public"
+		}
+		fmt.Println(visibility)
+		return 0
+	}
 	time.Sleep(b.Sleep)
 	out := b.Stdout
 	if response, ok := b.Responses[strings.Join(args, " ")]; ok {

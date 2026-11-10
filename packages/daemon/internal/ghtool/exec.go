@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -22,10 +24,7 @@ import (
 // GH_PATH names, gh's prompts, update check, spinner and colour off, and nothing of the daemon's
 // own environment.
 func (a *Answer) env(configDir string) []string {
-	path := filepath.Dir(a.host.GH)
-	if a.host.Git != "" && filepath.Dir(a.host.Git) != path {
-		path += string(filepath.ListSeparator) + filepath.Dir(a.host.Git)
-	}
+	path := a.toolPath()
 	return []string{
 		"PATH=" + path,
 		"HOME=" + a.home,
@@ -40,6 +39,108 @@ func (a *Answer) env(configDir string) []string {
 		"GH_SPINNER_DISABLED=1",
 		"NO_COLOR=1",
 	}
+}
+
+// toolPath is gh's directory, and the host's git's joined to it where the host holds a git of
+// its own: the whole of a call's PATH, and the front of the leak guard's (Answer.guardEnv).
+func (a *Answer) toolPath() string {
+	path := filepath.Dir(a.host.GH)
+	if a.host.Git != "" && filepath.Dir(a.host.Git) != path {
+		path += string(filepath.ListSeparator) + filepath.Dir(a.host.Git)
+	}
+	return path
+}
+
+// leakGuard is the shared leak guard's read of the call, the one check a Legion write to a public
+// GitHub repository passes before it writes (internal/leakguard). It runs where a pane's own gh
+// runs it, between the owner the call was routed to and the gh about to be started
+// (cmd/legion's runGh), and its error — a *leakguard.Refusal, about the text the call carries, or
+// a *leakguard.SetupFailure, a check that could not be made to run — refuses the call with the
+// guard's own message: a check that did not run has cleared nothing.
+//
+// The whole argv is what it reads, the footer added and all, rather than the options a parser
+// calls text: the shared check's own gh-guard reads full argv, and a private name is refusable
+// wherever it stands. The repository is the one the call was routed to, and "" where it named no
+// one repository, which the guard reads as a public destination and scans. The files are the
+// parse's own (ghroute.Target.Files), which knew each option's arity from the leaf's help, so the
+// guard reads no argv again with a table of its own — a table that would read the `-Fixed in
+// abc123` of a body as a file nobody named and refuse a call over it.
+//
+// Standard input is nil: this tool hands gh none (Answer.runGH), and there is nothing to buffer.
+// A check that asks for it anyway — the exit-4 handshake — is answered rather than left waiting:
+// the guard buffers an empty file and asks again (leakguard's askAgain, whose read is skipped for
+// a nil Stdin), and the bytes it answers with are none, which is what gh is given.
+//
+// Neither call `legion gh` lets through unchecked arises here. `gh auth git-credential` is none
+// of the tool's commands, refused by the allow list before any of this; and the shared check's
+// own visibility read is a child of this guard, run with the real gh and never through the
+// wrapper (Answer.guardEnv), so no call of the model's can be it.
+func (a *Answer) leakGuard(ctx context.Context, argv []string, target ghroute.Target, configDir string) error {
+	_, err := leakguard.New(leakguard.Options{Check: a.host.LeakCheck, Env: a.guardEnv(configDir)}).GhCall(ctx, leakguard.GhRequest{
+		Args:  argv,
+		Stdin: nil,
+		Repo:  targetRepo(target),
+		Files: target.Files,
+	})
+	return err
+}
+
+// targetRepo is the repository a call writes to, "<owner>/<name>", and "" where it names no one
+// repository: a call naming none at all, and one naming an owner alone or two repositories of
+// one owner, which is a destination the guard is better told nothing of than told wrongly.
+func targetRepo(target ghroute.Target) string {
+	if target.Owner == "" || target.Repo == "" {
+		return ""
+	}
+	return target.Owner + "/" + target.Repo
+}
+
+// guardEnv is the environment the leak guard's children start from for a call routed to
+// configDir: the daemon's own (Host.Environ, this process's where the host named none), with
+// PATH and GH_CONFIG_DIR its own and three names of the daemon's taken out.
+//
+// The daemon's and not the call's, which is the environment gh itself runs under (Answer.env):
+// that one holds two directories on its PATH, an empty HOME and empty XDG directories, which is
+// no environment the shared check — a shell script that runs git, gh and a detection engine —
+// could run in, and none its three places could be resolved from either (leakguard's Resolve,
+// which reads PATH and the configuration home).
+//
+// What is changed in it is what the guard's two children need:
+//
+//   - PATH with the real gh's directory, and the host's git's, in front of the daemon's own. The
+//     guard's visibility read is a plain `gh api … repos/<slug> --jq .visibility` resolved on
+//     this PATH (leakguard's program), so the gh that answers it is the boot this tool runs and
+//     never the answer's GH_PATH wrapper, which runs `legion gh` and would call a guard of its
+//     own over the read. The daemon's own PATH stays behind them, so the check finds the shell,
+//     the engine and everything else it runs.
+//   - GH_CONFIG_DIR the routed owner's, the directory the call itself runs with, so that read
+//     reaches GitHub as the agent's App — the one identity this call is made under — and sees
+//     what that App sees of the repository.
+//   - GH_TOKEN and GITHUB_TOKEN dropped, and GH_PATH with them. A token of the daemon's own
+//     would answer in the App's place, so the visibility read would be made as whoever started
+//     the daemon rather than as the agent; and a GH_PATH of the daemon's would name gh's git
+//     credential helper, which is no helper of this answer's bundle.
+func (a *Answer) guardEnv(configDir string) []string {
+	base := a.host.Environ
+	if base == nil {
+		base = os.Environ()
+	}
+	env := make([]string, 0, len(base)+2)
+	// The last entry of a name is the one exec reads, so the daemon's PATH is the last one seen.
+	path := ""
+	for _, pair := range base {
+		switch name, value, _ := strings.Cut(pair, "="); name {
+		case "PATH":
+			path = value
+		case "GH_CONFIG_DIR", "GH_PATH", "GH_TOKEN", "GITHUB_TOKEN":
+		default:
+			env = append(env, pair)
+		}
+	}
+	if path != "" {
+		path = string(filepath.ListSeparator) + path
+	}
+	return append(env, "PATH="+a.toolPath()+path, "GH_CONFIG_DIR="+configDir)
 }
 
 // route reads the repository argv targets, and its owner, as a pane's `legion gh` reads them

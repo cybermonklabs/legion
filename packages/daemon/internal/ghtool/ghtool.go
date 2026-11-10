@@ -4,10 +4,12 @@
 // its issue's repository owner, read-only to the project's other owners) and Close removes it;
 // Run runs one call the model makes. A call runs only when it is one of the tool's commands (the
 // allow list, checked before any process starts), routed to the owner it names as a pane's
-// `legion gh` routes it (internal/ghroute), with the agent's Legion footer on every comment or
-// review it posts, under a scrubbed environment, a time bound and an output bound, and recorded
-// before it runs and finished after (answer_tool_calls). Lookup tells a restarted answer whether a
-// comment or review call whose outcome was never recorded reached GitHub, by its footer.
+// `legion gh` routes it (internal/ghroute), cleared by the shared leak guard as every Legion
+// write to a public repository is (internal/leakguard, the guard a pane's `legion gh` runs), with
+// the agent's Legion footer on every comment or review it posts, under a scrubbed environment, a
+// time bound and an output bound, and recorded before it runs and finished after
+// (answer_tool_calls). Lookup tells a restarted answer whether a comment or review call whose
+// outcome was never recorded reached GitHub, by its footer.
 package ghtool
 
 import (
@@ -62,11 +64,23 @@ type Recorder interface {
 // daemon's state directory, under whose answers/ each answer's directory lives. Credential is the
 // function a pane's bundle comes from, appauth.GitHubCredential over the daemon's App tokens and
 // the project's owners. Calls records each call, Log takes its line, Now is the clock.
+//
+// The last two are the leak guard's, which every call passes before gh is handed anything
+// (Answer.leakGuard). LeakCheck is the shared public leak check this daemon resolved on its own
+// machine, the guard's Check seam: "" is the ordinary case, where every call resolves the check
+// for itself in Environ, the three places the check itself names (leakguard's Resolve, as
+// runtime/tmux's resolveLeakCheck resolves a pane's). Environ is the environment the guard's own
+// children — the check, and the gh read of a repository's visibility — start from, the daemon's
+// own (os.Environ() form); nil is this process's own, read at each call. It is the daemon's and
+// not the call's: a call's environment carries two directories on its PATH and nothing else,
+// which is no environment a shell script can run in, and resolves no check at all (Answer.guardEnv).
 type Host struct {
 	GH         string
 	Git        string
 	Legion     string
 	StateDir   string
+	LeakCheck  string
+	Environ    []string
 	Credential runtime.GitHubCredential
 	Calls      Recorder
 	Log        *slog.Logger
@@ -191,11 +205,15 @@ type Result struct {
 // allow list), or it posts a comment or review in a form the agent's footer cannot be added to;
 // it is refused after reading gh's help, with the command itself never run, when the owner it
 // targets cannot be read for certain or is none of the bundle's, or gh's help names its command
-// otherwise than its words do. Every other call runs with the footer added to what it posts, the
-// routed owner's gh directory, the scrubbed environment, the working directory the answer's empty
-// one, the gh_seconds bound and the gh_output_chars bound. Every call is recorded: an allowed one
+// otherwise than its words do, and when the leak guard refuses it or could not be made to run
+// (Answer.leakGuard), which is checked last of all, once the call's repository and the files it
+// would send are known and before anything is recorded or started. Every other call runs with
+// the footer added to what it posts, the routed owner's gh directory, the scrubbed environment,
+// the working directory the answer's empty one, the gh_seconds bound and the gh_output_chars
+// bound. Every call is recorded: an allowed one
 // before gh starts and finished after it ends, a refused one with its refusal; one whose start
-// cannot be recorded does not run. Each logs one `answers: gh` line.
+// cannot be recorded does not run. Each logs one `answers: gh` line, and a call the guard refused
+// one line of its own before it.
 func Run(ctx context.Context, call Call) Result {
 	a := call.Answer
 	started := a.host.Now()
@@ -227,6 +245,11 @@ func Run(ctx context.Context, call Call) Result {
 	}
 	if why := canonicalRefusal(words, target.Command); why != "" {
 		return a.refuse(ctx, call.Seq, run, started, why)
+	}
+	if err := a.leakGuard(ctx, run, target, dir); err != nil {
+		a.host.Log.Warn("answers: gh call refused by the leak guard", "question", a.question, "seq", call.Seq,
+			"issue", a.agent.Issue, "role", a.agent.Role, "repository", targetRepo(target), "why", err.Error())
+		return a.refuse(ctx, call.Seq, run, started, err.Error())
 	}
 	if err := a.host.Calls.StartAnswerToolCall(ctx, a.record(call.Seq, run, owner, started)); err != nil {
 		result := Result{Output: fmt.Sprintf("refused: the call could not be recorded, so it did not run: %v", err), Exit: -1}

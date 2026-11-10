@@ -1483,6 +1483,17 @@ the tool runs only what is safe there, and decides before anything runs:
   update check, spinner and colour off, and nothing else of the daemon's environment; the working
   directory is an empty one with no remotes. Each call is recorded in `answer_tool_calls` before it
   runs and finished after; a call whose start cannot be recorded does not run.
+- **The leak guard.** Every call passes the shared leak guard before gh is handed anything
+  (`internal/leakguard`, the guard a pane's `legion gh` runs), once the call's repository and the
+  files it would send are known: the whole argv, the destination the call was routed to and those
+  files are read, and a call the check refuses, or one whose check could not be made to run, is
+  refused with the guard's own message as the tool's result, gh never started, the refusal
+  recorded in `answer_tool_calls` and one `answers: gh call refused by the leak guard` line
+  logged with the issue, the role, the repository and the reason. The guard's own children — the
+  check, and its `gh` read of a repository's visibility — run in the daemon's environment rather
+  than the call's, with the real gh and the routed owner's `GH_CONFIG_DIR` in front of it and no
+  token of the daemon's own, so that read is the agent's App and never the `legion gh` wrapper,
+  which would call a guard of its own.
 
 ### The conversation stores
 

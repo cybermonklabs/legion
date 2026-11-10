@@ -25,6 +25,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
@@ -124,16 +126,34 @@ func (f *fakeRecorder) row(question string, seq int) (store.AnswerToolCall, bool
 }
 
 // fixture is one answer of an implementer on acme/widgets, in a project whose owners are acme and
-// sjawhar, its gh the stand-in.
+// sjawhar, its gh the stand-in and its shared public leak check a stand-in of its own, which
+// passes every call until a test writes another (fixture.leakCheck).
 type fixture struct {
 	t      *testing.T
 	stand  string // the stand-in gh's directory
+	check  string // the stand-in shared public leak check's directory
+	record string // the file that check records every run it was handed in
 	host   Host
 	tokens *fakeTokens
 	calls  *fakeRecorder
 	logs   *bytes.Buffer
 	answer *Answer
 }
+
+// The stand-in shared public leak checks the tool's guard is driven against, leakguardtest's,
+// each recording the call it was handed in LEAK_CHECK_RECORD so a test can read that the check
+// ran at all and with what (fixture.checked). checkRefuses answers as the check answers a write
+// it refuses, its report and exit 3; checkCannotRun as one that could not be made to run.
+var (
+	checkPasses     = leakguardtest.Recording(leakguardtest.Passes)
+	checkRefuses    = leakguardtest.Recording(leakguardtest.Refusing(checkRefusal))
+	checkCannotRun  = leakguardtest.Recording(leakguardtest.CannotFinish)
+	checkReadsStdin = leakguardtest.Recording(leakguardtest.Reading(0, ""))
+)
+
+// checkRefusal is the report the refusing stand-in prints, the whole of what its refusal says
+// about the call.
+const checkRefusal = "LEAK CHECK: refusing the gh call: one of ours"
 
 const question = "dispatch:m-1"
 
@@ -170,12 +190,18 @@ func setBehaviour(t *testing.T, dir string, b behaviour) {
 
 func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 	t.Helper()
-	f := &fixture{t: t, stand: standInGH(t, b), tokens: &fakeTokens{}, calls: newFakeRecorder(), logs: &bytes.Buffer{}}
+	f := &fixture{t: t, stand: standInGH(t, b), check: t.TempDir(), tokens: &fakeTokens{}, calls: newFakeRecorder(), logs: &bytes.Buffer{}}
 	root := t.TempDir()
+	f.record = filepath.Join(root, "leak-check-record")
 	f.host = Host{
 		GH: filepath.Join(f.stand, "gh"), Git: filepath.Join(root, "gitbin", "git"), Legion: filepath.Join(root, "legion"),
 		StateDir: filepath.Join(root, "state"), Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
 		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, slog.New(slog.DiscardHandler)),
+		// The guard's own two seams, as the daemon fills them: the check a stand-in of this
+		// test's, since the real one is a script no clone of this repository holds, and the
+		// environment this process's own with the record file the stand-in writes to added.
+		LeakCheck: leakguardtest.Write(t, f.check, checkPasses),
+		Environ:   append(os.Environ(), "LEAK_CHECK_RECORD="+f.record),
 	}
 	answer, err := Open(context.Background(), f.host, agent, question)
 	if err != nil {
@@ -184,6 +210,25 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 	t.Cleanup(func() { _ = answer.Close() })
 	f.answer = answer
 	return f
+}
+
+// leakCheck writes script as the body of the stand-in shared public leak check this fixture's
+// calls are guarded by, replacing the one it started with: the guard resolves the check at every
+// call, so a call after this is checked by the new one.
+func (f *fixture) leakCheck(script string) {
+	f.t.Helper()
+	leakguardtest.Write(f.t, f.check, script)
+}
+
+// checked is what the stand-in check recorded of the calls it was handed, and "" where it was
+// never run.
+func (f *fixture) checked() string {
+	f.t.Helper()
+	recorded, err := os.ReadFile(f.record)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		f.t.Fatal(err)
+	}
+	return string(recorded)
 }
 
 func args(argv ...string) string {
@@ -198,8 +243,36 @@ func (f *fixture) run(seq int, argv ...string) Result {
 	return Run(context.Background(), Call{Answer: f.answer, Seq: seq, Args: args(argv...), Bounds: bounds})
 }
 
-// invocations are the stand-in's runs so far: helps says whether to include its help reads.
+// invocations are the calls the stand-in gh was run for so far: helps says whether to include
+// its help reads. The leak guard's own visibility read is in neither (guardReads): it is a child
+// of the guard, not a call the tool made, and a test that counts the runs of a call counts the
+// call's own.
 func (f *fixture) invocations(helps bool) []invocation {
+	f.t.Helper()
+	var all []invocation
+	for _, inv := range f.allInvocations() {
+		if (helps || !inv.Help) && !inv.guardRead() {
+			all = append(all, inv)
+		}
+	}
+	return all
+}
+
+// guardReads are the leak guard's own reads of a repository's visibility, in the order they were
+// made.
+func (f *fixture) guardReads() []invocation {
+	f.t.Helper()
+	var reads []invocation
+	for _, inv := range f.allInvocations() {
+		if inv.guardRead() {
+			reads = append(reads, inv)
+		}
+	}
+	return reads
+}
+
+// allInvocations is every run of the stand-in gh recorded so far, whatever ran it.
+func (f *fixture) allInvocations() []invocation {
 	f.t.Helper()
 	data, err := os.ReadFile(filepath.Join(f.stand, "invocations.jsonl"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -216,9 +289,7 @@ func (f *fixture) invocations(helps bool) []invocation {
 		if err := json.Unmarshal(scanner.Bytes(), &inv); err != nil {
 			f.t.Fatal(err)
 		}
-		if helps || !inv.Help {
-			all = append(all, inv)
-		}
+		all = append(all, inv)
 	}
 	return all
 }
@@ -981,4 +1052,210 @@ func (c checkedStore) FinishAnswerToolCall(ctx context.Context, question string,
 		c.t.Errorf("at the finish of call %d gh had run %d times, want once", seq, len(c.f.invocations(false)))
 	}
 	return c.Store.FinishAnswerToolCall(ctx, question, seq, result, exit, at)
+}
+
+// Every call passes the shared leak guard before gh is handed anything, as every Legion write to
+// a public repository does (cybermonklabs/legion#3425): a call the shared check refuses never
+// starts gh, the model reads the check's own report as the call's result, the call is recorded
+// with that refusal and no exit, and one line of the package's own says which issue, which role's
+// name the write would have carried, which repository and why.
+func TestACallTheLeakGuardRefusesNeverStartsGh(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	f.leakCheck(checkRefuses)
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+	got := f.run(1, argv...)
+	if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !strings.Contains(got.Output, checkRefusal) {
+		t.Fatalf("gh %q = %+v; want a refusal carrying the check's report %q, gh never run", argv, got, checkRefusal)
+	}
+	if ran := f.invocations(false); len(ran) != 0 {
+		t.Errorf("gh ran for a call the guard refused: %+v", ran)
+	}
+	if f.checked() == "" {
+		t.Errorf("the shared check was never run for %q", argv)
+	}
+	row, recorded := f.calls.row(question, 1)
+	if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil || row.FinishedAt == nil {
+		t.Errorf("the refused call is recorded as %+v (%t); want the guard's refusal and no exit", row, recorded)
+	}
+	lines := f.logLines("answers: gh call refused by the leak guard")
+	if len(lines) != 1 {
+		t.Fatalf("the guard's refusal logged %d lines, want one: %s", len(lines), f.logs)
+	}
+	line := lines[0]
+	if line["issue"] != "LEG-1" || line["role"] != "implementer" || line["repository"] != "acme/widgets" ||
+		!strings.Contains(fmt.Sprint(line["why"]), checkRefusal) || line["question"] != question || line["seq"] != float64(1) {
+		t.Errorf("the refusal line = %v; want the issue LEG-1, the role implementer, acme/widgets and the guard's reason", line)
+	}
+	if ordinary := f.logLines("answers: gh"); len(ordinary) != 1 {
+		t.Errorf("the refused call logged %d `answers: gh` lines, want the one every call logs: %s", len(ordinary), f.logs)
+	}
+}
+
+// A check that could not be made to run refuses the call exactly as a refusal does — a check that
+// did not run has cleared nothing — in the shared check's own setup-error words: one that exits a
+// status it does not document, and one that is not there at all.
+func TestACheckThatCannotBeRunRefusesTheCall(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setUp func(f *fixture)
+		want  string
+	}{
+		{
+			name:  "the check could not finish",
+			setUp: func(f *fixture) { f.leakCheck(checkCannotRun) },
+			want:  "LEAK CHECK SETUP ERROR: the gh call",
+		},
+		{
+			name:  "no check is there to run",
+			setUp: func(f *fixture) { f.answer.host.LeakCheck = filepath.Join(f.check, "moved-away.sh") },
+			want:  "LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+			tc.setUp(f)
+			argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+			got := f.run(1, argv...)
+			if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !strings.Contains(got.Output, tc.want) {
+				t.Fatalf("gh %q = %+v; want a refusal containing %q, gh never run", argv, got, tc.want)
+			}
+			if ran := f.invocations(false); len(ran) != 0 {
+				t.Errorf("gh ran for a call no check cleared: %+v", ran)
+			}
+			row, recorded := f.calls.row(question, 1)
+			if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil {
+				t.Errorf("the refused call is recorded as %+v (%t); want the guard's refusal and no exit", row, recorded)
+			}
+			lines := f.logLines("answers: gh call refused by the leak guard")
+			if len(lines) != 1 || lines[0]["repository"] != "acme/widgets" || !strings.Contains(fmt.Sprint(lines[0]["why"]), tc.want) {
+				t.Errorf("the refusal logged %v; want one line naming acme/widgets and %q", lines, tc.want)
+			}
+		})
+	}
+}
+
+// A call the check passes runs exactly as it did before the guard: gh started once, with the
+// arguments and the environment the tool gives it, and its record finished with gh's exit. The
+// check read the whole call, the footer and all.
+//
+// The tool hands gh no standard input, so the guard is given none either; a check that asks for
+// it anyway — the exit-4 handshake, which a check reading a body on standard input makes — is
+// answered with an empty buffer rather than left waiting, and the call runs.
+func TestACallTheLeakGuardClearsRunsAsBefore(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check string
+		read  string
+	}{
+		{name: "a check that reads the call alone", check: checkPasses},
+		{name: "a check that asks for the call's standard input", check: checkReadsStdin, read: "checked stdin \n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+			f.leakCheck(tc.check)
+			argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+			got := f.run(1, argv...)
+			if !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
+				t.Fatalf("gh %q = %+v; want gh's answer, exit 0", argv, got)
+			}
+			ran := f.invocations(false)
+			if len(ran) != 1 {
+				t.Fatalf("gh %q ran gh %d times: %+v", argv, len(ran), ran)
+			}
+			want := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done.\n\n" + footer(implementer, question, 1)}
+			if !slices.Equal(ran[0].Argv, want) {
+				t.Errorf("gh ran with %q, want %q", ran[0].Argv, want)
+			}
+			if env := f.wantEnv("acme"); !slices.Equal(ran[0].Env, env) {
+				t.Errorf("gh ran with the environment\n%q\nwant exactly\n%q", ran[0].Env, env)
+			}
+			if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(want, " ")) {
+				t.Errorf("the check was handed %q, want the whole call %q", checked, want)
+			}
+			if tc.read != "" && !strings.Contains(f.checked(), tc.read) {
+				t.Errorf("the check read %q on the call's standard input, want the empty buffer %q", f.checked(), tc.read)
+			}
+			row, _ := f.calls.row(question, 1)
+			if row.Result == nil || *row.Result != got.Output || row.Exit == nil || *row.Exit != 0 {
+				t.Errorf("the call is recorded as %+v; want gh's output and exit 0", row)
+			}
+		})
+	}
+}
+
+// What the guard is given is the call as the routing read it: the repository it targets, which is
+// the destination whose visibility decides whether this repository's own rules run, and the files
+// the parse found, which is no file for every command of this tool — none of them reads one, and
+// the guard therefore reads the argv with no table of its own, which would take the `-Fixed in
+// abc123` of a body for a file nobody named and refuse the call over it.
+//
+// The visibility read is the guard's own gh child, and it is the real gh that makes it, on the
+// guard's PATH, with the routed owner's gh directory and no token of the daemon's to answer in
+// the App's place: the wrapper GH_PATH names runs `legion gh`, which would call a guard of its
+// own over the read.
+func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
+	t.Run("the repository the call targets, read by the real gh as the agent", func(t *testing.T) {
+		f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
+		// A token and a wrapper of the daemon's own, which this environment must not carry to
+		// the guard's children.
+		f.answer.host.Environ = append(f.answer.host.Environ,
+			"GH_TOKEN=ghp_the_daemons_own", "GITHUB_TOKEN=ghp_the_daemons_own", "GH_PATH="+f.answer.wrapper)
+		argv := []string{"pr", "view", "5", "-R", "sjawhar/legion", "--json", "title"}
+		if got := f.run(1, argv...); !got.Ran {
+			t.Fatalf("gh %q = %+v; want it run", argv, got)
+		}
+		reads := f.guardReads()
+		if len(reads) != 1 {
+			t.Fatalf("the guard made %d visibility reads, want the one of the call's repository: %+v", len(reads), reads)
+		}
+		read := reads[0]
+		if want := leakguard.VisibilityReadArgs("sjawhar/legion"); !slices.Equal(read.Argv, want) {
+			t.Errorf("the guard read %q, want the visibility of the repository the call targets, %q", read.Argv, want)
+		}
+		values := map[string]string{}
+		for _, pair := range read.Env {
+			name, value, _ := strings.Cut(pair, "=")
+			values[name] = value
+		}
+		if want := filepath.Join(f.answer.owners, "sjawhar"); values["GH_CONFIG_DIR"] != want {
+			t.Errorf("the read ran with GH_CONFIG_DIR %q, want the routed owner's %q", values["GH_CONFIG_DIR"], want)
+		}
+		for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_PATH"} {
+			if value, ok := values[name]; ok {
+				t.Errorf("the read ran with %s=%q; a token or a wrapper of the daemon's answers in the App's place", name, value)
+			}
+		}
+		path := strings.Split(values["PATH"], string(filepath.ListSeparator))
+		if len(path) == 0 || path[0] != f.stand {
+			t.Errorf("the read's PATH is %q, want the real gh's directory %s first", values["PATH"], f.stand)
+		}
+		if slices.Contains(path, filepath.Dir(f.answer.wrapper)) {
+			t.Errorf("the read's PATH holds the GH_PATH wrapper's directory %s, which runs `legion gh`", filepath.Dir(f.answer.wrapper))
+		}
+	})
+
+	t.Run("the files the parse found, which no command of this tool sends", func(t *testing.T) {
+		f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+		body := "-Fixed in abc123"
+		argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", body}
+		got := f.run(1, argv...)
+		if !got.Ran || got.Exit != 0 {
+			t.Fatalf("gh %q = %+v; want it run: the parse found no file, so the guard reads none", argv, got)
+		}
+		// The same call with no files named, which is what a caller that leaves the guard to
+		// read the argv itself hands it: the guard's own table takes the body for a file.
+		run, why := withFooter(argv, commandWords(argv), footer(implementer, question, 1))
+		if why != "" {
+			t.Fatalf("the call's footer: %s", why)
+		}
+		guard := leakguard.New(leakguard.Options{
+			Check: f.answer.host.LeakCheck, Env: f.answer.host.Environ,
+			Visibility: func(context.Context, string) (leakguard.Visibility, error) { return leakguard.Public, nil },
+		})
+		_, err := guard.GhCall(context.Background(), leakguard.GhRequest{Args: run, Repo: "acme/widgets"})
+		var setup *leakguard.SetupFailure
+		if !errors.As(err, &setup) {
+			t.Fatalf("the guard reading %q with no files named = %v; want the setup failure its own table makes of the body", run, err)
+		}
+	})
 }

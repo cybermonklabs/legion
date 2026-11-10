@@ -66,8 +66,9 @@ type Options struct {
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
 // guard of its own for the one write it is about to make (cmd/legion's gh and leak-check,
-// internal/rescue, internal/ghbranch), and each entry point reads a destination's visibility at
-// most once, so there is nothing a shared answer would spare.
+// internal/ghtool's call of the answer loop, internal/rescue, internal/ghbranch), and each entry
+// point reads a destination's visibility at most once, so there is nothing a shared answer would
+// spare.
 type Guard struct {
 	opts Options
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base

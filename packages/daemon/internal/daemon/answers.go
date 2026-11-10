@@ -49,8 +49,14 @@ func (w *workflowRuntime) attachAnswers(cfg config.Config, p plan, s *supervisio
 	if err != nil {
 		return fmt.Errorf("the answer loop: resolve this daemon's executable for the gh tool's wrapper: %w", err)
 	}
+	// Environ is the daemon's own environment, which the gh tool's leak guard runs the shared
+	// public leak check and its own visibility read in (ghtool.Host). LeakCheck is left empty:
+	// the daemon resolves a check for a pane because a pane can resolve none of the three places
+	// itself (runtime/tmux's resolveLeakCheck), while this guard runs in this process, in this
+	// environment, so it resolves them itself at every call — the same three places, and the
+	// copy the check has published by then rather than the one that was there at boot.
 	host := ghtool.Host{
-		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir,
+		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir, Environ: os.Environ(),
 		Credential: appauth.GitHubCredential(w.tokens, p.repositories.Accepted, cfg.RepositoryRenames, appauth.NewLeftOut(), w.log), Calls: st, Log: w.log, Now: time.Now,
 	}
 	w.answers.loop = answerloop.New(answerloop.Config{
