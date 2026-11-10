@@ -88,15 +88,24 @@ pid=$(field "$state" sampler_pid)
 check "the state carries a sampler pid" "$(contains "$pid" '^[0-9][0-9]*$')"
 check "the state carries the watched path" "$(is "$(field "$state" path)" "$watched")"
 
-echo "case: the series begins with the start step's own tick, not a second later"
-# The sampler sleeps a second before its first read, so without this tick the series would
-# begin after the step being measured began, and the first boundary a reader lines up against
-# would fall outside it.
-first_tick_file="$state.series"
-check "start left a series file behind it" "$([ -f "$first_tick_file" ] && echo true || echo false)"
-check "it holds one tick already" "$(is "$(grep -c '' "$first_tick_file")" 1)"
-check "that tick is a reading of the machine" "$(contains "$(cat "$first_tick_file")" "$tick_shape")"
-check "the state carries all three worst readings from that one tick" \
+echo "case: the series begins in the second start ran in, not a second later"
+# The sampler reads before it sleeps, so its first tick falls inside the start step rather than
+# after it. Without that the series would begin after the first step being measured had begun,
+# and the boundary a reader most wants to line up would have no tick of the machine beside it.
+after_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+series_file="$state.series"
+for _ in $(seq 30); do
+  [ -s "$series_file" ] && break
+  sleep 0.1
+done
+check "the sampler wrote a tick without waiting a second" \
+  "$([ -s "$series_file" ] && echo true || echo false)"
+first_tick=$(head -1 "$series_file")
+check "that tick is a reading of the machine" "$(contains "$first_tick" "$tick_shape")"
+check "it was read no later than the second start returned in" \
+  "$([ "$(cut -d' ' -f2 <<<"$first_tick")" \< "$after_start" ] ||
+    [ "$(cut -d' ' -f2 <<<"$first_tick")" = "$after_start" ] && echo true || echo false)"
+check "start seeded all three worst readings itself, each with its time" \
   "$([ -n "$(field "$state" least_kb_at)" ] && [ -n "$(field "$state" least_memory_kb_at)" ] &&
      [ -n "$(field "$state" greatest_load_at)" ] && echo true || echo false)"
 

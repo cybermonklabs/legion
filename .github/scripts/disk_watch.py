@@ -247,13 +247,13 @@ def start(path: str, state_path: str) -> int:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    # The first tick is this step's own, because the sampler sleeps a second before its first
-    # read: without it the series would begin a second after the step being measured began, and
-    # the first boundary a reader wants to line up would fall outside it.
+    # The state carries this step's own reading of all three, so a sampler that never writes
+    # still leaves a report with three numbers and a time beside each. The series line is the
+    # sampler's: its first read is immediate, in this same second, so writing one here would
+    # put two lines on one second.
     when = now_utc()
     memory = available_memory_kb()
     load = one_minute_load()
-    append_series(state_path, series_line(when, before, memory, load))
     state = {"path": path, "before_kb": before, "sampler_pid": sampler.pid}
     # Every reading this step made is the worst there has been so far, and it was read now, so
     # the report names a time beside each number from the start.
@@ -321,9 +321,8 @@ def sample(path: str, state_path: str) -> int:
     """The detached sampler: write the machine to the series once a second, and keep the worst
     each reading has reached in the state, until the report stops this process or the deadline
     above passes."""
-    deadline = time.monotonic() + SAMPLER_MAX_SECONDS
+    deadline = time.monotonic() + SAMPLE_SECONDS + SAMPLER_MAX_SECONDS
     while time.monotonic() < deadline:
-        time.sleep(SAMPLE_SECONDS)
         when = now_utc()
         try:
             free = free_kb(path)
@@ -336,20 +335,25 @@ def sample(path: str, state_path: str) -> int:
         # would read as a second the machine was gone.
         append_series(state_path, series_line(when, free, memory, load))
         state = read_state(state_path)
-        if state is None:
-            continue
-        changed = False
-        if free is not None:
-            changed |= keep_worst(state, "least_kb", free, when, greater=False)
-        if memory is not None:
-            changed |= keep_worst(state, "least_memory_kb", memory, when, greater=False)
-        if load is not None:
-            changed |= keep_worst(state, "greatest_load", load, when, greater=True)
-        # Nearly every tick finds the state already saying all three, and the state file is on
-        # the very file system being measured, so a tick that would rewrite the same bytes writes
-        # nothing.
-        if changed:
-            write_state(state_path, state)
+        if state is not None:
+            changed = False
+            if free is not None:
+                changed |= keep_worst(state, "least_kb", free, when, greater=False)
+            if memory is not None:
+                changed |= keep_worst(state, "least_memory_kb", memory, when, greater=False)
+            if load is not None:
+                changed |= keep_worst(state, "greatest_load", load, when, greater=True)
+            # Nearly every tick finds the state already saying all three, and the state file is
+            # on the very file system being measured, so a tick that would rewrite the same
+            # bytes writes nothing.
+            if changed:
+                write_state(state_path, state)
+        # The read comes before the sleep, so the series begins in the second `start` spawned
+        # this process in rather than a second later: the first step being measured begins at
+        # the boundary `start` ends on, and a reader lines that boundary up against a tick. The
+        # state file may not be written yet on this first pass, which costs nothing: `start`
+        # seeds all three worst readings itself, and the series line is written either way.
+        time.sleep(SAMPLE_SECONDS)
     return 0
 
 
