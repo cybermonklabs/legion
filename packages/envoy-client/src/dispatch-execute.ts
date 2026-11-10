@@ -495,6 +495,17 @@ function optionalString(args: Record<string, unknown>, name: string): string | u
   return typeof value === "string" ? value : undefined;
 }
 
+/** A field the server reads as a tri-state: absent leaves it, null clears it, a string sets it.
+ *  `assignee` is one, and `--clear-assignee` is how the command sends its null. */
+function optionalNullableString(
+  args: Record<string, unknown>,
+  name: string
+): string | null | undefined {
+  const value = args[name];
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
+}
+
 function optionalBoolean(args: Record<string, unknown>, name: string): boolean | undefined {
   const value = args[name];
   return typeof value === "boolean" ? value : undefined;
@@ -2835,9 +2846,19 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
+/** The person an open ask waits on, as the server resolved it (`waiting_on_person`: whoever the
+ *  ask was handed to, and the assignee of its issue until somebody hands it on), and `nobody`
+ *  where the server names none — an ask on a project document, or on an issue nobody holds. */
+function openAskWaitingOn(ask: OpenAsk): string {
+  const person = ask.waiting_on_person;
+  return person === undefined || person === "" ? "nobody" : person;
+}
+
+/** One row of `dispatch open-asks`, in both of the listing's groups: the person it waits on is
+ *  on every row, since one row renderer is one rule. */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · waiting on ${openAskWaitingOn(ask)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
@@ -4176,6 +4197,7 @@ export async function executeDispatchTool(
       const rankBefore = optionalString(args, "before");
       const rankAfter = optionalString(args, "after");
       const priority = optionalPriority(args, "priority");
+      const assignee = optionalNullableString(args, "assignee");
       const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
       const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
       const requestedLinks = Array.isArray(args.external_links)
@@ -4251,6 +4273,7 @@ export async function executeDispatchTool(
           ...(title === undefined ? {} : { title }),
           ...(labels === undefined ? {} : { labels }),
           ...(priority === undefined ? {} : { priority }),
+          ...(assignee === undefined ? {} : { assignee }),
           ...(route === undefined ? {} : { route }),
           ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
           ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
@@ -4300,6 +4323,9 @@ export async function executeDispatchTool(
         ...(priority === undefined
           ? []
           : [after.priority === null ? "priority cleared" : `priority -> P${after.priority}`]),
+        ...(assignee === undefined
+          ? []
+          : [after.assignee === null ? "assignee cleared" : `assignee -> ${after.assignee}`]),
         ...(rank === undefined
           ? []
           : [

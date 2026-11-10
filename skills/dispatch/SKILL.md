@@ -14,24 +14,23 @@ Dispatch is a record for the people who decide, never a log of your work.
 
 ## Asks and ask blocks
 
-- A design question a document records is an ask block (a decision block) at the end of its section:
+- An ask is a question for a person, never a request to another agent. Ask an agent by `envoy_send` or a comment on the issue.
+- An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.
+- A design question a document records is an ask block at the end of its section:
 
 ```md
 :::ask{urgency="med"}
-The question and the recommendation, as `skill://dispatch-writing-specs` writes them.
+The question and the recommendation (`skill://dispatch-writing-specs`).
 
 - Option one: what it costs.
 - Option two: what it costs.
 :::
 ```
 
-- An ask is short and asks one thing; its reasoning goes in the document.
-- An open ask is the request; never repeat it per message.
-- Change an open ask's block with `dispatch edit-ask`, or `doc-edit`'s `replace` or `move`. An answered ask is fixed: ask anew.
+- Never repeat an open ask in a message.
+- Change an open ask's block with `dispatch edit-ask` (its ask id), or `doc-edit`'s `replace` or `move` (its block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
 - Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
-- An ask block has a block id, for `doc-edit`, and an ask id, for the ask commands. `dispatch read --ref dispatch://KEY/ask/<id>` takes either.
-- An ask reaches the issue's assignee; if none, name who answers.
 
 ## Choosing what to work on
 
