@@ -5656,6 +5656,9 @@ export async function executeDispatchTool(
                 ]),
             `Reference: ${documentRef}`,
             `Versions: ${(artifact.versions ?? []).length}`,
+            // A summary holds none of the document's text, and readers asking for the text land
+            // here first (1,272 such reads in 670 INFRA sessions in 48 h, dispatch://INFRA-2531).
+            `Contents: dispatch doc-read --ref ${documentRef}`,
             ...(approval === undefined ? [] : [approval]),
             ...(await graphSections(client, documentRef)),
           ].join("\n"),

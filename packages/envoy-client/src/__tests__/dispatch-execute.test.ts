@@ -6019,6 +6019,7 @@ describe("executeDispatchTool", () => {
         "Issue: DSP-42 [in_progress] Native workspace",
         `Reference: dispatch://DSP-42/artifact/${slug}`,
         `Versions: ${versions}`,
+        `Contents: dispatch doc-read --ref dispatch://DSP-42/artifact/${slug}`,
         ...(approval === undefined ? [] : [approval]),
         "Referenced by:",
         "- none",
