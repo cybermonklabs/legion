@@ -88,6 +88,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `j` / `k` | Next / previous issue |
 | `o` | Open issue |
 | `Enter` | Open the focused issue (from the row) |
+| `x` | Select or deselect the focused issue |
 
 ## Board
 

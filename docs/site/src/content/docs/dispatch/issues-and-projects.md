@@ -88,6 +88,8 @@ The open rows and filters stay usable while Done loads, or if that read fails; *
 Until Done has loaded, its filter option says so instead of claiming there are no closed issues.
 **Clear filters** also clears Needs you, Unread and Unclaimed.
 Tick rows to open a floating action bar: **Start next**, **Move to epic…**, **Take out of epic**, or **New epic from these**.
+Press `x` to select or deselect the row your keys are on; the search bar then acts on what you have selected, and leaving the table clears it.
+An issue the table stops listing drops out of the selection, so a row listed again comes back unselected.
 On phones the bar stays in one horizontally scrollable row above the project content, so it cannot cover the table or pager.
 **Select all N matching** includes rows beyond the current page.
 Start next moves queued selections ahead of the rest of Legion's waiting line, keeping their queue order.

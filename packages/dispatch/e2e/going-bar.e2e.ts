@@ -210,6 +210,49 @@ test("the chip names what the bar will act on, and nothing where the page names 
   }
 });
 
+test("the bar acts on the issues the table has selected, and leaving the table clears them @phone", async ({
+  browser,
+}) => {
+  const fixture = await seed();
+  const third = await createIssue({ project: "CORE", title: "Sextants" });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openIssueList(page);
+
+    // Two rows by their own checkboxes, the third by the key that takes the row in hand: both
+    // ways in reach the one selection the bar reads.
+    await page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` }).check();
+    await page.getByRole("checkbox", { name: `Select ${fixture.secondKey}` }).check();
+    await page.keyboard.press("j");
+    await page.keyboard.press("x");
+    await expect(page.getByRole("checkbox", { name: `Select ${third.key}` })).toBeChecked();
+
+    await openBar(page, ["Control+k"]);
+    await expect(scope(page)).toHaveText(
+      new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}[\\s\\S]*${third.key}`)
+    );
+    await closeBar(page);
+
+    // The Board takes the table off the page, and the selection goes with it.
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+    await page.locator("body").focus();
+    await openBar(page, ["Control+k"]);
+    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await closeBar(page);
+
+    // Back on the table, the rows come back unselected rather than carrying a hidden mark.
+    await page.getByRole("button", { name: "List", exact: true }).click();
+    await expect(
+      page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` })
+    ).not.toBeChecked();
+  } finally {
+    await context.close();
+  }
+});
+
 test("Tab narrows the chip to the block the cursor is in and Backspace widens it to the project @phone", async ({
   browser,
 }) => {
