@@ -1197,6 +1197,26 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 	})
 }
 
+// inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
+// this deployment's own windows derive it (bus.InactiveThresholdFor): main reads it before it
+// opens the session-consumer connection and gives it to that connection, so every consumer the
+// listener creates carries it (connectSessionDelivery, bus.ConnectSessionConsumers's
+// inactiveThreshold).
+//
+// It must stand above the sweep's worst bound - the session's record leaves the bucket, the
+// sweep's next pass deletes the consumer - because a consumer the server removes first takes
+// the session's position with it: the resume floor is recorded by the listener's own delete and
+// by nothing else, so a session whose consumer the server removed is created again at the
+// stream's end and loses every message stored while it was away.
+//
+// The record's life is the longer of the gone horizon and the bucket's maximum age, since
+// either can be what drops the record: the reaper deletes it a pass after the horizon, and the
+// bucket itself drops it at that age.
+func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweepInterval time.Duration) time.Duration {
+	_, goneHorizon := sessions.Windows()
+	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
+}
+
 func main() {
 	instance, err := listenerInstance()
 	if err != nil {
@@ -1480,6 +1500,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The session consumer sweep's period, the bound on how long a session that ended without
+	// deregistering keeps its consumer (startSessionConsumerSweep, session_consumer_sweep.go).
+	// It is neither reaper's: what it waits for is the state the session registry answers, and a
+	// pass of it frees a slot of the stream's consumer cap rather than taking anything away from
+	// a session. Like them it runs on the pod holding the delivery lease alone (holderLoops).
+	sessionConsumerSweepInterval, err := envconf.PositiveDuration(logger.Slog(), os.LookupEnv, "ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL", defaultSessionConsumerSweepInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
 	sessionOptions := []session.SessionRegistryOption{
 		session.WithSessionReplicas(cfg.NATSReplicas),
 		session.WithSessionLogger(logger.Slog()),
@@ -1619,7 +1648,16 @@ func main() {
 	// The session consumers a registration asks for are managed on a connection of their own
 	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
 	// delivery, which a listener of an earlier release serves too, rather than ending the start.
-	delivery := connectSessionDelivery(cfg.NATSURLs, logger)
+	//
+	// The threshold the server removes an idle session consumer after is derived from this
+	// deployment's own windows first and given to that connection, so every consumer the
+	// listener creates carries one that stands above its own sweep's worst bound: the session's
+	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
+	// records for longer than the default windows would otherwise have the server remove a
+	// consumer the listener's own delete had not reached, and with it the only record of where
+	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
+	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
+	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
 	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
 	// this task serves its machine's receive term (below). Without its reply inbox no frame could
 	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.
@@ -1737,6 +1775,27 @@ func main() {
 			// one stream read a pass while no role has a kept lane (startKeptRoleSweep,
 			// role_keep_sweep.go).
 			startKeptRoleSweep(ctx, deliveryConfig, 5*time.Minute),
+			// The session consumer sweep frees the slot every session consumer whose session
+			// ended without deregistering holds. The deregistration route deletes the consumer
+			// of a registration it removed, and a session whose pane closed or whose box went
+			// deregisters nothing: this is the bound under which such a consumer goes, one pass
+			// after the session's record leaves the envoy_sessions bucket - the session reaper's
+			// first pass past the gone horizon, or the bucket's maximum age, whichever comes
+			// first - since a pass deletes only on a bucket that answers for the session no
+			// longer. It is also what retires the consumers a hub already holds from before the
+			// sweep existed. A pass that found a cold or stale copy of the session bucket would
+			// read the whole fleet as gone, so it runs here, on the pod holding the delivery
+			// lease alone, and only over a copy that is ready, servable and needs no read. The
+			// pass reads this pod's receive term again itself (sessionConsumerSweep.trusted), so
+			// a term that ends between a tick and its pass sweeps nothing, and among the pods of
+			// one machine id only the one receiving deletes a consumer
+			// (startSessionConsumerSweep, session_consumer_sweep.go).
+			startSessionConsumerSweep(ctx, &sessionConsumerSweep{
+				delivery: delivery,
+				sessions: sessions,
+				relays:   relays,
+				logger:   logger,
+			}, sessionConsumerSweepInterval),
 		}
 		// The CI summary loop, on a listener that opened the CI store, emits one pr.<n>.checks
 		// event once a commit's checks settle, for every commit of a pull request, its head or
@@ -1873,6 +1932,32 @@ func main() {
 	})
 }
 
+// startSweep runs pass every interval, and once as the loop starts, which is the loop every
+// backstop sweep of the listener runs: the kept role lanes' (startKeptRoleSweep) and the session
+// consumers' (startSessionConsumerSweep). It runs under the context the holder-only loops run
+// under and returns a channel closed once its goroutine has returned, as they do
+// (store.Registry.StartReaper), so the end of this pod's receive term ends it and waits for a
+// pass in flight (holderLoops, waitLoops). A pass that is still running when ctx ends is not cut
+// short by this loop: each pass watches ctx itself and the term's end waits for it, up to
+// holderLoopsStopWait, so a sweep ends between two of its own calls rather than inside one.
+func startSweep(ctx context.Context, interval time.Duration, pass func(context.Context)) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			pass(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return done
+}
+
 // listenerLoops are what main started that the shutdown ends before it drains NATS: stop ends the
 // self-health monitor, monitorDone is closed once it has returned, and receiver is the durable's
 // receive loop, which stops the holder-only loops itself.
@@ -1949,6 +2034,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}
+	// A deregistration answers before its session consumer is deleted and leaves that delete
+	// running behind it (sessionDelivery.deleteAfterAnswer), so the stop waits for those still
+	// in flight once the server has stopped serving: a delete cut off here would leave its
+	// consumer for the sweep, and one started after the drain below would reach a closed
+	// connection.
+	parts.delivery.awaitDeletes(shutdownCtx)
 	// The session-consumer connection carries the consumer calls registrations make, which the HTTP
 	// server has stopped serving, and the relays' acks, which its drain lets reach the server,
 	// within what is left of the HTTP stop's budget.

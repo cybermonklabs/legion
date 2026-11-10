@@ -51,7 +51,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a root issue of a project gating three steps reads each step's own document: approved, approved and changed since, and awaiting", async ({
+// @pr: An approval: a gated project's root issue reads each step's own document as approved, approved and changed since, or awaiting.
+test("a root issue of a project gating three steps reads each step's own document: approved, approved and changed since, and awaiting @pr", async ({
   browser,
 }) => {
   await createProject({ key: "GATETHREE", name: "Three steps" });

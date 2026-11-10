@@ -212,8 +212,8 @@ func KeptRoleCursorSubject(role string) string {
 const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 
 // streamSubjects are the notification subjects the stream carries, and the list every consumer
-// filter over them takes (StreamSubjects). The stream carries one subject more, the listener's own
-// kept lane (streamCarriedSubjects).
+// filter over them takes (StreamSubjects). The stream carries two subjects more, the listener's
+// own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
 	"notifications.dispatch.>",
@@ -228,13 +228,57 @@ var streamSubjects = []string{
 	ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
 }
 
-// streamCarriedSubjects is every subject the stream itself carries: the notification subjects and
-// the listener's kept lane, the role messages it could not deliver and the per-role drain cursors
-// over them. That prefix is the stream's alone and no consumer filter takes it: a kept copy still
-// carries its role topic in the envelope, so a consumer handed one would deliver it as a role
-// message and re-trigger role delivery on every listener. The listener reads the lane itself
-// instead (cmd/listener/role_keep.go).
-var streamCarriedSubjects = slices.Concat(streamSubjects, []string{KeptTopicPrefix + ">"})
+// listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
+// lane, holding the role messages it could not deliver and the per-role drain cursors over them
+// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
+// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
+// consumer handed one would deliver it as a role message and re-trigger role delivery on every
+// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
+// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
+// carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+
+// ListenerOwnLanes reports the lanes the stream carries for the listener itself
+// (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
+// (`notifications.envoy.kept.`) rather than the `>` pattern the stream carries it as. That is the
+// shape a caller names a lane in and builds a topic of one with: the publish route's refusal
+// names the lane it refused, and the row that tests that refusal is the lanes themselves
+// (cmd/listener), so a lane the stream gains is named and covered with nothing written out a
+// second time. A caller judging one topic asks ListenerOwnLaneOf instead, which reads the same
+// list.
+func ListenerOwnLanes() []string {
+	lanes := make([]string, len(listenerOwnStreamLanes))
+	for i, lane := range listenerOwnStreamLanes {
+		lanes[i] = listenerOwnLanePrefix(lane)
+	}
+	return lanes
+}
+
+// ListenerOwnLaneOf is the lane of the listener's own that topic lies under, spelled as
+// ListenerOwnLanes spells it, and "" for a topic under none. It is the one test a caller makes
+// of such a topic, and the name it puts in a refusal: the publish route refuses one, since a
+// session writing a drain cursor or a resume floor would take over a role's lane or move
+// another session's delivery (cmd/listener/api.go). So a lane added to listenerOwnStreamLanes
+// is covered wherever the question is asked, and no caller lists a lane of its own.
+func ListenerOwnLaneOf(topic string) string {
+	for _, lane := range listenerOwnStreamLanes {
+		if SubjectContains(lane, topic) {
+			return listenerOwnLanePrefix(lane)
+		}
+	}
+	return ""
+}
+
+// listenerOwnLanePrefix is lane, a subject pattern of listenerOwnStreamLanes, as the prefix every
+// topic of that lane begins with: the pattern without its trailing `>`.
+func listenerOwnLanePrefix(lane string) string {
+	return strings.TrimSuffix(lane, ">")
+}
+
+// streamCarriedSubjects is every subject the stream itself carries: the notification subjects
+// and the listener's own lanes (listenerOwnStreamLanes).
+var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes)
 
 // Every subject of streamCarriedSubjects is classified for POST /v1/replay (cmd/listener/replay.go) by
 // whether a topic under it ever carries one agent session's private payload, read from the code
@@ -275,6 +319,10 @@ var (
 		// holder it was meant for, and the per-role drain cursor over them: no session may
 		// register a topic under it and no replay hands one out.
 		KeptTopicPrefix + ">",
+		// The resume floor of a session whose consumer was deleted, which names the session and
+		// the stream sequence its delivery stopped at (SessionResumeSubject): no session may
+		// register a topic under it and no replay hands one out.
+		SessionResumeSubjectPrefix + ">",
 	}
 )
 
@@ -300,15 +348,16 @@ func ReachesPrivateStreamSubject(sessionID, topic string) bool {
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
-// and the listener's kept lane: the list every consumer filter built over the notification
-// subjects uses. The stream's own list, which carries the kept lane too, is StreamCarriedSubjects.
+// and the listener's own lanes, the kept one and the resume one: the list every consumer filter
+// built over the notification subjects uses. The stream's own list, which carries both of those
+// lanes too, is StreamCarriedSubjects.
 func StreamSubjects() []string {
 	return slices.Clone(streamSubjects)
 }
 
 // StreamCarriedSubjects reports every subject the stream itself carries (streamCarriedSubjects):
-// the notification subjects and the listener's kept lane. A caller that builds or checks the
-// stream takes it, where a consumer's filter takes StreamSubjects.
+// the notification subjects and the listener's own kept and resume lanes. A caller that builds or
+// checks the stream takes it, where a consumer's filter takes StreamSubjects.
 func StreamCarriedSubjects() []string {
 	return slices.Clone(streamCarriedSubjects)
 }
@@ -395,21 +444,31 @@ func subjectMatches(subject, topic string) bool {
 // (infra/gcp/clusteredhub_live_test.go), and it renders no accounts block, so every client runs
 // in the global account with its JetStream limits unset.
 //
-// The population the cap must cover is not the live session count. Nothing deletes a session's
-// consumer when the session ends: the only delete is inside SessionConsumers.RestartAtFloor
-// (session_consumers.go), and the server removes a consumer SessionConsumerInactiveThreshold, 72
-// hours, after its last pull. The population is therefore every distinct session that pulled
-// inside those 72 hours. It was read twice on 2026-11-06, by sampling the listener's session list
-// every 20 seconds and counting each id that appeared in no earlier read, which needs no
-// assumption about how long a session lives: 238 reads from 01:53:37Z to 02:33:35Z gave 42 new
-// ids, 63.1 an hour, 36 of them stamped inside the window by their UUIDv7, 54.0 an hour, against
-// 663 live; 136 reads from 04:23:40Z to 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them
-// stamped inside it, 75.0 an hour, against 668 live. The population is live + 72 x rate: 4,551 to
-// 5,206 by the first reading and 6,068 to 6,447 by the second.
+// The population the cap must cover is not the live session count. The measurement below was
+// taken while nothing deleted a session's consumer when the session ended, the only delete being
+// inside SessionConsumers.RestartAtFloor (session_consumers.go), and the server removing a
+// consumer SessionConsumerInactiveThreshold after its last pull, which was then 72 hours. The
+// population was therefore every distinct session that pulled inside those 72 hours. It was read
+// twice on 2026-11-06, by sampling the listener's session list every 20 seconds and counting each
+// id that appeared in no earlier read, which needs no assumption about how long a session lives:
+// 238 reads from 01:53:37Z to 02:33:35Z gave 42 new ids, 63.1 an hour, 36 of them stamped inside
+// the window by their UUIDv7, 54.0 an hour, against 663 live; 136 reads from 04:23:40Z to
+// 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them stamped inside it, 75.0 an hour, against
+// 668 live. That population was live + 72 x rate: 4,551 to 5,206 by the first reading and 6,068
+// to 6,447 by the second.
+//
+// What bounds the population today is not that threshold but two deletes it only backs up
+// (SessionConsumerInactiveThreshold): a deregistration deletes the session's consumer
+// (cmd/listener/api.go) and the sweep deletes the consumer of every session the registry judges
+// gone, at most 256 a pass (cmd/listener/session_consumer_sweep.go), so the population is the
+// live sessions, plus the sessions that ended without deregistering, which keep their consumers
+// about the gone horizon plus one ENVOY_SESSION_REAP_INTERVAL plus one sweep interval after
+// their last registration - about 60 to 85 at the rates above - plus the consumers a hub still
+// holds from before the sweep existed.
 //
 // dispatch://INFRA-514's capacity gate asks for at least twice the larger of the stream's consumer
-// count and that population, so the gate's own number is 9,102 to 12,894 across the two readings.
-// 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times the population. The second
+// count and that measured population, so the gate's own number is 9,102 to 12,894 across the two
+// readings. 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times that population. The
 // reading sets it: at the fleet's growth between the two, a cap only 1.2 to 1.3 times the gate's
 // own number would need raising again within a release or two, and the cap costs nothing while it
 // is not reached, since the server allocates per live consumer. It costs what its consumers cost
@@ -528,13 +587,14 @@ func purgeLegacyRoleMessages(js nats.JetStreamContext) error {
 	return nil
 }
 
-// consumerFilterSubjects is subjects without the listener's kept lane, the list a consumer's
-// filter may carry: the stream's own list holds the kept prefix (streamCarriedSubjects) and no
-// consumer filter ever does, since a kept copy still carries its role topic and a consumer handed
-// one would deliver it as a role message, and a drain cursor is no envelope at all.
+// consumerFilterSubjects is subjects without the listener's own lanes
+// (listenerOwnStreamLanes), the list a consumer's filter may carry: the stream's own list holds
+// both prefixes (streamCarriedSubjects) and no consumer filter ever does.
 func consumerFilterSubjects(subjects []string) []string {
 	return slices.DeleteFunc(slices.Clone(subjects), func(subject string) bool {
-		return subjectsOverlap(subject, KeptTopicPrefix+">")
+		return slices.ContainsFunc(listenerOwnStreamLanes, func(lane string) bool {
+			return subjectsOverlap(subject, lane)
+		})
 	})
 }
 
