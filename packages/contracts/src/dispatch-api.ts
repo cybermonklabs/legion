@@ -5001,6 +5001,11 @@ export interface LegionBoardResponse {
   readonly columns: readonly LegionBoardColumn[];
   readonly settings: Readonly<Record<string, unknown>>;
   readonly setting_sources: Readonly<Record<string, LegionSettingSource>>;
+  /** Every issue of the project with Legion phase work, open or closed, by key: its hours by
+   *  phase (the board's column ids, with `awaiting_person` and `other`), counted as the metrics'
+   *  phase breakdown counts them. At most a minute old. The server always sends it; it is
+   *  optional so a board fixture without it still types. */
+  readonly phase_hours?: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly computed_at: string;
 }
 

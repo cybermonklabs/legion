@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -113,5 +114,51 @@ func TestAnIssuesTimelineAddsUpToWhatTheMetricsCountForIt(t *testing.T) {
 	}
 	if column := timeline.Columns["reviewing"]; column.ID != "reviewing" || column.Label != "Reviewing" {
 		t.Errorf("the reviewing phase is drawn as %+v, want the board's Reviewing column", column)
+	}
+}
+
+// TestTheBoardCarriesEachIssuesHoursByPhase: GET /api/v1/legion/board answers phase_hours for
+// every issue with Legion phase work, closed or open, and a closed issue's hours by phase are the
+// metrics' phase breakdown of it.
+func TestTheBoardCarriesEachIssuesHoursByPhase(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC().Truncate(time.Minute)
+	at := func(hoursAgo float64) time.Time { return now.Add(-time.Duration(hoursAgo * float64(time.Hour))) }
+	closed := seedLegionIssue(t, database, "INFRA", 1, "A closed one", "a", nil, "")
+	open := seedLegionIssue(t, database, "INFRA", 2, "An open one", "b", nil, "")
+	idle := seedLegionIssue(t, database, "INFRA", 3, "No Legion work", "c", nil, "")
+
+	seedLegionRoleEvent(t, database, closed, "s-impl", "implementer", closed, at(10))
+	for _, mark := range []struct {
+		value    string
+		hoursAgo float64
+	}{{`"implementing"`, 10}, {`"reviewing"`, 6}, {`"done"`, 2}} {
+		seedLegionObservation(t, database, "INFRA", closed, legion.FieldPhase, mark.value, at(mark.hoursAgo))
+	}
+	closeLegionIssue(t, database, closed, at(2))
+	seedLegionRoleEvent(t, database, open, "s-open", "implementer", open, at(3))
+	seedLegionObservation(t, database, "INFRA", open, legion.FieldPhase, `"implementing"`, at(3))
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project=INFRA", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET the board: status=%d body=%s", response.Code, response.Body.String())
+	}
+	board := decodeBody[legionBoardResponse](t, response)
+	if got := board.PhaseHours[closed]; got["implementing"] != 4 || got["reviewing"] != 4 {
+		t.Errorf("the closed issue's hours by phase are %v, want 4 implementing and 4 reviewing", got)
+	}
+	if got := board.PhaseHours[open]["implementing"]; got < 2.9 || got > 3.1 {
+		t.Errorf("the open issue has %g h implementing, want about 3 (to now)", got)
+	}
+	if _, held := board.PhaseHours[idle]; held {
+		t.Errorf("an issue with no Legion phase work has phase hours: %v", board.PhaseHours[idle])
+	}
+
+	query := url.Values{"project": {"INFRA"}, "from": {at(3).Format(time.RFC3339)}, "to": {now.Format(time.RFC3339)}}
+	report := decodeBody[metrics.Report](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/metrics?"+query.Encode(), nil, "alice"))
+	if len(report.PhaseBreakdown.Issues) != 1 || !maps.Equal(report.PhaseBreakdown.Issues[0].Phases, board.PhaseHours[closed]) {
+		t.Errorf("the metrics break %s down as %v, the board as %v", closed, report.PhaseBreakdown.Issues, board.PhaseHours[closed])
 	}
 }

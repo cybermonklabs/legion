@@ -269,7 +269,12 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	// Every issue the board names, so an event about one marks the view (dirtyIssueLocked); the
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
-	return legionBoardCompute(board, now), nil
+	body := legionBoardCompute(board, now)
+	// A live body carries the phase hours the route does, so a push never drops them.
+	if body.PhaseHours, err = h.server.legionPhaseHours(ctx, spec.project, now); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 // readPipelineView is a Pipeline section's read: the delivery settings and the runs, jobs and

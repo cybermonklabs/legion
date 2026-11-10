@@ -171,6 +171,20 @@ type Population struct {
 // include names issues whose trees the reads cover whether or not they finished in the window:
 // the issue timeline reads one issue, open or closed (ReadIssue).
 func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, include ...string) (*Population, error) {
+	return read(ctx, pool, github, project, from, to, func(p *Population) []string {
+		return p.scopeKeys(from, to, include...)
+	})
+}
+
+// ReadProject is the population of every issue of the project, open or closed, up to now: what
+// the per-issue phase hours of the board route read (PhaseHours).
+func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, now time.Time) (*Population, error) {
+	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
+		return p.Keys
+	})
+}
+
+func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, scope func(*Population) []string) (*Population, error) {
 	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}, reported: map[string]string{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
@@ -178,7 +192,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	if err := population.readFiled(ctx, pool, project, from, to); err != nil {
 		return nil, err
 	}
-	keys := population.scopeKeys(from, to, include...)
+	keys := scope(population)
 	// The eight reads below write disjoint fields — six take the keys above and write fields of
 	// those issues, the other two the project's reported set with its trees and the project's
 	// phase-work keys — so they run together rather than one after another, as the delivery
