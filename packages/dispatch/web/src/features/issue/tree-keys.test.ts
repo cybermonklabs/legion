@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
+import { treeRows } from "./tree-fold";
 import {
   decisionBehind,
   everythingOpened,
@@ -97,11 +98,38 @@ test("the last state of the cycle opens every branch of the tree", () => {
   expect(opened.branches.size).toBe(nodesInOrder(issue()).length);
 });
 
-test("a row is told from another by the node it holds and the parent it sits under", () => {
+test("a row is told from another by the path from the root down to it", () => {
   const one = node("spec#b-r1", "requirement");
-  expect(rowKeyOf({ kind: "node", level: 2, node: one, parent: "CORE-1" })).toBe(
+  expect(rowKeyOf({ kind: "node", level: 2, node: one, trail: ["CORE-1"] })).toBe(
     "CORE-1>spec#b-r1"
   );
-  expect(rowKeyOf({ kind: "node", level: 1, node: one })).toBe(">spec#b-r1");
-  expect(rowKeyOf({ held: 3, kind: "deeper", level: 4, of: one })).toBe("deeper:spec#b-r1");
+  expect(rowKeyOf({ kind: "node", level: 1, node: one, trail: [] })).toBe("spec#b-r1");
+  expect(
+    rowKeyOf({ held: 3, kind: "deeper", level: 4, of: one, trail: ["CORE-1", "spec#b-r2"] })
+  ).toBe("deeper:CORE-1>spec#b-r2>spec#b-r1");
+});
+
+// R9: a check that serves two requirements is one node built under both (`issue-tree.ts`), so
+// the rows below each copy draw the same nodes. Keyed by their direct parent those rows shared
+// one key: React warned, the focus, the body and the pin matched both copies at once, and the
+// tree had two rows carrying `tabIndex=0` instead of its one tab stop.
+test("a node drawn under two requirements gives every row below it a key of its own", () => {
+  const check = (): TreeNode =>
+    node("verification-md#b-c1", "check", [node("res1", "result")], { state: "passed" });
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [check()]),
+    node("spec#b-r2", "requirement", [check()]),
+  ]);
+
+  const open = treeRows(root, everythingOpened(root)).map(rowKeyOf);
+  expect(new Set(open).size).toBe(open.length);
+  expect(open).toContain("CORE-1>spec#b-r1>verification-md#b-c1>res1");
+  expect(open).toContain("CORE-1>spec#b-r2>verification-md#b-c1>res1");
+  // Folded as the page opens, each copy's branch below the drawn levels is its own row too.
+  const folded = treeRows(root).map(rowKeyOf);
+  expect(new Set(folded).size).toBe(folded.length);
+  expect(folded.filter((key) => key.startsWith("deeper:"))).toEqual([
+    "deeper:CORE-1>spec#b-r1>verification-md#b-c1",
+    "deeper:CORE-1>spec#b-r2>verification-md#b-c1",
+  ]);
 });

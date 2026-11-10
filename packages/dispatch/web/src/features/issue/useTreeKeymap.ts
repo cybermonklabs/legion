@@ -212,7 +212,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (row === undefined) return;
         tree.onReport("");
         if (tree.oneNodeAtATime) {
-          if (row.parent !== undefined) tree.onZoom(row.parent);
+          const parent = row.trail.at(-1);
+          if (parent !== undefined) tree.onZoom(parent);
           return;
         }
         if (row.expanded === true) {

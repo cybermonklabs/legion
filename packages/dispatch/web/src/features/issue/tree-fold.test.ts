@@ -140,6 +140,7 @@ test("a branch below the drawn levels is one row saying how many nodes it holds"
   // Opened in place, the branch is drawn where it stands.
   const opened = treeRows(deep, {
     branches: new Set(),
+    closed: new Set(),
     deeper: new Set(["verification-md#b-c1"]),
   });
   expect(idsOf(opened)).toContain("result-2");
@@ -158,9 +159,46 @@ test("a replaced decision folds to one line with a count, and is not deleted", (
   // The reader opens it by hand and it is all there.
   const opened = treeRows(root, {
     branches: new Set(["decisions-md#b-d1"]),
+    closed: new Set(),
     deeper: new Set(),
   });
   expect(idsOf(opened)).toContain("question");
+});
+
+// R1: the twisty says Fold and ArrowLeft folds, so every branch with children folds, including
+// the reasoning the fold draws of its own accord and the path to an open question the frontier
+// unfolds. A branch the reader cannot close is a branch they cannot read past.
+test("a branch the reader folds shut stays shut, whatever drew it open", () => {
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [node("verification-md#b-c1", "check")]),
+    node("doc-1", "document", [node("question", "ask", [], { question: true, state: "open" })]),
+  ]);
+  // Nothing folded by hand: the requirement's own reasoning is drawn, and so is the path down
+  // to the open question.
+  expect(idsOf(treeRows(root))).toEqual([
+    "CORE-1",
+    "spec#b-r1",
+    "verification-md#b-c1",
+    "doc-1",
+    "question",
+  ]);
+  const folded = treeRows(root, {
+    branches: new Set(),
+    closed: new Set(["spec#b-r1", "doc-1"]),
+    deeper: new Set(),
+  });
+  expect(idsOf(folded)).toEqual(["CORE-1", "spec#b-r1", "doc-1"]);
+  const requirement = rowOf(folded, "spec#b-r1");
+  expect(requirement?.kind === "node" ? requirement.expanded : undefined).toBe(false);
+  expect(requirement?.kind === "node" ? requirement.folded : undefined).toBe(1);
+  // Opened again by the same control, both branches are back.
+  const reopened = treeRows(root, {
+    branches: new Set(["spec#b-r1", "doc-1"]),
+    closed: new Set(),
+    deeper: new Set(),
+  });
+  expect(idsOf(reopened)).toContain("verification-md#b-c1");
+  expect(idsOf(reopened)).toContain("question");
 });
 
 test("the frontier holds every node above an open question and no question itself", () => {

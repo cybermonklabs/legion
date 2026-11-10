@@ -4,10 +4,14 @@ import type {
   Artifact,
   ArtifactBlock,
   BlockAttributeValue,
+  Comment,
   Decision,
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
+  IssueReferences,
+  Message,
+  MessageRead,
   RequirementCoverage,
 } from "../../api/types";
 import { buildIssueTree, FIRST_LINE_LIMIT, firstLineOf, type TreeNode } from "./issue-tree";
@@ -199,6 +203,59 @@ function depthOf(node: TreeNode): number {
   return 1 + Math.max(0, ...node.children.map(depthOf));
 }
 
+type ReferenceMember = NonNullable<IssueReferences["members"]>[number];
+
+/** One member of the references read: a document the issue reaches, named by the document that
+ *  cites it and the blocks of that document the link stands in (`?own=1`). */
+function member(cited: Artifact, via: Artifact, blocks: readonly string[]): ReferenceMember {
+  return {
+    artifact: cited,
+    depth: 1,
+    via: { id: via.id, kind: "artifact" },
+    via_blocks: [...blocks],
+  };
+}
+
+function comment(id: string, createdAt: string): Comment {
+  return {
+    anchor: null,
+    answers: null,
+    artifact_id: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body: `Comment ${id}.`,
+    created_at: createdAt,
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+function thread(id: string, createdAt: string): MessageRead {
+  const message: Message = {
+    author: { id: "bob", kind: "user" },
+    body: `Message ${id}.`,
+    broadcast_id: null,
+    created_at: createdAt,
+    deliveries: [],
+    id,
+    in_reply_to: null,
+    issue_key: KEY,
+    reply_block: null,
+    target: null,
+  };
+  return { message, replies: [] };
+}
+
 // R4: a check serves every requirement its `serves` names, edited under the first and
 // transcluded under the rest, and each placement names the other requirement it sits under.
 test("a check that serves two requirements is drawn under both", () => {
@@ -373,4 +430,113 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   // A space at the limit's own edge is a word boundary, and the line ends before it.
   const atTheEdge = `${"a".repeat(FIRST_LINE_LIMIT)} tail`;
   expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+});
+
+// R1, R16: a spec that cites the plan while the plan cites the spec is ordinary data, and the
+// references read answers each one via the other. Both documents are drawn, with every block
+// they hold: a ring hanging off nothing would be lost from the tree entirely.
+test("two documents that cite each other are both drawn, with what they hold", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const root = buildIssueTree({
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement"), block("q1", "ask")] },
+      { artifactId: plan.id, blocks: [block("t1", "plan_task")] },
+    ],
+    issue: issueDetails([spec, plan]),
+    references: {
+      members: [member(plan, spec, ["r1"]), member(spec, plan, ["t1"])],
+      truncated: false,
+    },
+  });
+
+  // The spec is the issue's first document, so the citation it holds stands and the one that
+  // would put it back inside the plan is the citation the ring is opened at.
+  expect(placementsOf(root, SPEC).map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "plan-md").map((one) => one.parent)).toEqual([blockNodeId(SPEC, "r1")]);
+  // Nothing the documents hold is lost with them: the question inside the spec is a row of the
+  // tree, which is what the fold opens the path to (R6).
+  expect(placementsOf(root, blockNodeId(SPEC, "q1")).map((one) => one.parent)).toEqual([SPEC]);
+  expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
+    "plan-md",
+  ]);
+});
+
+// R4: a `from` edge that points in a circle is the same case one level down, and `assemble`
+// answers it the same way: the first node of the ring comes home to the issue, so no node of
+// it is lost whatever the documents say.
+test("requirements whose `from` edges point in a circle are drawn under the issue", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first."), requirement("r2", "The second.")]),
+    documents: [
+      {
+        artifactId: spec.id,
+        blocks: [
+          block("r1", "requirement", { from: `dispatch://${KEY}/spec#b-r2` }),
+          block("r2", "requirement", { from: `dispatch://${KEY}/spec#b-r1` }),
+        ],
+      },
+    ],
+    issue: issueDetails([spec]),
+  });
+
+  expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, blockNodeId(SPEC, "r2")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "r1"),
+  ]);
+});
+
+// R16: a slug is unique inside one issue only, so a member is this issue's document by its
+// artifact id. Another issue's `plan-md` cited from the spec places nothing here, and it does
+// not stop the member that names this issue's own `plan-md` either.
+test("a document of another issue with the same slug places nothing", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const foreign: Artifact = {
+    ...artifact("artifact-other-plan", "plan-md", "plan.md"),
+    issue_key: "OTHER-1",
+    project: "OTHER",
+  };
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: spec.id,
+        // Spans of their own, since the row a citation is drawn on is the listed block whose
+        // span covers the citing one's (`citingRow`).
+        blocks: [
+          { ...block("r1", "requirement"), from: 0, to: 10 },
+          { ...block("r2", "requirement"), from: 10, to: 20 },
+        ],
+      },
+      { artifactId: plan.id, blocks: [] },
+    ],
+    issue: issueDetails([spec, plan]),
+    references: {
+      // The foreign document is answered first, as the read orders its members by depth.
+      members: [member(foreign, spec, ["r1"]), member(plan, spec, ["r2"])],
+      truncated: false,
+    },
+  });
+
+  expect(placementsOf(root, "plan-md").map((one) => one.parent)).toEqual([blockNodeId(SPEC, "r2")]);
+  expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.children).toEqual([]);
+});
+
+// R1: the conversation is one order. The comments and the messages are two reads, each
+// counting from zero, so a message sent today drawn among yesterday's comments would be the
+// reader reading the conversation out of order.
+test("the conversation's turns are drawn by the time each was made", () => {
+  const root = buildIssueTree({
+    comments: [
+      comment("c0", "2026-11-04T09:00:00Z"),
+      comment("c1", "2026-11-04T10:00:00Z"),
+      comment("c2", "2026-11-04T11:00:00Z"),
+    ],
+    issue: issueDetails([]),
+    // An id that sorts before every comment's, so a tie broken by id would draw it first.
+    messages: [thread("a-message", "2026-11-05T09:00:00Z")],
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2", "a-message"]);
 });

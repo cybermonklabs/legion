@@ -8,11 +8,14 @@ import type { DrawnRow, OpenedBranches } from "./tree-fold";
  * a unit test answers the same question the page does.
  */
 
-/** What tells two rows apart: a node drawn under two requirements is two rows, and the focus,
- *  the body and the pin belong to the row rather than to the node they are on. */
+/** What tells two rows apart: the path from the root down to the node the row draws. A node
+ *  drawn under two requirements is two rows, and so is every row below each of them, which is
+ *  why the whole path and not the direct parent is the key: the focus, the body, the pin and
+ *  the tree's one tab stop belong to the row rather than to the node they are on, and two rows
+ *  sharing a key would move together. */
 export function rowKeyOf(row: DrawnRow): string {
-  if (row.kind === "deeper") return `deeper:${row.of.id}`;
-  return `${row.parent ?? ""}>${row.node.id}`;
+  const path = [...row.trail, row.kind === "deeper" ? row.of.id : row.node.id].join(">");
+  return row.kind === "deeper" ? `deeper:${path}` : path;
 }
 
 /** Every node of `root` in reading order, the root first: the order the rows are drawn in, and
@@ -67,8 +70,10 @@ export function decisionBehind(root: TreeNode, id: string): TreeNode | undefined
 }
 
 /** Every branch of `root` opened, which is the whole tree drawn: the last state of the key that
- *  cycles how much of it is on screen. */
+ *  cycles how much of it is on screen. Nothing is folded shut in it, since this state is the
+ *  whole tree; the reader's own folds are held apart from it and come back when the cycle
+ *  does. */
 export function everythingOpened(root: TreeNode): OpenedBranches {
   const ids = nodesInOrder(root).map((node) => node.id);
-  return { branches: new Set(ids), deeper: new Set(ids) };
+  return { branches: new Set(ids), closed: new Set(), deeper: new Set(ids) };
 }

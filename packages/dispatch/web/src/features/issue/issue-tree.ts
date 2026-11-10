@@ -233,7 +233,8 @@ export function treeReferences(root: TreeNode): string[] {
  * A parent no draft answers to is no placement at all: a document cited by a paragraph, which
  * is the document's own text and no node, and a reply to a turn the page never read. Rather
  * than dropping the node with its missing parent, it sits under the issue, which is where
- * every node whose parent is absent goes (R4).
+ * every node whose parent is absent goes (R4). A draft the issue cannot reach is the same case
+ * one step further out, and `bringHome` answers it the same way.
  */
 function assemble(
   issue: IssueDetails,
@@ -250,9 +251,11 @@ function assemble(
   for (const draft of drafts) {
     references.set(draft.id, draft.reference ?? draft.id);
     const named = draft.parents.filter((parent) => known.has(parent));
-    const placed = named.length === 0 ? [key] : named;
-    placements.set(draft.id, placed);
-    for (const parent of placed) {
+    placements.set(draft.id, named.length === 0 ? [key] : named);
+  }
+  bringHome(key, drafts, placements);
+  for (const draft of drafts) {
+    for (const parent of placements.get(draft.id) ?? []) {
       byParent.set(parent, [...(byParent.get(parent) ?? []), draft]);
     }
   }
@@ -303,4 +306,55 @@ function assemble(
     type: "issue",
     waiting: false,
   };
+}
+
+/**
+ * Puts back under the issue every draft the walk from the issue cannot reach, so that nothing
+ * the reads hold is lost (R1): the tree is built downwards from the issue, so a ring of
+ * placements nothing above it holds would be drawn nowhere, and every node inside it with it.
+ * Two documents of the issue that cite each other make one - the references read answers each
+ * one via the other, so each is placed under a block of the other (`tree-drafts.ts`'s
+ * `citations`) - and so does a `from` edge that points in a circle.
+ *
+ * The ring is opened at one draft and no more: the first of the drafts the issue cannot reach,
+ * in the order the tree draws siblings in - its own order, then its id - comes home to the
+ * issue, and whatever that lets the issue reach keeps the place its citation gave it. So the
+ * spec, which is the first document of the issue, is drawn under the issue and the plan that
+ * cites it stays under the block of the spec that cites the plan, and the same reads always
+ * draw the same tree.
+ */
+function bringHome(
+  key: string,
+  drafts: readonly Draft[],
+  placements: Map<string, readonly string[]>
+): void {
+  const below = new Map<string, string[]>();
+  for (const draft of drafts) {
+    for (const parent of placements.get(draft.id) ?? []) {
+      below.set(parent, [...(below.get(parent) ?? []), draft.id]);
+    }
+  }
+  const reached = new Set<string>([key]);
+  const walk = (from: string): void => {
+    const queue = [from];
+    for (;;) {
+      const id = queue.pop();
+      if (id === undefined) return;
+      for (const child of below.get(id) ?? []) {
+        if (reached.has(child)) continue;
+        reached.add(child);
+        queue.push(child);
+      }
+    }
+  };
+  walk(key);
+  const ordered = [...drafts].sort(
+    (one, other) => one.order - other.order || one.id.localeCompare(other.id)
+  );
+  for (const draft of ordered) {
+    if (reached.has(draft.id)) continue;
+    placements.set(draft.id, [key]);
+    reached.add(draft.id);
+    walk(draft.id);
+  }
 }

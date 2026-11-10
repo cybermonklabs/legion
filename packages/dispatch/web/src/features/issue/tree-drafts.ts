@@ -1,6 +1,7 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
 import type { Actor, ArtifactBlock, Ask, Decision } from "../../api/types";
+import { compareTimestamps } from "../../lib/timestamps";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { checkFacts, resultFacts } from "./check-facts";
 import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact } from "./issue-tree";
@@ -169,17 +170,20 @@ interface Citation {
  *
  * A member whose via is not a document of this issue, or whose citer the page holds no blocks
  * for, places nothing: the citation is drawn as a node under a block, and there is no block to
- * draw it under.
+ * draw it under. Neither does a citation that would place a document inside itself, which
+ * `openRings` takes out.
  */
 function citations(reads: IssueTreeReads, context: TreeContext): Map<string, Citation> {
   const found = new Map<string, Citation>();
   const listings = new Map<string, readonly ArtifactBlock[]>(
     (reads.documents ?? []).map((document) => [document.artifactId, document.blocks])
   );
-  const ownSlugs = new Set((reads.issue.artifacts ?? []).map((artifact) => artifact.slug));
   for (const member of reads.references?.members ?? []) {
-    const slug = member.artifact.slug;
-    if (!ownSlugs.has(slug) || found.has(slug)) continue;
+    // The cited artifact is this issue's by its id and never by its slug: a slug is unique
+    // inside one issue only (`unique (issue_key, slug)`), so another issue's `plan-md` read as
+    // this issue's would draw this issue's `plan-md` under the block citing that one.
+    const slug = context.slugOf(member.artifact.id);
+    if (slug === undefined || found.has(slug)) continue;
     if (member.via.kind !== "artifact") continue;
     const document = context.slugOf(member.via.id);
     const cites = member.via_blocks ?? [];
@@ -188,7 +192,49 @@ function citations(reads: IssueTreeReads, context: TreeContext): Map<string, Cit
     if (id === undefined) continue;
     found.set(slug, { document, id: blockNodeId(document, id) });
   }
+  openRings(found, documentRanks(reads));
   return found;
+}
+
+/** Where each document of the issue stands among its own: the spec first and the rest in the
+ *  order the issue carries them, which is the order their rows are drawn in (`ROOT_ORDER`). A
+ *  slug the issue does not carry ranks last. */
+function documentRanks(reads: IssueTreeReads): ReadonlyMap<string, number> {
+  const ranks = new Map<string, number>();
+  (reads.issue.artifacts ?? []).forEach((artifact, index) => {
+    ranks.set(artifact.slug, artifact.primary ? 0 : index + 1);
+  });
+  return ranks;
+}
+
+/**
+ * Takes out every citation that would place a document inside a document it already holds. A
+ * spec that cites the plan while the plan cites the spec is ordinary data, and the server
+ * answers each one via the other (`?own=1`), so each would be placed under the other and
+ * neither would be drawn at all: the tree is walked downwards from the issue, and a ring
+ * hangs off nothing.
+ *
+ * The ring is opened at the citation whose citing document comes last among the issue's own,
+ * so the spec keeps the documents it cites under it and the document citing the spec back
+ * leaves the spec where it was, under the issue. The decision is made in that same order and
+ * never in the order the references read answered in, so the same documents always draw the
+ * same tree.
+ */
+function openRings(found: Map<string, Citation>, ranks: ReadonlyMap<string, number>): void {
+  const rank = (slug: string): number => ranks.get(slug) ?? Number.MAX_SAFE_INTEGER;
+  const holder = new Map<string, string>();
+  const decided = [...found].sort(
+    ([slug, one], [otherSlug, other]) =>
+      rank(one.document) - rank(other.document) ||
+      rank(slug) - rank(otherSlug) ||
+      slug.localeCompare(otherSlug)
+  );
+  for (const [slug, citation] of decided) {
+    let above: string | undefined = citation.document;
+    while (above !== undefined && above !== slug) above = holder.get(above);
+    if (above === slug) found.delete(slug);
+    else holder.set(slug, citation.document);
+  }
 }
 
 /**
@@ -252,9 +298,9 @@ function blank(id: string, type: NodeType, order: number): Draft {
 
 /**
  * The documents and images the issue carries. A document a block cites sits under that block
- * (R16) - the block `citations` found, and the one the references read names for a document of
- * another issue; one nothing cites sits under the issue, which is where a node whose spine
- * parent is absent goes.
+ * (R16) - the block `citations` found, reading the references read by the cited artifact's id;
+ * one nothing cites sits under the issue, which is where a node whose spine parent is absent
+ * goes.
  */
 function addDocuments(
   drafts: Map<string, Draft>,
@@ -262,17 +308,9 @@ function addDocuments(
   context: TreeContext,
   cited: ReadonlyMap<string, Citation>
 ): void {
-  const citedBy = new Map<string, string>();
-  for (const member of reads.references?.members ?? []) {
-    const block = member.via_blocks?.[0];
-    const document = context.slugOf(member.via.id);
-    if (block === undefined || document === undefined || member.via.kind !== "artifact") continue;
-    citedBy.set(member.artifact.slug, blockNodeId(document, block));
-  }
-  for (const [slug, citation] of cited) citedBy.set(slug, citation.id);
   (reads.issue.artifacts ?? []).forEach((artifact, index) => {
     if (artifact.kind !== "doc" && artifact.kind !== "image") return;
-    const cites = citedBy.get(artifact.slug);
+    const cites = cited.get(artifact.slug);
     const draft = add(
       drafts,
       blank(
@@ -282,7 +320,7 @@ function addDocuments(
       )
     );
     draft.author = artifact.created_by;
-    draft.parents = cites === undefined ? [] : [cites];
+    draft.parents = cites === undefined ? [] : [cites.id];
     draft.reference = buildDispatchReference({
       key: context.key,
       kind: "artifact",
@@ -378,11 +416,30 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
   }
 }
 
+/** One turn of the conversation as the tree holds it: a comment and a message are the same row
+ *  here, told apart by the kind they are drawn as and by the address they carry. */
+interface Turn {
+  /** When it was made, which is the order the conversation is read in. */
+  readonly at: string;
+  readonly author: Actor;
+  readonly body: string;
+  readonly id: string;
+  readonly kind: "comment" | "message";
+  /** The turn it answers, `null` for a root turn. */
+  readonly replyTo: string | null;
+}
+
 /**
  * The conversation's own turns: each comment and each message a node of this tree, a root turn
  * under the issue and a reply under the turn it answers (R1, R19). A thread head a page never
  * read is no node, so a reply whose parent is missing falls back to the issue, as every node
  * whose parent is absent does (`assemble`).
+ *
+ * One conversation is one order, so the turns are drawn by the time they were made and not by
+ * their place in the read that carried them: the comments and the messages are two lists, each
+ * counting from zero, and a message sent today drawn among yesterday's comments is the reader
+ * reading the conversation out of order. Two turns made in the same instant are drawn by id, so
+ * the same reads always draw the same tree.
  *
  * The page draws these rows *and* the panel draws the same conversation (R12): the tree is the
  * issue's one ordered body, and the panel is where a reader answers. An address naming a
@@ -390,31 +447,33 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
  * address of a row of this tree.
  */
 function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  (reads.comments ?? []).forEach((comment, index) => {
-    const draft = add(drafts, blank(comment.id, "comment", ROOT_ORDER.turn + index));
-    draft.author = comment.author;
-    draft.parents = comment.reply_to === null ? [] : [comment.reply_to];
-    draft.reference = buildDispatchReference({
+  const turns: Turn[] = [
+    ...(reads.comments ?? []).map((comment) => ({
+      at: comment.created_at,
+      author: comment.author,
+      body: comment.body,
       id: comment.id,
-      key: context.key,
-      kind: "comment",
-    });
-    draft.text = comment.body;
-  });
-  const messages = (reads.messages ?? []).flatMap((thread) => [
-    thread.message,
-    ...(thread.replies ?? []),
-  ]);
-  messages.forEach((message, index) => {
-    const draft = add(drafts, blank(message.id, "message", ROOT_ORDER.turn + index));
-    draft.author = message.author;
-    draft.parents = message.in_reply_to === null ? [] : [message.in_reply_to];
-    draft.reference = buildDispatchReference({
-      id: message.id,
-      key: context.key,
-      kind: "message",
-    });
-    draft.text = message.body;
+      kind: "comment" as const,
+      replyTo: comment.reply_to,
+    })),
+    ...(reads.messages ?? [])
+      .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
+      .map((message) => ({
+        at: message.created_at,
+        author: message.author,
+        body: message.body,
+        id: message.id,
+        kind: "message" as const,
+        replyTo: message.in_reply_to,
+      })),
+  ];
+  turns.sort((one, other) => compareTimestamps(one.at, other.at) || one.id.localeCompare(other.id));
+  turns.forEach((turn, index) => {
+    const draft = add(drafts, blank(turn.id, turn.kind, ROOT_ORDER.turn + index));
+    draft.author = turn.author;
+    draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
+    draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
+    draft.text = turn.body;
   });
 }
 

@@ -110,13 +110,18 @@ export function IssueTree({
 
   const target = reveal?.at(-1);
   // The address's own node is unfolded to whatever the reader has opened by hand, at every
-  // depth: a `#b-` fragment names a block of a document the page opens folded.
+  // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
+  // that path the reader folded shut is opened again, since the row the address names is
+  // drawn nowhere while anything above it is closed.
   const path = reveal ?? [];
   const shown: OpenedBranches =
     path.length === 0
       ? opened
       : {
           branches: new Set([...opened.branches, ...path.map((above) => above.id)]),
+          closed: new Set(
+            [...opened.closed].filter((id) => !path.some((above) => above.id === id))
+          ),
           deeper: new Set([...opened.deeper, ...path.map((above) => above.id)]),
         };
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
@@ -167,16 +172,30 @@ export function IssueTree({
     },
     [editing, setFocusedNode]
   );
+  // What the twisty and the arrow keys do to one branch. Folding a branch is held as its own
+  // set and not as the absence of an opened one: the fold draws the reasoning and the path to
+  // an open question of its own accord, so a reader folding one of those shut has nothing to
+  // delete and their Fold would do nothing (`tree-fold.ts`'s `closed`).
   const unfold = useCallback((id: string, open: boolean) => {
     setOpened((held) => {
       const branches = new Set(held.branches);
-      if (open) branches.add(id);
-      else branches.delete(id);
-      return { branches, deeper: held.deeper };
+      const closed = new Set(held.closed);
+      if (open) {
+        branches.add(id);
+        closed.delete(id);
+      } else {
+        branches.delete(id);
+        closed.add(id);
+      }
+      return { branches, closed, deeper: held.deeper };
     });
   }, []);
   const openDeeper = useCallback((id: string) => {
-    setOpened((held) => ({ branches: held.branches, deeper: new Set(held.deeper).add(id) }));
+    setOpened((held) => ({
+      branches: held.branches,
+      closed: held.closed,
+      deeper: new Set(held.deeper).add(id),
+    }));
   }, []);
   const pin = useCallback((row: string) => {
     setPinned((held) => {
@@ -193,6 +212,7 @@ export function IssueTree({
       const above = (pathTo(root, id) ?? []).slice(0, -1).map((node) => node.id);
       setOpened((held) => ({
         branches: new Set([...held.branches, ...above]),
+        closed: new Set([...held.closed].filter((one) => !above.includes(one))),
         deeper: new Set([...held.deeper, ...above]),
       }));
       setZoom((held) =>

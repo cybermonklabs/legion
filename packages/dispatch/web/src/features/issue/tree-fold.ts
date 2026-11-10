@@ -33,11 +33,16 @@ export const DRAWN_LEVELS = 3;
  *  fold to one row with a count, and everything else is drawn. */
 const FOLDED_KINDS: readonly string[] = ["child_issue", "comment", "document", "image", "message"];
 
-/** What the reader has opened by hand: the branches they unfolded, and the deeper branches they
- *  opened in place. */
+/** What the reader has done to the fold by hand: the branches they unfolded, the branches they
+ *  folded shut, and the deeper branches they opened in place. */
 export interface OpenedBranches {
   /** The nodes whose children the reader unfolded. */
   readonly branches: ReadonlySet<string>;
+  /** The nodes whose children the reader folded shut. A branch the fold draws of its own
+   *  accord - the reasoning, and the path to an open question - is drawn until the reader
+   *  closes it, and this is what says they did: without it a reader could open a branch and
+   *  never close it again, and the Fold control on it would do nothing. */
+  readonly closed: ReadonlySet<string>;
   /** The nodes whose branch below `DRAWN_LEVELS` the reader opened in place. */
   readonly deeper: ReadonlySet<string>;
 }
@@ -54,8 +59,10 @@ export interface TreeRow {
   readonly folded?: number;
   readonly level: number;
   readonly node: TreeNode;
-  /** The node this row sits under; undefined for the root. */
-  readonly parent?: string;
+  /** The ids of the nodes this row sits under, the outermost first and its own parent last;
+   *  empty for the root. One node is drawn under two parents (R23), so this is what tells its
+   *  rows apart, down to the rows below them (`rowKeyOf`). */
+  readonly trail: readonly string[];
 }
 
 /** One row standing for a branch below the drawn levels, which opens it in place. */
@@ -65,6 +72,8 @@ export interface DeeperRow {
   readonly level: number;
   /** The node whose branch it stands for. */
   readonly of: TreeNode;
+  /** The ids of the nodes that node sits under, as a `TreeRow`'s own trail. */
+  readonly trail: readonly string[];
 }
 
 /** Every row the tree draws, in reading order: a node's own row, or the one row a branch below
@@ -73,8 +82,12 @@ export type DrawnRow =
   | ({ readonly kind: "node" } & TreeRow)
   | ({ readonly kind: "deeper" } & DeeperRow);
 
-/** Nothing opened by hand, which is how the page opens. */
-export const NOTHING_OPENED: OpenedBranches = { branches: new Set(), deeper: new Set() };
+/** Nothing opened or folded by hand, which is how the page opens. */
+export const NOTHING_OPENED: OpenedBranches = {
+  branches: new Set(),
+  closed: new Set(),
+  deeper: new Set(),
+};
 
 /**
  * The ids of every node above an open question that waits on the reader: the path the fold
@@ -98,21 +111,24 @@ export function frontier(root: TreeNode): ReadonlySet<string> {
  * Every row the tree draws over `root`, in reading order. The root is always unfolded, because
  * an issue drawn as one folded row would say nothing at all; a branch below it is unfolded when
  * the frontier runs through it, when the reader opened it, or when it is the reasoning rather
- * than a set the reader opens.
+ * than a set the reader opens - and folded shut, whichever of those holds, once the reader has
+ * folded it by hand, because a branch a reader cannot close is a branch they cannot read past.
  */
 export function treeRows(root: TreeNode, opened: OpenedBranches = NOTHING_OPENED): DrawnRow[] {
   const path = frontier(root);
   const rows: DrawnRow[] = [];
-  const walk = (node: TreeNode, level: number, parent: string | undefined): void => {
+  const walk = (node: TreeNode, level: number, trail: readonly string[]): void => {
     const holds = node.children.length > 0;
     // A replaced decision's branch folds to the one line that settled it and opens by key: the
     // frontier does not open it, and nothing deletes it (R1).
     const foldsShut = node.replaced || FOLDED_KINDS.includes(node.type);
     // The reasoning is drawn and a set the reader opens is folded; how deep the drawn levels
-    // reach is the rule below, not this one.
+    // reach is the rule below, not this one. The reader's own hand outranks both: what they
+    // folded stays shut until they open it again.
     const unfolded =
       level === 1 ||
       (holds &&
+        !opened.closed.has(node.id) &&
         (opened.branches.has(node.id) || (!node.replaced && path.has(node.id)) || !foldsShut));
     // Past the drawn levels the branch is one row of its own, unless the reader opened it in
     // place or the frontier runs through it. Either way the node's children are drawn as no
@@ -129,16 +145,17 @@ export function treeRows(root: TreeNode, opened: OpenedBranches = NOTHING_OPENED
       kind: "node",
       level,
       node,
-      ...(parent === undefined ? {} : { parent }),
+      trail,
     });
     if (!unfolded || !holds) return;
     if (toOneLine) {
-      rows.push({ held: node.held, kind: "deeper", level: level + 1, of: node });
+      rows.push({ held: node.held, kind: "deeper", level: level + 1, of: node, trail });
       return;
     }
-    for (const child of node.children) walk(child, level + 1, node.id);
+    const below = [...trail, node.id];
+    for (const child of node.children) walk(child, level + 1, below);
   };
-  walk(root, 1, undefined);
+  walk(root, 1, []);
   return rows;
 }
 
@@ -182,15 +199,19 @@ export function zoomedRows(
     const at = trail.findIndex((one) => one.id === child.id);
     below.push(...(at === -1 ? [child] : trail.slice(at)));
   }
+  // The path down to the node the tree is zoomed on, which its rows are told apart by even
+  // though the breadcrumb draws it rather than a row apiece.
+  const path = above.slice(0, -1).map((one) => one.id);
   const rows: DrawnRow[] = [
     {
       ...(node.children.length > 0 ? { expanded: true } : {}),
       kind: "node",
       level: 1,
       node,
-      ...(above.length < 2 ? {} : { parent: above[above.length - 2]?.id ?? root.id }),
+      trail: path,
     },
   ];
+  const under = [...path, node.id];
   for (const [index, child] of below.entries()) {
     // Its own twisty says "open" exactly where the trail carries its next node into the row
     // under it, and "closed", with a count, wherever its branch is a zoom away.
@@ -205,7 +226,7 @@ export function zoomedRows(
       kind: "node",
       level: 2,
       node: child,
-      parent: node.id,
+      trail: under,
     });
   }
   return rows;
