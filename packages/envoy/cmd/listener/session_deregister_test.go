@@ -335,6 +335,11 @@ func TestTheConsumerDeleteReadsTheSessionBucketsLeader(t *testing.T) {
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
 		"delivery":{"consumer":true,"epoch":"e"}}`)
 	rig.requireConsumer(t, sessionID)
+	// The registry's watcher is retired before its bucket handle is swapped, as every other
+	// caller of swapSessionBucket retires it: that handle is the watcher's own field, and a
+	// watcher still delivering records reads it while the swap writes it. Nothing below needs
+	// the cache to follow the bucket - both reads here go to the bucket itself.
+	rig.harness.sessions.StopWatch()
 	directGets := &atomic.Int64{}
 	swapSessionBucket(t, rig.harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
 		return laggingFollowerBucket{KeyValue: kv, gets: directGets}

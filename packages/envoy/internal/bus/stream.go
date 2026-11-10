@@ -218,10 +218,11 @@ func ListenerOwnLanes() []string {
 }
 
 // ListenerOwnLaneOf is the lane of the listener's own that topic lies under, spelled as
-// ListenerOwnLanes spells it, and "" for a topic under none: the name a caller that refuses such
-// a topic puts in its refusal, so a bearer reads which lane it reached. Whether a topic is one of
-// the listener's own is this one judgement, which ListenerOwnLane only reports as a yes or a no,
-// so the two can never disagree.
+// ListenerOwnLanes spells it, and "" for a topic under none. It is the one test a caller makes
+// of such a topic, and the name it puts in a refusal: the publish route refuses one, since a
+// session writing a drain cursor or a resume floor would take over a role's lane or move
+// another session's delivery (cmd/listener/api.go). So a lane added to listenerOwnStreamLanes
+// is covered wherever the question is asked, and no caller lists a lane of its own.
 func ListenerOwnLaneOf(topic string) string {
 	for _, lane := range listenerOwnStreamLanes {
 		if SubjectContains(lane, topic) {
@@ -235,17 +236,6 @@ func ListenerOwnLaneOf(topic string) string {
 // topic of that lane begins with: the pattern without its trailing `>`.
 func listenerOwnLanePrefix(lane string) string {
 	return strings.TrimSuffix(lane, ">")
-}
-
-// ListenerOwnLane reports whether topic lies under one of the listener's own lanes
-// (listenerOwnStreamLanes): every subject topic matches is inside the kept lane or the resume
-// lane, under NATS wildcard rules (SubjectContains). It is the one test a caller makes of such a
-// topic - the publish route refuses one, since a session writing a drain cursor or a resume
-// floor would take over a role's lane or move another session's delivery (cmd/listener/api.go) -
-// so a lane added to that list is covered wherever it is asked, and no caller lists a lane of
-// its own. The lane itself, for a refusal that names it, is ListenerOwnLaneOf.
-func ListenerOwnLane(topic string) bool {
-	return ListenerOwnLaneOf(topic) != ""
 }
 
 // streamCarriedSubjects is every subject the stream itself carries: the notification subjects

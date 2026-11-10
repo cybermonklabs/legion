@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -172,11 +173,15 @@ type SessionConsumers struct {
 // dials a replacement for a connection nats.go gave up on. A pull (Pull) started on a connection
 // that was replaced ends with an error, and its caller pulls again.
 //
-// Every consumer this handle creates or updates carries the inactive threshold options name
-// (WithInactiveThreshold), and SessionConsumerInactiveThreshold where they name none: it is read
-// once, here, so no consumer is created before the deployment's threshold is in hand and nothing
-// writes that field while a create reads it.
-func ConnectSessionConsumers(urls []string, options ...ConnectOption) (*SessionConsumers, error) {
+// Every consumer this handle creates or updates carries inactiveThreshold, and
+// SessionConsumerInactiveThreshold when that is zero or negative: the listener passes the
+// threshold its own session windows derive (InactiveThresholdFor), so a deployment whose session
+// records outlive the default windows keeps each consumer until its own sweep can delete it and
+// record the resume floor. It is a parameter rather than a connect option because it is this
+// constructor's setting alone, where a ConnectOption is every program's; taking it here means no
+// consumer is created before the deployment's threshold is in hand, and nothing writes that
+// field while a create reads it.
+func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {
 		return nil, err
@@ -184,7 +189,7 @@ func ConnectSessionConsumers(urls []string, options ...ConnectOption) (*SessionC
 	return &SessionConsumers{
 		client:            client,
 		ackWait:           SessionConsumerAckWait,
-		inactiveThreshold: parseConnectOptions(options).inactiveThreshold,
+		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
 	}, nil

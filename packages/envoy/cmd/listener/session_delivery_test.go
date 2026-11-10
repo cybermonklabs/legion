@@ -50,13 +50,13 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
 	// deployment with these windows would give it.
 	delivery := connectSessionDelivery([]string{url},
-		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval, harness.config.logger),
+		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
 		harness.config.logger)
 	t.Cleanup(delivery.close)
 	if delivery.consumers == nil {
 		t.Fatal("the session-consumer connection did not open")
 	}
-	observer, err := bus.ConnectSessionConsumers([]string{url})
+	observer, err := bus.ConnectSessionConsumers([]string{url}, 0)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
 
 	// The derivation the rig's connection was opened with, read from the same windows and the
 	// same two intervals a deployment that sets neither runs.
-	threshold := inactiveThresholdFor(rig.harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval, rig.harness.config.logger)
+	threshold := inactiveThresholdFor(rig.harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval)
 
 	if bound := bucketAge + defaultSessionReapInterval + defaultSessionConsumerSweepInterval; threshold <= bound {
 		t.Fatalf("the inactive threshold is %s, want it above this deployment's sweep bound %s: a record kept %s, the reaper's pass %s, the sweep's pass %s",

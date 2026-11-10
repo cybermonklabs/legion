@@ -999,9 +999,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// which is where that session's consumer is created again, so one publishing there
 		// would choose where another session's delivery resumes and make it miss every message
 		// stored before that floor or read again what it has read.
-		if bus.ListenerOwnLane(request.Topic) {
+		if lane := bus.ListenerOwnLaneOf(request.Topic); lane != "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-				"cannot publish to "+bus.ListenerOwnLaneOf(request.Topic)+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
+				"cannot publish to "+lane+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
 			return
 		}
 		message, field, bodyExpectsReply := validateMessageBody(request.messageBody)

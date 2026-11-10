@@ -42,7 +42,6 @@ type connectOpts struct {
 	streamMaxBytes              int64
 	keepInterval                time.Duration
 	keptBuckets                 []string
-	inactiveThreshold           time.Duration
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
 	environment                 func(string) (string, bool)
@@ -64,7 +63,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, inactiveThreshold: SessionConsumerInactiveThreshold, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv}
+	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -134,24 +133,6 @@ func WithStreamMaxBytes(n int64) ConnectOption {
 // until the program creates it.
 func WithKeptBuckets(buckets ...string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.keptBuckets = buckets })
-}
-
-// WithInactiveThreshold sets the inactive threshold every session consumer created or updated on
-// the connection carries (ConnectSessionConsumers, SessionConsumers.applySettings), in place of
-// SessionConsumerInactiveThreshold: the listener passes the threshold its own session windows
-// derive (InactiveThresholdFor), so a deployment whose session records outlive the default
-// windows keeps each consumer until its own sweep can delete it and record the resume floor.
-// A d that is zero or negative leaves the constant's default standing, since no deployment turns
-// the server's backstop off and a program that derives nothing keeps the hour. It is given at
-// construction rather than set afterwards, so no consumer can be created before the threshold a
-// deployment runs with is in hand. Only ConnectSessionConsumers reads it; another client takes
-// it and creates no consumer to carry it.
-func WithInactiveThreshold(d time.Duration) ConnectOption {
-	return clientOption(func(o *connectOpts) {
-		if d > 0 {
-			o.inactiveThreshold = d
-		}
-	})
 }
 
 // WithEnvironment names where a connect reads ENVOY_ALLOW_REMOTE_NATS (AllowRemoteEnvVar),

@@ -163,18 +163,23 @@ type sessionDelivery struct {
 }
 
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
-// urls, with inactiveThreshold the threshold every consumer created on it carries
-// (bus.WithInactiveThreshold): it is given here, at the connection, because the threshold must
+// urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
+// here, at the connection, because the threshold must
 // be in hand before the first consumer is created, and this is the one place every one of them
 // comes from. main derives it from the deployment's own windows (inactiveThresholdFor). A
 // connection that fails is logged once and leaves the listener serving every registration on
 // the core path, as a listener of an earlier release does.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, logger *logging.Logger) *sessionDelivery {
-	consumers, err := bus.ConnectSessionConsumers(urls, bus.WithInactiveThreshold(inactiveThreshold))
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold)
 	if err != nil {
 		logger.Error("session consumer connection failed; every session stays on core delivery", slog.String("error", err.Error()))
 		return &sessionDelivery{logger: logger, now: time.Now}
 	}
+	// Logged here rather than where it was derived: this is where the first consumer that
+	// carries it becomes possible, so a listener that reaches this line has consumers to carry
+	// it and one whose connection failed logs no threshold at all.
+	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
+		slog.String("inactive_threshold", inactiveThreshold.String()))
 	return &sessionDelivery{consumers: consumers, logger: logger, now: time.Now}
 }
 

@@ -847,18 +847,10 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 //
 // The record's life is the longer of the gone horizon and the bucket's maximum age, since
 // either can be what drops the record: the reaper deletes it a pass after the horizon, and the
-// bucket itself drops it at that age. The value and the three windows it came from are logged
-// once at start, so an operator can read why their deployment carries the threshold it does.
-func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweepInterval time.Duration, logger *logging.Logger) time.Duration {
+// bucket itself drops it at that age.
+func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweepInterval time.Duration) time.Duration {
 	_, goneHorizon := sessions.Windows()
-	recordLife := max(goneHorizon, sessions.TTL())
-	threshold := bus.InactiveThresholdFor(recordLife, reapInterval, sweepInterval)
-	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
-		slog.String("inactive_threshold", threshold.String()),
-		slog.String("record_life", recordLife.String()),
-		slog.String("reap_interval", reapInterval.String()),
-		slog.String("sweep_interval", sweepInterval.String()))
-	return threshold
+	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
 }
 
 func main() {
@@ -1283,7 +1275,7 @@ func main() {
 	// records for longer than the default windows would otherwise have the server remove a
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.WithInactiveThreshold).
-	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval, logger)
+	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
 	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
 	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
 	// this task holds its machine's durable binding (below). Without its reply inbox no frame could
