@@ -1605,59 +1605,8 @@ func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "events", "view": map[string]string{"kind": "events"}}); err != nil {
 		t.Fatalf("subscribe the live socket to the event feed: %v", err)
 	}
-	subscribed := time.Now()
-	// Warnings already logged belong to a hold before this subscribe, perhaps one long over, so
-	// the wait counts only what the server says from here on.
-	before := strings.Count(p.Output.String(), events.StallWarning)
-	read := readEventsStart(conn, "events")
-	ticker := time.NewTicker(eventsStartPoll)
-	defer ticker.Stop()
-	// A run given no deadline (go test -timeout 0) has no drain arm to fail on: nil channel.
-	var runOut <-chan time.Time
-	if deadline, ok := t.Deadline(); ok {
-		drain := time.NewTimer(time.Until(deadline.Add(-eventsStartDrain)))
-		defer drain.Stop()
-		runOut = drain.C
-	}
-	state := eventsStartState{ownDatabase: p.database}
-	rose := subscribed
-	for {
-		select {
-		case result := <-read:
-			switch {
-			case result.err != nil:
-				t.Fatalf("read the event feed's events_start: %v\n%s", result.err, p.Output.String())
-			case result.unexpected != "":
-				t.Fatalf("the live socket answered the event feed's subscribe with a %s frame, want its events_start", result.unexpected)
-			}
-			return conn
-		case <-runOut:
-			t.Fatalf("the event feed's events_start did not arrive in the %v the run had left; the horizon's newest stall warning was %q\n%s",
-				time.Since(subscribed).Round(time.Millisecond), state.lastWarning, p.Output.String())
-		case now := <-ticker.C:
-			output := p.Output.String()
-			// Count, never Contains: a contains check latches on the first warning and
-			// would extend the wait for ever on a server that has stopped warning.
-			if warnings := strings.Count(output, events.StallWarning) - before; warnings > state.warnings {
-				state.warnings = warnings
-				state.lastWarning = lastStallWarning(output)
-				rose = now
-			}
-			state.elapsed = now.Sub(subscribed)
-			state.sinceNewWarning = now.Sub(rose)
-			switch eventsStartVerdictOf(state) {
-			case eventsStartNoSignal:
-				t.Fatalf("the event feed's events_start did not arrive in %v, and the server never said the event horizon was held back by an open transaction\n%s",
-					state.elapsed.Round(time.Millisecond), p.Output.String())
-			case eventsStartSignalStopped:
-				t.Fatalf("the event feed's events_start did not arrive in %v, and the server stopped saying the event horizon was held back %v ago; its newest stall warning was %q\n%s",
-					state.elapsed.Round(time.Millisecond), state.sinceNewWarning.Round(time.Millisecond), state.lastWarning, p.Output.String())
-			case eventsStartOwnHold:
-				t.Fatalf("the event feed's events_start did not arrive in %v, and the server says its own database %s holds the event horizon back, which is Dispatch holding up its own readers; its newest stall warning was %q\n%s",
-					state.elapsed.Round(time.Millisecond), p.database, state.lastWarning, p.Output.String())
-			}
-		}
-	}
+	p.waitEventsStart(t, conn, "events")
+	return conn
 }
 
 // watchAgent subscribes conn, a live socket, to session's agent view, as an agent's page does,

@@ -206,6 +206,15 @@ type Horizon struct {
 	// observation was.
 	warnedAt     time.Time
 	failWarnedAt time.Time
+	// diagnosing is whether a warnStall is in flight. Its pg_stat_activity scan runs on h.db,
+	// which for a server is the horizon pool (horizonPoolSize, store/pool.go): the two
+	// connections the horizon's own observations use. One diagnosis is bounded by
+	// horizonDiagnosisTimeout and cannot overlap the next at the production warnEvery, but a
+	// test process runs warnEvery an order of magnitude below that bound, and several
+	// diagnoses at once would queue for those two connections, each queued acquire burning
+	// its context into a diagnosis_error warning that names no holder, with the horizon's own
+	// observation - the one the waiting reader needs - behind them. So one at a time.
+	diagnosing bool
 	// persist is whether H is written to event_horizon as it advances (PersistProven);
 	// persistedSafe is the H last written this generation, persistedAt when the last write was
 	// tried, succeeded or failed, and persisting whether a write is under way. persistWarnedAt is
@@ -575,8 +584,9 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 // run takes flight's observation and records it, unless a Reset came between. A stall warning it
 // finds due runs on a goroutine of its own: its diagnosis query can take up to
 // horizonDiagnosisTimeout, which would otherwise hold up the relay, the hub or the handler that
-// ran the observation. stalled has already marked the warning logged, so the rate limit holds
-// however long the diagnosis takes.
+// ran the observation. stalled has already marked the warning logged and the diagnosis started,
+// so the rate limit and the one-diagnosis-at-a-time rule both hold however long the diagnosis
+// takes.
 //
 // An observation that failed while ctx was still live logs its error, at most once every
 // warnEvery: Await retries it every 250 ms for up to horizonAwaitFailFor, and its long-lived
@@ -764,16 +774,20 @@ func (h *Horizon) thinPending() {
 	h.pending = append(kept, h.pending[last])
 }
 
-// stalled returns the oldest pending observation when it has waited stallAfter and no warning
-// has been logged within warnEvery, and marks the warning logged. h.mu is held.
+// stalled returns the oldest pending observation when it has waited stallAfter, no warning has
+// been logged within warnEvery and no diagnosis is in flight, and marks the warning logged and
+// the diagnosis started. h.mu is held.
 func (h *Horizon) stalled(now time.Time) *horizonObservation {
 	if len(h.pending) == 0 || now.Sub(h.pending[0].at) < h.stallAfter {
+		return nil
+	}
+	if h.diagnosing {
 		return nil
 	}
 	if !h.warnedAt.IsZero() && now.Sub(h.warnedAt) < h.warnEvery {
 		return nil
 	}
-	h.warnedAt = now
+	h.warnedAt, h.diagnosing = now, true
 	oldest := h.pending[0]
 	return &oldest
 }
@@ -786,6 +800,13 @@ func (h *Horizon) stalled(now time.Time) *horizonObservation {
 // horizon pool cannot open) would have the diagnosis's QueryRow refused as a nested acquire. A
 // failed diagnosis is logged in the warning, never returned.
 func (h *Horizon) warnStall(oldest horizonObservation, pendingFor time.Duration, safe int64) {
+	// Under h.mu and deferred, so that a diagnosis that panics leaves no Horizon that never
+	// warns again (stalled returns nil while this stands).
+	defer func() {
+		h.mu.Lock()
+		h.diagnosing = false
+		h.mu.Unlock()
+	}()
 	attrs := []any{
 		"pending_for", pendingFor, "observed_id", oldest.newest, "safe_horizon", safe,
 		"observer_xid", oldest.xid,

@@ -72,6 +72,95 @@ const (
 	eventsStartDrain = 30 * time.Second
 )
 
+// waitEventsStart waits for subscription sub's events_start frame on conn, which the caller has
+// just subscribed, and returns once it has arrived. The frame is behind the event horizon, so the
+// wait is on the server's own account of itself rather than on a clock: while the server keeps
+// logging events.StallWarning the wait goes on, and it fails - with the process's whole output,
+// naming the newest warning - when the server never said it was held, when it stopped saying so,
+// or when the hold is Dispatch's own (eventsStartVerdictOf).
+func (p *dispatchProcess) waitEventsStart(t *testing.T, conn *gws.Conn, sub string) {
+	t.Helper()
+	subscribed := time.Now()
+	// Warnings already logged belong to a hold before this subscribe, perhaps one long over, so
+	// the wait counts only what the server says from here on.
+	before := len(p.logLines(events.StallWarning))
+	read := readEventsStart(conn, sub)
+	ticker := time.NewTicker(eventsStartPoll)
+	defer ticker.Stop()
+	// A run given no deadline (go test -timeout 0) has no drain arm to fail on: nil channel.
+	var runOut <-chan time.Time
+	if deadline, ok := t.Deadline(); ok {
+		drain := time.NewTimer(time.Until(deadline.Add(-eventsStartDrain)))
+		defer drain.Stop()
+		runOut = drain.C
+	}
+	state := eventsStartState{ownDatabase: p.database}
+	rose := subscribed
+	for {
+		select {
+		case result := <-read:
+			p.requireEventsStart(t, result)
+			return
+		case <-runOut:
+			// A frame already delivered wins over this timer. t.Deadline() is the whole
+			// test binary's deadline, not this test's, so a helper called within
+			// eventsStartDrain of it has this timer ready from its first select, and a
+			// select chooses uniformly among the arms that are ready: without this
+			// non-blocking receive the run could be failed for a frame it had already
+			// read, and a run that short would never poll at all.
+			select {
+			case result := <-read:
+				p.requireEventsStart(t, result)
+				return
+			default:
+			}
+			t.Fatalf("the event feed's events_start did not arrive in the %v the run had left; the horizon's newest stall warning was %q\n%s",
+				time.Since(subscribed).Round(time.Millisecond), state.lastWarning, p.Output.String())
+		case now := <-ticker.C:
+			// Count, never Contains: a contains check latches on the first warning and
+			// would extend the wait for ever on a server that has stopped warning. The
+			// count is of the lines that hold the message rather than of the message's
+			// occurrences - two different quantities, which agree here because the
+			// message is slog's msg field and warnStall is its only producer - and the
+			// line is what the failures print, since it carries the holder's kind, pid,
+			// database and query.
+			warnings := p.logLines(events.StallWarning)
+			if since := len(warnings) - before; since > state.warnings {
+				state.warnings = since
+				state.lastWarning = warnings[len(warnings)-1]
+				rose = now
+			}
+			state.elapsed = now.Sub(subscribed)
+			state.sinceNewWarning = now.Sub(rose)
+			switch eventsStartVerdictOf(state) {
+			case eventsStartNoSignal:
+				t.Fatalf("the event feed's events_start did not arrive in %v, and the server never said the event horizon was held back by an open transaction\n%s",
+					state.elapsed.Round(time.Millisecond), p.Output.String())
+			case eventsStartSignalStopped:
+				t.Fatalf("the event feed's events_start did not arrive in %v, and the server stopped saying the event horizon was held back %v ago; its newest stall warning was %q\n%s",
+					state.elapsed.Round(time.Millisecond), state.sinceNewWarning.Round(time.Millisecond), state.lastWarning, p.Output.String())
+			case eventsStartOwnHold:
+				t.Fatalf("the event feed's events_start did not arrive in %v, and the server says its own database %s holds the event horizon back, which is Dispatch holding up its own readers; its newest stall warning was %q\n%s",
+					state.elapsed.Round(time.Millisecond), p.database, state.lastWarning, p.Output.String())
+			}
+		}
+	}
+}
+
+// requireEventsStart takes one result the reader delivered: it returns on the events_start the
+// wait is for, and fails the test on the read that failed or the frame that came in its place.
+// Both arms that can take a delivered result go through it, so neither can come to answer a
+// delivered frame differently from the other.
+func (p *dispatchProcess) requireEventsStart(t *testing.T, result eventsStartRead) {
+	t.Helper()
+	switch {
+	case result.err != nil:
+		t.Fatalf("read the event feed's events_start: %v\n%s", result.err, p.Output.String())
+	case result.unexpected != "":
+		t.Fatalf("the live socket answered the event feed's subscribe with a %s frame, want its events_start", result.unexpected)
+	}
+}
+
 // eventsStartState is what the wait knows at one poll.
 type eventsStartState struct {
 	elapsed         time.Duration // since the subscribe went out
@@ -128,21 +217,6 @@ func stallWarningNamesDatabase(warning, database string) bool {
 	return name == database
 }
 
-// lastStallWarning is the whole newest events.StallWarning line in output, "" when there is none.
-// The line, not the message, because the rest of it carries the holder's kind, pid, database and
-// query, which is what a failure has to print.
-func lastStallWarning(output string) string {
-	at := strings.LastIndex(output, events.StallWarning)
-	if at < 0 {
-		return ""
-	}
-	line := output[strings.LastIndex(output[:at], "\n")+1:]
-	if end := strings.IndexByte(line, '\n'); end >= 0 {
-		line = line[:end]
-	}
-	return line
-}
-
 // eventsStartRead is the one result the events_start reader sends: the frame arrived when both
 // fields are zero, else err is the read that failed or unexpected is the type of the frame that
 // came in its place.
@@ -196,9 +270,9 @@ func stallWarningLine(database string) string {
 		` state=active application_name=psql database=` + database + ` query="begin; select 1"`
 }
 
-// eventsStartVerdictName names a verdict, so a failed row reads as the decision the wait made
-// rather than as the integer the constants are.
-func eventsStartVerdictName(verdict eventsStartVerdict) string {
+// String names a verdict, so a failed row reads as the decision the wait made rather than as the
+// integer the constants are.
+func (verdict eventsStartVerdict) String() string {
 	switch verdict {
 	case eventsStartWaitOn:
 		return "eventsStartWaitOn"
@@ -327,8 +401,7 @@ func TestEventsStartVerdictOfKeysTheWaitOnTheServersStallWarning(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := eventsStartVerdictOf(tc.state); got != tc.want {
-				t.Errorf("eventsStartVerdictOf(%+v) = %s, want %s",
-					tc.state, eventsStartVerdictName(got), eventsStartVerdictName(tc.want))
+				t.Errorf("eventsStartVerdictOf(%+v) = %s, want %s", tc.state, got, tc.want)
 			}
 		})
 	}
@@ -366,37 +439,6 @@ func TestStallWarningNamesDatabaseMatchesTheWholeDatabaseField(t *testing.T) {
 			if got := stallWarningNamesDatabase(tc.warning, tc.database); got != tc.want {
 				t.Errorf("stallWarningNamesDatabase(%q, %q) = %t, want %t",
 					tc.warning, tc.database, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestLastStallWarningAnswersTheNewestWholeWarningLine proves the wait reads the newest warning
-// whole: the line is what a failure prints, and the database= field in it is what decides whether
-// the hold is Dispatch's own.
-func TestLastStallWarningAnswersTheNewestWholeWarningLine(t *testing.T) {
-	const other = `time=2026-11-10T02:14:05.001Z level=INFO msg="dispatch: live socket subscribed" sub=events`
-	older := stallWarningLine("postgres")
-	newest := stallWarningLine("legion_daemon")
-	for _, tc := range []struct {
-		name   string
-		output string
-		want   string
-	}{
-		{
-			"output holding several warnings among other lines answers the newest one whole, with its fields and without the lines around it",
-			strings.Join([]string{other, older, other, newest, other}, "\n") + "\n",
-			newest,
-		},
-		{
-			"output holding no warning at all answers the empty string, which the wait reads as a server that has said nothing",
-			strings.Join([]string{other, other}, "\n") + "\n",
-			"",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := lastStallWarning(tc.output); got != tc.want {
-				t.Errorf("lastStallWarning() = %q, want %q", got, tc.want)
 			}
 		})
 	}
