@@ -796,7 +796,10 @@ test("a refused merge move leaves the source open without a close reason", async
       else await route.continue();
     });
     await page.goto("/projects/CORE/issues?group=epic");
-    await page.getByRole("button", { name: "Epic actions ▾" }).click();
+    // The childless destination epic keeps a heading of its own, so the merge starts at the
+    // source's rather than at whichever heading comes first.
+    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
     await expect(page.getByRole("alert")).toContainText(bad.key);
     await expect.poll(() => getIssue(good.key).then((issue) => issue.parent)).toBe(target.key);
@@ -969,7 +972,11 @@ test("reload mid merge moves current open descendants then records one reason an
       await route.fulfill({ status: 403, json: { error: "Move refused during reload" } });
     });
     await page.goto("/projects/CORE/issues?group=epic");
-    await page.getByRole("button", { name: "Epic actions ▾" }).click();
+    // The childless destination epic keeps a heading of its own, so this names the source's.
+    const heading = page.locator("tr", {
+      has: page.getByRole("link", { name: /Source workflow/ }),
+    });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
     await expect
       .poll(() => getIssue(completedChild.key).then((issue) => issue.parent))
