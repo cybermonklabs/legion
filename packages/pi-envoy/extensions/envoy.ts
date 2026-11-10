@@ -2169,12 +2169,13 @@ export default function envoyExtension(pi: PiApi): void {
       console.warn(`[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, error);
       // A frame no sweep will show again (a role forward, already acknowledged; one on a
       // subscription the replay does not read: refused, not started, or the listener's replay
-      // failing) gets its notice at once. A frame that names a session gets it in that session
-      // and nowhere else: one that failed because the host moved on names a session that is
-      // closed here now, and the conversation it moved to is told nothing. A frame that names
-      // none gets it in the conversation open here, which is the one that took it. The
-      // stream's copy of any other waits for a sweep. A relay frame's failure is the relay's to
-      // count: it comes again, or gets its notice.
+      // failing) gets its notice at once, in the session its card would have gone to
+      // (`cardSession`): a Dispatch delivery names the session the person addressed, and its
+      // notice is held to that one, so a delivery that failed because the host moved on tells
+      // the conversation it moved to nothing. Every other frame names the conversation open
+      // here, the one that took it, so its notice follows its card there. The stream's copy of
+      // any other waits for a sweep. A relay frame's failure is the relay's to count: it comes
+      // again, or gets its notice.
       if (relayed === undefined && envelope !== undefined) {
         void replay?.liveFailed(cardSession(), topic, envelope, error, receivedAt);
       }

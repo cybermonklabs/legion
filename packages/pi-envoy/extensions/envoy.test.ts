@@ -21668,6 +21668,78 @@ describe("messages missed while the subscription was down", () => {
       }
     });
 
+    // The same comment, published on this session's own agent subject: a frame the person
+    // addressed to this session that is no Dispatch delivery. Nothing sends such a frame again,
+    // and the listener serves no replay here, so its failure is told at once or not at all. Its
+    // own card is the moved-to conversation's, as the card rows of a comment whose picture load
+    // overlaps a switch read, and the notice stands in for that card, so it is shown in the
+    // same conversation (dispatch://INFRA-812). Held to the session the frame names, as a
+    // delivery's notice is, this notice would reach nobody: that session is closed here now.
+    test("a live comment the person addressed, failing after the host moved, tells the conversation it moved to", async () => {
+      process.env.DISPATCH_URL = "http://moved-comment.dispatch.test";
+      process.env.DISPATCH_TOKEN = "dispatch-token";
+      const event = "dispatch-moved-comment";
+      const slug = "moved-comment-png";
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      const model = new StreamModel();
+      model.served = false;
+      const move: { fire?: () => Promise<void> } = {};
+      let moved = false;
+      try {
+        const session = await bootReplay("replay-fail-moved-comment", model, {
+          sessionID: "ses_delivery",
+          beforeSend: (content) => {
+            if (content.includes(event) && !isNotice(content)) {
+              throw new Error("host refuses the card");
+            }
+          },
+          dispatch: async (url) => {
+            if (url.pathname !== `/api/v1/issues/LEGION-1/artifacts/${slug}`) return undefined;
+            await move.fire?.();
+            moved = true;
+            // Dispatch serves no picture here, so the card carries the link alone; what this row
+            // is about is the move the read held open.
+            return undefined;
+          },
+        });
+        // The conversation the host moves to is idle and holds no message, so a card reaches it
+        // at once: this row reads whether the notice went there, not whether it waited.
+        move.fire = async () => {
+          await session.fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            {
+              ...sessionContext("ses_after_comment"),
+              hasPendingMessages: () => false,
+              isIdle: () => true,
+            }
+          );
+        };
+
+        // The same comment, on the subject the person addressed to this session.
+        const comment = JSON.stringify({
+          ...JSON.parse(commentWithPicture(event, slug)),
+          topic: session.agentSubject,
+        });
+        session.live(session.agentSubject).push(comment);
+        await until(() => session.notices(event).length > 0, "the notice the moved host is told");
+
+        expect(moved).toBe(true);
+        expect(session.cards(event)).toHaveLength(0);
+        expect(session.notices(event)[0]?.content).toContain("host refuses the card");
+        // The line the engine logs when it holds a notice to a session closed here: the notice
+        // above went to the open conversation instead, so nothing held it.
+        const unreported = warnings.filter((warning) =>
+          warning.includes("a failed frame was not reported")
+        );
+        expect(unreported).toEqual([]);
+      } finally {
+        stopSink();
+      }
+    });
+
     test("a live frame still pending while its stored copy is swept, then failing, is shown once later", async () => {
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = "dispatch-token";

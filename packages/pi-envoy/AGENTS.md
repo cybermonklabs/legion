@@ -701,10 +701,13 @@ show gets the notice at once: a role forward after its receipt, or a frame on a 
 replay does not read (a team topic, a subject refused or without a cursor yet, or while the
 listener's replay is failing), or one the plugin received before its subject's cursor started (a
 new follow, a new session, a reset after a stream recreation), since that cursor starts at the
-stream's end, which can be past a frame the live path still held. The notice names the session
-the frame was addressed to (`liveFailed` takes it), so a frame that failed because the host moved
-on is told to nobody: the conversation it moved to is shown no notice of a message nobody sent
-it, and records none. A frame is stamped when its
+stream's end, which can be past a frame the live path still held.
+The notice goes to the session the frame's own card would have gone to (`cardSession`, which
+`liveFailed` takes): a Dispatch delivery names the session the person addressed, so one that
+failed because the host moved on is told to nobody, the conversation it moved to being shown no
+notice of a message nobody sent it; every other frame names the conversation open here, the one
+that took it, so its notice follows its card there.
+A frame is stamped when its
 subscription yielded it (`readArrivals`, which reads each subscription as its messages arrive),
 not when the frames queued before it finished delivering. One card that starts no turn
 (`routeReplayNotice` sends this kind to a card, through `UnwrittenFrames.sendNotice`) says that
