@@ -357,11 +357,15 @@ var indexPasses = map[string]indexPass{
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together rather than bringing
 	// one into line with the other, so it is no repair.
-	"graphcensus/erase.go#apply":           {input: "the node the operator named"},
-	"graphstore/arms.go#nodeArm":           {input: "the nodes its caller states"},
-	"graphstore/arms.go#claimArms":         {input: "the claims its caller states"},
-	"graphstore/arms.go#tupleInsert":       {input: "the tuples its caller states"},
-	"graphstore/write.go#writeNodes":       {input: "the nodes its caller states"},
+	"graphcensus/erase.go#apply":     {input: "the node the operator named"},
+	"graphstore/arms.go#nodeArm":     {input: "the nodes its caller states"},
+	"graphstore/arms.go#claimArms":   {input: "the claims its caller states"},
+	"graphstore/arms.go#tupleInsert": {input: "the tuples its caller states"},
+	"graphstore/write.go#writeNodes": {input: "the nodes its caller states"},
+	// Caused is the second half of one write rather than a second look at it: the nodes its
+	// caller has just written take the id of the event that recorded them, which is known only
+	// once that event is appended. It reads no projection and mends nothing.
+	"graphstore/write.go#Caused":           {input: "the nodes its caller stated and the event that recorded the write"},
 	"refs/blocks.go#IndexBlocks":           {input: "the version's render"},
 	"refs/blocks.go#reconcileBlockParents": {input: "the version's render"},
 	"refs/blocks.go#replaceBlockRefs":      {input: "the version's render"},
