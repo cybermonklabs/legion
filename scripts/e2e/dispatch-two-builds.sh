@@ -58,8 +58,8 @@ timeout_hook=''
 . "$root/scripts/e2e/lib/two-builds.sh"
 
 # This proof's own ports. two_builds_setup reads this script's --base-commit and DATABASE_URL
-# before it drops every DISPATCH_*, ENVOY_*, NATS_* and PGHOSTADDR the shell inherited, and arms
-# the teardown, whose last line carries the label given here.
+# before it drops every DISPATCH_*, ENVOY_*, NATS_*, PGHOSTADDR, PGSERVICE and PGSERVICEFILE the
+# shell inherited, and arms the teardown, whose last line carries the label given here.
 base_port=${TWO_BUILDS_BASE_PORT:-19071}
 head_port=${TWO_BUILDS_HEAD_PORT:-19072}
 envoy_port=${TWO_BUILDS_ENVOY_PORT:-19073}

@@ -101,8 +101,9 @@ timeout_hook=''
 
 # This proof's own ports, and a longer wait on one call than the shared default: a search of
 # this corpus runs the meaning leg too. two_builds_setup reads this script's --base-commit and
-# DATABASE_URL before it drops every DISPATCH_*, ENVOY_*, NATS_* and PGHOSTADDR the shell
-# inherited, and arms the teardown, whose last line carries the label given here.
+# DATABASE_URL before it drops every DISPATCH_*, ENVOY_*, NATS_*, PGHOSTADDR, PGSERVICE and
+# PGSERVICEFILE the shell inherited, and arms the teardown, whose last line carries the label
+# given here.
 base_port=${SEARCH_TWO_BUILDS_BASE_PORT:-19081}
 head_port=${SEARCH_TWO_BUILDS_HEAD_PORT:-19082}
 envoy_port=${SEARCH_TWO_BUILDS_ENVOY_PORT:-19083}

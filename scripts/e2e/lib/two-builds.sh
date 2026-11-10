@@ -64,14 +64,14 @@ two_builds_setup() {
 
   # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
   # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-  # psql reads PGHOSTADDR, which would replace the URL's host for the reset below while a server,
-  # which never reads it, connects to the host the check admitted.
+  # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+  # scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
   local name
   local -a inherited
   mapfile -t inherited < <(compgen -e)
   for name in "${inherited[@]}"; do
     case "$name" in
-      DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR) unset "$name" ;;
+      DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
     esac
   done
 
@@ -149,7 +149,7 @@ json_field() {
 # its own terms. CHECK, when given, is the proof's own prerequisite, run after the shared ones and
 # before the two notes below, so what it notes lands where it did.
 two_builds_prerequisites() {
-  local refusal=$1 authority hostport db_host tool port
+  local refusal=$1 db_host tool port
   shift
   [ -n "$database_url" ] ||
     fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
@@ -158,25 +158,18 @@ two_builds_prerequisites() {
     postgres://* | postgresql://*) ;;
     *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
   esac
-  authority=${database_url#*://}
-  authority=${authority%%[/?]*}
-  hostport=${authority##*@}
-  if [[ "$hostport" == \[* ]]; then
-    db_host=${hostport#\[}
-    db_host=${db_host%%\]*}
-  else
-    db_host=${hostport%%:*}
-  fi
-  case "$db_host" in
-    127.0.0.1 | localhost | ::1) ;;
-    *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-  esac
-  [[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-    fail "DATABASE_URL must not name its host in a parameter"
-  # tar is in the list because two_builds_build takes the base tree with `git archive | tar -x`.
-  for tool in go bun curl psql git tar openssl; do
+  # tar is in the list because two_builds_build takes the base tree with `git archive | tar -x`,
+  # and python3 because require_loopback_dsn below runs lib/loopback-dsn.py, which is why the
+  # tool check comes first.
+  for tool in go bun curl psql git tar openssl python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
+  # The one loopback guard of this repository (lib/loopback-dsn.sh, which lib/rig.sh sources),
+  # rather than a reading of this file's own: libpq and a URL parser read different text as the
+  # host, and the run must connect to the host the guard admitted. Both proofs reset the
+  # database's `public` schema, so neither may reach any server but this machine's.
+  require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" ||
+    fail "$db_host"
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
     fail "--base-commit '$base_commit' names no commit of this repository"
   for port in "$base_port" "$head_port" "$envoy_port"; do
