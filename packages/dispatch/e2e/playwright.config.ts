@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project } from "@playwright/test";
 import { baseUrl } from "./api";
+import { stubProjectNames, tagged } from "./configurations";
 import { targetedListeners } from "./harness-listeners";
 import {
   harnessPorts,
@@ -14,6 +15,8 @@ import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
+import { stubOrigin } from "./stub/origin";
+import { stubSelection } from "./stub/selection";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -37,9 +40,6 @@ const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // test drops out with no failure. The pattern is anchored so a tag matches only as a whole
 // whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
 // `@webkit-iphone` or `@firefox-alone`.
-function tagged(tag: string): RegExp {
-  return new RegExp(`(^|\\s)@${tag}(\\s|$)`);
-}
 const phoneTagged = tagged("phone");
 const webkitTagged = tagged("webkit");
 const firefoxTagged = tagged("firefox");
@@ -48,6 +48,15 @@ const firefoxTagged = tagged("firefox");
 // the proxy's own routes; two-process mode (DISPATCH_E2E_PROCESSES=2, `bun run e2e:multiprocess`)
 // runs them alone, in Chromium, since every other spec runs against one server already.
 const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
+// Specs of the stubbed layer, each named `*.stub.e2e.ts`: a real browser against a recording of
+// the API, with no Go server, no Postgres, no fakes, no sign-in and no reset (e2e/stub/). The
+// `stub` project at the end of this file runs them and nothing else runs them: this config's own
+// `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
+// since a project's overrides this one's. A moved row lives in such a file rather than carrying an
+// annotation, because 150 spec files reset the database in a `beforeEach` and most of them sign in
+// and seed through the API: a stubbed row left among them would still run its file's hooks
+// (packages/dispatch/AGENTS.md, "The stubbed layer").
+const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
 // signs in through dev sign-in, runs only without it.
@@ -121,54 +130,72 @@ const ports = harnessPorts();
 const reuseServers = resolveReuseServers();
 const unset = targeted.filter((listener) => ports[listener.key].port === 0);
 const listing = isListMode(process.argv);
-if (!listing && unset.length > 0) {
-  throw new Error(
-    `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
-      `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
-      `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
-      `${runThroughWrapper}. To run against servers you started yourself, set ` +
-      `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
-      "DISPATCH_E2E_REUSE_SERVERS=1."
-  );
-}
-if (!reuseServers && (!listing || unset.length < targeted.length)) {
-  const targets = targeted
-    .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
-    .join(", ");
-  throw new Error(
-    `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
-      `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
-      "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose database " +
-      "this run truncates."
-  );
-}
+// What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
+// recording, whether it holds a stubbed row at all - which is what decides the static file
+// server below - and whether it is the stubbed layer alone, which is what exempts it from the
+// four refusals here and from the global setup. That module says why each question is asked and
+// why the third travels to the workers in an environment variable.
+const stub = stubSelection({
+  argv: process.argv,
+  env: process.env,
+  processes: harnessProcessCount,
+  projects: stubProjectNames,
+});
 
 // One worker per lane, and the lanes are e2e/run.ts's: a worker resolves its own harness from
 // `TEST_PARALLEL_INDEX` (e2e/harness-ports.ts), so a run with more workers than lanes would put
 // two workers on one lane's servers and database, which e2e/seed.ts truncates per row.
 const lanes = laneCount();
 const asked = workersOnCommandLine(process.argv);
-if (asked !== undefined && asked !== String(lanes)) {
-  throw new Error(
-    `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
-      `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
-      `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that many ` +
-      "workers."
-  );
-}
 
-// `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run against
-// servers a person started reads its own. That fallback is right for one worker and wrong for
-// more: nothing exported a lane, so every worker would resolve lane 0 and share one harness's
-// servers and database, which e2e/seed.ts truncates per row - rows would delete each other's
-// fixtures and fail in ways that read as product faults. Only e2e/run.ts exports that variable.
-if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
-  throw new Error(
-    `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing exported ` +
-      `${laneCountVariable}, so there is one harness and every worker would share it. Run this ` +
-      `config through e2e/run.ts, which starts a lane per worker and exports that count: ` +
-      `${runThroughWrapper}.`
-  );
+// Every refusal of this config is about the harness, so they stand together under one guard: a
+// run of the stubbed layer alone reaches no server of it and meets none of them, and every
+// other run meets all four. Each keeps its own sentence, so a person who forgets the harness
+// still gets the line that fixes it.
+if (!stub.onlyStub) {
+  if (!listing && unset.length > 0) {
+    throw new Error(
+      `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
+        `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
+        `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
+        `${runThroughWrapper}. To run against servers you started yourself, set ` +
+        `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
+        "DISPATCH_E2E_REUSE_SERVERS=1."
+    );
+  }
+  if (!reuseServers && (!listing || unset.length < targeted.length)) {
+    const targets = targeted
+      .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
+      .join(", ");
+    throw new Error(
+      `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
+        `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
+        "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose " +
+        "database this run truncates."
+    );
+  }
+  if (asked !== undefined && asked !== String(lanes)) {
+    throw new Error(
+      `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
+        `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
+        `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that ` +
+        "many workers."
+    );
+  }
+  // `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run
+  // against servers a person started reads its own. That fallback is right for one worker and
+  // wrong for more: nothing exported a lane, so every worker would resolve lane 0 and share one
+  // harness's servers and database, which e2e/seed.ts truncates per row - rows would delete
+  // each other's fixtures and fail in ways that read as product faults. Only e2e/run.ts exports
+  // that variable.
+  if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
+    throw new Error(
+      `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing ` +
+        `exported ${laneCountVariable}, so there is one harness and every worker would share ` +
+        `it. Run this config through e2e/run.ts, which starts a lane per worker and exports ` +
+        `that count: ${runThroughWrapper}.`
+    );
+  }
 }
 
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
@@ -228,6 +255,33 @@ const expectTimeout = 15_000;
 // It lengthens no row's work; a row that needs it has already lost whatever it was waiting for.
 // Raise it only from a measurement of the same shape, over the same population.
 const testTimeout = 60_000;
+
+// The per-action deadline, and the one timeout Playwright leaves at 0 by default - no deadline at
+// all, so an action whose target has gone runs until the row's budget ends and is reported at
+// whatever line the row's `finally` holds rather than at the call that hung. A 60 ms product race
+// cost 120 s twice that way, at `await context.close()` (dispatch://INFRA-2452). It bounds one
+// action - a click, a fill, a press - and not a row: an `expect` carries `expectTimeout`, a whole
+// row `testTimeout` above, and a navigation its own `navigationTimeout`, which is set apart from
+// this one and stays 0 (node_modules/.bun/playwright@1.64.1/node_modules/playwright-core/lib/
+// coreBundle.js:64256-64257). It is the context's default timeout as well (`actionTimeout || 0`,
+// node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:360), so a
+// `waitForResponse` or `waitForFunction` that names no timeout of its own takes it too. The
+// longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answers the
+// 18 s server hold of keyed-send.e2e.ts:411, well inside this.
+//
+// Derived from the population `testTimeout` above measures, not asserted: over those 320,101
+// passing results of 201 ci.yaml runs the slowest WHOLE row is 29,856 ms, so no single action in
+// any of them reached 30 s. An action a governed row can afford at all is under that row's 60 s,
+// since the row pays for everything else it does out of the same budget. That leaves the band
+// between, and 45 s sits in it: above every passing result the window measured, and below the
+// budget that would otherwise swallow the failure.
+//
+// The same limit applies as to the budget above, rather than being papered over: the population
+// is censored at Playwright's old 30 s default, where 27 governed results were killed (19 in
+// pictures.e2e.ts, 6 in deep-links.e2e.ts, 2 in keyed-writes.e2e.ts), so the tail above 30 s is
+// unknown and a governed row's single action between 30 s and 45 s has been measured by nobody.
+// Move it only on a measurement of the same shape.
+const actionTimeout = 45_000;
 
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
@@ -306,13 +360,13 @@ const visualSpecs = /visual\.e2e\.ts$/;
 const parallelProjects = [
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grepInvert: clockRows,
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: phoneTagged,
     grepInvert: clockRows,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
@@ -359,7 +413,7 @@ const parallelProjects = [
   // given an engine tag later would otherwise be measured four lanes wide here.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: webkitTagged,
     grepInvert: clockRows,
     use: { ...devices["Desktop Safari"] },
@@ -417,7 +471,7 @@ const parallelProjects = [
   // The `testIgnore` and `grepInvert` are `chromium`'s, for the reasons given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
     grep: firefoxTagged,
     grepInvert: clockRows,
     use: { ...devices["Desktop Firefox"] },
@@ -630,11 +684,79 @@ const visualProjects = [
   },
 ] satisfies Project[];
 
+/**
+ * The stubbed layer: a real browser against a recording of the API (e2e/stub/).
+ *
+ * It is declared unconditionally, like `visualProjects` above and for the same reason: the guard
+ * that finds a row running twice in one configuration lists this config in a subprocess whose
+ * environment is cut to `HOME`, `PATH` and `DISPATCH_E2E_PROCESSES`
+ * (e2e/__tests__/row-configurations.test.ts), so a project declared only when a variable is set
+ * would be invisible to it.
+ *
+ * Its origin is its own, a static file server over `web/dist` rather than a Dispatch server
+ * (e2e/stub/origin.ts), which is also what gives it a configuration key of its own: `chromium`
+ * runs the same engine at the same viewport, and the origin is what tells the two apart.
+ *
+ * `testIgnore: []` because this config's own `testIgnore` holds `stubSpecs`, to keep a project
+ * that names neither selector from picking these rows up; a project's `testIgnore` replaces this
+ * one's, so the empty array is what lets these rows reach the project that exists for them.
+ *
+ * Recording (`DISPATCH_E2E_STUB_RECORD=1`) is the one run where these rows meet the real stack:
+ * the project takes the harness's base URL, the static server is not started, and each row writes
+ * what it fetched (e2e/stub/stub-test.ts).
+ *
+ * `retries: 0` on both, for two reasons of this layer's own. On replay a stubbed row reaches
+ * no server, no database and no fake: its answers come from a committed file, so a row that
+ * fails once and passes once is not a flake to be retried past but a defect of the recording,
+ * the page or the row, and the lane should say so. A recording run does reach the real
+ * harness, and it takes no retry either, deliberately: it is the run that writes what every
+ * later replay reads, so a row that only passed on a second attempt would commit whatever
+ * that attempt happened to fetch. And the dead-recording guard
+ * (`deadRecordingGuard`, e2e/stub/stub-test.ts) would otherwise be retried away: measured in
+ * this issue's pod, Playwright re-runs a row that called `test.skip` without running its
+ * fixtures at all, so the guard's refusal is raised on the first attempt and never on the
+ * retry, and the run reports the row flaky and exits 0.
+ */
+const stubProjects = [
+  {
+    name: "stub",
+    retries: 0,
+    testMatch: stubSpecs,
+    testIgnore: [],
+    use: {
+      ...devices["Desktop Chrome"],
+      baseURL: stub.recording ? baseUrl : stubOrigin(),
+    },
+  },
+  // The phone half, which `iphone` is to `chromium`, and exactly that: `stub` runs every stub
+  // row as `chromium` runs every row of the suite, and this one greps the `@phone` tag as
+  // `iphone` does. `stub` does **not** invert the tag, which it did until a review read the
+  // three rows that cost: a `@phone` row that `chromium` ran at the desktop width lost that
+  // case in the move, and a moved row has to assert what it asserted before. A row that is a
+  // phone row alone says so itself, with the `test.skip` its author wrote against `iphone`,
+  // read here against this project's name - which is how those rows were skipped in `chromium`
+  // on the real stack too.
+  {
+    name: "stub-phone",
+    retries: 0,
+    testMatch: stubSpecs,
+    testIgnore: [],
+    grep: phoneTagged,
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      baseURL: stub.recording ? baseUrl : stubOrigin(),
+    },
+  },
+] satisfies Project[];
+
 export default defineConfig({
   testDir: ".",
   testMatch: /.*\.e2e\.ts/,
-  // The projects below that name no `testIgnore` of their own inherit this one.
-  testIgnore: harnessProcessCount === 1 ? multiprocessSpecs : undefined,
+  // The projects below that name no `testIgnore` of their own inherit this one. `stubSpecs` is
+  // here so that a project which names neither selector never picks a stubbed row up: the `stub`
+  // project names `testIgnore: []`, which is what lets those rows reach it.
+  testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
   // Every row is independent: it empties its lane's database and fake listeners itself
   // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
@@ -645,9 +767,9 @@ export default defineConfig({
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
-  // at, and `bun run e2e` is read as pass or fail. This is the sharded projects' value: the
-  // four `-alone` projects and the multiprocess one each set `retries: 0`, each for a reason
-  // its own comment gives.
+  // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
+  // none of its own: the four `-alone` projects, the two `visual` ones, the two stubbed ones
+  // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the
   // list reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
@@ -658,6 +780,7 @@ export default defineConfig({
   expect: { timeout: expectTimeout },
   use: {
     ...devices["Desktop Chrome"],
+    actionTimeout,
     baseURL: baseUrl,
     headless: true,
     // One value for both runs. `retain-on-first-failure` records the first attempt and keeps it
@@ -672,10 +795,52 @@ export default defineConfig({
   },
   // Runs before any row, against the servers the checks above require: it refuses a target that
   // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not
-  // both read it or do not accept each other's cookies (e2e/preflight.ts).
-  globalSetup: fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  // both read it or do not accept each other's cookies (e2e/preflight.ts). A run of the `stub`
+  // project alone reaches no such server, so it has no global setup at all.
+  globalSetup: stub.onlyStub
+    ? undefined
+    : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
+  // The one server this config starts, and it serves files: the built SPA, for the stubbed
+  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
+  // it before Playwright.
+  //
+  // It is declared for a run that holds a stubbed row and for no other (e2e/stub/selection.ts
+  // says which runs those are and why the question has to be asked at all).
+  //
+  // `reuseExistingServer: false`, deliberately, and it is the one thing that makes the fixed
+  // port safe. The port has to be fixed because Playwright polls a URL before the command it
+  // starts exists; reusing whatever answers it would let a second checkout on one machine
+  // replay this one's rows against that one's `web/dist`, silently, since the probe only asks
+  // for a document every build serves. Refusing instead makes the collision a message:
+  // Playwright says the port is in use and names it, and `DISPATCH_E2E_STUB_PORT` moves this
+  // run off it.
+  webServer:
+    !stub.holdsStubRow || stub.recording
+      ? undefined
+      : {
+          command: "bun e2e/stub/static-server.ts",
+          // Playwright runs a `webServer` command in the config's own directory, and every
+          // command of this package is written from the package root, as `package.json`'s
+          // scripts are.
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          reuseExistingServer: false,
+          stdout: "pipe",
+          timeout: 60_000,
+          url: `${stubOrigin()}/index.html`,
+        },
+  // A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) gets no stub project at
+  // all: the stubbed layer replays a recording against a build this checkout made, so against
+  // a deployed server it would prove nothing about either, and `e2e:deployed` names no project
+  // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
+  // above is built on the same one, so a server can never start for a project this list leaves
+  // out, nor a project be declared with no server to answer it.
   projects:
     harnessProcessCount === 2
       ? multiprocessProjects
-      : [...parallelProjects, ...aloneProjects, ...visualProjects],
+      : [
+          ...parallelProjects,
+          ...aloneProjects,
+          ...visualProjects,
+          ...(stub.declared ? stubProjects : []),
+        ],
 });

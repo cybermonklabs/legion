@@ -513,7 +513,8 @@ function drawnTitlesByRow(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
-test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written", async ({
+// @pr: The live document: every reference of the shared table drawn in the editor, followed, and the stored text left as written.
+test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written @pr", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);

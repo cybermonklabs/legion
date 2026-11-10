@@ -198,7 +198,8 @@ test("reading a document gives its headings ids without versioning it or crediti
   }
 });
 
-test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both", async ({
+// @pr: The two-context race at the heart of the editor: two people edit one spec, see each other's text and cursor, and settle one version.
+test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -333,7 +334,8 @@ test("named versions, the version picker, and the diff stay current across users
   }
 });
 
-test("an agent edit lands live in every open editor", async ({ browser }) => {
+// @pr: The live document: an agent's edit has to land in every open editor.
+test("an agent edit lands live in every open editor @pr", async ({ browser }) => {
   await createProject({ key: "LIVE", name: "Live updates" });
   const issue = await createIssue({
     project: "LIVE",
@@ -509,7 +511,8 @@ test("moving between issue documents leaves one open document connection, not on
 // end its session.
 // SLOW(>=2s): two browser contexts and the provider's own reconnect after the drop, which no
 // page clock can bring forward: the socket it reopens is a real one.
-test("a dropped document transport reconnects the mounted editor and leaves one connection", async ({
+// @pr: The live document: a dropped transport reconnects the mounted editor and leaves one connection, not one per drop.
+test("a dropped document transport reconnects the mounted editor and leaves one connection @pr", async ({
   browser,
 }) => {
   await createProject({ key: "BLIP", name: "Blip" });

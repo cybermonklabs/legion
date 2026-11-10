@@ -447,8 +447,21 @@ docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 
 `e2e/seed.ts` empties its database before each scenario. Always set
 `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
-The suite has eleven projects. `chromium` runs every spec except the two plain-HTTP specs and the
-three the `-alone` projects below take. `iphone`
+
+The stubbed layer reads three variables of its own, and a run that is not recording needs none
+of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
+what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves the static file
+server off 4319, which is what a second checkout on one machine needs, since the server refuses
+to reuse one already listening rather than serve another checkout's build. And
+`DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
+one, which the nightly's re-record job uses so that it can see a committed recording no row
+writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
+the stubbed layer alone" to its workers; set by hand it waives every harness refusal and the
+preflight for the whole run, real-stack projects included.
+The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+three the `-alone` projects below take and the stubbed layer's own
+(`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
+run). `iphone`
 runs, from those same specs, only the tests tagged `@phone` (written at the end of the test's or
 its `test.describe`'s title); a test takes the tag when the phone viewport can change what it
 asserts, and not when it only reaches the same control by another route, which is in
@@ -456,8 +469,10 @@ asserts, and not when it only reaches the same control by another route, which i
 failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses
 Chromium with iPhone 13 viewport, touch, and user-agent emulation. A deployed run
-(`bun run e2e:deployed`) uses the same projects, so its `iphone` project also runs only the
-`@phone` tests. `webkit` and `firefox` select by tag as well, `@webkit` and `@firefox`: each
+(`bun run e2e:deployed`) uses the same projects but the two stubbed ones, so its `iphone`
+project also runs only the `@phone` tests. The stubbed layer is left out of a deployed run
+because it replays a recording against a build this checkout made, which says nothing about a
+deployed image, and because that command builds no `web/dist` for its server to serve. `webkit` and `firefox` select by tag as well, `@webkit` and `@firefox`: each
 tagged row exercises one engine behaviour the comment above the project in
 `e2e/playwright.config.ts` names, and a comment beside the tag names which. `webkit` covers
 where a caret lands beside a collaborator's cursor, and `firefox` covers text typed over what

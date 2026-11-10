@@ -58,7 +58,8 @@ async function seed(): Promise<string> {
   return issue.key;
 }
 
-test("the search box narrows by a word in the title, directory, machine, session id or issue key, every typed word required wherever it appears, and clears back to every session", async ({
+// @pr: The Agents search box's only row: every typed word must match, in the title, directory, machine, session id or issue key.
+test("the search box narrows by a word in the title, directory, machine, session id or issue key, every typed word required wherever it appears, and clears back to every session @pr", async ({
   browser,
 }, testInfo) => {
   const issueKey = await seed();

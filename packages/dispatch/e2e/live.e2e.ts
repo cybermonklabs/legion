@@ -61,7 +61,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("live: bob's ask updates alice's Inbox and project badges without reload", async ({
+// @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
+test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -357,7 +358,8 @@ test("live: new events on the open issue appear in Conversation and mark it read
   await alice.close();
 });
 
-test("live: the stream recovers after the connection drops", async ({ browser }, testInfo) => {
+// @pr: The live socket: the stream has to recover after the connection drops.
+test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reconnect target" });
 
@@ -408,7 +410,8 @@ test("live: the stream recovers after the connection drops", async ({ browser },
 
 // SLOW(>=2s): two live sockets, each with its own subscribe and replay, and the two messages
 // written across the forced disconnect between them.
-test("live: a forced server disconnect resumes from the last event id", async ({ browser }) => {
+// @pr: The live socket: after a forced server disconnect the page resumes from the last event id, so nothing written across it is lost.
+test("live: a forced server disconnect resumes from the last event id @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Disconnect target" });
   await createMessage(issue.key, { body: "Before disconnect" }, bob);

@@ -85,7 +85,8 @@ test.beforeEach(async () => {
 // SLOW(>=2s): one row for the whole Architecture page - the seeded model and its six issues, the
 // bars over them, a drill-down, a row's details, a status change that has to move a bar, and the
 // Unassigned picker. Each clause of the title is a press the row has to make.
-test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker", async ({
+// @pr: The Architecture page whole: bars over the seeded model, a drill-down, details, a bar that a status change moves, and the Unassigned picker.
+test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker @pr", async ({
   browser,
 }) => {
   const issues = await seedArchitecture();

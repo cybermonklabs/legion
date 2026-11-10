@@ -8,10 +8,11 @@ name: Dispatch browser suite
 # joins what the shard and alone legs wrote into a single report and publishes the run's flake
 # rate.
 #
-# Two lanes, one input. `pull-request` runs the two projects a pull request is held to, `chromium`
-# and `iphone`, and the fake-embedder job, which holds a check of the pull request it is on;
-# `full` runs all eight parallel projects, the four `-alone` ones, the two-process job, the
-# visual review and that same embedder job. So an unlabelled pull request pays for the rows that
+# Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
+# `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
+# fake-embedder job, which holds a check of the pull request it is on; `full` runs every
+# parallel project, the four `-alone` ones, the two-process job, the visual review and that
+# same embedder job, over every row. So an unlabelled pull request pays for the rows that
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
 # run pay for the rest, each of which has the wall time for them.
 #
@@ -50,9 +51,9 @@ on:
     inputs:
       lane:
         description: >-
-          Which projects run: `pull-request` for `chromium` and `iphone`, the two a pull request
-          is held to, or `full` for every project, the `-alone` ones and the two-process job
-          among them. The shard job reads it for the projects it runs; no job reads it for a
+          Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
+          and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
+          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs; no job reads it for a
           browser to install any more, since the image the shard and alone jobs run in carries
           all three engines. Any other value fails the shard job's browser step by name, before
           it starts a row.
@@ -300,12 +301,14 @@ jobs:
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed again
     # at this branch's head (`bunx playwright test --config e2e/playwright.config.ts --list`),
-    # the shard and alone jobs hold 1,402 rows: 1,345 in the eight projects the full lane's four
-    # shards run, of which 1,244 are in the two the pull-request lane runs. The remaining 57 are
-    # the four `-alone` projects', which the alone job runs - 20, 17 and 17 of the three engine
-    # legs and 3 of `iphone-alone`. The 20 is `chromium-alone`'s two clock specs plus the one
-    # desktop clock row of large-documents.e2e.ts; the 3 are `iphone-alone`'s phone clock rows.
-    # The visual job's 20 rows are in neither figure: it writes no blob report at all.
+    # the shard and alone jobs hold 1,430 rows: 1,373 in the ten projects the full lane's four
+    # shards run - the eight parallel ones and the two stubbed - of which 290 are what the
+    # pull-request lane's four projects run under `@pr`, 147 of them on the real stack. The
+    # remaining 57 are the four `-alone` projects', which the alone job runs - 20, 17 and 17 of
+    # the three engine legs and 3 of `iphone-alone`. The 20 is `chromium-alone`'s two clock
+    # specs plus the one desktop clock row of large-documents.e2e.ts; the 3 are `iphone-alone`'s
+    # phone clock rows. The visual job's 20 rows are in neither figure: it writes no blob report
+    # at all.
     timeout-minutes: 13
     strategy:
       fail-fast: false
@@ -489,12 +492,39 @@ jobs:
           # lane's list is written. An unknown lane ends the step here rather than running the
           # default set under a name nobody meant, and this is the one place that refuses it now
           # that no install step reads the lane for engines.
+          #
+          # `stub` and `stub-phone` are in both lanes: a stubbed row is a row of this suite like
+          # any other, and it runs here rather than in a leg of its own so that neither the leg
+          # capture of the merge job's readings nor its row accounting has to learn a new name.
+          # They start no harness of their own either - this job starts one per lane already, for
+          # the real-stack rows beside them - and the config starts their static file server
+          # itself, for a run that names one of them (e2e/playwright.config.ts's `webServer`).
+          #
+          # `--grep '@pr'` on the pull-request lane alone is what holds that lane to the rows a
+          # pull request is answered by: every stubbed row carries the tag, and so do the
+          # real-stack rows of the journeys that must be seen on a pull request. Playwright
+          # applies a command-line grep **on top of** a project's own, never in place of it -
+          # measured at this branch's base, where `--grep '@pr'` left `iphone` all 99 of its
+          # `@phone` rows and `webkit` 1 of its 40 - so the two tagged projects keep their own
+          # axis. Every row without the tag runs on the full lane, which `ci.yaml` runs for every
+          # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
+          # a displaced row loses is feedback on the pull request itself
+          # (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
+          # the lane to its budget by listing the config with this same grep.
           case "${{ inputs.lane }}" in
-            pull-request) projects="--project=chromium --project=iphone" ;;
+            pull-request)
+              projects="--project=chromium --project=iphone --project=stub --project=stub-phone"
+              # Anchored as `tagged("pr")` is (e2e/configurations.ts), which is what
+              # e2e/__tests__/pull-request-lane.test.ts lists this lane with: a bare `@pr`
+              # would also take a row titled `@prototype`, and the two readings of this lane
+              # must select the same rows or the budget test measures another lane.
+              lane_grep="--grep=(^|\\s)@pr(\\s|$)"
+              ;;
             full)
               projects="--project=chromium --project=iphone --project=webkit --project=webkit-iphone
               --project=firefox --project=firefox-download-navigation --project=chromium-plain-http
-              --project=chromium-plain-http-sign-out"
+              --project=chromium-plain-http-sign-out --project=stub --project=stub-phone"
+              lane_grep=""
               ;;
             *)
               echo "::error::lane must be pull-request or full, not '${{ inputs.lane }}'"
@@ -520,7 +550,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects --shard=${{ matrix.shard }}/4 --reporter=list,blob 2>&1 ||
+          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --reporter=list,blob 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -775,11 +805,11 @@ jobs:
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
         # legs run uploads or downloads anything. chromium-alone runs both clock specs
         # (`clockSpecs`: heavy-bodies and nested-directive, named at
-        # e2e/playwright.config.ts:261) and the one row of large-documents.e2e.ts read at a
-        # desktop width (`desktopClockRow`, :286), which that project takes with the `testMatch`
-        # and `grep` at :521-522; firefox-alone and webkit-alone run heavy-bodies alone (:530,
-        # :542); and iphone-alone runs the three rows of large-documents.e2e.ts that
-        # `phoneClockRows` names (:275) - the two measurements and the timer row. Each
+        # e2e/playwright.config.ts:315) and the one row of large-documents.e2e.ts read at a
+        # desktop width (`desktopClockRow`, :340), which that project takes with the `testMatch`
+        # and `grep` at :575-576; firefox-alone and webkit-alone run heavy-bodies alone (:584,
+        # :596); and iphone-alone runs the three rows of large-documents.e2e.ts that
+        # `phoneClockRows` names (:329) - the two measurements and the timer row. Each
         # large-documents row seeds its document through the API and reads it. And
         # e2e/run.ts:126-130 makes no lane bucket at one worker. A store serving nothing would be
         # charged to the very reading these rows exist for, which is why the `weed` the image
@@ -1694,6 +1724,55 @@ jobs:
             echo "- $text" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice title=dispatch-browser leg exits::$text"
           done < "$unhappy"
+      # Reading four. What a row of each layer costs, which nothing published before: the merge
+      # job printed rows and the flake rate and no duration statistic at all, so
+      # dispatch://INFRA-1407's k1 and dispatch://INFRA-983's R13 had no repeatable command to
+      # read. The two classes are the `stub` and `stub-phone` projects' rows and every other
+      # row, which is what "the project or tag the configuration gives them" names after that
+      # change.
+      #
+      # Read from the merged report's passing results alone, as the per-test budget in
+      # e2e/playwright.config.ts is: a failed row's duration is the time it took to fail or to
+      # reach its timeout, which says nothing about what the row costs, and a skipped row's is
+      # not a run at all. A retried row contributes each attempt it passed, which is one.
+      - name: Reading four, the row durations
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/report.json"
+          if [ ! -f "$report" ]; then
+            echo "::warning::no merged report, so no durations; reading one above says why"
+            exit 0
+          fi
+          # One line per passing result: the class it belongs to and its duration in
+          # milliseconds. `stub` and `stub-phone` are the stubbed layer; every other project is
+          # a row against the real stack.
+          jq -r '[.. | objects | select(has("specs")) | .specs[] | .tests[]] | .[]
+            | (if (.projectName | startswith("stub")) then "stubbed" else "real-stack" end) as $class
+            | .results[] | select(.status == "passed") | "\($class) \(.duration)"' "$report" \
+            > "$RUNNER_TEMP/durations.txt"
+          {
+            echo "### The row durations"
+            echo
+            echo "| class | rows | median ms | 95th percentile ms |"
+            echo "| --- | ---: | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for class in stubbed real-stack; do
+            # The nearest-rank percentile of the sorted durations, which is the reading the
+            # per-test budget's own jq takes, and three zeroes where the lane ran no row of
+            # that class - the pull-request lane before a row moved, or a shard that drew none.
+            stats=$(awk -v want="$class" '$1 == want { print $2 }' "$RUNNER_TEMP/durations.txt" |
+              sort -n |
+              awk '{ d[NR] = $1 } END { if (NR == 0) { print 0, 0, 0 } else {
+                print NR, d[int((NR + 1) / 2)], d[NR < 2 ? 1 : int((NR * 95 + 99) / 100)] } }')
+            # Word splitting is what reads the three figures, so `$stats` is deliberately
+            # unquoted; `set --` is the one way to do that without an array, which this step's
+            # `bash -e {0}` would take but `sh` would not.
+            # shellcheck disable=SC2086
+            set -- $stats
+            echo "| $class | $1 | $2 | $3 |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=dispatch-browser row durations::$class: $1 rows," \
+              "median $2 ms, 95th percentile $3 ms"
+          done
       # The verdict, which the three readings above do not give: they report, and this fails. Two
       # of the job's three failures are here - an upstream job that neither succeeded nor was
       # skipped, the binaries job among them, and a failed row in the merged report - and the
