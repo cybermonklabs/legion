@@ -84,6 +84,8 @@ export const realStackReasons: Record<string, string> = {
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
   "doc.e2e.ts": "every row lives in the live document room, its connections and versions",
   "document-and-comment-read-alike.e2e.ts": "each row asserts inside the live spec editor",
+  "document-refusals.e2e.ts":
+    "every row drives a refusal the document room alone decides - the bounds a browser's update is weighed against and the close code it is given - and reads what the editor shows and whether the stored document moved",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",

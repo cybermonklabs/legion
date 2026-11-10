@@ -218,6 +218,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/doc-reload-line.e2e.ts` | the read-only admission is decided at socket open |
 | `e2e/doc.e2e.ts` | every row lives in the live document room, its connections and versions |
 | `e2e/document-and-comment-read-alike.e2e.ts` | each row asserts inside the live spec editor |
+| `e2e/document-refusals.e2e.ts` | every row drives a refusal the document room alone decides - the bounds a browser's update is weighed against and the close code it is given - and reads what the editor shows and whether the stored document moved |
 | `e2e/document.e2e.ts` | collaboration, uploads, marks, and the live connection dot |
 | `e2e/editor-paste.e2e.ts` | pastes into the live editor, read back after a reload |
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
