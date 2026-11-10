@@ -312,6 +312,7 @@ function DecisionBody({
         />
       )}
       issueKey={ask.issue_key}
+      item={ask.id}
       loadingName={ask.approval?.name ?? ask.document?.name ?? "the document"}
       onAskAnswered={onAnswered}
     />

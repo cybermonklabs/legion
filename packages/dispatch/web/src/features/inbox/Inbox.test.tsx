@@ -8,7 +8,7 @@ import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
@@ -22,6 +22,7 @@ import type {
   Issue,
   IssueDetails,
 } from "../../api/types";
+import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import type { InboxRoute } from "../refs/routes";
@@ -4023,6 +4024,214 @@ test("the answer keys act on the selected decision block, not the first one in t
     expect(answerBox).not.toBeNull();
     expect(firstCard.querySelector("[data-ask-answer]")).toBeNull();
     expect(answerBox).toHaveFocus();
+  } finally {
+    unmount();
+    narrow();
+    getArtifact.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifactText.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    listIssueAsks.mockRestore();
+  }
+});
+
+/** Draws one decision block in the column's editor, as the real editor draws one for every
+ *  `ask` node of the document: the node view stamps its element with the block id, which is
+ *  what the column places itself by. */
+function drawAskBlock(editor: FakeEditor, blockId: string, question: string): void {
+  const nodeViews = editor.viewProps.nodeViews as Record<
+    string,
+    (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+  >;
+  const construct = nodeViews.ask;
+  if (construct === undefined) throw new Error("the ask node view was not installed");
+  act(() => {
+    editor.root.append(construct(askBlockNode(blockId, question)).dom);
+  });
+}
+
+/** A question written as a decision block of `SPEC_DOCUMENT`. Its block stands before any
+ *  heading, so the section the column opens at is the document's start and the placement writes
+ *  `scrollTop` itself: happy-dom lays nothing out, so a scroll to a heading would measure a move
+ *  of zero and say nothing about where the column went. */
+function decisionRow(id: string, blockId: string, question: string): InboxRow {
+  return inboxIssue(id, "CORE-1", question, {
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: blockId,
+  });
+}
+
+test("the first draw of a question's document puts the column at the start of its section", async () => {
+  const narrow = widenToReadingPane();
+  const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+  const rows = [ask];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "",
+    token: "",
+    version: null,
+  });
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
+    rows.map((row) => ({ ...row, last_reply: null }))
+  );
+  const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    // The one scroller outlives the row, so it starts wherever the reader last left it.
+    scroller.scrollTop = 240;
+    drawAskBlock(editor, "block-a", ask.question);
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  } finally {
+    unmount();
+    narrow();
+    getArtifact.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifactText.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    listIssueAsks.mockRestore();
+  }
+});
+
+test("a question's document lost and read again leaves the column where the reader left it", async () => {
+  // One placement is armed for each row the reader opens, so the document going and coming
+  // back - a read that fails and the read after it that lands - arms none. The row waits the
+  // hold's quiet window out before it leaves the reader anywhere: while the hold is on, the
+  // column is the first placement's to write, and a row that read `scrollTop` before it ended
+  // would pass whether or not a second placement had been armed.
+  const narrow = widenToReadingPane();
+  const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+  const rows = [ask];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "",
+    token: "",
+    version: null,
+  });
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
+    rows.map((row) => ({ ...row, last_reply: null }))
+  );
+  const { queryClient, unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    drawAskBlock(editor, "block-a", ask.question);
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    // The drawing has been quiet for longer than the hold waits, so the first placement is over.
+    await act(async () => {
+      await Bun.sleep(QUIET_MS * 3);
+    });
+    scroller.scrollTop = 240;
+
+    // The document's read fails, and the column falls back to the question's own card.
+    getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["artifact", "artifact-1"] });
+    });
+    await waitFor(() => expect(fake.connections[0]?.destroyed).toBe(true));
+
+    // The read after it lands, so the column opens the same document again and draws the block.
+    getArtifact.mockResolvedValue(SPEC_DOCUMENT);
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["artifact", "artifact-1"] });
+    });
+    await waitFor(() => expect(fake.connections).toHaveLength(2));
+    act(() => fake.sync());
+    // The fake's sync reaches every connection it ever made, the one the lost document left
+    // behind among them, so the editor to draw in is the one whose root stands in the column.
+    const reopened = await waitFor(() => {
+      const live = fake.editors.find((candidate) => scroller.contains(candidate.root));
+      if (live === undefined) throw new Error("the column mounted no editor of its own");
+      return live;
+    });
+    drawAskBlock(reopened, "block-a", ask.question);
+    await within(screen.getByTestId("inbox-pane")).findByTestId("ask-ask-a");
+
+    expect(scroller.scrollTop).toBe(240);
+  } finally {
+    unmount();
+    narrow();
+    getArtifact.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifactText.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    listIssueAsks.mockRestore();
+  }
+});
+
+test("opening another question arms a placement of its own", async () => {
+  // Two decision blocks of one document, so the column keeps the document it has open and only
+  // the row the reader opened changes. The row waits the hold's quiet window out first, so the
+  // column the second row writes is written by the second row's own placement.
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+  const second = decisionRow("ask-b", "block-b", "Rename the flag?");
+  const rows = [first, second];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "",
+    token: "",
+    version: null,
+  });
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
+    rows.map((row) => ({ ...row, last_reply: null }))
+  );
+  const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    drawAskBlock(editor, "block-a", first.question);
+    drawAskBlock(editor, "block-b", second.question);
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await act(async () => {
+      await Bun.sleep(QUIET_MS * 3);
+    });
+    scroller.scrollTop = 240;
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
   } finally {
     unmount();
     narrow();

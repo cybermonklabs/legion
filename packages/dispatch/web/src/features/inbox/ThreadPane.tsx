@@ -105,6 +105,7 @@ function ThreadDocumentBody({
         <ThreadPaneHead sectionBlockId={document.sectionBlockId} thread={thread} />
       )}
       issueKey={issueKey}
+      item={thread.thread_id}
       label="Selected thread"
       loadingName={thread.document?.name ?? "the document"}
       onAskAnswered={noAnswer}
