@@ -98,13 +98,13 @@ done
 
 # The one `-skip` line of this repository is daemon-go's race step, and the rule expands
 # packages/daemon now, so the space form below is reachable from a real step and the equals form
-# from none, which is why this case holds both. The parse is what these
-# cases hold: measured at b9e4127d0d78, `-skip '<pattern>'` left the pattern in the command's
-# packages, where `go list` refuses it as a malformed import path and the whole run stops at
-# exit 2 naming a `go list` failure rather than the flag; `-skip=<pattern>` was dropped whole,
-# and the step was reported as running every test of its packages, the skipped ones included,
-# which is the shape that makes the exactly-once rule wrong: a test that runs nowhere reads as
-# covered, and one the step skips reads as a duplicate.
+# from none, which is why this case holds both. The parse is what these cases hold: measured at
+# b9e4127d0d78, `-skip '<pattern>'` left the pattern in the command's packages, where `go list`
+# refuses it as a malformed import path and the whole run stops at exit 2 naming a `go list`
+# failure rather than the flag; `-skip=<pattern>` was dropped whole, and the step was reported as
+# running every test of its packages, the skipped ones included, which is the shape that makes the
+# exactly-once rule wrong: a test that runs nowhere reads as covered, and one the step skips reads
+# as a duplicate.
 echo "case: a -skip is read rather than dropped, in either form a step may write it"
 pattern='^(TestTheShippedWordsNameTheWaitingLineBand)$'
 for form in "-skip '$pattern'" "-skip=$pattern"; do

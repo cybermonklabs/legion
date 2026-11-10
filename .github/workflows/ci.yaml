@@ -1261,8 +1261,11 @@ jobs:
               - '.github/scripts/check-ci-tools.sh'
               # check-ci-tools.sh:609-610 runs it for this repository's own addresses.
               - '.github/scripts/repo-paths.sh'
-              # :1195 runs the gate over this repository's own tree.
+              # :1733 runs the gate over this repository's own tree.
               - '.github/ci-tools.yaml'
+              # The image's own pins, which that same case holds the mise, jj and uv rows to, so
+              # a change to one of those ARGs must run this test.
+              - 'packages/daemon/docker/worker.Dockerfile'
             check_action_pins_test: &check_action_pins_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1547,10 +1550,6 @@ jobs:
               # Its one step sources .github/scripts/ci-tools.sh and fetches the `changie` row of
               # .github/ci-tools.yaml, both of which the tool harness lists above name.
               - '.github/actions/install-changie/**'
-              # The image's own pins, which the manifest check's case over this repository's tree
-              # holds the mise, jj and uv rows to (check-ci-tools.test.sh:1733 runs the gate over
-              # it), so a change to one of those ARGs must run that test here.
-              - 'packages/daemon/docker/worker.Dockerfile'
               # The fold-check step renders every fragment of every package
               # .github/changelog-packages lists, each with its own changie configuration;
               # release-push.test.sh's "Case: fold-notes renders a package with the shipped
@@ -1797,17 +1796,17 @@ jobs:
               # END generated
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
-            # fake-embedder job, the visual review and the merge
-            # job. Every entry is something a browser row reads: the dashboard and its contracts,
-            # the Dispatch server its harness builds, and the two workflow files that hold the
-            # steps. The retired `dispatch` job's filter also held three fixture sets whose only
-            # readers are the dashboard's and the proof editor's unit tests, and they are not here:
-            # dispatch-ui's filter names all three, and with this output ungated on a pull request
-            # they would start four shard machines and the merge job for a fixture-only change.
-            # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
-            # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
-            # that misses a read, never one that is too wide, so a path is in this list because a
-            # browser row reads it and for no other reason.
+            # fake-embedder job, the visual review and the merge job. Every entry is something a
+            # browser row reads: the dashboard and its contracts, the Dispatch server its harness
+            # builds, and the two workflow files that hold the steps. The retired `dispatch` job's
+            # filter also held three fixture sets whose only readers are the dashboard's and the
+            # proof editor's unit tests, and they are not here: dispatch-ui's filter names all
+            # three, and with this output ungated on a pull request they would start four shard
+            # machines and the merge job for a fixture-only change. The dispatch_browser gate in
+            # .github/scripts/ci_job_reads.py says what this suite reads, and check-ci-filters.sh
+            # holds this filter to that gate - it refuses a filter that misses a read, never one
+            # that is too wide, so a path is in this list because a browser row reads it and for
+            # no other reason.
             dispatch_browser:
               - *ci_router
               - *bun_install
@@ -3810,12 +3809,12 @@ jobs:
   # not succeed, all of them but lint, which runs on every change anyway, run rather than skip.
   # ci-ok fails then anyway (ci-ok.sh), so this buys signal: their results while `changes` is
   # broken. The set is main's fail-open typecheck and test, and every job that took a suite from
-  # that test job: its daemon Go tests are daemon-go's, the plugin pack test is plugin-pack's, the
-  # daemon's text checks are text-checks' and `bun test scripts/sessions` is sessions-script's, so
-  # each of those carries the term too and a suite that moves out of a fail-open job takes it with
-  # it. A re-run of only the failed jobs can leave the jobs `changes` then selects skipped, and
-  # ci-ok fails a selected job that skipped rather than passing with nothing tested: re-run every
-  # job instead.
+  # that test job: its daemon Go tests are daemon-go's, the three tests that load a plugin on the
+  # real Oh My Pi are plugin-pack's, the daemon's text checks are text-checks' and `bun test
+  # scripts/sessions` is sessions-script's, so each of those carries the term too and a suite that
+  # moves out of a fail-open job takes it with it. A re-run of only the failed jobs can leave the
+  # jobs `changes` then selects skipped, and ci-ok fails a selected job that skipped rather than
+  # passing with nothing tested: re-run every job instead.
   typecheck:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.typecheck == 'true') }}
@@ -3901,11 +3900,13 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The one test of the daemon's Go suite that packs the two plugin releases and loads them on
-  # the real Oh My Pi. It left daemon-go above in dispatch://INFRA-1413: the pack reads bun.lock
-  # and the two plugin packages, so that filter named the lockfile and a lockfile change ran the
-  # daemon's whole Go suite. Here it runs on its own inputs, and the daemon-go race step skips
-  # it by name (.github/scripts/ci_job_reads.py's PACK_TESTS builds both steps' text).
+  # The three tests of the daemon's Go suite that load a plugin on the real Oh My Pi: the one that
+  # packs the two plugin releases and loads them, and the two prompt probes. They left daemon-go
+  # above in dispatch://INFRA-1413: the pack reads bun.lock and the two plugin packages, and the
+  # agent-model probe stages skills/, so that filter named the lockfile and skills/, and a change
+  # to either ran the daemon's whole Go suite. Here they run on their own inputs, and the
+  # daemon-go race step skips them by name (.github/scripts/ci_job_reads.py's PLUGIN_PACK_TESTS
+  # builds both steps' text).
   plugin-pack:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.plugin_pack == 'true') }}

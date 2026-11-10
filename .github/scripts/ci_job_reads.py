@@ -1363,7 +1363,10 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
         (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:609-610 runs it in bash for plugin_download_url, and "
                                      "check-ci-tools.test.sh:83 links it into every fixture"),
-        (".github/ci-tools.yaml", "check-ci-tools.test.sh:1195 runs the gate over this repository's own tree"),
+        (".github/ci-tools.yaml", "check-ci-tools.test.sh:1733 runs the gate over this repository's own tree"),
+        (f"{DAEMON}/docker/worker.Dockerfile",
+         "check-ci-tools.test.sh:1733 runs the gate over that same tree, where it holds the mise, jj and uv "
+         "rows of .github/ci-tools.yaml to this file's ARG MISE_VERSION, ARG JJ_TOOL and ARG UV_VERSION"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -1626,10 +1629,6 @@ GATES = [
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:179-187"),
         ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
-        (f"{DAEMON}/docker/worker.Dockerfile",
-         f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh's \"this repository's own tree\" case "
-         "runs the gate over it, where the gate holds the mise, jj and uv rows of .github/ci-tools.yaml to this "
-         "file's ARG MISE_VERSION, ARG JJ_TOOL and ARG UV_VERSION"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
         (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:19-20 installs the changie row's tarball"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-changie/action.yml:18 sources it, and ci_tools_fetch "

@@ -29,11 +29,12 @@ on:
 jobs:
   tool-fallback:
     runs-on: ubuntu-24.04
-    # The budget, added up from the slowest run this job can have, the way the tool-fallback-arm
-    # job below adds up its own, and not derived any more from the four installs this job began
-    # with: the two checkouts and the runner's download of the actions (2), the two steps that
-    # read the package and the manifest (1), `stage`, which now moves about 165 MB more over
-    # the network than it did — the CLI's 119816773-byte archive, the plugin's 24184600, uv's
+    # The budget, added up from the slowest run this job can have, the way the
+    # tool-fallback-arm job of .github/workflows/ci-job-tool-fallback-arm.yaml adds up its
+    # own, and not derived any more from the four installs this job began with: the two
+    # checkouts and the runner's download of the actions (2), the two steps that read the
+    # package and the manifest (1), `stage`, which now moves about 165 MB more over the
+    # network than it did — the CLI's 119816773-byte archive, the plugin's 24184600, uv's
     # 16682639-byte archive, fetched once, with the 37597160-byte binary taken out of that
     # staged archive rather than fetched, and elan's 4996571 — and packs a 37 MB zip beside
     # the 107 MB Bun tarball (6), a count neither that 16 MB nor the second fetch of it this

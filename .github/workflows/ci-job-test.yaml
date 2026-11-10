@@ -517,7 +517,7 @@ jobs:
 
       # Beside the two checks above, and needing no Go either: every case is one line of text,
       # read by the line reader of .github/scripts/go-test-step-expansion.py, whose own run
-      # compiles both Go modules and is run by hand rather than by any job.
+      # compiles the three Go modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh
