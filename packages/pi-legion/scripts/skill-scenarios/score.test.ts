@@ -45,7 +45,7 @@ beforeAll(() => {
 
 /** The session id of a run's first agent, and of the half the rig boots after it: the score
  * reads who sent a message by the sender Envoy recorded against the session id of that half's
- * own transcript (score.ts's `sessionOf`), so the two halves of a run are two sessions. */
+ * own transcript (score.ts's `ownSession`), so the two halves of a run are two sessions. */
 const FIRST_SESSION = "01a0f2cc";
 const SECOND_SESSION = "01b1f3dd";
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
@@ -3226,9 +3226,9 @@ const publishCall = (role: string, text: string, at = "2026-09-30T17:42:00.000Z"
 });
 /** The reviewer's own read of the record, which the rule has it make before it sends: the
  * `legion` tool's `read_record`, answered with the issue in `accepting` (review-threads.md step
- * 1). The score reads this call and the stand-in's line for the read it made, since every other
- * caller of `/legion/v1/state` — `handoff_complete`, the phase reminder — reads the same route
- * and says nothing about the reviewer having read the record. */
+ * 1). The score reads this call and its own answer, since every other caller of
+ * `/legion/v1/state` — `handoff_complete`, the phase reminder — reads the same route and says
+ * nothing about the reviewer having read the record. */
 const readRecord = (at = "2026-09-30T17:40:30.000Z", phase = "accepting") => [
   {
     type: "message",
@@ -3258,6 +3258,58 @@ const readRecord = (at = "2026-09-30T17:40:30.000Z", phase = "accepting") => [
     },
   },
 ];
+/** The same read made through a `write` to `xd://legion`, whose result carries the tool's own
+ * answer one level down, and through an `eval` cell, whose result carries whatever it printed.
+ * Which tool carried the call is no part of the rule, so the score reads the record from the
+ * answer on each route through one schema. */
+const readRecordVia = (
+  route: "xd" | "eval" | "eval-unreadable",
+  at = "2026-09-30T17:40:30.000Z"
+) => {
+  const record = { key: "LWEVAL-1", phase: "accepting", status: "needs_review" };
+  const call =
+    route === "xd"
+      ? {
+          type: "toolCall",
+          id: `call-read-${route}`,
+          name: "write",
+          arguments: { path: "xd://legion", content: JSON.stringify({ op: "read_record" }) },
+        }
+      : {
+          type: "toolCall",
+          id: `call-read-${route}`,
+          name: "eval",
+          arguments: {
+            language: "py",
+            code: 'print(tool.legion({"op": "read_record", "issue": "LWEVAL-1"}))',
+          },
+        };
+  const result =
+    route === "xd"
+      ? { text: "wrote xd://legion", details: { xdev: { inner: { record } } } }
+      : route === "eval"
+        ? {
+            text: `the cell printed ${JSON.stringify({ record })}`,
+            details: { cells: [{ language: "py" }], language: "py" },
+          }
+        : {
+            text: "the cell printed <Record object at 0x7f>",
+            details: { cells: [{ language: "py" }], language: "py" },
+          };
+  return [
+    { type: "message", timestamp: at, message: { role: "assistant", content: [call] } },
+    {
+      type: "message",
+      timestamp: at,
+      message: {
+        role: "toolResult",
+        toolCallId: `call-read-${route}`,
+        content: [{ type: "text", text: result.text }],
+        details: result.details,
+      },
+    },
+  ];
+};
 /** The reviewer's wake of the implementer, which an approval that leaves text threads open owns:
  * the daemon starts no phase for the fix, so the implementer learns its turn began from this
  * message naming the head the fix lands above, and from nothing else. */
@@ -3267,9 +3319,9 @@ const toldImplementer = (commit: string, at?: string) =>
     `Approved ${commit}: the two text threads are yours to close above it.`,
     at
   );
-/** The daemon lines a clean round leaves: the completion the stand-in accepted, and the
- * reviewer's own read of the record after it, which is when `read_record` first answers
- * `accepting`. The publish of a passing run is stamped after both (publishTo's default). */
+/** The daemon line a clean round leaves: the completion the stand-in accepted. The round's own
+ * state reads are no part of the score, which reads the reviewer's `read_record` and its answer
+ * from the transcript. */
 const reviewDaemon = [
   {
     at: "2026-09-30T17:40:00.000Z",
@@ -3277,7 +3329,6 @@ const reviewDaemon = [
     status: 200,
     grantId: "g-1",
   },
-  { at: "2026-09-30T17:41:00.000Z", path: "/legion/v1/state", status: 200, served: "accepting" },
 ];
 function reviewRun(
   name: string,
@@ -3325,11 +3376,9 @@ reviewRun(
 );
 // head-36: the stand-in answered the read 200 and the agent's own plugin refused the body, which
 // is what a label whose contract requires a key the stand-in stopped serving reads on every state
-// read (measured on 2026-11-10: all 30 runs of the base label, against 0 of the head's). An agent
-// whose `read_record` is refused cannot take the step the rule names and spends its turns on the
-// daemon, so the run is a rig error naming the refused read rather than a row of its own — and
-// without this the base arm, the negative control of k1 and k2, reports `0 pass` for the right
-// reason and the wrong reason at once.
+// read (`daemon-standin.ts`'s `settings` line tells that measurement). An agent whose
+// `read_record` is refused cannot take the step the rule names, so the run is a rig error naming
+// the refused read rather than a row whose wake was never sent.
 // head-37: the reviewer published the wake and read the record after it. The rule's order is the
 // other way round — the record first, because the round ends on both halves and a push between an
 // accepted completion and the review's webhook voids the approval — so a run that read it late
@@ -3343,6 +3392,45 @@ reviewRun(
   },
   [...header, ...turn, ...readRecord("2026-09-30T17:43:00.000Z")]
 );
+// The same read on the other two routes a session can reach the tool by, and one whose answer
+// this cannot read at all. Which tool carried the call is no part of the rule — head-38 writes to
+// `xd://legion`, whose result carries the tool's answer as `details.xdev.inner`, and head-39 runs
+// an `eval` cell, whose result carries what it printed — so both pass. head-40's cell printed no
+// record this can parse, which is the reader's limit and a rig error, never a round that read no
+// record.
+reviewRun(
+  "reviewer-text-findings-text-only-head-38",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [...header, ...turn, ...readRecordVia("xd")]
+);
+reviewRun(
+  "reviewer-text-findings-text-only-head-39",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [...header, ...turn, ...readRecordVia("eval")]
+);
+reviewRun(
+  "reviewer-text-findings-text-only-head-40",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+  },
+  [...header, ...turn, ...readRecordVia("eval-unreadable")]
+);
+// head-41: the reviewer completed, read `accepting` and published, and only then submitted its
+// approval. The stand-in moves to `accepting` on any accepted completion of `reviewing`, while
+// the daemon needs the review as well, so the read alone cannot see that window — and that window
+// is the one the rule exists to close. The passing order is every other text-only head run:
+// submission, then the read, then the publish.
+reviewRun("reviewer-text-findings-text-only-head-41", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([{ ...submission(approval()), at: "2026-09-30T17:45:00.000Z" }]),
+});
 reviewRun(
   "reviewer-text-findings-text-only-head-36",
   {
@@ -4369,7 +4457,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/13\t0/13\t1\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t5/16\t0/16\t2\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4661,7 +4749,7 @@ test("published: the harness reads every message the score counts, in order", ()
 // with its review — before the completion and before `read_record` could answer `accepting` —
 // scores the same as one that waited, which is the ordering `workflow/review.go` makes
 // load-bearing and the reviewer's own round-1 finding.
-test("reviewer-text-findings, text-only: a wake sent before the record was read fails, whether it was early or the record was never read", () => {
+test("reviewer-text-findings, text-only: a wake sent before the record was read, before the approval, or with no read at all, fails", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-30\tpass=false\t.*event=APPROVE .*toldImplementer=false /
   );
@@ -4671,6 +4759,32 @@ test("reviewer-text-findings, text-only: a wake sent before the record was read 
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-37\tpass=false\t.*event=APPROVE .*toldImplementer=false /
   );
+  // The publish landed after the accepted completion and the accepting read, and before the
+  // approval it is supposed to follow.
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-41\tpass=false\t.*event=APPROVE .*toldImplementer=false /
+  );
+  // And the right order still passes: submission, read, publish (head-1, head-2, head-4 …).
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-1\tpass=true\t.*event=APPROVE .*toldImplementer=true /
+  );
+});
+// Catches: a scorer that accepts a `read_record` made through `xd://legion` or an `eval` cell at
+// the call and drops it at the answer, which is what reading `details.record` alone did: both
+// routes carry the record elsewhere, so a reviewer that obeyed the rule through either scored as
+// one that never read. And a cell whose answer holds no record this can parse is the reader's
+// limit, so it is a rig error rather than a round that read none.
+test("reviewer-text-findings, text-only: the record is read on every route, and an answer this cannot read is a rig error", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-38\tpass=true\t.*toldImplementer=true /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-39\tpass=true\t.*toldImplementer=true /
+  );
+  expect(out).toContain(
+    "reviewer-text-findings-text-only-head-40\trig error: the run's own agent made a read_record this cannot read the answer of"
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-40\tpass=");
 });
 // Catches: a scorer that reads a run whose agent could not read the daemon at all as a row of
 // its own. Each label's agents load the plugin of their own checkout, so a stand-in body one

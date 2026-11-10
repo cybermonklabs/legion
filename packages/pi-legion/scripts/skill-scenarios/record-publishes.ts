@@ -68,7 +68,7 @@ const Envelope = z.looseObject({
   issued_at: z.number(),
   payload_summary: z.string(),
   payload: z.string().optional(),
-  source_session: z.string().optional(),
+  source_session: z.string().min(1),
 });
 
 const line = (value: Record<string, unknown>) =>
@@ -142,7 +142,7 @@ for await (const message of subscription) {
     // A message of one line is its summary and its payload is empty; a longer one is the payload
     // whole (`messageEnvelope`, `packages/envoy/cmd/listener/api.go`).
     message: payload !== undefined && payload !== "" ? payload : payload_summary,
-    sender: source_session ?? "",
+    sender: source_session,
     subject: message.subject,
   });
 }

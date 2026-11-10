@@ -124,14 +124,9 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a stand-in that serves the settings of this checkout's contract alone. Each label's
-// agents load the plugin of their own checkout, and `legionSettings` is a loose object in every
-// one of them, so a body carrying every key any label requires is described by all of them while
-// one carrying a subset is refused by the rest — silently, in that label alone. Measured on
-// 2026-11-10: the base label, built from main `ff2a10ef`, whose contract requires
-// `settings.max_fix_attempts`, had every state read of all 30 of its runs refused, against 0 of
-// the head label's, and every base row still read `0 pass` for its own reasons, so the negative
-// control of k1 and k2 was measured in a world of its own.
+// Catches: a stand-in that serves the settings of this checkout's contract alone, which breaks
+// every label whose contract requires a key this one dropped — silently, in that label alone
+// (the measurement that found it is told once, at `daemon-standin.ts`'s `settings` line).
 test.skipIf(skip)(
   "the state read serves every settings key a label's contract requires",
   async () => {
