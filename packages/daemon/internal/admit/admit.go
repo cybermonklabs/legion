@@ -2272,11 +2272,12 @@ func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	if held == nil || held.State != supervise.StateRetired {
 		return false
 	}
-	// A row at or below the mark carries a payload written before the retirement was recorded,
+	// A row at or below the mark took its number before the retirement took its own (store's
+	// putClaim says what that order does and does not show of two writes in flight together),
 	// so the stop is the whole of its story: whatever it was written for, the worker it would
 	// reach is gone, and its only effect when a slot came would be to start a stopped worker.
 	//
-	// A row above the mark was written after the stop, so it is the workflow's own next start of
+	// A row above the mark took its number after it, so it is the workflow's own next start of
 	// this worker — a re-admitted tree's promotion, the held phase's retry — and the row is the
 	// whole of that start. Ending it would end the way back: the issue would leave the waiting
 	// line, since the line's first part is the issues that owe a start (record.Waiting), and

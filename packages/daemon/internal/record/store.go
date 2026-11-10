@@ -2307,12 +2307,14 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 // ReplaceOutboxPayload replaces the payload of a leased row with one of the row's own kind,
 // answering false for a row the lease no longer holds.
 //
-// The rewrite takes a fresh number from outbox_write_mark_seq, as every other write of a
-// payload does (ReplaceOwedStart, and an insert through the column's own default): the mark is
-// the write that last put a payload in the row, and a rewrite that left it where it stood would
-// be a payload written at one moment carrying the number of another. No reader weighs this
-// caller's row — auto-merge's ready_merge row, which the stop rule never reads — so what the
-// mark buys here is that the column means one thing for every row of the table.
+// The rewrite takes a fresh number from outbox_write_mark_seq, as ReplaceOwedStart's rewrite
+// and an insert through the column's own default do: the mark is the write that last put a
+// payload in the row, and a rewrite that left it where it stood would be a payload written at
+// one moment carrying the number of another. No reader weighs this caller's row — auto-merge's
+// ready_merge row, which the stop rule never reads. The two upserts that rewrite a payload of
+// their own kind in place (EnqueueGatedSteps' and readyMergeConflict's) leave the mark the row's
+// first insert took, so the column is held to say when a payload was written only for the
+// supervise start rows the stop rule reads (OwedStarts).
 func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, payload OutboxPayload) (bool, error) {
 	if err := validateOutboxPayload(payload); err != nil {
 		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)

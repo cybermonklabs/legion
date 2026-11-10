@@ -20,7 +20,7 @@
 --
 -- outbox_write_mark_seq numbers writes rather than rows, and both sides draw from it: an insert
 -- of an outbox row takes a number through the column's own default, and ReplaceOwedStart takes
--- one explicitly on every rewrite, so a row's write_mark is the moment its payload was last
+-- one explicitly on every rewrite, so a start row's write_mark is the moment its payload was last
 -- written and not the moment the row was first queued. Beside it, claims.retired_at_write_mark
 -- takes a number from that same sequence, in the write that records a retirement and on the
 -- transition into retired alone (store's putClaim), and stopOutlivedStart ends an owed row whose
