@@ -43,14 +43,17 @@ type RawPool struct {
 	name string
 }
 
-// busy maps an acquire that ran out this pool's bound to ErrPoolBusy (poolBusy).
-func (r *RawPool) busy(ctx context.Context, err error) error { return poolBusy(ctx, r.name, err) }
+// busy maps a call of this pool's that a bound of the server's ended to ErrPoolBusy, or to
+// ErrStatementOutcomeUnknown where the call is a statement that commits itself (poolBusy).
+func (r *RawPool) busy(ctx context.Context, err error, commits outcome) error {
+	return poolBusy(ctx, r.name, err, commits)
+}
 
 // Acquire takes a connection the caller holds until it releases it: the lease a maintenance pass
 // holds for its whole pass, and the connection Listener hijacks.
 func (r *RawPool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	conn, err := r.Pool.Acquire(ctx)
-	return conn, r.busy(ctx, err)
+	return conn, r.busy(ctx, err, commitsNothing)
 }
 
 // AcquireFunc runs fn with a connection of the pool. Only the acquire's error is mapped: fn's own
@@ -67,7 +70,7 @@ func (r *RawPool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error)
 // Query runs a query on a connection of the pool, which the rows hold until they close.
 func (r *RawPool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	rows, err := r.Pool.Query(ctx, sql, args...)
-	return rows, r.busy(ctx, err)
+	return rows, r.busy(ctx, err, commitsItself)
 }
 
 // QueryRow runs a single-row query on a connection of the pool. pgxpool defers an acquire's error
@@ -79,7 +82,7 @@ func (r *RawPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 // Exec runs a statement on a connection of the pool.
 func (r *RawPool) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	tag, err := r.Pool.Exec(ctx, sql, args...)
-	return tag, r.busy(ctx, err)
+	return tag, r.busy(ctx, err, commitsItself)
 }
 
 // SendBatch runs a batch on a connection of the pool. pgxpool defers an acquire's error to the
@@ -96,7 +99,7 @@ func (r *RawPool) CopyFrom(
 	source pgx.CopyFromSource,
 ) (int64, error) {
 	copied, err := r.Pool.CopyFrom(ctx, table, columns, source)
-	return copied, r.busy(ctx, err)
+	return copied, r.busy(ctx, err, commitsItself)
 }
 
 // Begin opens a transaction of its own on a connection of the pool. Unlike a wrapped pool's it is
@@ -105,18 +108,18 @@ func (r *RawPool) CopyFrom(
 // no request.
 func (r *RawPool) Begin(ctx context.Context) (pgx.Tx, error) {
 	tx, err := r.Pool.Begin(ctx)
-	return tx, r.busy(ctx, err)
+	return tx, r.busy(ctx, err, commitsNothing)
 }
 
 // BeginTx opens a transaction with options, as Begin opens one.
 func (r *RawPool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := r.Pool.BeginTx(ctx, options)
-	return tx, r.busy(ctx, err)
+	return tx, r.busy(ctx, err, commitsNothing)
 }
 
 // Ping takes a connection and asks the database to answer on it.
 func (r *RawPool) Ping(ctx context.Context) error {
-	return r.busy(ctx, r.Pool.Ping(ctx))
+	return r.busy(ctx, r.Pool.Ping(ctx), commitsNothing)
 }
 
 // SharedPoolSize bounds the shared pool - the request pool - deliberately and in code. pgx's

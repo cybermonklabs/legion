@@ -402,7 +402,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	subject := r.ctx.SignInRule.Subject(session.Claims)
 	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, email, subject, session.RefreshToken); err != nil {
-		writeUnservedOr500(w, req, err, slog.LevelError, "dispatch: record sign-in failed", "record sign-in", "email", email)
+		writeUnservedOr500(w, req, err, true, slog.LevelError, "dispatch: record sign-in failed", "record sign-in", "email", email)
 		return
 	}
 	if !r.issueSession(w, req, email, subject) {
@@ -429,7 +429,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 		var err error
 		generation, err = r.ctx.Sessions.EnsureSession(req.Context(), email)
 		if err != nil {
-			writeUnservedOr500(w, req, err, slog.LevelError, "dispatch: ensure session generation failed", "session generation", "email", email)
+			writeUnservedOr500(w, req, err, true, slog.LevelError, "dispatch: ensure session generation failed", "session generation", "email", email)
 			return false
 		}
 	}
@@ -440,7 +440,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 				writeCodeError(w, http.StatusConflict, "another Google account signed in to this address meanwhile; start over at /auth/start", "SIGNIN_SUPERSEDED")
 				return false
 			}
-			writeUnservedOr500(w, req, err, slog.LevelError, "dispatch: read the account the sign-in recorded failed", "record sign-in", "email", email)
+			writeUnservedOr500(w, req, err, false, slog.LevelError, "dispatch: read the account the sign-in recorded failed", "record sign-in", "email", email)
 			return false
 		}
 	}
@@ -455,7 +455,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	}
 	if r.ctx.Sessions != nil {
 		if err := r.ctx.Sessions.RevokeSessions(req.Context(), email); err != nil {
-			writeUnservedOr500(w, req, err, slog.LevelWarn, "dispatch: revoke sessions failed", "revoke session", "email", email)
+			writeUnservedOr500(w, req, err, true, slog.LevelWarn, "dispatch: revoke sessions failed", "revoke session", "email", email)
 			return
 		}
 	}
@@ -947,8 +947,17 @@ func oauthStateCookieFor(value string, maxAge int, secure bool) *http.Cookie {
 // with one line at level naming message, attrs and the error. Every route of this package that
 // answers a failed store call does it this way, so each answers alike. The caller returns after
 // it: the request is answered whichever branch was taken.
-func writeUnservedOr500(w http.ResponseWriter, req *http.Request, err error, level slog.Level, message, publicMessage string, attrs ...any) {
-	if admission.WriteUnserved(w, req.Context(), err) {
+//
+// wrote is whether the call this answers writes, which the method cannot say here: these routes
+// are mounted on GET and write anyway - the sign-in callback records the person, their sign-in
+// and their session generation - so each caller states it. A write the database stopped
+// answering after it reached the database may have committed, and is answered 500
+// COMMIT_OUTCOME_UNKNOWN rather than offered the retry that would advance a session generation
+// or record a sign-in twice; a read of theirs is offered the retry (admission.WriteUnserved).
+func writeUnservedOr500(
+	w http.ResponseWriter, req *http.Request, err error, wrote bool, level slog.Level, message, publicMessage string, attrs ...any,
+) {
+	if admission.WriteUnserved(w, req.Context(), err, wrote) {
 		return
 	}
 	slog.Log(req.Context(), level, message, append(attrs, "error", err)...)

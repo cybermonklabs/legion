@@ -197,8 +197,12 @@ func (p *Pool) Config() *pgxpool.Config { return p.pool.Config() }
 // Stat reports the pool's current connection counts.
 func (p *Pool) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
-// busy maps an acquire that ran out this pool's bound to ErrPoolBusy (poolBusy).
-func (p *Pool) busy(ctx context.Context, err error) error { return poolBusy(ctx, p.name, err) }
+// busy maps a call of this pool's that a bound of the server's ended to ErrPoolBusy, or to
+// ErrStatementOutcomeUnknown where the call is a statement that commits itself (poolBusy):
+// commits is what this call can have left behind at the database.
+func (p *Pool) busy(ctx context.Context, err error, commits outcome) error {
+	return poolBusy(ctx, p.name, err, commits)
+}
 
 // refuseOrPin is the refusal every way this pool hands out a connection makes first, and the
 // pinned connection to run the call on where ctx pins one on this pool (nil where it pins none).
@@ -308,7 +312,7 @@ func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, er
 	rows, err := on.Query(ctx, sql, args...)
 	if err != nil {
 		finished(done)
-		return nil, p.busy(ctx, err)
+		return nil, p.busy(ctx, err, commitsItself)
 	}
 	// A context without a mark pins nothing, so done is nil whenever release is.
 	release := hold(ctx)
@@ -373,7 +377,7 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	}
 	tag, err := on.Exec(ctx, sql, args...)
 	finished(done)
-	return tag, p.busy(ctx, err)
+	return tag, p.busy(ctx, err, commitsItself)
 }
 
 // Acquire takes a pooled connection the caller holds until it releases it. Under a pin it hands
@@ -385,7 +389,7 @@ func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 		return conn, err
 	}
 	conn, err = p.pool.Acquire(ctx)
-	return conn, p.busy(ctx, err)
+	return conn, p.busy(ctx, err, commitsNothing)
 }
 
 // handOver is Acquire's refusal and its pinned connection: ErrNestedAcquire for a caller holding a
@@ -420,7 +424,7 @@ func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) er
 	}
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
-		return p.busy(ctx, err)
+		return p.busy(ctx, err, commitsNothing)
 	}
 	defer conn.Release()
 	return fn(conn)
@@ -447,7 +451,7 @@ func (p *Pool) CopyFrom(
 	}
 	copied, err := on.CopyFrom(ctx, table, columns, source)
 	finished(done)
-	return copied, p.busy(ctx, err)
+	return copied, p.busy(ctx, err, commitsItself)
 }
 
 // SendBatch runs a batch on a pooled connection. pgxpool defers an acquire's error to the
@@ -499,7 +503,7 @@ func (p *Pool) begin(ctx context.Context, on connection, done func(), options pg
 	tx, err := on.BeginTx(ctx, options)
 	if err != nil {
 		finished(done)
-		return nil, p.busy(ctx, err)
+		return nil, p.busy(ctx, err, commitsNothing)
 	}
 	release := hold(ctx)
 	if release == nil {
@@ -731,7 +735,8 @@ func (b errBatchResults) QueryRow() pgx.Row                { return errRow{err: 
 func (b errBatchResults) Close() error                     { return b.err }
 
 // busyRow maps a deferred acquire error to ErrPoolBusy when the row is scanned, and gives back the
-// pinned connection the row was read on, if any, once it is.
+// pinned connection the row was read on, if any, once it is. The call it carries the error of is
+// the statement itself, which runs outside any transaction (commitsItself).
 type busyRow struct {
 	pgx.Row
 	ctx  context.Context
@@ -742,11 +747,12 @@ type busyRow struct {
 func (r busyRow) Scan(dest ...any) error {
 	err := r.Row.Scan(dest...)
 	finished(r.done)
-	return poolBusy(r.ctx, r.pool, err)
+	return poolBusy(r.ctx, r.pool, err, commitsItself)
 }
 
 // busyBatchResults maps a deferred acquire error to ErrPoolBusy in every result the caller reads,
-// and gives back the pinned connection the batch ran on, if any, once it closes.
+// and gives back the pinned connection the batch ran on, if any, once it closes. Its statements
+// run outside any transaction, as a single statement's do (commitsItself).
 type busyBatchResults struct {
 	pgx.BatchResults
 	ctx  context.Context
@@ -756,12 +762,12 @@ type busyBatchResults struct {
 
 func (b busyBatchResults) Exec() (pgconn.CommandTag, error) {
 	tag, err := b.BatchResults.Exec()
-	return tag, poolBusy(b.ctx, b.pool, err)
+	return tag, poolBusy(b.ctx, b.pool, err, commitsItself)
 }
 
 func (b busyBatchResults) Query() (pgx.Rows, error) {
 	rows, err := b.BatchResults.Query()
-	return rows, poolBusy(b.ctx, b.pool, err)
+	return rows, poolBusy(b.ctx, b.pool, err, commitsItself)
 }
 
 func (b busyBatchResults) QueryRow() pgx.Row {
@@ -771,5 +777,5 @@ func (b busyBatchResults) QueryRow() pgx.Row {
 func (b busyBatchResults) Close() error {
 	err := b.BatchResults.Close()
 	finished(b.done)
-	return poolBusy(b.ctx, b.pool, err)
+	return poolBusy(b.ctx, b.pool, err, commitsItself)
 }

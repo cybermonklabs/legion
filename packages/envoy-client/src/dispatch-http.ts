@@ -378,10 +378,13 @@ function refusalError(
  * Whether Dispatch's refusal `code`, answered with `status` to `method`, is one the client waits
  * out (`Retry-After`) and asks again. A `429 OVERLOADED` (admission) or `429 EDIT_QUEUE_FULL` (the
  * document writer queue) was sent before the request ran, or with its key released, so any method
- * may repeat it. A `503 DATABASE_BUSY` (no database connection in time) or `503 REQUEST_TIMEOUT`
- * (the read deadline) can come after a write committed, so only a read (GET, HEAD) repeats it; a
- * POST's or PATCH's retry is left to its idempotency key (`#sendOnce`), and a PUT's or DELETE's,
- * which has none, to its caller. Every other answer is the caller's at once.
+ * may repeat it. A `503 DATABASE_BUSY` (a bound of the server's own ended a call before the
+ * database answered it, and nothing of that call committed) or `503 REQUEST_TIMEOUT` (the read
+ * deadline) can still come after an earlier statement of a write committed, so only a read (GET,
+ * HEAD) repeats it; a POST's or PATCH's retry is left to its idempotency key (`#sendOnce`), and a
+ * PUT's or DELETE's, which has none, to its caller. A `500 COMMIT_OUTCOME_UNKNOWN` is never
+ * waited out and carries no `Retry-After`: the write may have landed, so the caller reads what it
+ * would have written before sending it again. Every other answer is the caller's at once.
  */
 function waitsOut(method: string, status: number, code: string | undefined): boolean {
   if (status === 429) return code === "OVERLOADED" || code === "EDIT_QUEUE_FULL";

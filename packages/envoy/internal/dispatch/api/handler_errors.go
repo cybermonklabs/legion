@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -20,20 +19,14 @@ import (
 
 // The codes writeHandlerError answers a document it cannot read or serve and an unclassified
 // failure with, which a comment's or ask's single read also carries as anchor_block_error
-// (anchorBlock).
+// (anchorBlock). The codes of a request the server could not serve, and of a call it never got
+// an answer to, are admission's (admission.CodeDatabaseBusy,
+// admission.CodeCommitOutcomeUnknown).
 const (
 	codeDocSchema             = "DOC_SCHEMA"
 	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
 	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
 	codeInternal              = "INTERNAL"
-	// codeCommitOutcomeUnknown is a commit the database did not answer within its bound
-	// (store.ErrCommitTimeout), answered 500. It is not a 503: a 503 with Retry-After tells a
-	// client to send the request again, and this one may have committed - the server does not
-	// know - so a blind retry would write it twice. A code of its own tells it from the
-	// INTERNAL of a failure that wrote nothing, so a client reads what the write would have
-	// written, or sends it again under its idempotency key, which answers a replay rather than
-	// writing again.
-	codeCommitOutcomeUnknown = "COMMIT_OUTCOME_UNKNOWN"
 )
 
 // documentErrorCode names an error a document operation returns when it could not read or serve
@@ -93,51 +86,16 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
-// writeHandlerError answers r, whose handler failed with err. A database call the server made
-// and never got an answer to is told first: its outcome, unlike every other failure's, is
-// unknown, so the operator's log carries the ERROR line whether or not a client is still there
-// to be told. A request the server could not serve - its deadline passed, its client went away,
-// or a bound of the server's own ended one of its calls before the database answered it and
-// before anything of it could have committed - comes next, as admission.WriteUnserved
-// answers it: a retryable 503, or nothing for a client that is gone, and never an ERROR line,
-// since under load every request may meet one. Only then is err mapped to the failure it names.
+// writeHandlerError answers r, whose handler failed with err. A request the server could not
+// serve - its deadline passed, its client went away, or a bound of the server's own ended one of
+// its calls before the database answered it - and a call it never got an answer to, whose
+// outcome is unknown, are both admission.WriteUnserved's to answer, and it is asked first: a
+// retryable 503, a 429, nothing for a client that is gone, or the 500 naming the unknown
+// outcome. Whether this request can have written is what that answer turns on, and the route's
+// method is what says so (admission.Reads): no GET of the table writes. Only then is err mapped
+// to the failure it names.
 func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
-	// The write may have committed: the server sent the statement and never heard back. That is
-	// the COMMIT whose ten-second bound passed or whose socket timed out under it
-	// (store.ErrCommitTimeout), and it is also a statement a pool ran outside any transaction,
-	// which commits itself, that reached the database and was not answered
-	// (store.ErrStatementOutcomeUnknown) - a revoked agent token, a keyed request's
-	// bookkeeping. Only a write route is told this way: what a GET runs commits nothing, and a
-	// client that sends the GET again only reads, so that one is refused as busy below.
-	//
-	// The operator's log says so at ERROR, since a database that leaves a write unanswered
-	// is a fault, not load the server is meant to absorb. A write runs on its client's context
-	// unless it is keyed, and only the commit itself is detached (store.CommitContext), so a
-	// client that leaves while the commit runs out its bound is the likeliest way this is met:
-	// the 500 then goes to nobody, and the line records the 499 that it is, but the unknown
-	// outcome is reported either way.
-	statementUnknown := store.IsStatementOutcomeUnknown(err)
-	if store.IsCommitTimeout(err) || (statementUnknown && r.Method != http.MethodGet) {
-		what, outcome := "commit", "this write's commit"
-		if statementUnknown {
-			what, outcome = "statement", "a statement of this write"
-		}
-		slog.Error("dispatch: API write's "+what+" was not answered; its outcome is unknown and it may have committed", "error", err)
-		if admission.WriteUnserved(w, r.Context(), err) {
-			return
-		}
-		writeError(w, codeCommitOutcomeUnknown, http.StatusInternalServerError,
-			"the database did not answer "+outcome+" in time; its outcome is unknown, so read what it wrote before sending it again")
-		return
-	}
-	if admission.WriteUnserved(w, r.Context(), err) {
-		return
-	}
-	// A read's statement runs outside a transaction too, but it commits nothing, so the unknown
-	// outcome the store named is none here: it is the same stalled database every other
-	// refusal above answers as busy, and the client may send the GET again.
-	if statementUnknown {
-		admission.WriteDatabaseBusy(w, err)
+	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
 		return
 	}
 	// A write that waited for a document's writer gate gave its admission units back while it

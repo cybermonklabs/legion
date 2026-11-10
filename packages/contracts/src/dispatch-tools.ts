@@ -57,7 +57,12 @@ const OWNER_REFERENCE =
 const WRITE_REFUSAL_RETRY =
   "OVERLOADED (the server had no room for the request) and EDIT_QUEUE_FULL (too many writes " +
   "already waiting for the same document; any write to a document can get it) are refusals sent " +
-  "before anything ran: wait the Retry-After they name and send the same call again.";
+  "before anything ran: wait the Retry-After they name and send the same call again. " +
+  "DATABASE_BUSY is a refusal too, by the database rather than by the queue, after which " +
+  "nothing of the call committed: wait its Retry-After and send the same call again. " +
+  "COMMIT_OUTCOME_UNKNOWN carries no Retry-After, because the write may have landed: read what " +
+  "it would have written before sending it again, unless it carried an Idempotency-Key, under " +
+  "which the same call may be sent again as it is.";
 
 const ASK_QUESTION_CONTRACT =
   "The question names the concrete case first: which machines, files, sessions or people, and the " +

@@ -584,7 +584,7 @@ type apiRoute struct {
 // A write never pins: it waits for its documents' writer gates between statements, which a caller
 // holding a connection is refused (docs.ErrGateWhileHoldingConnection).
 func (r apiRoute) pinsConnection() bool {
-	return r.Method == http.MethodGet && !r.TestHook && !r.Streams && r.Weight <= 1 && !r.Download
+	return admission.Reads(r.Method) && !r.TestHook && !r.Streams && r.Weight <= 1 && !r.Download
 }
 
 // downloadDeadline is the deadline of the four file version downloads: five minutes for the work

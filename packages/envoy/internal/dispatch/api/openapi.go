@@ -22,6 +22,8 @@ import (
 
 	"github.com/swaggest/jsonschema-go"
 	"github.com/swaggest/openapi-go/openapi31"
+
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 )
 
 // OpenAPIDocumentPath is where the emitted document is committed, from the repository root. The
@@ -872,7 +874,7 @@ func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
 	unserved := "Unserved: " + busy
 	// A test hook's GET is not served as a read (serveRoute wraps only a row that is not a test
 	// hook in servedAsRead), so it has no deadline to run past.
-	if route.Method == http.MethodGet && !route.TestHook {
+	if admission.Reads(route.Method) && !route.TestHook {
 		unserved = "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or " + busy
 	}
 	answers = append(answers, openAPIServerAnswer{
@@ -880,7 +882,7 @@ func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
 		description: unserved + " Retry-After says how long to wait before sending it again.",
 		retryAfter:  true,
 	})
-	if route.Method != http.MethodGet {
+	if !admission.Reads(route.Method) {
 		answers = append(answers, openAPIServerAnswer{
 			status: http.StatusInternalServerError,
 			description: "COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's " +

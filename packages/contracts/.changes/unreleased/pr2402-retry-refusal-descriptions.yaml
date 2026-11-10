@@ -5,3 +5,6 @@ body: |-
   already waiting for the same document) are refusals sent before anything ran, so the caller
   waits the `Retry-After` they name and sends the same call again, and that any write to a
   document can get `EDIT_QUEUE_FULL`, where `dispatch_doc_edit` said only to back off.
+  They also say that `DATABASE_BUSY` is a refusal to send again after its `Retry-After`, and that
+  `COMMIT_OUTCOME_UNKNOWN` carries none: the write may have landed, so the caller reads what it
+  would have written before sending it again.

@@ -154,11 +154,16 @@ func IsPoolBusy(err error) bool { return errors.Is(err, ErrPoolBusy) }
 // unanswered commit's is (ErrCommitTimeout), and it is not retryable: a client that sent it
 // again could write twice. A write route answers it 500 COMMIT_OUTCOME_UNKNOWN with no
 // Retry-After and an ERROR line; a read route answers it 503 DATABASE_BUSY, since what a read
-// runs commits nothing and sending the GET again only reads (api.writeHandlerError).
+// runs commits nothing and sending the GET again only reads (admission.WriteUnserved).
 //
-// A statement inside a transaction is none of this: its transaction rolls back, so nothing of it
-// committed, and it never passes through this package's pools in the first place - it runs on
-// the pgx transaction the caller holds.
+// Only a statement is this. A call of a pool's that commits nothing whatever the database did
+// with it - an acquire, with the ping and the statement-cache deallocation pgx runs inside it,
+// and the BEGIN that opens a transaction, which leaves a transaction that rolls back or no
+// transaction at all - is a busy pool (commitsNothing, poolBusy).
+//
+// A statement inside a transaction is none of this either: its transaction rolls back, so
+// nothing of it committed, and it never passes through this package's pools in the first place -
+// it runs on the pgx transaction the caller holds.
 var ErrStatementOutcomeUnknown = errors.New(
 	"the database stopped answering on the connection after this statement reached it; it ran outside a transaction, so its outcome is unknown",
 )
@@ -218,22 +223,42 @@ func Unserved(ctx context.Context, err error) bool {
 	return IsPoolBusy(err) || stalled(ctx, err)
 }
 
+// outcome is what the call poolBusy maps an error for can have left behind at the database if it
+// reached it, which only the caller of the pool knows: a statement it runs outside a transaction
+// commits itself, and everything else a pool does commits nothing.
+type outcome bool
+
+const (
+	// commitsNothing is a call that leaves nothing behind whatever the database did with it: an
+	// acquire (with the ping and the statement-cache deallocation pgx runs inside it), the
+	// pool's own ping, and the BEGIN that opens a transaction - a BEGIN the database never
+	// answered opened no transaction the caller can commit, and one it did answer is rolled
+	// back by the caller's deferred rollback or ended by the connection being destroyed.
+	commitsNothing outcome = false
+	// commitsItself is a statement run outside any transaction, which commits itself: the
+	// pool's Query, QueryRow, Exec, CopyFrom and SendBatch, whose statements may write.
+	commitsItself outcome = true
+)
+
 // poolBusy names err for what a bound of this server's did to the call: a deadline exceeded
 // while the caller's own context is still live can only be the bound acquireTracer put on the
 // acquire, since the statement itself runs on the caller's context, and a socket that timed out
 // under a live caller is one of those bounds too (stalled). A stall pgconn marks safe to retry
-// never reached the database and is a busy pool like any other; one that did reach it may have
-// run, and a pool runs every statement outside a transaction, so that one is
-// ErrStatementOutcomeUnknown. Each wrap names what the pool met, so the line a refusal is logged
-// on says which bound passed and what it left behind. A caller whose own deadline came first
-// gets its own error back.
-func poolBusy(ctx context.Context, pool string, err error) error {
+// never reached the database, and one of a call that commits nothing left nothing behind even
+// though it did: both are a busy pool like any other. Only a statement that reached the
+// database and commits itself may have run, and that one is ErrStatementOutcomeUnknown. Each
+// wrap names what the pool met, so the line a refusal is logged on says which bound passed and
+// what it left behind. A caller whose own deadline came first gets its own error back.
+func poolBusy(ctx context.Context, pool string, err error, commits outcome) error {
 	switch {
 	case err == nil || errors.Is(err, ErrPoolBusy) || errors.Is(err, ErrStatementOutcomeUnknown):
 		return err
 	case stalled(ctx, err):
-		if pgconn.SafeToRetry(err) {
+		switch {
+		case pgconn.SafeToRetry(err):
 			return fmt.Errorf("%s pool: %w: the database stopped answering before the call reached it: %w", pool, ErrPoolBusy, err)
+		case commits == commitsNothing:
+			return fmt.Errorf("%s pool: %w: the database stopped answering on the connection, and this call commits nothing: %w", pool, ErrPoolBusy, err)
 		}
 		return fmt.Errorf("%s pool: %w: %w", pool, ErrStatementOutcomeUnknown, err)
 	case ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded):

@@ -351,6 +351,102 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	receiveRelayedThrough(t, subscription, opened, high)
 }
 
+// A gap re-read is scheduled on the horizon the read read the log through, not on the one the
+// Horizon holds by the time that read decides. Another reader of the process observes in
+// between - the delivery hub's intake, a `GET /api/v1/references?since=` read - and its
+// observation can prove the ids this read could not publish final: H then stands at the newest
+// id observed, with nothing above it, though this relay has published nothing past its own
+// cursor. Here the id open below the committed one rolls back, which notifies nothing, and the
+// other reader's Await moves H past both while the read is between its own Safe and its
+// decision. Nothing commits afterwards, so a decision taken on the Horizon's H alone would
+// leave the committed event unpublished until some unrelated write woke the relay, and every
+// open page would miss it.
+//
+// This is the branch merge 02f52aea lost with this branch's
+// TestAHubRereadsTheGapAnotherReaderProvedWhileItRead: the hub no longer reads the log, so the
+// relay's read holds it (eventStreamRelay.read, events.Horizon.Behind).
+func TestARelayRereadsTheGapAnotherReaderProvedWhileItRead(t *testing.T) {
+	// Settlement is held off, so nothing of the seeded specs commits an event behind the
+	// relay's back: only this test's own appends wake it, and after the rollback nothing
+	// notifies at all.
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
+	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
+	relay, reads := newCountedRelay(t, deps)
+	var armed atomic.Bool
+	caught, released := make(chan struct{}), make(chan struct{})
+	// The read makes this call between its own Safe and the gap it decides on.
+	relay.deciding = func(int64) {
+		if armed.CompareAndSwap(true, false) {
+			close(caught)
+			select {
+			case <-released:
+			case <-time.After(eventFeedWait): // the test failed before it let the relay on
+			}
+		}
+	}
+	subscription, _, opened := subscribeRelay(t, relay)
+	waitForBackends(t, database, 1, relayListenBackend)
+	quietRelayReads(t, reads)
+
+	low, high, _, rollbackLow := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
+	armed.Store(true)
+	// The higher id's commit notifies, and the gap it leaves open has the relay read again
+	// every 10-250 ms: one of those reads is held at its decision, having published nothing.
+	select {
+	case <-caught:
+	case <-time.After(eventFeedWait):
+		t.Fatalf("no read of the log decided a gap while id %d stood open below the committed %d", low, high)
+	}
+
+	rollbackLow()
+	proven, err := relay.server.horizon().Await(t.Context())
+	if err != nil || proven < high {
+		t.Fatalf("the other reader's Await once id %d had rolled back = %d, %v; want at least the committed %d", low, proven, err, high)
+	}
+	close(released)
+
+	receiveRelayedThrough(t, subscription, opened, high)
+	if published := relayPublished(relay); published < high {
+		t.Fatalf("the relay published through %d, want the committed %d another reader proved final", published, high)
+	}
+}
+
+// The gap re-read's own backoff, which that race decides the horizon of: the first gap waits
+// eventRelayGapMin, a gap the horizon has not moved under doubles the wait to eventRelayGapMax,
+// and a gap over a horizon that moved waits from eventRelayGapMin again, since a horizon that
+// moves is the gap closing from below and the next re-read is the one worth making soon. A read
+// that left no gap open schedules nothing at all.
+func TestTheGapRereadWaitsFromTheStartAgainWhenTheHorizonMoves(t *testing.T) {
+	var gaps eventGapReread
+	defer gaps.stop()
+
+	gaps.schedule(10, true)
+	if gaps.wait != eventRelayGapMin {
+		t.Fatalf("the first gap waits %s, want %s", gaps.wait, eventRelayGapMin)
+	}
+	gaps.schedule(10, true)
+	if gaps.wait != 2*eventRelayGapMin {
+		t.Fatalf("a gap over the same horizon waits %s, want the first wait doubled (%s)", gaps.wait, 2*eventRelayGapMin)
+	}
+	for range 10 {
+		gaps.schedule(10, true)
+	}
+	if gaps.wait != eventRelayGapMax {
+		t.Fatalf("a gap the horizon stands still under waits %s, want at most %s", gaps.wait, eventRelayGapMax)
+	}
+
+	gaps.schedule(11, true)
+	if gaps.wait != eventRelayGapMin {
+		t.Fatalf("a gap over a horizon that moved waits %s, want %s", gaps.wait, eventRelayGapMin)
+	}
+
+	gaps.schedule(11, false)
+	if gaps.wait != 0 || gaps.due() != nil {
+		t.Fatalf("a read that left no gap scheduled a re-read after %s", gaps.wait)
+	}
+}
+
 // TestEventStreamRelayCatchesUpWhenItsListenerReconnects covers the window a redial leaves: a
 // notification sent while the relay has no connection reaches nobody, and nothing sends it again.
 // What covers it is the catch-up the listener's onConnected runs after every LISTEN, from the

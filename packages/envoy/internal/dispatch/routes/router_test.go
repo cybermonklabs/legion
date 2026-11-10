@@ -85,6 +85,9 @@ type memoryPeopleStore struct {
 	now      func() time.Time
 	// afterSignIn, when set, runs once after the next SignIn or SignInSubject returns.
 	afterSignIn func()
+	// recordFails, when set, is what Record answers instead of recording the person: the store's
+	// own error, for a test of how a route answers one.
+	recordFails error
 }
 
 // memoryPerson is one person's row in memoryPeopleStore: ConfirmedAt is the store clock's time of
@@ -109,6 +112,9 @@ func (s *memoryPeopleStore) clock() time.Time {
 func (s *memoryPeopleStore) Record(_ context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.recordFails != nil {
+		return s.recordFails
+	}
 	if _, found := s.people[email]; !found {
 		s.people[email] = memoryPerson{}
 	}

@@ -12,9 +12,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The codes a request is answered with when the server could not serve it: a refusal by a Limiter
-// is a 429, and the two failures after admission are 503s. Each carries Retry-After and
-// Cache-Control: no-store (writeRetryable).
+// The codes a request is answered with when the server could not serve it, or could not say what
+// it did: a refusal by a Limiter is a 429, the two failures after admission are 503s, each
+// carrying Retry-After and Cache-Control: no-store (writeRetryable), and a call the database
+// never answered that may have committed is a 500 with neither header
+// (writeOutcomeUnknown).
 const (
 	// CodeOverloaded is a request a Limiter refused, answered 429 Too Many Requests: nothing of it
 	// ran, so any method may be retried.
@@ -22,13 +24,21 @@ const (
 	// CodeDatabaseBusy is a request a bound of the server's own stopped before the database
 	// answered it (store.ErrPoolBusy, store.DatabaseStalled): its handler waited its pool's
 	// acquire bound for a connection, or the database stopped answering on the connection it
-	// held. Answered 503. A write may have committed part of what it does before the bound that
-	// failed it.
+	// held. Answered 503. Nothing of the call that failed committed - that is what tells it from
+	// CodeCommitOutcomeUnknown - though a write may have committed an earlier statement of its
+	// own before the bound that failed it, its idempotency key's claim among them.
 	CodeDatabaseBusy = "DATABASE_BUSY"
 	// CodeRequestTimeout is a read that ran past its deadline (WithDeadline,
 	// WithDeadlineUntilAnswer), answered 503. Only reads have a deadline: a write runs to
 	// completion once admitted.
 	CodeRequestTimeout = "REQUEST_TIMEOUT"
+	// CodeCommitOutcomeUnknown is a call the server sent and never got an answer to, which may
+	// have committed: a commit (store.ErrCommitTimeout), or a statement a write ran outside any
+	// transaction, which commits itself (store.ErrStatementOutcomeUnknown). Answered 500 with no
+	// Retry-After: a 503 with one would tell the client to send a write the server may already
+	// have applied, so the client reads what the write would have written before sending it
+	// again, or sends it again under its Idempotency-Key.
+	CodeCommitOutcomeUnknown = "COMMIT_OUTCOME_UNKNOWN"
 )
 
 // RetryAfter is the Retry-After, in seconds, of every refusal and 503 this package writes, and of
@@ -91,13 +101,28 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 }
 
 // WriteUnserved answers a request whose handler failed with err because the server could not
-// serve it, and reports whether it did; on false the caller maps err as it always has. Its
-// order is the order the causes are told apart:
+// serve it, or could not say what one of its calls did, and reports whether it did; on false the
+// caller maps err as it always has. wrote says whether a statement of this request that reached
+// the database could have committed anything: every caller reads it off the request's method
+// (Reads), but the sign-in routes, whose GET writes (routes.writeUnservedOr500).
 //
+// Its order is the order the causes are told apart:
+//
+//   - a call the server sent and never got an answer to, which may have committed: a commit
+//     (store.ErrCommitTimeout), or - where wrote is true - a statement a pool ran outside any
+//     transaction, which commits itself (store.ErrStatementOutcomeUnknown): 500
+//     COMMIT_OUTCOME_UNKNOWN with no Retry-After (writeOutcomeUnknown). It is told first
+//     because its outcome, unlike every other failure's, is unknown, so the operator's log
+//     carries the ERROR line whether or not a client is still there to be told: a write runs on
+//     its client's context unless it is keyed, and only the commit itself is detached
+//     (store.CommitContext), so a client that leaves while the commit runs out its bound is the
+//     likeliest way this is met. The request is then answered as a client that went away is,
+//     below, and the line records the 499 that it is;
 //   - a request cancelled by a refusal of the units it asked back (Ticket.Resume, whose refusal
 //     the caller made ctx's cause): 429 OVERLOADED, as a request refused before it ran is
-//     answered. It is told first because that cancellation reads as a client that went away,
-//     which it is not: the client is still there, and what it is owed is the refusal;
+//     answered. It is told before the cancellation below because that cancellation reads as a
+//     client that went away, which it is not: the client is still there, and what it is owed is
+//     the refusal;
 //   - the read's deadline passed (DeadlinePassed): 503 REQUEST_TIMEOUT, whatever err says,
 //     since every failure after the deadline is the deadline's;
 //   - the client went away (ctx cancelled): nothing is written, since nobody reads it, and the
@@ -110,19 +135,50 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //     timeout pgx raises only from a context it was watching). 503 DATABASE_BUSY. The second is
 //     read off the error here as well as inside the store, because a statement inside a
 //     transaction runs on pgx directly, never passes through a pool's own error mapping, and
-//     rolls back with the transaction it was in.
+//     rolls back with the transaction it was in;
+//   - a statement a pool ran outside any transaction, met by a request that wrote nothing: 503
+//     DATABASE_BUSY, since what a read runs commits nothing however the database answered it,
+//     and a client that sends the read again only reads.
 //
-// A failure of the server's own is none of these and is left to the caller, and so are the two
-// calls a lost answer leaves with an unknown outcome: a commit (store.ErrCommitTimeout), which
-// was once answered DATABASE_BUSY by a guess from its deadline, and a statement a pool ran
-// outside a transaction and the database may still have run
-// (store.ErrStatementOutcomeUnknown). Neither may be sent again unanswered, so neither is
-// written here; api.writeHandlerError answers both, and a read's handler, whose statements
-// commit nothing, refuses the second as busy with WriteDatabaseBusy.
-//
-// None of these is a fault of the server's to alarm an operator over, and under load every
-// request meets one, so each is logged at debug and never at error.
-func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error) bool {
+// A failure of the server's own is none of these and is left to the caller. None of the
+// refusals is a fault of the server's to alarm an operator over, and under load every request
+// meets one, so each is logged at debug; only the unknown outcome is logged at error.
+func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error, wrote bool) bool {
+	if unanswered := unknownOutcome(err, wrote); unanswered != "" {
+		slog.Error("dispatch: the request's "+unanswered+" was not answered; its outcome is unknown and it may have committed", "error", err)
+		if unserved(w, ctx, err) {
+			return true
+		}
+		writeOutcomeUnknown(w, unanswered)
+		return true
+	}
+	if unserved(w, ctx, err) {
+		return true
+	}
+	if store.IsStatementOutcomeUnknown(err) {
+		writeDatabaseBusy(w, err)
+		return true
+	}
+	return false
+}
+
+// unknownOutcome names the call err is of where the database never answered it and it may have
+// committed - "commit" or "statement" - and is empty for every other error. A commit is one
+// whatever the request is; a statement a pool ran outside any transaction is one only where the
+// request may have written, since a read's statements commit nothing (WriteUnserved's wrote).
+func unknownOutcome(err error, wrote bool) string {
+	switch {
+	case store.IsCommitTimeout(err):
+		return "commit"
+	case wrote && store.IsStatementOutcomeUnknown(err):
+		return "statement"
+	}
+	return ""
+}
+
+// unserved is the refusals WriteUnserved writes for a request nothing of which can have
+// committed, in the order its documentation gives.
+func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	var refusal *Refusal
 	switch {
 	case errors.As(context.Cause(ctx), &refusal):
@@ -135,22 +191,35 @@ func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 		slog.Debug("dispatch: request's client went away", "error", err)
 		accesslog.ClientGone(ctx)
 	case store.IsPoolBusy(err), store.DatabaseStalled(ctx, err):
-		WriteDatabaseBusy(w, err)
+		writeDatabaseBusy(w, err)
 	default:
 		return false
 	}
 	return true
 }
 
-// WriteDatabaseBusy answers a request 503 DATABASE_BUSY with Retry-After, the answer
-// WriteUnserved gives a pool that could not serve a call. It is exported for the one caller
-// that decides for itself that a stalled call of its own is retryable: a read's handler, whose
-// statements run outside a transaction but commit nothing, so the unknown outcome
-// store.ErrStatementOutcomeUnknown carries is no unknown outcome there
-// (api.writeHandlerError).
-func WriteDatabaseBusy(w http.ResponseWriter, err error) {
+// writeDatabaseBusy answers a request 503 DATABASE_BUSY with Retry-After: a pool that could not
+// serve a call, and a stall after which nothing of the request can have committed.
+func writeDatabaseBusy(w http.ResponseWriter, err error) {
 	slog.Debug("dispatch: request found the database busy", "error", err)
 	writeRetryable(w, http.StatusServiceUnavailable, CodeDatabaseBusy, "the database did not answer this request in time; retry after Retry-After")
+}
+
+// writeOutcomeUnknown answers a request 500 COMMIT_OUTCOME_UNKNOWN, naming the call - the commit
+// or a statement - the database never answered. It carries no Retry-After and no Cache-Control:
+// the call may have committed, so the client reads what the write would have written before
+// sending it again rather than being told to wait and repeat it.
+func writeOutcomeUnknown(w http.ResponseWriter, unanswered string) {
+	what := "this write's commit"
+	if unanswered == "statement" {
+		what = "a statement of this write"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "the database did not answer " + what + " in time; its outcome is unknown, so read what it wrote before sending it again",
+		"code":  CodeCommitOutcomeUnknown,
+	})
 }
 
 // writeRetryable writes status with code and message in Dispatch's {error, code} body, telling

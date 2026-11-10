@@ -1,7 +1,8 @@
 // Package admission decides whether the server has room for a request before the request takes
 // any, and answers the requests it could not serve: refused here with a retryable 429, out of
-// time or out of database connections with a retryable 503, rather than with an error.
-//
+// time or out of database connections with a retryable 503, rather than with an error. It also
+// answers the one failure that is neither served nor safe to repeat - a call the database never
+// answered that may have committed - with a 500 naming that unknown outcome (WriteUnserved).
 // Without it every request queued, with no bound, for one pool of connections: past capacity the
 // queue grew until clients gave up, and almost nothing succeeded. A Limiter admits a request only
 // while its class has room, lets it wait for room a bounded time in a bounded queue, and refuses
@@ -34,9 +35,27 @@ const (
 	classCount
 )
 
+// Reads reports whether a request with method only reads: it runs no statement that can commit,
+// so a call of its own the database never answered left nothing behind and the client may send
+// it again. It is the one place the server decides a method that question, for the class a
+// request is counted under (ClassOf), for the layers a route is wrapped in (api.serveRoute), and
+// for the answer a call whose outcome nobody knows is given (WriteUnserved).
+//
+// A GET is one, and so is a HEAD: net/http's mux serves a HEAD with the route's GET handler, so
+// it runs that read's statements and writes nothing. Every other method the server serves is a
+// write. OPTIONS is not among them: no route of the table is mounted for it, and net/http
+// answers it 405 without reaching a handler, so no handler's error is ever a request of its.
+//
+// A handler that writes on a read route decides for itself, rather than by its method: the
+// sign-in callback is the one of them, and the routes package names it where it answers
+// (routes.writeUnservedOr500).
+func Reads(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
 // ClassOf is the class of a request with method.
 func ClassOf(method string) Class {
-	if method == http.MethodGet || method == http.MethodHead {
+	if Reads(method) {
 		return Read
 	}
 	return Write

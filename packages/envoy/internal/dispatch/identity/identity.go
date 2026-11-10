@@ -104,12 +104,18 @@ const signInUnavailableMessage = "the sign-in issuer cannot be reached; try agai
 // served); and 500 IDENTITY_ERROR for anything else. A lookup that failed because r could not be
 // served - its deadline passed, its client went away, or a bound of the server's own ended one
 // of its calls before the database answered it - is answered as admission.WriteUnserved answers
-// it, a retryable 503 or
-// nothing, rather than as a failure of the identity service. An unreachable sign-in issuer is
-// answered as itself: the timeout its error carries is the call to the issuer's, which no longer
-// reads as a want of database room (store.IsPoolBusy).
+// it, a retryable 503 or nothing, rather than as a failure of the identity service. An
+// unreachable sign-in issuer is answered as itself: the timeout its error carries is the call to
+// the issuer's, which no longer reads as a want of database room (store.IsPoolBusy).
+//
+// Resolving the caller reads (CookieIdentity.Login), and a lapsed membership's renewal also
+// writes the person's own row - its confirmation, or the end of its sign-in (Membership.refresh,
+// SignInRule.WriteConfirm, SignInRule.End) - outside any transaction. So a statement the
+// database stopped answering here may have committed, and the request's method decides as it
+// does everywhere else (admission.Reads): a read is told to try again, since repeating it only
+// re-runs the same idempotent update of that row, and a write is told its outcome is unknown.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
-	if admission.WriteUnserved(w, r.Context(), err) {
+	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
 		return
 	}
 	status := http.StatusInternalServerError

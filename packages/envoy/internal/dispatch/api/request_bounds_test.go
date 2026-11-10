@@ -406,6 +406,41 @@ func TestAWriteStatementOutsideATransactionTheDatabaseDropsIsAnOutcomeNobodyKnow
 	}
 }
 
+// A write whose BEGIN the database stops answering committed nothing: the transaction it would
+// have opened holds no statement of the write, and whether the database opened it or not, it
+// rolls back with the connection. So that write is refused 503 DATABASE_BUSY with Retry-After,
+// as any other call that left nothing behind is, and never 500 COMMIT_OUTCOME_UNKNOWN: naming
+// an unknown outcome there would tell a client to go and read what a write that ran nothing may
+// have written. The pool knows this of its own calls - an acquire, a ping and a BEGIN commit
+// nothing, where a statement it runs outside a transaction commits itself (store's
+// commitsNothing).
+//
+// The stall is armed on the BEGIN message itself, so it is this write's transaction that stalls
+// and no other call of the pool (storetest.SimpleQuery; pgx sends an argument-less statement as
+// a simple query, and `begin` is how it opens a transaction).
+func TestAWriteWhoseBeginTheDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
+	socket := storetest.NewStalledSocket(store.RequestsPool)
+	logs := captureDebugLog(t)
+	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "The database stops answering a BEGIN", "A spec")
+
+	socket.StallAfterSent(storetest.SimpleQuery("begin"))
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": "A comment whose transaction never opened"}, "alice")
+
+	if !socket.Fired() {
+		t.Fatal("the socket never timed out, so the write's BEGIN was answered as any other")
+	}
+	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+	if unknown := logs.Lines("its outcome is unknown"); unknown != "" {
+		t.Fatalf("the stalled BEGIN was reported as an outcome nobody knows:\n%s", unknown)
+	}
+	busy := logs.Lines("request found the database busy")
+	if !strings.Contains(busy, store.RequestsPool+" pool") || !strings.Contains(busy, "commits nothing") {
+		t.Fatalf("logged %q, want a line naming the pool and the call that committed nothing", busy)
+	}
+}
+
 // The live socket is mounted outside the route table, so it is neither admitted nor bounded by the
 // read deadline: it stays open, and keeps sending its heartbeat, long after an ordinary read's
 // deadline would have ended it.

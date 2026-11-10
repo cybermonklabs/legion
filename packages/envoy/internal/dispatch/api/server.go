@@ -756,7 +756,7 @@ func (s *server) serveRoute(route apiRoute, limiter *admission.Limiter, deadline
 	if route.RefusesClosedIssue {
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
-	if route.Method != http.MethodGet {
+	if !admission.Reads(route.Method) {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a credential that names no person
 		// claims no idempotency key and costs no body (withinProjectScope,
@@ -789,7 +789,7 @@ func (s *server) serveRoute(route apiRoute, limiter *admission.Limiter, deadline
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
 	if !route.TestHook {
-		if route.Method == http.MethodGet {
+		if admission.Reads(route.Method) {
 			// A download's work before its answer is bounded at downloadDeadline's five
 			// minutes, which a test shortens (Deps.DownloadDeadline); it is also the read
 			// whose deadline stops at its answer, as a stream's does: what the deadline
@@ -809,7 +809,7 @@ func (s *server) serveRoute(route apiRoute, limiter *admission.Limiter, deadline
 			handler = admitted(limiter, route.Weight, route.Lane, handler)
 		}
 	}
-	if route.Method != http.MethodGet {
+	if !admission.Reads(route.Method) {
 		// Every layer below may answer before the body is read - admission's refusal included;
 		// the answer waits for the body.
 		//

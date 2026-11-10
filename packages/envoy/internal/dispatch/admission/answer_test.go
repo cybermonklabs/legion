@@ -48,28 +48,37 @@ func assertRetryable(t *testing.T, w *httptest.ResponseRecorder, status int, cod
 func TestWriteUnservedTellsTheCausesApartInOrder(t *testing.T) {
 	busy := fmt.Errorf("read issue: %w", fmt.Errorf("requests pool: %w: %w", store.ErrPoolBusy, context.DeadlineExceeded))
 	commitCutOff := fmt.Errorf("commit the write: %w: %w", store.ErrCommitTimeout, context.DeadlineExceeded)
+	statementUnknown := fmt.Errorf("revoke the token: %w", fmt.Errorf("requests pool: %w: %w",
+		store.ErrStatementOutcomeUnknown, errors.New("timeout: read tcp: i/o timeout")))
 	for _, test := range []struct {
-		name string
-		ctx  context.Context
-		err  error
-		code string // empty: nothing written
-		ok   bool
+		name   string
+		ctx    context.Context
+		err    error
+		wrote  bool
+		status int
+		code   string // empty: nothing written
+		ok     bool
 	}{
-		{"the read's deadline passed", expiredRequest(t), context.DeadlineExceeded, CodeRequestTimeout, true},
-		{"the read's deadline passed, whatever the handler failed with", expiredRequest(t), busy, CodeRequestTimeout, true},
-		{"the client went away", cancelledRequest(), context.Canceled, "", true},
-		{"the client went away while the pool was busy", cancelledRequest(), busy, "", true},
-		{"the pool was busy", context.Background(), busy, CodeDatabaseBusy, true},
-		// A deadline of its own on a live request says nothing about a pool: the commit that
-		// ran out its bound carries one, and its outcome is unknown where a busy pool's is
-		// that nothing ran, so its caller answers it rather than this layer.
-		{"a commit ran out its bound", context.Background(), commitCutOff, "", false},
-		{"another deadline ran out on a live request", context.Background(), fmt.Errorf("call: %w", context.DeadlineExceeded), "", false},
-		{"anything else", context.Background(), errors.New("boom"), "", false},
+		{"the read's deadline passed", expiredRequest(t), context.DeadlineExceeded, false, http.StatusServiceUnavailable, CodeRequestTimeout, true},
+		{"the read's deadline passed, whatever the handler failed with", expiredRequest(t), busy, false, http.StatusServiceUnavailable, CodeRequestTimeout, true},
+		{"the client went away", cancelledRequest(), context.Canceled, true, 0, "", true},
+		{"the client went away while the pool was busy", cancelledRequest(), busy, true, 0, "", true},
+		{"the pool was busy", context.Background(), busy, true, http.StatusServiceUnavailable, CodeDatabaseBusy, true},
+		// A commit the database never answered may have committed whatever the request is, so
+		// it is never offered the retry a busy pool is.
+		{"a commit ran out its bound", context.Background(), commitCutOff, true, http.StatusInternalServerError, CodeCommitOutcomeUnknown, true},
+		// The statement a pool ran outside a transaction turns on the one fact its caller
+		// holds: a write's may have written, a read's commits nothing.
+		{"a write's statement outside a transaction", context.Background(), statementUnknown, true, http.StatusInternalServerError, CodeCommitOutcomeUnknown, true},
+		{"a read's statement outside a transaction", context.Background(), statementUnknown, false, http.StatusServiceUnavailable, CodeDatabaseBusy, true},
+		// The 500 goes to nobody when the client has left, and the ERROR line records it.
+		{"the client went away mid-commit", cancelledRequest(), commitCutOff, true, 0, "", true},
+		{"another deadline ran out on a live request", context.Background(), fmt.Errorf("call: %w", context.DeadlineExceeded), true, 0, "", false},
+		{"anything else", context.Background(), errors.New("boom"), true, 0, "", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			if ok := WriteUnserved(w, test.ctx, test.err); ok != test.ok {
+			if ok := WriteUnserved(w, test.ctx, test.err, test.wrote); ok != test.ok {
 				t.Fatalf("WriteUnserved = %v, want %v", ok, test.ok)
 			}
 			if test.code == "" {
@@ -78,7 +87,16 @@ func TestWriteUnservedTellsTheCausesApartInOrder(t *testing.T) {
 				}
 				return
 			}
-			assertRetryable(t, w, http.StatusServiceUnavailable, test.code)
+			if test.code == CodeCommitOutcomeUnknown {
+				if w.Code != test.status || !strings.Contains(w.Body.String(), `"code":"`+test.code+`"`) {
+					t.Fatalf("status=%d body=%s, want %d %s", w.Code, w.Body.String(), test.status, test.code)
+				}
+				if retry := w.Header().Get("Retry-After"); retry != "" {
+					t.Fatalf("Retry-After = %q, want none: the call may have committed", retry)
+				}
+				return
+			}
+			assertRetryable(t, w, test.status, test.code)
 		})
 	}
 }
@@ -90,7 +108,7 @@ func TestARequestWhoseClientWentAwayIsLogged499(t *testing.T) {
 	logged := &bytes.Buffer{}
 	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
 	handler := accesslog.Handler("/api/v1/issues/{key}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !WriteUnserved(w, r.Context(), fmt.Errorf("patch issue: %w", context.Canceled)) {
+		if !WriteUnserved(w, r.Context(), fmt.Errorf("patch issue: %w", context.Canceled), !Reads(r.Method)) {
 			t.Error("WriteUnserved did not answer a request whose client went away")
 		}
 	}))

@@ -49,7 +49,7 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 		return false
 	}
 	if err := s.deps.Files.Put(r.Context(), sha, input.contentType, input.content); err != nil {
-		if admission.WriteUnserved(w, r.Context(), err) {
+		if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
 			return false
 		}
 		slog.Error("dispatch: store an uploaded file", "sha256", sha, "size", len(input.content), "error", err)
@@ -162,7 +162,7 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 			// A deadline that passed inside the open, or a client that left under it, is the
 			// request's own end and not the store's: 503 REQUEST_TIMEOUT, or nothing at all,
 			// with no ERROR line, as an upload's object write answers one (putUploadedFile).
-			if admission.WriteUnserved(w, r.Context(), err) {
+			if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
 				return
 			}
 			if errors.Is(err, files.ErrNotFound) {

@@ -105,7 +105,7 @@ func (c *pinnedConnection) take(ctx context.Context, pool *Pool) (*pgxpool.Conn,
 		c.mu.Unlock()
 		if err != nil {
 			c.giveBack()
-			return nil, nil, pool.busy(ctx, err)
+			return nil, nil, pool.busy(ctx, err, commitsNothing)
 		}
 		conn = acquired
 	}

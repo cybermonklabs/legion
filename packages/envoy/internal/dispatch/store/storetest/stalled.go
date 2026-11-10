@@ -3,6 +3,7 @@ package storetest
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"net"
 	"os"
 	"sync/atomic"
@@ -24,22 +25,41 @@ import (
 // Give Dial to a pool's ConnConfig.DialFunc (Reopened, the api package's
 // testServerOptions.dialRequestPool). Every pool a store opens of its own is configured from
 // that one, so pool names which of them may stall - store.RequestsPool, store.SettlementsPool -
-// read off the startup message each connection writes first.
+// read off the startup message each connection writes first. Within that pool the stall is armed
+// on the one connection that sent the statement the test chose (StallAfter, StallAfterSent) and
+// fires on that connection's next read, so a test stalls exactly the call it means rather than
+// whichever connection of the pool reads next.
 type StalledSocket struct {
-	pool   string
-	marker atomic.Pointer[string]
-	armed  atomic.Bool
-	fired  atomic.Bool
+	pool  string
+	match atomic.Pointer[func(sent []byte) bool]
+	fired atomic.Bool
 }
 
 // NewStalledSocket is a socket for pool's connections that stalls nothing until StallAfter arms
 // it.
 func NewStalledSocket(pool string) *StalledSocket { return &StalledSocket{pool: pool} }
 
-// StallAfter arms the socket: the first read that follows a statement carrying marker fails,
-// once. marker is something only the statement the test means to stall carries, such as the id
-// of the row it works on.
-func (s *StalledSocket) StallAfter(marker string) { s.marker.Store(&marker) }
+// StallAfter arms the socket: from the statement carrying marker, the connection that sent it
+// answers every read with that timeout. marker is something only the statement the test means to
+// stall carries, such as the id of the row it works on.
+func (s *StalledSocket) StallAfter(marker string) {
+	s.StallAfterSent(func(sent []byte) bool { return bytes.Contains(sent, []byte(marker)) })
+}
+
+// StallAfterSent arms the socket on the first message a connection of the pool writes that
+// matches reports true for: that connection's reads fail from then on. The bytes are the
+// Postgres protocol messages pgx wrote, so a test that means one statement and no other matches
+// the message itself (SimpleQuery).
+func (s *StalledSocket) StallAfterSent(matches func(sent []byte) bool) { s.match.Store(&matches) }
+
+// SimpleQuery matches the simple-query message pgx writes for query and nothing else. pgx sends
+// a statement with no arguments that way (pgx.Conn.exec), which is how it opens a transaction:
+// `begin` (pgx.TxOptions.beginSQL).
+func SimpleQuery(query string) func(sent []byte) bool {
+	frame := append([]byte{'Q'}, binary.BigEndian.AppendUint32(nil, uint32(len(query)+5))...)
+	frame = append(append(frame, query...), 0)
+	return func(sent []byte) bool { return bytes.Equal(sent, frame) }
+}
 
 // Fired reports whether the stall has happened, which a test asserts before it reads what the
 // server made of it.
@@ -61,6 +81,17 @@ type stalledConn struct {
 	// they are touched by writes alone, which one goroutine makes at a time.
 	greeted bool
 	stalls  bool
+	// armed is set by this connection's write of the statement the test chose and read by its
+	// reads, which pgconn's background reader can make on another goroutine. It covers the whole
+	// call rather than one read: a socket pgx has put a deadline on fails every read until pgx
+	// lifts that deadline, and one failed read is not the same thing - pgx reads a simple
+	// query's answer through a peek whose error it drops (pgconn's
+	// MultiResultReader.NextResult), so a single failure leaves an argument-less statement,
+	// `begin` among them, served as if nothing had happened. The next statement written on the
+	// connection lifts it, as pgx lifts that deadline once the call it cut off has ended: a
+	// pgconn timeout does not close the connection, so the pool keeps it and its next caller
+	// must be served.
+	armed atomic.Bool
 }
 
 func (c *stalledConn) Write(p []byte) (int, error) {
@@ -68,14 +99,19 @@ func (c *stalledConn) Write(p []byte) (int, error) {
 		c.greeted = true
 		c.stalls = bytes.Contains(p, []byte("dispatch-"+c.socket.pool))
 	}
-	if marker := c.socket.marker.Load(); c.stalls && marker != nil && bytes.Contains(p, []byte(*marker)) {
-		c.socket.armed.Store(true)
+	if c.armed.Load() && c.socket.fired.Load() {
+		c.armed.Store(false)
+	}
+	matches := c.socket.match.Load()
+	if c.stalls && matches != nil && !c.socket.fired.Load() && (*matches)(p) {
+		c.armed.Store(true)
 	}
 	return c.Conn.Write(p)
 }
 
 func (c *stalledConn) Read(p []byte) (int, error) {
-	if c.socket.armed.Load() && c.socket.fired.CompareAndSwap(false, true) {
+	if c.armed.Load() {
+		c.socket.fired.Store(true)
 		return 0, &net.OpError{
 			Op: "read", Net: "tcp", Source: c.LocalAddr(), Addr: c.RemoteAddr(), Err: os.ErrDeadlineExceeded,
 		}

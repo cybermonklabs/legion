@@ -134,6 +134,11 @@ type eventStreamRelay struct {
 	// readAfter reads one page of the committed events in (after, through] through pool; nil is
 	// readEventsAfterID. A test counts the relay's reads of the event log through it.
 	readAfter func(ctx context.Context, pool queryer, after, through int64) ([]model.Event, error)
+	// deciding, when set, runs with the horizon a read read the log through, between that read
+	// and the gap it decides on (behind). A test holds the read there to prove the decision is
+	// the read's own: another reader's observation that raises H in that window must not lose
+	// the gap (TestARelayRereadsTheGapAnotherReaderProvedWhileItRead).
+	deciding func(safe int64)
 
 	// running counts every generation's goroutines. Add runs under mu and only while closed is
 	// false, so no Add can follow the Wait in wait.
@@ -451,7 +456,7 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 	for {
 		cursor, _ := r.at(g)
 		if cursor >= safe {
-			return safe, horizon.Behind(safe), true
+			return safe, r.behind(horizon, safe), true
 		}
 		committed, err := r.page(tracked, g, cursor, safe)
 		if err != nil {
@@ -471,9 +476,21 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 		}
 		r.publish(g, relayed)
 		if len(committed) < maxEventReplay {
-			return safe, horizon.Behind(safe), true
+			return safe, r.behind(horizon, safe), true
 		}
 	}
+}
+
+// behind reports whether an observed id stands above safe, the horizon this read read the log
+// through, which is the gap run re-reads for (events.Horizon.Behind). The question is asked with
+// that horizon and never with the one the Horizon holds by now: another reader's observation can
+// have proven the ids this read could not publish final in between, which raises H to the newest
+// id observed and would leave nothing standing above it (deciding).
+func (r *eventStreamRelay) behind(horizon *events.Horizon, safe int64) bool {
+	if r.deciding != nil {
+		r.deciding(safe)
+	}
+	return horizon.Behind(safe)
 }
 
 // page reads the committed events in (after, through]: the relay's one read of the event log's
