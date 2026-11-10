@@ -9,7 +9,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an issue shows its spec's task list and its children counted, on its page, in the list and on the board", async ({
+// @pr: The progress surface's only row: the spec's task list and the children count, on the issue page, the list and the board.
+test("an issue shows its spec's task list and its children counted, on its page, in the list and on the board @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

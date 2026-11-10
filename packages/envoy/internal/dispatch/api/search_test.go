@@ -16,9 +16,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// searchRequestOn is one search sent to one of the two paths the search handler serves
+// (routes_table.go): GET /api/v1/search, which declares the four members every build has read,
+// and GET /api/v1/search/results, which declares all nine.
+func searchRequestOn(t *testing.T, handler http.Handler, path, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	return dispatchRequest(t, handler, http.MethodGet, path+"?"+query, nil, "alice")
+}
+
 func searchRequest(t *testing.T, handler http.Handler, query string) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodGet, "/api/v1/search?"+query, nil, "alice")
+	return searchRequestOn(t, handler, "/api/v1/search", query)
 }
 
 type searchCorpus struct {
@@ -73,13 +81,19 @@ func seedSearchCorpus(t *testing.T, handler http.Handler) searchCorpus {
 	}
 }
 
-func searchResponse(t *testing.T, handler http.Handler, query string) model.SearchResponse {
+// searchResponseOn is searchRequestOn's answer, which must be 200.
+func searchResponseOn(t *testing.T, handler http.Handler, path, query string) model.SearchResponse {
 	t.Helper()
-	response := searchRequest(t, handler, query)
+	response := searchRequestOn(t, handler, path, query)
 	if response.Code != http.StatusOK {
-		t.Fatalf("search %q: status=%d body=%s", query, response.Code, response.Body.String())
+		t.Fatalf("GET %s?%s: status=%d body=%s", path, query, response.Code, response.Body.String())
 	}
 	return decodeBody[model.SearchResponse](t, response)
+}
+
+func searchResponse(t *testing.T, handler http.Handler, query string) model.SearchResponse {
+	t.Helper()
+	return searchResponseOn(t, handler, "/api/v1/search", query)
 }
 
 func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {

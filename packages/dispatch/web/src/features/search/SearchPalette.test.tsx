@@ -11,7 +11,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
@@ -92,16 +92,55 @@ function RouteChanger(): ReactNode {
   );
 }
 
-function renderPalette(
+/** A route settling itself the way `ProjectPage` does: a `replace` to the address the page
+ *  belongs at, which the reader did not ask for. */
+function RouteSettler(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate("/projects/LEGION/issues", { replace: true })} type="button">
+      Settle the route
+    </button>
+  );
+}
+
+/** The reader going back: the browser's Back button, or anything that calls `navigate(-1)`. */
+function RouteReturner(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
+/** A link whose target is the address already shown. React Router makes that click a `replace`
+ *  that moves nothing, and the reader has moved, so the palette closes: the Inbox drawer's owner
+ *  links are these (dispatch://INFRA-2452). */
+function SameAddressLink({ to }: { to: string }): ReactNode {
+  return <Link to={to}>Open the issue</Link>;
+}
+
+interface RenderPaletteOptions {
+  /** Rendered beside the palette, inside the router: what a navigation row clicks. */
+  control?: ReactNode;
+  entries?: string[];
+  index?: number;
+  onClose?: () => void;
+}
+
+function renderPalette({
+  control,
+  entries = ["/"],
+  index,
   onClose = () => {},
-  page = "/"
-): { queryClient: QueryClient; unmount: () => void } {
+}: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <MemoryRouter initialEntries={[page]}>
+    <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <CurrentRoute />
+          {control}
           <SearchPalette onClose={onClose} open />
         </KeymapProvider>
       </QueryClientProvider>
@@ -982,8 +1021,10 @@ test("a query that starts an action's label lists it above the hits, and Enter r
 test("Escape calls onClose", async () => {
   const user = userEvent.setup();
   let closed = 0;
-  const view = renderPalette(() => {
-    closed += 1;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
   });
 
   try {
@@ -1000,8 +1041,10 @@ test("Escape calls onClose", async () => {
 test("Escape closes the palette even when pressed before focus has moved into it", async () => {
   const user = userEvent.setup();
   let closed = 0;
-  const view = renderPalette(() => {
-    closed += 1;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
   });
 
   try {
@@ -1018,30 +1061,101 @@ test("Escape closes the palette even when pressed before focus has moved into it
   }
 });
 
+/** The four rows below drive one navigation each at an open palette and count the closes. */
 test("closes the palette when navigation changes", async () => {
   const user = userEvent.setup();
   let closed = 0;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <RouteChanger />
-        <SearchPalette
-          onClose={() => {
-            closed += 1;
-          }}
-          open
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = renderPalette({
+    control: <RouteChanger />,
+    onClose: () => {
+      closed += 1;
+    },
+  });
 
   try {
     await user.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
     await waitFor(() => expect(closed).toBe(1));
   } finally {
     view.unmount();
-    queryClient.clear();
+    view.queryClient.clear();
+  }
+});
+
+// A bare project path redirects to its board once its architecture sources have loaded, and a
+// `replace` mints a fresh `location.key` like any other navigation. The reader opened the bar
+// over that page and is still on it, so the bar stays open (dispatch://INFRA-2452).
+test("leaves the palette open when the route settles itself with a replace", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const view = renderPalette({
+    control: <RouteSettler />,
+    entries: ["/projects/LEGION"],
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Settle the route" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/projects/LEGION/issues")
+    );
+    expect(closed).toBe(0);
+    expect(screen.getByRole("combobox", { name: "Search" })).not.toBeNull();
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A pop is the reader leaving the page the bar was opened over, as a push is, so it closes the
+// bar; only a `replace` that moves the address is the page correcting itself under a reader who
+// has not moved (dispatch://INFRA-2452).
+test("closes the palette when the reader goes back", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const view = renderPalette({
+    control: <RouteReturner />,
+    entries: ["/projects/LEGION", "/issues/LEGION-9"],
+    index: 1,
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/projects/LEGION")
+    );
+    expect(closed).toBe(1);
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// React Router makes a `<Link>` click a `replace` whenever the link's target is the address
+// already shown, and that replace moves nothing. The reader followed a link, so the bar closes -
+// the Inbox drawer's owner link to the issue being read is this link (dispatch://INFRA-2452).
+test("closes the palette when a link points at the address already shown", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const view = renderPalette({
+    control: <SameAddressLink to="/issues/CORE-1" />,
+    entries: ["/issues/CORE-1"],
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.click(screen.getByRole("link", { name: "Open the issue" }));
+    await waitFor(() => expect(closed).toBe(1));
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
   }
 });
 
@@ -1169,7 +1283,7 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
     status: "done",
     title: "Navigation instruments",
   });
-  const view = renderPalette(() => {}, "/issues/LEGION-2/spec");
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
 
   try {
     await searchFor(user, "astrolabe");

@@ -60,7 +60,15 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 	t.Helper()
 
 	calls := map[string]func(key string) error{
-		"Get":       func(key string) error { _, err := kv.Get(key); return err },
+		"Get": func(key string) error { _, err := kv.Get(key); return err },
+		// The leader-answered read builds its own request rather than letting nats.go build one,
+		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
+		"GetFromLeader": func(key string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := kv.GetFromLeader(ctx, key)
+			return err
+		},
 		"Put":       func(key string) error { _, err := kv.Put(key, []byte("v")); return err },
 		"PutString": func(key string) error { _, err := kv.PutString(key, "v"); return err },
 		"Create":    func(key string) error { _, err := kv.Create(key, []byte("v")); return err },

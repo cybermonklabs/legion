@@ -45,10 +45,11 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 		},
 		{
 			// An entry lapses while its interest stays for at least ten minutes
-			// (store.InterestReapGrace plus store.InterestRefreshAge) and its consumer for three
-			// days (bus.SessionConsumerInactiveThreshold), so the fan-out judges a message for a
-			// session it cannot resolve. A refusal whose resolution failed names a delivery that
-			// was never made, and records nothing.
+			// (store.InterestReapGrace plus store.InterestRefreshAge) and its consumer until
+			// the deregistration or the sweep deletes it (sessionDelivery.deleteConsumer,
+			// session_consumer_sweep.go), so the fan-out judges a message for a session it
+			// cannot resolve. A refusal whose resolution failed names a delivery that was never
+			// made, and records nothing.
 			name: "a session whose entry has lapsed and that registers again",
 			beforeTheRefusal: func(t *testing.T, rig *relayRig, sessionID string) {
 				t.Helper()
