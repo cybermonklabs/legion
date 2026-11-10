@@ -414,12 +414,12 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   `pace` is the gap it left between REST requests, `deadline_reached` says its own bound ended it, and `cycle_complete` says it reached the end of the order and left the cursor at the start.
   `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test, and a deployment never sets it; it is the pass's bound as well as the loop's period.
 
-- Every pass also records itself in `ci_reconcile_passes`, which is that line again in a table anyone can read a day later.
+- Every pass also records itself in `ci_reconcile_passes`, which is that line in a table anyone can read a day later, and one thing the line does not carry: how the pass ended.
   A container log rotates — the production pod's reached back 45 minutes, nine passes — and the question a person asks is usually about a head read hours ago, so the counts live in Postgres as well.
-  The pass writes its row when it starts, with its process's `server_processes` instance id and the moment it started, and fills the rest in when it ends: the end time, the eight counts its line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`), how it ended (`complete`, `deadline`, `rate_limit`) and where it left the cursor.
+  The pass writes its row when it starts, with its process's `server_processes` instance id and the moment it started, and fills the rest in when it ends: the end time, the eight counts its line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`), how it ended (`complete`, `deadline`, `rate_limit` or `cancelled`, which are the whole set the column's check allows) and where it left the cursor.
   The end write runs on a bounded context of its own, never the pass's, exactly as a lease's own statements do (`duty.LeaseCall`): the pass's context is the thing that has just expired for the pass this record matters most for, and a write made on it would land nowhere.
   A pass whose process is not registered yet writes no row at all, which is the first pass or two of a process: the loops start before `processes.Register` returns, since registration waits out a live peer whose signing keys do not match.
-  A pass its process's shutdown cancelled records `complete`, as its own line reports it (`deadline_reached` names the pass's own bound and nothing else); the `dispatch duty: leased pass cut short by shutdown` line beside it is what says otherwise.
+  A pass its process's shutdown cancelled records `cancelled`, which its own line does not say (`deadline_reached` names the pass's own bound and nothing else) and the `dispatch duty: leased pass cut short by shutdown` line beside it says only while the log still holds it: the row is read a day later, and a reader of it must not take an interrupted pass for a finished one.
   The pass that ends deletes every row older than 48 hours, so one pass every five minutes leaves about 576 rows and the prune needs no loop of its own.
   `GET /api/v1/ci-reconcile/passes` answers the last 24 hours of them, newest first (Routes, below).
   A row with no end time reads as `running` only while its process is live by the registry's 15-second window, the `ci-reconcile` lease is held, and it is the newest row; otherwise it reads as `ended_without_completing`, which is a process killed between a pass's start and its end.
@@ -3045,7 +3045,7 @@ Each item below names a path with its method and identity, then its purpose.
   `instance` is the `server_processes` id of the process that ran the pass, which may be long gone — the rows are kept for 48 hours and a process is not.
   `ended_at`, `counts` and `cursor` are `null` until the pass ends;
   `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, page, number}`, where the pass left the order for the pass after it, all zero for a pass that reached the end of it.
-  `state` is `running`, `complete`, `deadline`, `rate_limit` or `ended_without_completing`, the last being a process killed between a pass's start and its end.
+  `state` is `running`, `complete`, `deadline`, `rate_limit`, `cancelled` (its process shut down under the pass) or `ended_without_completing`, the last being a process killed between a pass's start and its end.
   A deployment that has run no pass answers `[]`.
 
 - `/api/v1/settings/project-default-assignees` (GET; cookie, trusted header, or bearer; needs the `person` scope)

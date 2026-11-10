@@ -14,7 +14,8 @@ import (
 // (passes.go). The cases here are the ones the issue's verification document names: a pass held
 // open, the record outliving the process that wrote it, the prune, a pass its own bound cut
 // short, a pass a kill left open, and the liveness rule that decides the last of those when
-// nothing else can.
+// nothing else can; and beside them the pass its caller cancelled, which the record tells from
+// a pass that finished and the pass's own line does not.
 
 // registerProcess writes the row processes.Register writes for a live server process, with a
 // heartbeat of the given age, and answers the instance id. Written here rather than by calling
@@ -247,11 +248,57 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 		t.Errorf("the row records no GraphQL queries, and the pass asked for two pages: %+v", pass.Counts)
 	}
 	if line := h.passLine(); line["heads"] != float64(pass.Counts.Heads) {
-		t.Errorf("the row records %d heads and the line %v: the row is the line made durable", pass.Counts.Heads, line["heads"])
+		t.Errorf("the row records %d heads and the line %v: the row carries the count the line carries", pass.Counts.Heads, line["heads"])
 	}
 	// The cursor the next pass takes up: the page this one did not finish.
 	if pass.Cursor == nil || pass.Cursor.Repository != rowRepository {
 		t.Errorf("the row's cursor is %+v, want the repository the pass was cut short in", pass.Cursor)
+	}
+}
+
+// A pass its caller cancelled -- the process shutting down under it -- records that it was
+// cancelled, never that it was complete. It is not the pass's own bound either: the bound is a
+// pass that ran out of the interval it was given, where this is a pass that lost the process
+// running it. A row reading `complete` would have the reader take the heads the shutdown left
+// unread for heads a finished pass found nothing to do about.
+//
+// The pass is given no bound of its own, so nothing but the cancellation can end it, and GitHub
+// holds back the page it is reading until the test cancels the context the pass was handed,
+// which is what the loop's own context does when the process is told to stop.
+func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(heads(45)...)
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+	h.reconciler.PassTimeout = 0
+	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+
+	shutting, shutdown := context.WithCancel(h.ctx)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		h.reconciler.Pass(shutting)
+	}()
+	// The row the pass opened, which says the pass has started; the stalled page holds it there.
+	id := waitForRow(t, h.pool, instance)
+	shutdown()
+	<-ended
+
+	pass := passOf(t, recent(t, h.pool), id)
+	if pass.State != outcomeCancelled {
+		t.Fatalf("the pass ended %q, want %q: its caller cancelled it, so it read nothing of what was left: %+v", pass.State, outcomeCancelled, pass)
+	}
+	if pass.EndedAt == nil {
+		t.Error("a cancelled pass has no end time, so nothing tells it from a pass whose process died in the middle of it")
+	}
+	if pass.Counts == nil {
+		t.Error("a cancelled pass recorded no counts, and what it did before the shutdown is what the row is for")
+	}
+	// The line is the pass's own account and reports the bound alone, as it always has: the
+	// record is what tells a cancelled pass from one that finished.
+	if line := h.passLine(); line["deadline_reached"] != false {
+		t.Errorf("the pass reports deadline_reached = %v, want false: its own bound did not end it: %v", line["deadline_reached"], line)
 	}
 }
 

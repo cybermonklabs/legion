@@ -330,8 +330,10 @@ func (c *counts) mark(head pullHead) {
 
 // Pass runs one reconcile pass within ctx and logs exactly one INFO line for it: the pass line
 // below, or, for a pass that could not bind the CI record writer, the line saying so. It also
-// records the pass in ci_reconcile_passes, which is that line again in a table a person can read
-// a day later, after the container log has rotated (passes.go).
+// records the pass in ci_reconcile_passes, which is that line in a table a person can read a day
+// later, after the container log has rotated, and one thing more: how the pass ended, which the
+// line does not say, since a pass its caller cancelled logs the line a pass that finished logs
+// (passes.go).
 //
 // The pass's loop belongs to its caller, which runs it under Lease every Interval. PassTimeout is
 // that same interval, and the pass is bound at it: a pass too big for one interval ends on that
@@ -340,6 +342,11 @@ func (c *counts) mark(head pullHead) {
 func (r *Reconciler) Pass(ctx context.Context) {
 	started := time.Now()
 	var c counts
+	// The context the caller handed this pass, kept before the pass's own bound goes on it.
+	// Its cancellation is the process shutting down, which the row records apart from the
+	// bound: the two end a pass for different reasons, and neither is a pass that finished
+	// (passOutcome).
+	caller := ctx
 	if r.PassTimeout > 0 {
 		// Every read of the pass is made within this, and so is every gap it leaves between two
 		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what
@@ -349,13 +356,14 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		ctx = bounded
 	}
 	// The row this pass leaves behind, opened before it reads anything and closed on every way
-	// out below. at is the rate limit that ended the pass, read by the deferred close: a pass
-	// that ends at a limit records that, and a pass whose own bound or whose process's shutdown
-	// cut it short records its end all the same, because endPass writes on a context of its own
+	// out below. at is the rate limit that ended the pass, read by the deferred close beside the
+	// caller's context: a pass that ends at a limit records that, one its caller cancelled
+	// records the cancellation, and a pass whose own bound or whose process's shutdown cut it
+	// short records its end all the same, because endPass writes on a context of its own
 	// (endWrite).
 	var at *stop
 	record := r.beginPass(ctx)
-	defer func() { r.endPass(record, &c, at) }()
+	defer func() { r.endPass(record, &c, at, caller.Err() != nil) }()
 	// A limit in force ends the pass before it binds anything or reads GitHub: the App's budget is
 	// shared, and a process that waits out a limit another met is why it is recorded at all.
 	if at = r.limited(ctx, githubapp.AppScope); at != nil {
@@ -670,7 +678,10 @@ func (r *Reconciler) over(ctx context.Context, c *counts) bool {
 		return false
 	}
 	// Only the pass's own bound is the deadline the line reports: a cancelled caller is the
-	// process going down, which is not a pass that ran out of its interval.
+	// process going down, which is not a pass that ran out of its interval. The row says which
+	// of the two it was, read off the caller's own context rather than from here, so every way
+	// out of a cancelled pass records it and not only the ones that come through here (Pass,
+	// passOutcome).
 	c.deadline = c.deadline || errors.Is(ctx.Err(), context.DeadlineExceeded)
 	return true
 }

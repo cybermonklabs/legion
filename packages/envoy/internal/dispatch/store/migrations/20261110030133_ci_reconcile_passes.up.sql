@@ -22,9 +22,14 @@
 --                   before it could write its end. The route tells those two apart by the
 --                   process's own liveness, by the `ci-reconcile` lease and by whether the row
 --                   is the newest one, never by the null alone.
---   outcome         how the pass ended: 'complete', 'deadline' (its own five-minute bound cut it
---                   short) or 'rate_limit' (a shared GitHub limit ended it where it stood). Null
---                   exactly while ended_at is null, which the check below holds the pair to.
+--   outcome         how the pass ended, one of four values and no other, which the check below
+--                   holds it to: 'complete', 'deadline' (its own five-minute bound cut it
+--                   short), 'rate_limit' (a shared GitHub limit ended it where it stood) and
+--                   'cancelled' (the process running it shut down, which cancelled the pass's
+--                   context where it stood). A cancelled pass is told from a complete one
+--                   because it did not read what it set out to read, and a reader of the row
+--                   must not take it for a pass that finished. Null exactly while ended_at is
+--                   null, which ci_reconcile_passes_ended_with_an_outcome holds the pair to.
 --   the counts      the eight numbers the pass's one log line carries: the GraphQL queries it
 --                   asked and the points GitHub charged them, the REST requests beside them and
 --                   how many of those GitHub answered 304, the heads it had to read over REST,
@@ -48,7 +53,7 @@ create table ci_reconcile_passes (
     instance uuid not null,
     started_at timestamptz not null default now(),
     ended_at timestamptz,
-    outcome text check (outcome in ('complete', 'deadline', 'rate_limit')),
+    outcome text check (outcome in ('complete', 'deadline', 'rate_limit', 'cancelled')),
     graphql_queries integer,
     graphql_points integer,
     rest_requests integer,

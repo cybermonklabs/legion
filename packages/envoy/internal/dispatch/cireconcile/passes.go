@@ -51,7 +51,8 @@ func endWrite() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), endWriteTimeout)
 }
 
-// How a pass ended, as its row records it and the route answers it.
+// How a pass ended, as its row records it and the route answers it. These four are the whole
+// set, and the table's own check holds the column to them.
 const (
 	// outcomeComplete is a pass that read everything it set out to read in this interval and
 	// ended of its own accord. It does not mean the pass closed a cycle: a pass that ends at the
@@ -63,6 +64,12 @@ const (
 	outcomeDeadline = "deadline"
 	// outcomeRateLimit is a pass a shared GitHub rate limit ended where it stood.
 	outcomeRateLimit = "rate_limit"
+	// outcomeCancelled is a pass the caller whose loop runs it cancelled, which is the process
+	// shutting down. It is recorded apart from the three above because the pass did not finish
+	// what it set out to read and nothing in its counts says so: the heads it never reached
+	// were not read, and a reader of a row that said `complete` would take the gap they leave
+	// for a pass that found nothing there.
+	outcomeCancelled = "cancelled"
 
 	// PassStateRunning is a row with no end time whose pass is still running: its process is
 	// live, the lease is held and it is the newest row (RecentPasses says why all three).
@@ -80,7 +87,8 @@ const insertPass = `
 	insert into ci_reconcile_passes (instance, started_at) values ($1, now())
 	returning id`
 
-// updatePass closes it, with everything the pass's one log line carries.
+// updatePass closes it, with everything the pass's one log line carries and the outcome, which
+// the line does not: a cancelled pass logs the same line as a complete one.
 const updatePass = `
 	update ci_reconcile_passes set
 		ended_at = now(),
@@ -137,15 +145,16 @@ func (r *Reconciler) beginPass(ctx context.Context) int64 {
 // pass that opened none, which records nothing and prunes nothing: the prune belongs to a pass
 // that wrote, so a process with no registry row never deletes another process's record.
 //
-// at is the rate limit that ended the pass, nil for a pass no limit stopped.
-func (r *Reconciler) endPass(id int64, c *counts, at *stop) {
+// at is the rate limit that ended the pass, nil for a pass no limit stopped, and cancelled says
+// the caller whose loop runs the pass cancelled it, which is the process going down.
+func (r *Reconciler) endPass(id int64, c *counts, at *stop, cancelled bool) {
 	if id == 0 {
 		return
 	}
 	ctx, done := endWrite()
 	defer done()
 	cursor := r.resume
-	if _, err := r.Pool.Exec(ctx, updatePass, id, passOutcome(c, at),
+	if _, err := r.Pool.Exec(ctx, updatePass, id, passOutcome(c, at, cancelled),
 		c.queries, c.points, c.restRequests, c.restNotModified, c.restHeads, c.records, c.heads, r.known(),
 		cursor.repository, cursor.page, cursor.number); err != nil {
 		r.Logger.Warn("ci reconcile pass recorded no end", "pass", id, "error", err)
@@ -157,13 +166,19 @@ func (r *Reconciler) endPass(id int64, c *counts, at *stop) {
 
 // passOutcome is how the pass ended, as the row records it. A rate limit outranks the bound: a
 // pass both stopped reading at a limit and ran out of its interval is a pass the limit ended,
-// since what it would have done with the time left is nothing.
-func passOutcome(c *counts, at *stop) string {
+// since what it would have done with the time left is nothing. A cancellation is read after
+// both, so it displaces only outcomeComplete: a pass that had already stopped reading at a
+// limit or at its own bound was over before its caller's shutdown reached it, and the limit or
+// the bound is what ended it. What a cancellation must never be read as is a pass that
+// finished.
+func passOutcome(c *counts, at *stop, cancelled bool) string {
 	switch {
 	case at != nil:
 		return outcomeRateLimit
 	case c.deadline:
 		return outcomeDeadline
+	case cancelled:
+		return outcomeCancelled
 	default:
 		return outcomeComplete
 	}
@@ -180,8 +195,8 @@ type PassRecord struct {
 	// running and for one that died before it could record its end. State tells those apart.
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at"`
-	// State is one of PassStateRunning, outcomeComplete, outcomeDeadline, outcomeRateLimit and
-	// PassStateAbandoned.
+	// State is one of PassStateRunning, outcomeComplete, outcomeDeadline, outcomeRateLimit,
+	// outcomeCancelled and PassStateAbandoned.
 	State string `json:"state"`
 	// Counts is what the pass did, null until it ended.
 	Counts *PassCounts `json:"counts"`
