@@ -27,7 +27,7 @@ test("Legion phase groups, workflow sort and searchable filters @phone", async (
   try {
     const page = await context.newPage();
     await page.goto("/projects/ACME/issues");
-    await page.getByRole("button", { name: /^Phase$/ }).click();
+    await page.getByRole("button", { name: "Sort by phase" }).click();
     await expect(page.locator("[data-issue-row]")).toHaveCount(5);
     expect(
       await page
@@ -62,15 +62,13 @@ test("daemon queue replaces Dispatch order and optional Legion columns sort and 
     await page.goto("/projects/ACME/issues");
     await expect(row(page, "ACME-4").getByText("#1", { exact: true })).toBeVisible();
     await expect(row(page, "ACME-3").getByText("#2", { exact: true })).toBeVisible();
-    for (const label of ["Slot", "Roles in a turn", "CI verdict"]) {
+    for (const label of ["Slot", "Roles", "CI"]) {
       await expect(
-        page
-          .getByRole("columnheader")
-          .filter({ has: page.getByRole("button", { name: label, exact: true }) })
+        page.getByRole("columnheader").filter({ hasText: new RegExp(`^${label}`) })
       ).toHaveCount(0);
     }
     await page.getByRole("button", { name: /^Columns/ }).click();
-    for (const label of ["Slot", "Roles in a turn", "CI verdict"])
+    for (const label of ["Slot", "Roles", "CI"])
       await page.getByRole("checkbox", { name: label, exact: true }).check();
     await page.keyboard.press("Escape");
     await expect(row(page, "ACME-1").locator('[data-legion-fact="slot"]')).toHaveText("0");
@@ -80,14 +78,12 @@ test("daemon queue replaces Dispatch order and optional Legion columns sort and 
     await expect(row(page, "ACME-1").locator('[data-legion-fact="checks"]')).toHaveText("failing");
     for (const [label, value] of [
       ["Slot", "0"],
-      ["Roles in a turn", "implementer"],
-      ["CI verdict", "failing"],
+      ["Roles", "implementer"],
+      ["CI", "failing"],
     ] as const) {
-      await page.getByRole("button", { name: label, exact: true }).click();
+      await page.getByRole("button", { name: `Sort by ${label.toLowerCase()}` }).click();
       await expect(
-        page
-          .getByRole("columnheader")
-          .filter({ has: page.getByRole("button", { name: new RegExp(`^${label} (▲|▼)$`) }) })
+        page.getByRole("columnheader").filter({ hasText: new RegExp(`^${label}`) })
       ).toHaveAttribute("aria-sort", /ascending|descending/);
       await pick(page, label, value);
       await expect(page.locator("[data-issue-row]")).toHaveCount(1);
@@ -124,8 +120,13 @@ test("phase-or-status bar and slot cap move live with a stored Legion event @pho
     const bar = page.getByRole("group", { name: "Issues by phase or status" });
     await expect(bar.getByRole("button", { name: "Implementing 1", exact: true })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Todo 1", exact: true })).toBeVisible();
-    await expect(page.locator("[data-legion-slots]")).toHaveText("2 of 4 slots in use");
-    await expect(page.locator("[data-legion-read-at]")).toContainText("Read");
+    await expect(page.locator("[data-legion-slots]")).toHaveText("2/4 slots");
+    await page
+      .locator("[data-legion-read-at]")
+      .getByRole("button", { name: "About these counts" })
+      .click();
+    await expect(page.getByText(/Dispatch read the daemon at/)).toBeVisible();
+    await page.keyboard.press("Escape");
     const navigations: string[] = [];
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) navigations.push(frame.url());
@@ -183,8 +184,11 @@ test("failed board read marks Legion data stale and names when it was read @phon
     const page = await context.newPage();
     await page.goto("/projects/ACME/issues");
     const stale = page.locator("[data-legion-read-error]");
-    await expect(stale).toContainText("Legion data is stale since");
-    await expect(stale).toContainText("no event or heartbeat from the daemon for");
+    await expect(stale).toContainText("Stale since");
+    // What the daemon said is behind the line's own hint, as every explanation on this page is.
+    await stale.getByRole("button", { name: "About the stale data" }).click();
+    await expect(page.getByText(/no event or heartbeat from the daemon for/)).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(stale.locator("time")).toHaveAttribute("datetime", /T/);
     await expect(row(page, "ACME-1").locator("[data-legion-phase]")).toContainText("Implementing");
   } finally {
@@ -205,9 +209,9 @@ test("a project without Legion keeps the Dispatch queue and ignores Legion URL c
     await expect(page.locator("[data-issue-row]")).toHaveCount(5);
     await expect(row(page, "ACME-3").getByText("#1", { exact: true })).toBeVisible();
     await expect(row(page, "ACME-4").getByText("#2", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Phase", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("columnheader").filter({ hasText: /^Phase/ })).toHaveCount(0);
     await page.getByRole("button", { name: "Columns", exact: true }).click();
-    for (const name of ["Phase", "Slot", "Roles in a turn", "CI verdict"]) {
+    for (const name of ["Phase", "Slot", "Roles", "CI"]) {
       await expect(page.getByRole("checkbox", { name, exact: true })).toHaveCount(0);
     }
     await expect(page.locator("[data-legion-slots]")).toHaveCount(0);
@@ -227,7 +231,7 @@ test("a pushed daemon batch updates phase, queue, slot, roles, CI and cap withou
     await page.goto("/projects/ACME/issues");
     await expect(row(page, "ACME-4").getByText("#1", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Columns", exact: true }).click();
-    for (const name of ["Slot", "Roles in a turn", "CI verdict"])
+    for (const name of ["Slot", "Roles", "CI"])
       await page.getByRole("checkbox", { name, exact: true }).check();
     await page.keyboard.press("Escape");
     const navigations: string[] = [];
@@ -281,7 +285,7 @@ test("a pushed daemon batch updates phase, queue, slot, roles, CI and cap withou
     await expect(row(page, "ACME-1").locator('[data-legion-fact="checks"]')).toHaveText("green");
     await expect(row(page, "ACME-3").getByText("#1", { exact: true })).toBeVisible();
     await expect(row(page, "ACME-4").getByText("#2", { exact: true })).toBeVisible();
-    await expect(page.locator("[data-legion-slots]")).toHaveText("2 of 6 slots in use");
+    await expect(page.locator("[data-legion-slots]")).toHaveText("2/6 slots");
     expect(navigations).toEqual([]);
   } finally {
     await context.close();

@@ -17,6 +17,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { InfoHint } from "../../components/InfoHint";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
   borderDefault,
@@ -384,8 +385,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {unreadableAncestors > 0 ? (
           <p className={dangerText} role="alert">
-            Could not load {unreadableAncestors}{" "}
-            {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown epic.{" "}
+            {unreadableAncestors} {unreadableAncestors === 1 ? "parent" : "parents"} did not load.{" "}
+            <InfoHint label="About the parents that did not load">
+              A row whose parent did not load reads Unknown epic. Every other row is as it was.
+            </InfoHint>{" "}
             <button type="button" onClick={() => void ancestry.refetch()}>
               Retry loading ancestors
             </button>
@@ -398,7 +401,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {hasLegion && legion.isError ? (
           <p className={dangerText} role="alert">
-            Could not refresh Legion data.{" "}
+            Legion data did not refresh.{" "}
             <button type="button" onClick={() => void legion.refetch()}>
               Retry Legion data
             </button>
@@ -456,7 +459,13 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         </p>
         {interrupted ? (
           <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
-            <p>{interruptedDescription}</p>
+            <p>
+              {interruptedDescription}{" "}
+              <InfoHint label="About the unfinished action">
+                Finish reads the project again and sends only the steps that are left. Dismiss
+                forgets them. Writes already sent stand either way.
+              </InfoHint>
+            </p>
             <button
               type="button"
               onClick={finish}
@@ -475,8 +484,11 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {unansweredEpic ? (
           <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-            The selected issues have not been moved. Find the epic in the project before moving
-            them.{" "}
+            Nothing was moved into it.{" "}
+            <InfoHint label="About the epic with no answer">
+              Dispatch sent the epic and got no answer, so it may exist. Find it in the project
+              before you move issues into it.
+            </InfoHint>{" "}
             <button type="button" onClick={dismissUnansweredEpic}>
               Dismiss
             </button>

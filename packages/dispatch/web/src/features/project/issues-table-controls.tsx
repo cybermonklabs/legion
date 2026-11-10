@@ -4,6 +4,7 @@ import { type ReactNode, type RefObject, useCallback, useRef, useState } from "r
 import { useSearchParams } from "react-router-dom";
 import type { IssueSummary, LegionBoardResponse } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
+import { InfoHint } from "../../components/InfoHint";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
@@ -22,12 +23,12 @@ import {
 } from "../../theme/classes";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
+import { columnLabel } from "./issues-table-columns";
 import {
   ALL_ROWS,
   countIssueStates,
   defaultView,
   type Item,
-  NO_PHASE,
   PAGE_SIZES,
   readUrl,
   runningIssueStatuses,
@@ -60,7 +61,7 @@ export function ColumnFilter({
   onOpenChange: (open: boolean) => void;
 }): ReactNode {
   const meta = column.columnDef.meta;
-  const name = String(column.columnDef.header);
+  const name = columnLabel(column);
   if (meta?.text) {
     const value = (column.getFilterValue() as string | undefined) ?? "";
     return (
@@ -208,7 +209,7 @@ export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): 
                 onChange={column.getToggleVisibilityHandler()}
                 type="checkbox"
               />
-              {String(column.columnDef.header)}
+              {columnLabel(column)}
             </label>
           ))
       }
@@ -263,8 +264,7 @@ export function IssueTableStatus({
         className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
       >
         <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in Legion's
-          queue
+          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> queued
         </span>
         <span>
           <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
@@ -276,29 +276,38 @@ export function IssueTableStatus({
         {hasLegion && board ? (
           <>
             <span data-legion-slots>
-              {board.header.slots_in_use} of {board.header.slot_cap ?? "an unknown number of"} slots
-              in use
+              <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>
+                {board.header.slots_in_use}/{board.header.slot_cap ?? "?"}
+              </b>{" "}
+              slots
             </span>
             {board.header.read_ok && board.header.read_at ? (
-              <span className={`text-xs ${textMutedOnCanvas}`} data-legion-read-at>
-                Read{" "}
-                <time dateTime={board.header.read_at}>
-                  {new Date(board.header.read_at).toLocaleString()}
-                </time>
+              <span data-legion-read-at>
+                <InfoHint label="About these counts">
+                  Queued counts the issues in Legion's waiting line. Running counts the issues a
+                  worker has in hand. Slots counts the workers at work against the most the daemon
+                  runs. Dispatch read the daemon at{" "}
+                  <time dateTime={board.header.read_at}>
+                    {new Date(board.header.read_at).toLocaleString()}
+                  </time>
+                  .
+                </InfoHint>
               </span>
             ) : (
               <span role="status" className={`text-xs ${dangerText}`} data-legion-read-error>
                 {board.header.read_at ? (
                   <>
-                    Legion data is stale since{" "}
+                    Stale since{" "}
                     <time dateTime={board.header.read_at}>
                       {new Date(board.header.read_at).toLocaleString()}
                     </time>
                   </>
                 ) : (
-                  "Legion data is stale: the daemon has never answered"
+                  "Stale: the daemon has never answered"
                 )}
-                {board.header.read_error ? `: ${board.header.read_error}` : ""}
+                {board.header.read_error ? (
+                  <InfoHint label="About the stale data">{board.header.read_error}</InfoHint>
+                ) : null}
               </span>
             )}
           </>
@@ -375,11 +384,15 @@ export function IssueTableToolbar({
           onChange={(event) => {
             setSearch(event.target.value);
           }}
-          placeholder="Search issues: key, title, epic, assignee, author, labels"
+          placeholder="Search issues"
           type="search"
           value={search}
           maxLength={SEARCH_QUERY_MAX}
         />
+        <InfoHint label="About the search">
+          The search reads the key, the title, the epic, the assignee, the author and the labels. A
+          row must match every word.
+        </InfoHint>
         <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
           Group by
           <select
@@ -396,7 +409,7 @@ export function IssueTableToolbar({
               .filter((column) => column.getCanGroup())
               .map((column) => (
                 <option key={column.id} value={column.id}>
-                  {String(column.columnDef.header)}
+                  {columnLabel(column)}
                 </option>
               ))}
           </select>

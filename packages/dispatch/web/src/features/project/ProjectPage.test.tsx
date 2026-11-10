@@ -562,7 +562,7 @@ test("a Legion project keeps two views and its list includes the phase column", 
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(await screen.findByRole("button", { name: "Phase" })).toBeDefined();
+    expect(await screen.findByRole("columnheader", { name: /Phase/ })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
 
     await user.keyboard("v");
@@ -584,7 +584,7 @@ test("the Legion columns keep the table's search and grouping controls", async (
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(await screen.findByRole("button", { name: "Phase" })).toBeDefined();
+    expect(await screen.findByRole("columnheader", { name: /Phase/ })).toBeDefined();
     expect(screen.getByRole("table", { name: "Project issues table" })).toBeDefined();
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
     expect(screen.getByRole("combobox", { name: "Group by" })).toBeDefined();

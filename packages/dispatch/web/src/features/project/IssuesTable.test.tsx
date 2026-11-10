@@ -265,7 +265,7 @@ test("an epic creation committed without an answer never sends parent writes to 
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   await named;
   expect((await screen.findByTestId("landed-without-answer")).textContent).toContain(
-    "The selected issues have not been moved"
+    "Nothing was moved into it"
   );
   expect(send).not.toHaveBeenCalled();
   expect(
@@ -354,7 +354,7 @@ test("a stopped epic creation retries its committed request under the same key",
   expect(created.size).toBe(1);
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   const recovery = screen.getByRole("region", { name: "Interrupted table action" });
-  expect(recovery.textContent).toContain("not yet adopted");
+  expect(recovery.textContent).toContain("not adopted");
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() => expect(rows[0]?.parent).toBe("CORE-9"));
   await waitFor(() =>
@@ -706,7 +706,7 @@ test("ancestor reads have one retry policy rather than multiplying inner and out
   client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
     issue("CORE-1", { parent: "CORE-9" }),
   ]);
-  await screen.findByText(/Could not load 1 ancestor;/);
+  await screen.findByText(/1 parent did not load\./);
   expect(get.mock.calls.length).toBe(3);
 });
 
@@ -1540,7 +1540,7 @@ test("one unreadable ancestor leaves every other row its epic", async () => {
       issue(`CORE-${index + 1}`, { parent: index === 0 ? "CORE-99" : `CORE-${100 + index}` })
     )
   );
-  expect((await screen.findByRole("alert")).textContent).toContain("Could not load 1 ancestor");
+  expect((await screen.findByRole("alert")).textContent).toContain("1 parent did not load");
   await waitFor(() => expect(screen.getAllByText("Unknown epic").length).toBe(1));
 });
 

@@ -83,3 +83,29 @@ test("Escape in a filter inside the inbox peek closes the filter, not the peek",
     await context.close();
   }
 });
+
+// The (i) beside a control is the one place an explanation lives now (dispatch://INFRA-1508).
+// It is an `AnchoredPanel` like every other popover, so it dismisses by the same two rules.
+test("a hint on the Issues tab opens on a press and closes on Escape, focus returning to it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Hinted row" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/projects/CORE/issues");
+    const hint = page.getByRole("button", { name: "About the search" });
+    await expect(hint).toBeVisible();
+    const text = page.getByText(/The search reads the key, the title/);
+    await expect(text).toHaveCount(0);
+
+    await hint.click();
+    await expect(text).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(text).toHaveCount(0);
+    await expect(hint).toBeFocused();
+  } finally {
+    await context.close();
+  }
+});

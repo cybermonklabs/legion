@@ -819,11 +819,14 @@ test("an unavailable ancestor uses one retry policy per attempt @phone", async (
       await route.fulfill({ status: 503, json: { error: "Ancestor unavailable" } });
     });
     await page.goto("/projects/CORE/issues");
-    await expect(page.getByRole("alert")).toContainText("Could not load 1 ancestor");
+    await expect(page.getByRole("alert")).toContainText("1 parent did not load");
     expect(attempts).toBe(3);
     await page.getByRole("button", { name: "Retry loading ancestors" }).click();
     await expect.poll(() => attempts).toBe(6);
-    await expect(page.getByRole("alert")).toContainText("Unknown epic");
+    // What a failed parent read costs the rows is behind the notice's hint.
+    await page.getByRole("button", { name: "About the parents that did not load" }).click();
+    await expect(page.getByText(/reads Unknown epic/)).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("table", { name: "Project issues table" })).toBeAttached();
   } finally {
     await context.close();
@@ -902,7 +905,7 @@ test("a stopped committed epic retries one key and reload finishes only its rema
     await expect(pending).toContainText("Not saved");
     await pending.getByRole("button", { name: "Retry", exact: true }).click();
     const interrupted = page.getByRole("region", { name: "Interrupted table action" });
-    await expect(interrupted).toContainText("not yet adopted");
+    await expect(interrupted).toContainText("not adopted");
     await expect.poll(() => posts.length).toBe(2);
     expect(posts[0]?.key).toEqual(expect.any(String));
     expect(posts[1]?.key).toBe(posts[0]?.key);

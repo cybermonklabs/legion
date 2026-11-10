@@ -3,6 +3,7 @@ import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { InfoHint } from "../../components/InfoHint";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -33,6 +34,7 @@ import {
   legionPhaseLabel,
   legionRolesText,
   legionSlotText,
+  legionSlotValue,
   matchesFilters,
   NO_PHASE,
 } from "./issues-table-model";
@@ -51,12 +53,51 @@ declare module "@tanstack/react-table" {
     /** The header holds a control of its own — a hint, a switch — so it is drawn beside the
      *  sort button rather than inside it: a press on that control sorts nothing. */
     control?: boolean;
+    /** The column's own name in words, for a header that draws more than its name: the column
+     *  picker and the Group by list read it rather than the header node. */
+    label?: string;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
 }
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
+
+/** A header that says what the column is, with what it means behind an (i). */
+function HeaderWithHint({ children, hint }: { children: string; hint: string }): ReactNode {
+  return (
+    <span className="flex items-center gap-1">
+      {children}
+      <InfoHint label={`About ${children}`}>{hint}</InfoHint>
+    </span>
+  );
+}
+
+/** Each column's name in words: the column picker, the Group by list and a header's hint read
+ *  it, so a column whose header draws a control still has one name. */
+export const COLUMN_LABELS: Record<ColumnId, string> = {
+  asks: "Open asks",
+  assignee: "Assignee",
+  author: "Created by",
+  ci: "CI",
+  claim: "Claimed by",
+  created: "Created",
+  epic: "Epic",
+  key: "Key",
+  labels: "Labels",
+  phase: "Phase",
+  priority: "Priority",
+  queue: "Queue",
+  roles: "Roles",
+  select: "Select",
+  slot: "Slot",
+  status: "Status",
+  title: "Title",
+  updated: "Updated",
+};
+/** What a list of columns calls one: its registry label, else whatever its header says. */
+export const columnLabel = (column: { id: string; columnDef: ColumnDef<Item> }): string =>
+  column.columnDef.meta?.label ?? String(column.columnDef.header ?? column.id);
 
 /** How each column renders and sorts, for the reader `userState` describes. Keyed by the
  *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
@@ -181,13 +222,18 @@ const renderings = (
     cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
   },
   phase: {
-    header: "Phase",
+    header: () => (
+      <HeaderWithHint hint="The board column the daemon holds the issue in, and how long it has stood there.">
+        Phase
+      </HeaderWithHint>
+    ),
     accessorFn: (item) => item.legion?.id ?? NO_PHASE,
     sortingFn: (a, b) =>
       (a.original.legion?.order ?? Number.MAX_SAFE_INTEGER) -
         (b.original.legion?.order ?? Number.MAX_SAFE_INTEGER) ||
       (a.original.queue ?? Number.MAX_SAFE_INTEGER) - (b.original.queue ?? Number.MAX_SAFE_INTEGER),
     sortDescFirst: false,
+    meta: { control: true },
     cell: ({ row }) =>
       row.original.legion ? (
         <LegionPhaseCell phase={row.original.legion} />
@@ -196,26 +242,51 @@ const renderings = (
       ),
   },
   slot: {
-    header: "Slot",
+    header: () => (
+      <HeaderWithHint hint="The worker slot the issue holds. A child holds its tree root's slot.">
+        Slot
+      </HeaderWithHint>
+    ),
     // A child holds its root's slot, so it sorts and reads by that slot too.
     accessorFn: (item) =>
       item.legion ? (item.legion.card.slot ?? item.legion.card.tree_slot ?? undefined) : undefined,
     sortUndefined: "last",
     sortDescFirst: false,
+    meta: { control: true },
     cell: ({ row }) => (
-      <span className="tabular-nums" data-legion-fact="slot">
-        {row.original.legion ? legionSlotText(row.original.legion.card) : "No slot"}
+      <span
+        className="tabular-nums"
+        data-legion-fact="slot"
+        // A child works in its tree root's slot, which the number alone does not say.
+        title={row.original.legion ? legionSlotText(row.original.legion.card) : undefined}
+      >
+        {legionSlotValue(row.original)}
       </span>
     ),
   },
   roles: {
-    header: "Roles in a turn",
-    accessorFn: (item) => (item.legion ? legionRolesText(item.legion.card) : NO_PHASE),
+    header: () => (
+      <HeaderWithHint hint="The roles that are in a turn on this issue now. None reads as between turns.">
+        Roles
+      </HeaderWithHint>
+    ),
+    accessorFn: (item) =>
+      item.legion === undefined
+        ? NO_PHASE
+        : item.legion.card.roles.length === 0
+          ? "between turns"
+          : item.legion.card.roles.join(", "),
+    meta: { control: true },
     cell: ({ getValue }) => <span data-legion-fact="roles">{getValue<string>()}</span>,
   },
   ci: {
-    header: "CI verdict",
+    header: () => (
+      <HeaderWithHint hint="What the issue's pull request checks said when the daemon last read them.">
+        CI
+      </HeaderWithHint>
+    ),
     accessorFn: (item) => item.legion?.card.checks_verdict ?? "No verdict",
+    meta: { control: true },
     cell: ({ getValue }) => <span data-legion-fact="checks">{getValue<string>()}</span>,
   },
   epic: {
@@ -316,6 +387,8 @@ export function useIssueTableColumns(
         ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
         ...(column.filter === undefined ? {} : { filterFn: picks ? inPicks : "includesString" }),
         meta: {
+          label: COLUMN_LABELS[column.id],
+          ...rendering[column.id]?.meta,
           ...(column.filter?.kind === "text" ? { text: true } : {}),
           ...(picks?.order === undefined ? {} : { order: picks.order }),
           ...(picks?.show === undefined ? {} : { show: picks.show }),

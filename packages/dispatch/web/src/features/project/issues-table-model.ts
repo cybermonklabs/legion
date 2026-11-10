@@ -208,6 +208,13 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   if (hours < 24) return `${hours} h ${minutes % 60} m`;
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
+/** The Slot column's value: the slot number the issue works in, its tree root's for a child,
+ *  as text. A row with no slot, and every row of a project with no daemon, reads "No slot". */
+export function legionSlotValue(item: Item): string {
+  const card = item.legion?.card;
+  const slot = card?.slot ?? card?.tree_slot;
+  return slot === undefined || slot === null ? "No slot" : String(slot);
+}
 /** A Legion phase's label as the views write it: the board column's label, and "(retro)" after
  *  Merging while the issue is in retro, whose turn is the implementer's, so a Merging issue with
  *  the implementer in a turn reads as what it is. */
@@ -310,9 +317,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "slot",
     size: 96,
     min: 116,
-    filter: one((item) => (item.legion ? legionSlotText(item.legion.card) : NO_PHASE), {
-      groups: false,
-    }),
+    filter: one((item) => legionSlotValue(item), { groups: false }),
   },
   {
     id: "roles",
