@@ -216,6 +216,13 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		// reaches, so the citation is credited, and `github.com@evil.test` is the other way
 		// round and is credited to nobody (citation_boundary_test.go holds that pair).
 		{"userinfo carrying another host's name", "See https://example.test/x@github.com/acme/widgets/issues/7 here.", []string{cited}},
+		// Whatever digits stand between a colon and the path are read as the port, however many:
+		// they name no host, so a port no URL may carry leaves the citation where it was rather
+		// than dropping it for a typo. Past the bound the digits are no port, and what runs into
+		// the path is no host name either.
+		{"a port no URL may carry", "See https://github.com:99999/acme/widgets/issues/7 here.", []string{cited}},
+		{"digits where a port should be", "See https://github.com:443443443/acme/widgets/issues/7 here.", []string{cited}},
+		{"more digits than a host name is long", "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here.", nil},
 		// The scan left of a host stops after maxCitationURL bytes and refuses there, so a host
 		// that far inside one unbroken run of URL bytes is no citation, while a hundred bytes of
 		// the same run leave one.

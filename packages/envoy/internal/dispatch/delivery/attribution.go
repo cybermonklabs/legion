@@ -113,9 +113,13 @@ const (
 	// maxCitationURL is how far back of a body one citation may be read: the scan left of a host
 	// stops there and refuses, which keeps one match's read bounded whatever the body holds.
 	maxCitationURL = 2048
-	// maxPortDigits is the longest run of digits read as a port before the path: a port is at
-	// most 65535, so a longer run is no port at all.
-	maxPortDigits = 5
+	// maxPortDigits bounds the run of digits read as a port before the path. It is a host name's
+	// length rather than a port's five, because the digits a writer puts between a colon and the
+	// path decide no host: `github.com:99999` and `github.com:443443443` name no port a URL may
+	// carry, and both are still github.com, so reading them as the port credits the citation
+	// where measuring them against 65535 would drop it for a typo. The bound is only what keeps
+	// the read constant.
+	maxPortDigits = maxHostName
 )
 
 // citesGitHubIssue says whether the issue path running from pathAt to end is the path of a URL
@@ -128,8 +132,9 @@ const (
 // authority owning this path begins, and refuses a path that belongs to another URL: the blob
 // path above is refused there, because what stands before it is a path segment rather than an
 // authority. net/url then says what that authority's host is, which is the reading that tells
-// github.com from a name that merely looks like it — a port, userinfo, upper case, a trailing
-// dot, a punycode or percent-encoded name are all its answer rather than this file's.
+// github.com from a name that merely looks like it — the digits after a colon, userinfo, upper
+// case, a trailing dot, a punycode or percent-encoded name are all its answer rather than this
+// file's.
 //
 // The path comparison states what the two together leave true: the authority runs to where the
 // match begins, so the matched path is the whole path of what was read. No body reaches it with
