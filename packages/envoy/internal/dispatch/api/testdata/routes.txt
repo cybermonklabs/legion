@@ -39,6 +39,8 @@ GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
 GET /api/v1/broadcasts/{id} any
+GET /api/v1/comment-threads/by-target any
+GET /api/v1/comment-threads/by-thread-state any
 GET /api/v1/comments/{id} any
 PATCH /api/v1/comments/{id} any
 POST /api/v1/comments/{id}/accept any

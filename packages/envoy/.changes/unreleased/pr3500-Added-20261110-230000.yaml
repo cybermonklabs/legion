@@ -1,0 +1,5 @@
+kind: Added
+body: 'Two indexes on `comments` for those routes, each built with `CREATE INDEX CONCURRENTLY`: `comments_anchor_artifact_created` on `((anchor->>''artifact_id''), created_at, id)`, which answers the `?artifact=` narrowing''s text comparison that 0032''s `comments_anchor_artifact` cannot, since that one is on the uuid cast; and `comments_artifact_created` on `(artifact_id, created_at, id)`, which carries the order a keyset page reads in where 0032''s `comments_artifact_id` carries the equality alone.'
+time: 2026-11-10T23:00:00.000000000Z
+custom:
+    Issue: pr3500
