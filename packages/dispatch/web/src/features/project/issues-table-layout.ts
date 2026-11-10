@@ -90,13 +90,24 @@ export function useTableLayout(project: string) {
       (height, row) => height + row.getBoundingClientRect().height,
       0
     );
-    // Everything the page holds under the box: the gap, the pager and the bottom padding that
-    // leaves room for the floating selection bar. Read rather than assumed — an assumed figure
-    // is what left the document a hundred pixels taller than the window — so the pager ends at
-    // the window's edge with nothing below it to scroll to.
-    const measured = document.documentElement.scrollHeight - (bounds.bottom + window.scrollY);
-    const below = measured > 0 ? measured : FALLBACK_BELOW_BOX;
-    const available = window.innerHeight - (bounds.top + window.scrollY) - below;
+    // The room left over under the pager, which the box takes: the window, less the bottom
+    // padding the section and the page keep for the floating selection bar, less where the
+    // pager's last pixel is now. Measured against the pager's own place rather than the page's
+    // height — which on a page shorter than the window is the window, leaving the box only
+    // able to shrink — so the box grows as well as shrinks, whatever stands above it.
+    const pager = pagerRef.current?.getBoundingClientRect();
+    const padding = (element: Element | null | undefined) =>
+      element === null || element === undefined
+        ? 0
+        : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
+    const slack =
+      pager === undefined
+        ? window.innerHeight - (bounds.top + window.scrollY) - FALLBACK_BELOW_BOX - bounds.height
+        : window.innerHeight -
+          padding(box.parentElement) -
+          padding(box.closest("main")) -
+          pager.bottom;
+    const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
     setBoxWidth(bounds.width);
   }, []);

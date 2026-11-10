@@ -10,6 +10,7 @@ import {
   getSortedRowModel,
   type Row,
   type RowSelectionState,
+  type Table,
   useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -44,6 +45,7 @@ import { useTableLayout } from "./issues-table-layout";
 import {
   compareGroups,
   facetCounts,
+  groupValue,
   type Item,
   isEpic,
   matchesFilters,
@@ -98,28 +100,45 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         (!flags.needsYou || issue.open_asks > 0) &&
         (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
     );
-    const grouped = grouping[0];
-    if (grouped === undefined) return shown;
-    // A group's heading is where its column's filter would list it, so the headings run in that
-    // order whatever the rows are sorted by: the groups are made in the order the rows arrive.
-    const ordered = [...shown].sort((a, b) => compareGroups(grouped, a, b));
-    if (grouped !== "epic") return ordered;
+    if (grouping[0] !== "epic") return shown;
     // An epic is an ordinary row, except where it is already a group's heading. A heading is
     // made by the children the table lists — the same filters and search it applies to every
     // row — so an epic none of the listed rows belongs to keeps its own row rather than leaving
     // the view with nothing to show it, select it or act on it.
     const headings = new Set(
-      ordered
+      shown
         .filter(
           (item) =>
             !isEpic(item.issue) && matchesFilters(item, filters) && matchesSearch(item, search)
         )
         .map(({ epicKey }) => epicKey)
     );
-    return ordered.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
+    return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, search, userState.data]);
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640);
+
+  // TanStack groups first and sorts afterwards, and that sort reorders the group rows by
+  // whatever the reader sorted the issues by — the sum of a numeric column, or the first leaf's
+  // value. A group's place is its column's, so the headings go back into the registry's order
+  // once the sort has run; the rows inside each group keep the reader's sort.
+  const sortedByGroup = useMemo(() => {
+    const sorted = getSortedRowModel<Item>();
+    const grouped = grouping[0];
+    if (grouped === undefined) return sorted;
+    return (instance: Table<Item>) => {
+      const rows = sorted(instance);
+      return () => {
+        const model = rows();
+        const heading = (row: Row<Item>) =>
+          row.getIsGrouped() ? String(row.groupingValue ?? "") : groupValue(grouped, row.original);
+        return {
+          ...model,
+          rows: [...model.rows].sort((a, b) => compareGroups(grouped, heading(a), heading(b))),
+        };
+      };
+    };
+  }, [grouping]);
 
   const table = useReactTable({
     data: items,
@@ -159,7 +178,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     groupedColumnMode: false,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getSortedRowModel: getSortedRowModel(),
+    getSortedRowModel: sortedByGroup,
     getGroupedRowModel: getGroupedRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),

@@ -633,7 +633,9 @@ test("compact windows give the table three full rows and let the page scroll @ph
   }
 });
 
-test("a roomy window holds the whole page, with nothing under the pager", async ({ browser }) => {
+test("a roomy window is filled by the box, which grows when the window does", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   for (let index = 0; index < 6; index++)
     await createIssue({ project: "CORE", title: `Roomy row ${index}` });
@@ -643,14 +645,38 @@ test("a roomy window holds the whole page, with nothing under the pager", async 
     await page.setViewportSize({ width: 1400, height: 900 });
     await page.goto("/projects/CORE/issues");
     await expect(page.locator("[data-issue-row]").nth(5)).toBeAttached();
-    // The box takes the room the page leaves, so the document is the window: the pager sits at
-    // its bottom edge and nothing below it scrolls into view.
-    const overflow = async () =>
-      await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
-    await expect.poll(overflow).toBeLessThanOrEqual(1);
+    // The box takes the room the window leaves: the pager's last pixel lands at the window's
+    // bottom, less the padding the page keeps under it for the floating selection bar, and
+    // nothing scrolls. A box that only ever shrank would pass a page-height check and fail
+    // this one.
+    const room = async () =>
+      await page.evaluate(() => {
+        const pager = document.querySelector('[data-testid="issues-table-pager"]');
+        const box = document.querySelector('[data-testid="issues-table-scroll"]');
+        const main = box?.closest("main");
+        if (!pager || !box || !main) return null;
+        const padding = (element: Element) =>
+          Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
+        return {
+          slack:
+            window.innerHeight -
+            padding(box.parentElement as Element) -
+            padding(main) -
+            pager.getBoundingClientRect().bottom,
+          box: box.getBoundingClientRect().height,
+          page: document.documentElement.scrollHeight - window.innerHeight,
+        };
+      });
+    await expect.poll(async () => (await room())?.slack).toBeLessThanOrEqual(1);
+    expect((await room())?.slack).toBeGreaterThanOrEqual(-1);
+    expect((await room())?.page).toBeLessThanOrEqual(1);
     await page.mouse.wheel(0, 400);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
     await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeInViewport();
+    const short = (await room())?.box ?? 0;
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    await expect.poll(async () => (await room())?.box ?? 0).toBeGreaterThan(short + 200);
+    expect((await room())?.slack).toBeLessThanOrEqual(1);
   } finally {
     await context.close();
   }

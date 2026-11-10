@@ -18,13 +18,16 @@ test("Escape after picking a label leaves focus on the labels trigger", async ({
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}`);
+    const labels = page.getByTestId("issue-labels");
+    await expect(labels.getByText("bug", { exact: true })).toBeVisible();
     const trigger = page.getByRole("button", { name: "Edit labels" });
     await trigger.click();
     await page.getByRole("option", { name: "bug" }).click();
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
-    // The save the close committed lands here, re-rendering the header around the trigger.
-    await expect(page.getByRole("button", { name: "Edit labels" })).toBeEnabled();
+    // The save the close committed lands here, taking the chip away and re-rendering the
+    // header around the trigger. Focus must still be where Escape put it.
+    await expect(labels.getByText("bug", { exact: true })).toHaveCount(0);
     await expect(trigger).toBeFocused();
   } finally {
     await context.close();

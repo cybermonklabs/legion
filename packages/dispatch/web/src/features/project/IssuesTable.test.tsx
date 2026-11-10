@@ -1018,15 +1018,21 @@ function headings(): string[] {
 
 // A group's place is its column's, not the row sort's: the registry lists the values in the
 // order the filter offers them, and the headings read the same way.
-test("grouped by Priority, the headings run P0, P1, P2, P3 whatever the rows are sorted by", async () => {
+test.each([
+  ["the default Queue sort", ""],
+  ["Created ascending", "&sort=created"],
+  ["Key descending", "&sort=-key"],
+])("grouped by Priority, the headings run P0, P1, P2, P3 under %s", async (_name, sort) => {
+  // Queued rows give each group a number to sum and a rank to sort by, which is what let the
+  // row sort carry the headings along with it.
   table(
     [
-      issue("CORE-1", { priority: 0, rank: "a" }),
-      issue("CORE-2", { priority: 1, rank: "b" }),
-      issue("CORE-3", { priority: 3, rank: "c" }),
-      issue("CORE-4", { priority: 2, rank: "d" }),
+      issue("CORE-1", { labels: ["legion"], priority: 0, rank: "a" }),
+      issue("CORE-2", { labels: ["legion"], priority: 1, rank: "b" }),
+      issue("CORE-3", { labels: ["legion"], priority: 3, rank: "c" }),
+      issue("CORE-4", { labels: ["legion"], priority: 2, rank: "d" }),
     ],
-    "?group=priority"
+    `?group=priority${sort}`
   );
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   await waitFor(() =>
@@ -1034,22 +1040,26 @@ test("grouped by Priority, the headings run P0, P1, P2, P3 whatever the rows are
   );
 });
 
-test("grouped by Status, the headings run in workflow order", async () => {
+test.each([
+  ["the default Queue sort", ""],
+  ["Created ascending", "&sort=created"],
+  ["Key descending", "&sort=-key"],
+])("grouped by Status, the headings run in workflow order under %s", async (_name, sort) => {
   table(
     [
-      issue("CORE-1", { status: "needs_review", rank: "a" }),
-      issue("CORE-2", { status: "triage", rank: "b" }),
-      issue("CORE-3", { status: "in_progress", rank: "c" }),
+      issue("CORE-1", { labels: ["legion"], status: "needs_review", rank: "a" }),
+      issue("CORE-2", { labels: ["legion"], status: "todo", rank: "b" }),
+      issue("CORE-3", { labels: ["legion"], status: "in_progress", rank: "c" }),
     ],
-    "?group=status&nofilter=1"
+    `?group=status&nofilter=1${sort}`
   );
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   await waitFor(() =>
     expect(
       headings().map((text) =>
-        ["Triage", "In progress", "Needs review"].find((name) => text.includes(name))
+        ["Todo", "In progress", "Needs review"].find((name) => text.includes(name))
       )
-    ).toEqual(["Triage", "In progress", "Needs review"])
+    ).toEqual(["Todo", "In progress", "Needs review"])
   );
 });
 
