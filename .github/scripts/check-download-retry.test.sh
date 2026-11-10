@@ -2600,8 +2600,8 @@ echo "case: rule 11's exemption holds a job that compiles Go and stops holding a
 # the fixture ci.yaml carries `airlock-lean`, so a tree whose GO_BUILD_EXEMPT names it passes
 # with that job compiling Go and no download, and the same tree with the job renamed is refused
 # twice - once for the renamed job, which no entry covers, and once for the entry, which now
-# matches no job compiling Go. That second refusal is what an entry keyed on the file alone
-# never made: it left a renamed job's exception live for the next job of that name.
+# matches no job compiling Go. That second refusal is what a guard that asked only whether the job
+# still existed never made: it left a renamed job's exception live for the next job of that name.
 root=$(fixture go-exempt)
 run_check "$root"
 check "the exempted job passes" "$(is "$status" 0)"

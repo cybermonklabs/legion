@@ -222,6 +222,25 @@ jobs:
           # this workflow saves none (.github/ci-budgets.md, "Caches").
           cache: false
 
+      # Rule 11 of .github/scripts/check-download-retry.sh cannot see this job's Go builds:
+      # they are inside the proof scripts the step below calls - lib/live-daemon-proof.sh:145
+      # builds packages/daemon's e2e driver, and dispatch-claimant-delivery.sh and
+      # verification-results.sh build packages/envoy's dispatch and natsd - which is the
+      # called-script limit that rule's reach paragraph names. setup-go above restores no cache
+      # (`cache: false`), so every run of every row fetches the module graph from
+      # proxy.golang.org, with no cache to hide it; this step is where that fetch retries.
+      # One download serves every row whichever module its script builds: go.work binds both,
+      # so `go mod download` resolves the workspace's whole build list wherever it is run
+      # (measured at this head with an empty module cache and GOPROXY=off: 193 modules looked
+      # up from the root, from packages/daemon and from packages/envoy alike, against 1 with
+      # GOWORK=off).
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's Go modules" 180 -- go mod download
+
       - name: Run the proof
         env:
           SCRIPT: ${{ matrix.script }}

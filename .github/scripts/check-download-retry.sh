@@ -112,22 +112,34 @@
 # reads: a job's `run:` body, in a workflow file, matched for `go build|test|vet|run` against a
 # `go mod download` in a `run:` body of the same job. What it does not read, each a hole a reader
 # would otherwise fill in wrongly:
-#   - a composite action's steps, since its loop walks `workflows` where every other rule here
-#     walks `workflows + actions`;
+#   - a composite action's steps, twice over: its loop walks `workflows` alone, and `job is
+#     None` drops an action's steps even where one is read;
 #   - a Go command inside a script the job calls, since it reads `step.get("run")` and follows
 #     no call;
 #   - the order of the two: a build before the download, or a build earlier in the same step,
 #     passes, because the rule asks whether the job holds a download and never where;
 #   - which module comes down: a download of `packages/envoy` answers for a
 #     `go -C packages/envoy/infra test` whose module `go.work` does not bind;
-#   - `go generate`, `go list -deps` and `go -C=dir build`, which fetch and are not in its
-#     pattern.
-# No live job of this tree does any of those, which is why emptying GO_BUILD_EXEMPT flags exactly
-# one job. dispatch://INFRA-2648 owns the reach and the measurement that would widen it. Twice the
-# shape was a real defect that every other rule passed - .github/workflows/dispatch-browser.yaml's
-# embedder job and .github/workflows/dispatch-browser-nightly.yaml's re-record job, each compiling
-# after a cache restore alone and each caught by a person reading the job rather than by this
-# check (review rounds 13 and 14 of dispatch://INFRA-1545).
+#   - commands outside its pattern that fetch, among them `go list -deps`, `go -C=dir build`,
+#     `go mod tidy`, `go get` and `go list -m all`. `go generate` is not one: driven at this
+#     head in packages/envoy with an empty module cache and GOPROXY=off, `go generate -n ./...`
+#     exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup disabled by
+#     GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
+# What holds in the tree is a reading rather than a count: every live job that reaches one of
+# those holes also holds its module's retried download, audited at this head by reading each
+# workflow job that compiles Go, through a called script, a composite action or a verb above as
+# well as directly. The ones in a hole: ci.yaml's lint (go-release-notices.sh), test
+# (stage1-skeleton.sh), envoy-go-checks and envoy-session-stall, release-envoy-infra.yaml's and
+# release-envoy-listener.yaml's builds and release.yaml's legion_build (go-third-party-notices.sh,
+# and `go -C "$infra" list -deps`), e2e.yaml's proof, and dispatch-browser.yaml's visual - the
+# last two added by review round 17 of dispatch://INFRA-1545, which found them where this
+# paragraph had claimed no live job stood. Emptying GO_BUILD_EXEMPT is no evidence for that
+# sentence: it shows what rule 11 reads and never what its holes hide. dispatch://INFRA-2648 owns
+# the reach and the measurement that would widen it. Four times the shape was a real defect that
+# every other rule passed: dispatch-browser.yaml's embedder (round 12),
+# dispatch-browser-nightly.yaml's re-record (round 14), and e2e.yaml's proof and
+# dispatch-browser.yaml's visual (round 17). Each was caught by a person reading the job rather
+# than by any check, and the last two stood inside a hole this paragraph names.
 #
 # THE VERBS. A fetch is one of these commands, in command position, after the wrappers below are
 # stripped: curl, wget, apt-get/apt (update, install, download, upgrade, dist-upgrade, source,
@@ -2725,11 +2737,8 @@ for (path, job), (line, name) in sorted(go_build_jobs.items()):
 
 for (path, job), why in sorted(GO_BUILD_EXEMPT.items()):
     # Every entry must match a job compiling Go in the tree being read, as EXEMPTIONS requires of
-    # its own. An earlier shape of this guard asked only that the job still exist, which left a
-    # renamed or deleted job's entry live and the next job of that name silently exempt; it was
-    # narrowed that far because the harness's fixture trees held no job this entry could match,
-    # and a guard shaped by what its fixtures can express is a guard that tests its fixtures.
-    # The fixtures carry an `airlock-lean` job of their own now, so the guard asks what it means.
+    # its own, so a renamed or deleted job takes its exception with it. The harness's fixture
+    # trees carry an `airlock-lean` job for that reason.
     if (path, job) not in go_build_jobs:
         problem(path, 1,
                 f"GO_BUILD_EXEMPT holds '{job}' of this file, and this check finds no job of that "

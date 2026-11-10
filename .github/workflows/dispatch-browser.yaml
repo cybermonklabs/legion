@@ -1408,6 +1408,19 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+      # The browser suite's step of this name, at the same bound: run-server.sh builds the
+      # Dispatch server for this job (packages/dispatch/e2e/run-server.sh:370, since the job
+      # sets no DISPATCH_E2E_SERVER_BIN), and that build fetches this module's dependencies
+      # itself on a cache miss. Rule 11 of .github/scripts/check-download-retry.sh cannot see
+      # it, because the build is in a script this job calls, which is the called-script limit
+      # that rule's reach paragraph names. The job's 34 minutes stand: 1050 s is under this
+      # job's largest step budget, setup-bun's 1482 s, which the ceiling is derived from.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The shard job's step of this name, at the same 1482 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
