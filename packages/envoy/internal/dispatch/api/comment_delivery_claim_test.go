@@ -162,8 +162,14 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		t.Fatalf("load retry event: %v", err)
 	}
 	stale := ResolvedMention{Target: "role:reviewer", Delivery: "steer", SessionID: new("s1"), attemptSessionID: "s1"}
+	// The retries below are read from zero, the role lookups with the sends: what the comment's
+	// own creation costs in lookups is not a fixed number. A lookup the listener answers after
+	// mentionLookupTimeout (comment_delivery.go) leaves the mention unresolved, and the sender of
+	// that mention resolves the role again after the commit (mentionResolutionFor), so the
+	// creation above makes one lookup or two.
 	mu.Lock()
 	blockS1 = true
+	roleLookups = 0
 	sent = nil
 	mu.Unlock()
 	type deliveryResult struct {
@@ -204,9 +210,11 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	defer mu.Unlock()
 	// Each retry sends exactly once, to the session its own attempt resolved. The two sends
 	// no longer run one after the other: the claim transaction commits before the listener is
-	// called, so which of them reaches the listener first is a race by design.
+	// called, so which of them reaches the listener first is a race by design. One role lookup
+	// pays for both: the attempt resumed under its pin rechecks s1 alone, and only the fresh
+	// attempt, opened with no resolution of its own, asks who holds the role now.
 	sort.Strings(sent)
-	if roleLookups != 2 || len(sent) != 2 || sent[0] != "s1" || sent[1] != "s2" {
+	if roleLookups != 1 || len(sent) != 2 || sent[0] != "s1" || sent[1] != "s2" {
 		t.Fatalf("concurrent retry decisions = lookups:%d sends:%#v, want one send to the original s1 and one to the fresh s2", roleLookups, sent)
 	}
 }

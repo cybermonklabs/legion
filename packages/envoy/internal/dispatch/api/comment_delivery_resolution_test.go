@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -15,12 +17,52 @@ import (
 // roleMentionRegistry is the listener state a role-mention retry test moves between requests:
 // who holds the role, whether the session an attempt is pinned to is still live, how many role
 // lookups and how many per-session reads the listener answered, and every send it accepted.
+//
+// Every field is read and written under mu, because the goroutine a lookup runs in and the test
+// goroutine overlap: a comment's creation gives up on a lookup that misses mentionLookupTimeout
+// (comment_delivery.go) and is answered without it, so that lookup's handler is still counting
+// itself while the test reads the counts.
 type roleMentionRegistry struct {
+	mu           sync.Mutex
 	holder       string
 	s1Live       bool
 	lookups      int
 	sessionReads int
 	sent         []map[string]any
+}
+
+// setHolder moves the role to holder.
+func (registry *roleMentionRegistry) setHolder(holder string) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.holder = holder
+}
+
+// setS1Live says whether the listener still answers for s1.
+func (registry *roleMentionRegistry) setS1Live(live bool) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.s1Live = live
+}
+
+// reset starts the counters again from zero, so that what the step after it costs is read on its
+// own. What the creation before it cost is not a fixed number: a lookup the listener answers
+// after mentionLookupTimeout leaves its mention unresolved, and the sender of that mention
+// resolves the target again after the commit (mentionResolutionFor).
+func (registry *roleMentionRegistry) reset() {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.lookups = 0
+	registry.sessionReads = 0
+	registry.sent = nil
+}
+
+// answered is what the listener has done since the last reset: role lookups, per-session reads,
+// and the sends it took.
+func (registry *roleMentionRegistry) answered() (lookups, sessionReads int, sent []map[string]any) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	return registry.lookups, registry.sessionReads, slices.Clone(registry.sent)
 }
 
 // roleMentionListener is the Envoy listener the role-mention retry tests run against: it
@@ -32,20 +74,29 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
+			registry.mu.Lock()
 			registry.lookups++
+			holder := registry.holder
+			registry.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"role": "reviewer", "holder": registry.holder, "title": "reviewer", "capabilities": []string{"steer"},
+				"role": "reviewer", "holder": holder, "title": "reviewer", "capabilities": []string{"steer"},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+			registry.mu.Lock()
 			registry.sessionReads++
-			if !registry.s1Live {
+			live := registry.s1Live
+			registry.mu.Unlock()
+			if !live {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no live session s1"}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"session_id":"s1","title":"planner","capabilities":["steer"]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
-			if !registry.s1Live {
+			registry.mu.Lock()
+			live := registry.s1Live
+			registry.mu.Unlock()
+			if !live {
 				_, _ = w.Write([]byte(`[]`))
 				return
 			}
@@ -55,7 +106,9 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatalf("decode role mention send: %v", err)
 			}
+			registry.mu.Lock()
 			registry.sent = append(registry.sent, request)
+			registry.mu.Unlock()
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -85,9 +138,15 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending role delivery: %v", err)
 	}
-	registry.holder = "s2"
-	registry.sent = nil
-	registry.sessionReads = 0
+	// The role moves to s2, and every counter the retry is read by starts again from zero, the
+	// role lookups with them: what the comment's own first delivery costs in lookups is not a
+	// fixed number. A lookup the listener answers after mentionLookupTimeout (comment_delivery.go)
+	// leaves the mention unresolved, and the sender of that mention resolves the role again after
+	// the commit (mentionResolutionFor), so the creation above makes one lookup or two. Counting
+	// from zero is what makes the assertion below about the retry alone: the retry must look up
+	// no role at all.
+	registry.setHolder("s2")
+	registry.reset()
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
 	}, "alice")
@@ -97,10 +156,10 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 1 || attempt.SessionID == nil || *attempt.SessionID != "s1" || attempt.State != "sent" {
 		t.Fatalf("pending role retry attempt = %#v, want original-holder attempt 1", attempt)
 	}
-	if registry.lookups != 1 || registry.sessionReads != 1 || len(registry.sent) != 1 ||
-		registry.sent[0]["target_session"] != "s1" {
+	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads != 1 || len(sent) != 1 ||
+		sent[0]["target_session"] != "s1" {
 		t.Fatalf("pending role retry = lookups:%d session reads:%d sends:%#v, want the pin rechecked once, no role re-resolution and no s2 delivery",
-			registry.lookups, registry.sessionReads, registry.sent)
+			lookups, sessionReads, sent)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -108,9 +167,8 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending disappeared-holder delivery: %v", err)
 	}
-	registry.s1Live = false
-	registry.sent = nil
-	registry.sessionReads = 0
+	registry.setS1Live(false)
+	registry.reset()
 	missingHolder := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
 	}, "alice")
@@ -123,9 +181,9 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	}
 	// "no live session" is what a listener take-over answers too, so the retry rechecks the pin
 	// on every try of the take-over window before it settles; each read is of s1 itself.
-	if registry.lookups != 1 || registry.sessionReads < 1 || len(registry.sent) != 0 {
+	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads < 1 || len(sent) != 0 {
 		t.Fatalf("absent original holder retry = lookups:%d session reads:%d sends:%#v, want the pin rechecked on each try, no role re-resolution and no send attempt",
-			registry.lookups, registry.sessionReads, registry.sent)
+			lookups, sessionReads, sent)
 	}
 }
 
@@ -252,11 +310,9 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHold
 
 	// The role moves to s2 and s1 goes briefly unreachable, so the retry's recheck of the
 	// pinned session fails without ever consulting the role.
-	registry.holder = "s2"
-	registry.s1Live = false
-	registry.lookups = 0
-	registry.sent = nil
-	registry.sessionReads = 0
+	registry.setHolder("s2")
+	registry.setS1Live(false)
+	registry.reset()
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
 	}, "alice")
@@ -269,9 +325,9 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHold
 	}
 	// "no live session" is what a listener take-over answers too, so the retry rechecks the pin
 	// on every try of the take-over window before it settles; each read is of s1 itself.
-	if registry.lookups != 0 || registry.sessionReads < 1 || len(registry.sent) != 0 {
+	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads < 1 || len(sent) != 0 {
 		t.Fatalf("retry during the outage = lookups:%d session reads:%d sends:%#v, want the pin rechecked directly on each try and no send attempted",
-			registry.lookups, registry.sessionReads, registry.sent)
+			lookups, sessionReads, sent)
 	}
 
 	// Attempt 1 already carried the receipt its creation send recorded; the outage settle pays
@@ -519,7 +575,14 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending unresolved delivery: %v", err)
 	}
+	// The role comes back, and the retry is read from zero lookups as well as zero sends: a
+	// lookup the listener answers after mentionLookupTimeout (comment_delivery.go) leaves the
+	// mention unresolved and its sender resolves the role again after the commit
+	// (mentionResolutionFor), so the creation above makes one lookup or two. What this test
+	// proves is the retry's own count: the error attempt 1 recorded is kept, so the retry asks
+	// the listener nothing.
 	roleAvailable = true
+	roleLookups = 0
 	sends = 0
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
@@ -532,7 +595,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 		*attempt.Error != "no holder for role reviewer" {
 		t.Fatalf("pending unresolved retry = %#v, want the original failed resolution", attempt)
 	}
-	if roleLookups != 1 || sends != 0 {
+	if roleLookups != 0 || sends != 0 {
 		t.Fatalf("pending unresolved retry = lookups:%d sends:%d, want no fresh decisions or sends", roleLookups, sends)
 	}
 }

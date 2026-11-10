@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +33,11 @@ type commentDeliveryRead struct {
 	SessionID *string `json:"session_id"`
 	State     string  `json:"state"`
 	Error     *string `json:"error"`
-	ReplyID   *string `json:"reply_id"`
+	// ResolveError is what the attempt's own resolution found. A create response carries it as
+	// the creating transaction wrote it, so it says, with nothing racing it, whether the
+	// listener answered that mention's lookup inside mentionLookupTimeout.
+	ResolveError *string `json:"resolve_error"`
+	ReplyID      *string `json:"reply_id"`
 }
 
 type mentionedCommentRead struct {
@@ -67,6 +73,39 @@ func settledCommentDeliveries(t *testing.T, database *store.Store, commentID str
 		}
 		return len(attempts) > 0
 	})
+}
+
+// aResolvedMentionCreation posts input until the comment it creates committed what its mention's
+// lookup found - a pinned session, or the listener's refusal - on attempt 1.
+//
+// A comment's creation bounds every lookup it makes at mentionLookupTimeout (250 ms,
+// comment_delivery.go) and is answered without one that missed it, committing that attempt with
+// neither a session nor a resolve error; the sender of that mention then resolves the target
+// again after the commit (mentionResolutionFor), which is a second lookup of the product's own
+// making. A creation that lost its lookup to that bound is not what a case using this helper is
+// about - each is about what a committed resolution does next - so that comment's deliveries are
+// settled, again puts the listener back as the case found it, and the comment is posted once
+// more. Five tries: the bound is missed about once in sixty on a loaded two-core runner, so five
+// in a row is not a wait a person will ever see, and a case that spent them says so rather than
+// asserting against a resolution that was never recorded.
+func aResolvedMentionCreation(
+	t *testing.T, handler http.Handler, database *store.Store, issueKey string,
+	input map[string]any, again func(),
+) mentionedCommentRead {
+	t.Helper()
+	for try := 1; try <= 5; try++ {
+		created := decodeMentionedComment(t, postMentionedComment(t, handler, issueKey, input))
+		if len(created.Deliveries) != 1 {
+			t.Fatalf("creation %d = %#v, want the one mention's attempt", try, created)
+		}
+		if created.Deliveries[0].SessionID != nil || created.Deliveries[0].ResolveError != nil {
+			return created
+		}
+		settledCommentDeliveries(t, database, created.ID)
+		again()
+	}
+	t.Fatalf("five creations in a row gave their mention's lookup up at %v", mentionLookupTimeout)
+	return mentionedCommentRead{}
 }
 
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
@@ -245,6 +284,7 @@ func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
 
 func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 	t.Parallel()
+	var mu sync.Mutex
 	roleHolder := "s1"
 	roleLookups := 0
 	sent := []map[string]any{}
@@ -252,9 +292,11 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
+			mu.Lock()
 			roleLookups++
 			holder := roleHolder
 			roleHolder = "s2"
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"role": "reviewer", "holder": holder, "title": "reviewer", "capabilities": []string{"btw", "steer"},
 			})
@@ -267,7 +309,9 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatalf("decode role mention send: %v", err)
 			}
+			mu.Lock()
 			sent = append(sent, input)
+			mu.Unlock()
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -281,13 +325,32 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		t.Fatalf("set route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+	created := aResolvedMentionCreation(t, handler, database, issue.Key, map[string]any{
 		"body": "Review this exact version.", "mentions": []map[string]any{{"target": "role:reviewer"}},
-	}))
+	}, func() {
+		mu.Lock()
+		roleHolder = "s1"
+		roleLookups = 0
+		sent = nil
+		mu.Unlock()
+	})
+	// The lookup behind this comment moved the role to s2 as it answered, and the attempt
+	// committed with the holder it read. From here the role must not be asked about again: the
+	// send is made to the session the attempt names, through a read of that session alone, so
+	// the lookups counted from this point are the whole proof that no role transition redirected
+	// the frame. They start at zero, because what the creation itself spent - one lookup, or two
+	// when it gave the first up at mentionLookupTimeout - says nothing about this.
+	mu.Lock()
+	roleLookups = 0
+	mu.Unlock()
 	settledCommentDeliveries(t, database, created.ID)
-	if roleLookups != 1 || roleHolder != "s2" || len(created.Mentions) != 1 || created.Mentions[0].SessionID == nil ||
-		*created.Mentions[0].SessionID != "s1" || len(sent) != 1 || sent[0]["target_session"] != "s1" {
-		t.Fatalf("role resolution/sends = holder:%s lookups:%d mentions:%#v sends:%#v, want one pinned s1 delivery after role moves to s2", roleHolder, roleLookups, created.Mentions, sent)
+	mu.Lock()
+	holder, lookups, sends := roleHolder, roleLookups, slices.Clone(sent)
+	mu.Unlock()
+	if lookups != 0 || holder != "s2" || len(created.Mentions) != 1 || created.Mentions[0].SessionID == nil ||
+		*created.Mentions[0].SessionID != "s1" || len(sends) != 1 || sends[0]["target_session"] != "s1" {
+		t.Fatalf("role resolution/sends = holder:%s lookups after the creation:%d mentions:%#v sends:%#v, want one pinned s1 delivery after role moves to s2",
+			holder, lookups, created.Mentions, sends)
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppress_route":true`) ||
@@ -587,16 +650,21 @@ func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
 
 func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 	t.Parallel()
+	var mu sync.Mutex
 	roleLookups := 0
 	sends := 0
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
+			mu.Lock()
 			roleLookups++
+			mu.Unlock()
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no holder for role reviewer"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			mu.Lock()
 			sends++
+			mu.Unlock()
 			w.WriteHeader(http.StatusInternalServerError)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -610,14 +678,33 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		t.Fatalf("set role route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+	created := aResolvedMentionCreation(t, handler, database, issue.Key, map[string]any{
 		"body": "No holder should remain unresolved.", "mentions": []map[string]any{{"target": "role:reviewer"}},
-	}))
+	}, func() {
+		mu.Lock()
+		roleLookups = 0
+		sends = 0
+		mu.Unlock()
+	})
+	// Attempt 1 committed with the listener's refusal on it, which is the resolution this case
+	// is about: it is kept, never taken again, so the comment reaches no holder that appears
+	// later. The lookups counted from here are that proof, and they start at zero because the
+	// creation's own count is not fixed - a lookup it gave up on at mentionLookupTimeout is
+	// resolved again by the mention's sender, which is the product doing what an attempt with
+	// nothing recorded on it asks for.
+	mu.Lock()
+	roleLookups = 0
+	mu.Unlock()
 	settled := settledCommentDeliveries(t, database, created.ID)
-	if roleLookups != 1 || sends != 0 || len(created.Mentions) != 1 || created.Mentions[0].SessionID != nil ||
-		len(settled) != 1 || settled[0].SessionID != nil || settled[0].State != "failed" {
-		t.Fatalf("missing-holder mention = lookups:%d sends:%d comment:%#v attempts:%#v, want one unresolved failed attempt",
-			roleLookups, sends, created, settled)
+	mu.Lock()
+	lookups, sendCount := roleLookups, sends
+	mu.Unlock()
+	if lookups != 0 || sendCount != 0 || len(created.Mentions) != 1 || created.Mentions[0].SessionID != nil ||
+		created.Deliveries[0].ResolveError == nil || *created.Deliveries[0].ResolveError != "no holder for role reviewer" ||
+		len(settled) != 1 || settled[0].SessionID != nil || settled[0].State != "failed" ||
+		settled[0].Error == nil || *settled[0].Error != "no holder for role reviewer" {
+		t.Fatalf("missing-holder mention = lookups after the creation:%d sends:%d comment:%#v attempts:%#v, want one unresolved failed attempt",
+			lookups, sendCount, created, settled)
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppress_route":false`) {
