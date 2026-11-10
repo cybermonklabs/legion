@@ -1,5 +1,5 @@
 kind: Added
-body: '`dispatch issue-update --assignee <email>` sets the person an issue''s questions wait on, and `--clear-assignee` leaves the issue on nobody. Every row `dispatch open-asks` prints now says which person the question is waiting on.'
+body: '`dispatch issue-update --assignee <email>` sets the person an issue''s questions wait on, and `--clear-assignee` leaves the issue on nobody. Every row `dispatch open-asks` prints now names the person the question is asked of.'
 time: 2026-11-10T06:23:52.816617924Z
 custom:
     Issue: pr3429
