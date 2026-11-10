@@ -537,9 +537,17 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     the issue and message arms are left with few candidates or none, and the project filter
 //     can take the rest. 400 keeps them, at a wider walk of the index paid once per query.
 //   - hnsw.iterative_scan: with it off, an arm whose kind filter rejects every one of those 400
-//     answers nothing at all; relaxed_order keeps scanning until the arm's own LIMIT is met or
-//     hnsw.max_scan_tuples (20,000) is reached. Relaxed rather than strict: every arm re-ranks
-//     its rows by r (distinct on, then ranked), so nothing downstream reads the index's order.
+//     answers nothing at all; relaxed_order lets the scan carry on past them instead of stopping
+//     there. It does not promise the arm's LIMIT: measured on the load-test corpus, an arm forced
+//     through embeddings_cosine over 1,104 qualifying rows took 245 of them, and that number did
+//     not move at ef_search 40, 400 or 1,000, with iterative_scan relaxed_order or off, at
+//     work_mem 256MB or hnsw.scan_mem_multiplier 16 - so neither the LIMIT nor
+//     hnsw.max_scan_tuples (20,000) was what ended the walk, and how deep an arm reaches is the
+//     index's own business (INFRA-988). That corpus's vectors are near-duplicates of each other,
+//     the worst case for an HNSW walk's reach, so how much of the shortfall a corpus of real text
+//     would see is an inference from it rather than a measurement of it. Relaxed rather than
+//     strict: every arm re-ranks its rows by r (distinct on, then ranked), so nothing downstream
+//     reads the index's order.
 //
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
@@ -867,12 +875,15 @@ totals as (
 // outright, which is worse than spending the candidate set on other projects; the switch to
 // `e.project_key` once the fill's row reads done is what retires it (meaningStatementFor).
 //
-// The depth is still ten times the items the arm keeps (searchWindowCandidates), for the
-// reason that constant gives: one long thread's windows would otherwise fill the arm. And
-// searchMeaningScan sets hnsw.iterative_scan to relaxed_order, so an HNSW scan keeps walking
-// until this arm's own LIMIT is met (or hnsw.max_scan_tuples, 20,000, is reached) rather than
-// stopping at the first hnsw.ef_search = 400 vectors, whichever kinds and projects those
-// happen to belong to: the depth is filled rather than cut short.
+// The depth asked for is still ten times the items the arm keeps (searchWindowCandidates), for
+// the reason that constant gives: one long thread's windows would otherwise fill the arm. What
+// the index delivers against it is its own: searchMeaningScan sets hnsw.iterative_scan to
+// relaxed_order, which lets an HNSW scan carry on past the first hnsw.ef_search = 400 vectors
+// rather than stopping there, and that is the whole of what it promises. It does not fill the
+// LIMIT - measured on the load-test corpus, this arm forced through embeddings_cosine over
+// 1,104 qualifying rows took 245, unmoved by every scan setting tried (the list beside
+// searchMeaningScan holds the numbers) - so the depth is a request, not a guarantee, and a
+// project the index does not reach is as absent as one a predicate excluded.
 //
 // Everything else is as the other window arms have it. The floor (searchMeaningFloor, $10) and
 // the per-item window dedup - `distinct on` over the comment, its nearest window first, carrying
