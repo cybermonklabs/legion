@@ -69,28 +69,50 @@ const READER_INPUT_GRACE_MS = 100;
  *  (`RefPreviewHost`) - and the two must read the same answer. */
 let lastInputAt = Number.NEGATIVE_INFINITY;
 
-/** Where `element` sits in the viewport, rounded, for telling an anchor that moved from a
- *  pointer that did. */
-function placeOf(element: HTMLElement): { left: number; top: number } {
-  const box = element.getBoundingClientRect();
-  return { left: Math.round(box.left), top: Math.round(box.top) };
-}
-
 /** Delegated hover/focus triggers for every reference trigger in the document, present or
  * future — React-rendered links and the anchors inside Markdown bodies and the Proof editor
  * alike, which come and go outside React's knowledge. Returns the detach function. */
 function attachTriggers(): () => void {
-  /** Where the hovered anchor sat when the pointer came to rest on it, so a boundary event can
-   *  say which of the two moved. A card the keyboard opened has none: nothing rested on it. */
-  let anchorWas: { anchor: HTMLElement; left: number; top: number } | undefined;
-  /** The page slid an open card's zone out from under a still pointer, and the card was kept.
-   *  The reader's next movement decides it: back in the zone it stays, anywhere else it goes. */
+  /** The page took the hover zone out from under a pointer that has not moved, and the request
+   *  was kept. The reader's next movement decides it: back in the zone it stays, anywhere else
+   *  it goes. True from the start for a request this host made for a pointer it never saw
+   *  arrive (the hover chain read below), since nothing of that pointer's has been seen to
+   *  move. */
   let keptUnderAStillPointer = false;
-  /** Where the pointer last was, so a `pointermove` the reader made can be told from the one the
-   *  engine makes itself: WebKit and Firefox both dispatch a move at the pointer's own place
-   *  after the page scrolls under it, to settle `:hover` on whatever is under it now
-   *  (sjawhar/legion#2519). The reader moving is the position changing. */
+  /** Where the pointer last was, so a pointer event the reader made can be told from one the
+   *  page made for them. A `pointermove` the engine sends itself is at the place the reader
+   *  left the pointer: WebKit and Firefox both send one after the page scrolls under it, to
+   *  settle `:hover` on whatever is under it now (sjawhar/legion#2519). A boundary event is the
+   *  same: the browser dispatches the pair at the pointer's own place when the page takes an
+   *  element out from under it, and at the new place - the one the `pointermove` right behind
+   *  it carries - when the reader moves away. The reader moving is the position changing. */
   let pointerWas: { x: number; y: number } | undefined;
+  const theReaderMoved = (event: PointerEvent): boolean =>
+    pointerWas === undefined || event.clientX !== pointerWas.x || event.clientY !== pointerWas.y;
+  /** Whether `anchor` is what the pointer is on, asked the moment a request's delay runs out
+   *  and again on the movements after that. A request is kept through whatever the page does
+   *  to it (`onPointerOut`), so by the time the delay is up the reference may be anywhere: slid
+   *  out from under the reader, or under a dialog, the inbox peek or a menu the page opened
+   *  across it. A card drawn then previews a link that is not under their pointer, over
+   *  whatever is - so it waits for them instead, pending rather than dropped.
+   *
+   *  Both halves are asked: the box, that the reference is where the pointer is, and
+   *  `elementFromPoint`, that nothing of the page's stands over it there. Where this host has
+   *  never seen the pointer there is no place to ask about, and the card opens as it always
+   *  did - a pointer that rested on the reference before this host existed is on it by the
+   *  browser's own reckoning, which is what the hover chain read below has just said. */
+  const thePointerIsOn = (anchor: HTMLElement): boolean => {
+    if (pointerWas === undefined) {
+      return true;
+    }
+    const { x, y } = pointerWas;
+    const box = anchor.getBoundingClientRect();
+    if (x < box.left || x > box.right || y < box.top || y > box.bottom) {
+      return false;
+    }
+    const at = document.elementFromPoint(x, y);
+    return at !== null && (at === anchor || anchor.contains(at));
+  };
   /** Anything the reader did that moves the pointer or the page, so neither a boundary event nor
    *  a scroll after it is read as the page moving by itself: a wheel they turned, a key they
    *  pressed (a space or an arrow scrolls), a button they put down (a drag of the scrollbar). */
@@ -98,8 +120,7 @@ function attachTriggers(): () => void {
     lastInputAt = event.timeStamp;
   };
   const onPointerMove = (event: PointerEvent) => {
-    const moved =
-      pointerWas === undefined || event.clientX !== pointerWas.x || event.clientY !== pointerWas.y;
+    const moved = theReaderMoved(event);
     pointerWas = { x: event.clientX, y: event.clientY };
     if (!moved) {
       // The engine's own move, at the place the reader left the pointer: it says only that the
@@ -107,13 +128,18 @@ function attachTriggers(): () => void {
       return;
     }
     lastInputAt = event.timeStamp;
-    if (!keptUnderAStillPointer) {
-      return;
+    if (keptUnderAStillPointer) {
+      keptUnderAStillPointer = false;
+      if (!inHoverZone(event.target)) {
+        refPreview.leave();
+        return;
+      }
     }
-    keptUnderAStillPointer = false;
-    if (!inHoverZone(event.target)) {
-      refPreview.leave();
-    }
+    // The movement that decides a request left standing when its delay ran out somewhere the
+    // reader was not pointing: where the reference is what they are on now, it waits that
+    // delay again from here - arriving on a reference from over something else is the hover
+    // the delay exists to tell from a reader passing through.
+    refPreview.startTheDelayAgain(thePointerIsOn);
   };
   const onPointerOver = (event: PointerEvent) => {
     // Inside the zone there is nothing to open: a pointer arriving from outside it only cancels
@@ -137,19 +163,18 @@ function attachTriggers(): () => void {
     const route = routeOf(trigger);
     if (route !== undefined) {
       keptUnderAStillPointer = false;
-      anchorWas = { anchor: trigger, ...placeOf(trigger) };
-      refPreview.hoverStart(trigger, route);
+      refPreview.hoverStart(trigger, route, thePointerIsOn);
     }
   };
   const onPointerOut = (event: PointerEvent) => {
     if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
       return;
     }
-    // A card the reader asked for is not taken away because the page moved: where the anchor
-    // has slid out from under a pointer that never moved - a card above it settling its height,
-    // a picture landing, a long body formatting, the issue page's own header, tab strip and
-    // margin landing over the body they are pointing at - the card stays, measured where the
-    // anchor is now, until the reader themselves moves away.
+    // A card the reader asked for is not taken away because the page moved: where the hover
+    // zone has slid out from under a pointer that never moved - a card above it settling its
+    // height, a picture landing, a long body formatting, the issue page's own header, tab strip
+    // and margin landing over the body they are pointing at - the card stays, measured where
+    // the anchor is now, until the reader themselves moves away.
     //
     // A hover still waiting out its delay is kept on the same terms as a card already drawn,
     // because what is kept is the reader's request rather than the pixels it has put on the
@@ -163,25 +188,31 @@ function attachTriggers(): () => void {
     // chromium, firefox and webkit alike). `reposition` keeps the pending target, so the delay
     // runs on and the card opens where the anchor is now.
     //
-    // THE CLOCK CANNOT TELL THE TWO APART, and a bound on it is the one thing this must not
-    // use: a reader reaches a reference by moving onto it, so their own last movement is always
-    // milliseconds old when the page slides it away, and reading that arrival as a departure
-    // closed the card on the ordinary conversation page in CI's container, deterministically
-    // and on both attempts (run 42628596511, shard 2, `e2e/hover-preview.e2e.ts:72`). The
-    // anchor's MEASURED BOX is what says the page moved - a reader moving away leaves it where
-    // it was - and `keptUnderAStillPointer` is the correction: the reader's next movement
-    // closes a request kept over nothing, and a movement is what their own leaving always
-    // sends, since the browser dispatches the move at the new place after the boundary pair.
-    const waiting = previewState();
-    const anchor = waiting?.target.anchor;
-    if (anchor !== undefined && anchorWas?.anchor === anchor) {
-      const place = placeOf(anchor);
-      if (place.left !== anchorWas.left || place.top !== anchorWas.top) {
-        anchorWas = { anchor, ...place };
-        keptUnderAStillPointer = true;
-        refPreview.reposition();
-        return;
-      }
+    // THE POINTER'S OWN PLACE IS WHAT SAYS WHICH OF THE TWO MOVED, and it is the only thing
+    // here that may say it. A clock cannot: a reader reaches a reference by moving onto it, so
+    // their own last movement is always milliseconds old when the page slides it away, and
+    // reading that arrival as a departure closed the card on the ordinary conversation page in
+    // CI's container, deterministically and on both attempts (run 42628596511, shard 2,
+    // `e2e/hover-preview.e2e.ts:72`). The ANCHOR'S MEASURED BOX cannot either: it says the page
+    // moved only while the page is still moving it, and a request made for an anchor the page
+    // has already moved - this host's chunk mounting in the very commit that lands the header,
+    // which is where run 42743455211's one red attempt of that row left it: the card's own
+    // reads went out 57 ms after the hover action, in the commit that landed the issue header
+    // and the margin and took the anchor 11 px up from under a pointer resting at its middle,
+    // leaving it 3 px below the reference, and no card ever opened - measures the same box
+    // twice and reads the page's own boundary event as the reader leaving.
+    //
+    // So the question asked is the reader's: the boundary event carries the pointer's place,
+    // and the page moving the zone away leaves that place exactly where the reader's last
+    // movement left it. `keptUnderAStillPointer` is the correction - their next movement closes
+    // a request kept over nothing, and a movement is what their own leaving always sends, since
+    // the browser dispatches the move at the new place after the boundary pair. A boundary
+    // event with nothing on the other side is not the page moving at all: the pointer has left
+    // the window, or the anchor has left the document, and the request goes with it.
+    if (event.relatedTarget !== null && (keptUnderAStillPointer || !theReaderMoved(event))) {
+      keptUnderAStillPointer = true;
+      refPreview.reposition();
+      return;
     }
     refPreview.leave();
   };
@@ -235,8 +266,10 @@ function attachTriggers(): () => void {
     const resting = triggerOf(hovered.length === 0 ? null : hovered[hovered.length - 1]);
     const restingRoute = resting === null ? undefined : routeOf(resting);
     if (resting !== null && restingRoute !== undefined) {
-      anchorWas = { anchor: resting, ...placeOf(resting) };
-      refPreview.hoverStart(resting, restingRoute);
+      // Nothing of this pointer has been seen to move, so the page taking the reference out
+      // from under it before the reader moves is the page's doing (`onPointerOut`).
+      keptUnderAStillPointer = true;
+      refPreview.hoverStart(resting, restingRoute, thePointerIsOn);
     }
   }
   const focused = triggerOf(document.activeElement);

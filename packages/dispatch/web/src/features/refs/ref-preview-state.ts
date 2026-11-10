@@ -32,6 +32,11 @@ export interface PreviewState {
 let state: PreviewState | undefined;
 let openTimer = 0;
 let closeTimer = 0;
+/** The open delay of the request standing now ran out while the reference was not what the
+ *  pointer was on, so the card was not drawn and the request was not dropped either: the page
+ *  had moved the reference out from under a still pointer, or drawn something over it. The
+ *  reader's next movement onto the reference is what opens it then (`openAfterTheDelay`). */
+let theDelayRanOut = false;
 const subscribers = new Set<() => void>();
 
 /** What the card's host renders, and what every precondition below is judged against. */
@@ -39,21 +44,40 @@ export function previewState(): PreviewState | undefined {
   return state;
 }
 
-/** A new target, or none, cancels both timers, so a timer's callback always acts on the target
- * that armed it and no transition has to clear them for a target change. The comparison is by
- * object identity, and `hoverStart` and `focus` mint a fresh `PreviewTarget` on every call, so
- * keyboard focus landing on the very anchor the pointer just left still cancels that anchor's
- * close. A transition that re-arms a timer on the target already shown clears it itself, which
- * is `leave` alone. */
+/** A new target, or none, cancels both timers and the delay a request of the old target ran
+ * out, so a timer's callback always acts on the target that armed it and no transition has to
+ * clear them for a target change. The comparison is by object identity, and `hoverStart` and
+ * `focus` mint a fresh `PreviewTarget` on every call, so keyboard focus landing on the very
+ * anchor the pointer just left still cancels that anchor's close. A transition that re-arms a
+ * timer on the target already shown clears it itself, which is `leave` alone. */
 function setState(next: PreviewState | undefined): void {
   if (next?.target !== state?.target) {
     window.clearTimeout(openTimer);
     window.clearTimeout(closeTimer);
+    theDelayRanOut = false;
   }
   state = next;
   for (const notify of subscribers) {
     notify();
   }
+}
+
+/** Arms the open delay of `target`: the card is drawn when it runs out, and where the
+ *  reference is not what the pointer is on then (`thePointerIsOnIt`) the request stands on
+ *  instead, pending and undropped, for the reader's next movement to decide
+ *  (`startTheDelayAgain`). */
+function armTheOpenDelay(
+  target: PreviewTarget,
+  thePointerIsOnIt: (anchor: HTMLElement) => boolean
+): void {
+  window.clearTimeout(openTimer);
+  openTimer = window.setTimeout(() => {
+    if (thePointerIsOnIt(target.anchor)) {
+      setState({ phase: "open", target });
+      return;
+    }
+    theDelayRanOut = true;
+  }, REF_PREVIEW_OPEN_DELAY_MS);
 }
 
 /** The one hover card's controller. Module-level on purpose: "one card at a time" is a single
@@ -64,14 +88,38 @@ function setState(next: PreviewState | undefined): void {
  * all of them are the host's, and `closeRefPreview` below is the whole outside surface. */
 export const refPreview = {
   /** Hover began on an anchor outside the hover zone: open its card after the delay unless the
-   * pointer leaves first. */
-  hoverStart(anchor: HTMLElement, route: DispatchReferenceRoute): void {
+   * pointer leaves first.
+   *
+   * `thePointerIsOnIt` is asked at the moment the delay runs out, and only the host can answer
+   * it: whether the reference is still what the pointer is over is a question about the laid
+   * out page - the anchor's box now, and what `elementFromPoint` finds at the place the host
+   * last saw the pointer - and this module holds no pointer and reads no layout. A card drawn
+   * over a dialog that opened across the reference, or beside a reference the page has slid
+   * away from under the reader, previews a link that is not under their pointer, so the answer
+   * no leaves the request standing: pending, undropped, for their next movement to decide. */
+  hoverStart(
+    anchor: HTMLElement,
+    route: DispatchReferenceRoute,
+    thePointerIsOnIt: (anchor: HTMLElement) => boolean
+  ): void {
     const target: PreviewTarget = { anchor, route };
     setState({ phase: "pending", target });
-    openTimer = window.setTimeout(
-      () => setState({ phase: "open", target }),
-      REF_PREVIEW_OPEN_DELAY_MS
-    );
+    armTheOpenDelay(target, thePointerIsOnIt);
+  },
+  /** The reader moved the pointer onto the reference of a request whose delay had already run
+   * out over something else - the page had slid it away from under them, or drawn a dialog
+   * across it. A pointer arriving on a reference from over something else is the case the
+   * delay exists for, a reader passing through, so the request waits a whole delay again from
+   * that movement rather than opening on it.
+   *
+   * Whether the reference is what the pointer is on now is the question `hoverStart` asks and
+   * the host answers, and it is asked here rather than before the call so that no movement
+   * reads the page's layout unless a request is waiting on one. */
+  startTheDelayAgain(thePointerIsOnIt: (anchor: HTMLElement) => boolean): void {
+    if (state?.phase === "pending" && theDelayRanOut && thePointerIsOnIt(state.target.anchor)) {
+      theDelayRanOut = false;
+      armTheOpenDelay(state.target, thePointerIsOnIt);
+    }
   },
   /** The pointer left the hover zone: a card that has not opened yet is abandoned, and an open
    * one closes after the bridge delay unless the pointer comes back. */
