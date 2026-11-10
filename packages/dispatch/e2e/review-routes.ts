@@ -99,14 +99,29 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // waits `DOCUMENT_SETTLE_MS` before it reads its document, so a page read on the heading
     // alone caught the head without that control in one run of the drift probe and with it in
     // the next. The column shows from the wide layout's width and nowhere narrower
-    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`), so the phone row, whose
-    // Inbox is the list of cards alone, has nothing there to wait for.
+    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`).
+    //
+    // And the last words this corpus fills the list with, on either width, because THE HEADING
+    // IS NOT THE PAGE. `app.tsx` draws it outside the `Suspense` that holds `InboxList`, whose
+    // fallback is `null`, so between the heading's commit and that chunk's the page is the
+    // header and the heading alone - 390 by 664 against a 390 by 3,965 baseline, which is what
+    // `visual-phone`'s `inbox` shot was in run 42815937548, and what a build of this tree three
+    // commits earlier gave twice in three runs: the race is older than that run and the
+    // baseline simply won it. The list's own first commit is not enough either, at 2,295 px of
+    // 3,988 with three of its six rows: its thread rows arrive on their own reads, and one
+    // measured run shot the page mid-fill. So this names something from the last of those
+    // reads - the Tester's reply to the @-mention on CORE-3 (`e2e/workspace.ts`) - after which
+    // the page does not move. It is the NARROW row's wait alone: at the wide layout that text
+    // is a card the reading pane holds rather than a row of the list, and it is not on the
+    // screen at all - a wait for it there is a wait for something the page never draws, which
+    // one run proved by timing out on it. The wide row needs none: its own control cannot draw
+    // before the list, since the column reads the document the selected row names.
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
       const wideEnoughForPane = wideLayout(page);
       return wideEnoughForPane
         ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
-        : [heading];
+        : [heading, page.getByText("Re-ran: 2 passed.")];
     },
   },
   {
