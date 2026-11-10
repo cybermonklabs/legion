@@ -827,7 +827,6 @@ done
 authority=${url#*://}
 authority=${authority%%[/?#]*}
 authority=${authority##*@}
-[ -n "$authority" ] || authority=none
 # A bracketed IPv6 literal carries colons inside its brackets, so a cut at the first colon
 # would leave `[` alone in the host field. The first arm keeps such a literal whole, with its
 # brackets, and drops the port after it.
@@ -835,6 +834,12 @@ case $authority in
   "["*"]"*) host=${authority%%]*}] ;;
   *) host=${authority%%:*} ;;
 esac
+# An authority that is only a port, as in http://:443/ or http://u@:80/, leaves the host
+# empty, and the ladder-report verb refuses a line that holds an empty host=. The fallback is
+# therefore on the host and below the case, and not on the authority above it. No test of
+# this script compares the authority against the word none: the one test below compares it
+# against $dead_address, which is an address and a port.
+[ -n "$host" ] || host=none
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
 # (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
@@ -880,12 +885,17 @@ else
   "$real_curl" "$@" || status=$?
 fi
 ended=$(printf '%(%s)T' -1)
+# Both of those times are readings of the wall clock. A clock stepped back during the fetch
+# would make this difference negative, and the ladder-report verb refuses a line that holds a
+# negative seconds=, so the difference is held at zero or above here.
+elapsed=$((ended - started))
+[ "$elapsed" -ge 0 ] || elapsed=0
 
 # The one line per fetch the ladder-report verb reads, and the whole of what this script writes
 # of its own: curl's stdout and stderr pass through untouched, because the probe verb parses
 # what curl printed.
 printf 'seconds=%s decision=%s host=%s exit=%s full-ladder=%s\n' \
-  "$((ended - started))" "$decision" "$host" "$status" \
+  "$elapsed" "$decision" "$host" "$status" \
   "${CI_TOOLS_PROOF_FULL_LADDER:-none}" >> "$curl_log"
 exit "$status"
 SH
@@ -1539,45 +1549,26 @@ ladder_report() {
   [ -s "$curl_log" ] ||
     die "ladder-report: there is no fetch at all in $curl_log, so the stand-in curl the shorten-ladder step above writes never ran: read that step for the directory it adds to this job's PATH, because a job that runs the runner's own curl rides the pinned ladder for every one of its refusals"
   local problems=0 names="" longest=0 unrecognised="" rode_out="" served="" kept measured who
-  local seconds decision host status bypass
+  local seconds decision host status bypass line
   note "every fetch the stand-in curl of the shorten-ladder step measured"
-  while read -r seconds decision host status bypass; do
-    # The reader takes its fields by position, so a field added to the writer's printf about
-    # 650 lines above, or moved inside it, would shift every value of this line with no error
-    # at all. Each key is therefore read before it is cut off, and a key this reader does not
-    # expect refuses the job.
-    [ "${seconds%%=*}" = seconds ] || die "ladder-report: this line of $curl_log holds '$seconds' where the writer's first field is seconds=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
-    [ "${decision%%=*}" = decision ] || die "ladder-report: this line of $curl_log holds '$decision' where the writer's second field is decision=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
-    [ "${host%%=*}" = host ] || die "ladder-report: this line of $curl_log holds '$host' where the writer's third field is host=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
-    [ "${status%%=*}" = exit ] || die "ladder-report: this line of $curl_log holds '$status' where the writer's fourth field is exit=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
-    [ "${bypass%%=*}" = full-ladder ] || die "ladder-report: this line of $curl_log holds '$bypass' where the writer's fifth field is full-ladder=: the stand-in's own printf and this reader no longer agree, and every value of this reading would be read from the wrong field"
-    seconds=${seconds#*=}
-    decision=${decision#*=}
-    host=${host#*=}
-    status=${status#*=}
-    bypass=${bypass#*=}
-    # The five key checks above catch a line whose fields moved. These five catch the other
-    # half of the same fault: a field whose key is right and whose value this reader cannot
-    # read. Without them `[ "$seconds" -le "$longest" ]` fails with `integer expression
-    # expected` and returns 2, so `longest` takes the text itself, both window arms below then
-    # read false, and this verb passes the job with no refusal at all. The same hole reaches
-    # `[ "$status" -eq 0 ]`, which is the test the refusal of a shortened fetch that served the
-    # bytes is read from. So a writer that starts printing something else is refused here, and
-    # every arithmetic test below runs on a number.
-    case $seconds in
-      "" | *[!0-9]*) die "ladder-report: this line of $curl_log measures seconds=$seconds, where this reader holds the seconds of a fetch to bare digits and nothing else: the measurement below is read with [ … -le … ], [ … -lt … ] and [ … -gt … ], which fail on text and let the job pass with no refusal" ;;
-    esac
-    case $decision in
-      full | shortened) ;;
-      *) die "ladder-report: this line of $curl_log holds decision=$decision, where this reader knows the two words full and shortened only: every branch below compares against those two words, so this fetch would fall through all of them and no reading of this job would see it" ;;
-    esac
-    [ -n "$host" ] ||
-      die "ladder-report: this line of $curl_log holds an empty host=, where this reader holds the host of a fetch to a name: an empty one names no source in the warnings and the refusals below, which carry the host to the reader of this job"
-    case $status in
-      "" | *[!0-9]*) die "ladder-report: this line of $curl_log holds exit=$status, where this reader holds curl's exit to bare digits and nothing else: the refusal of a shortened fetch that served the bytes is read with [ … -eq 0 ], which fails on text and takes that refusal off the job" ;;
-    esac
-    [ -n "$bypass" ] ||
-      die "ladder-report: this line of $curl_log holds an empty full-ladder=, where this reader holds that field to none or to the name the case carries: an empty one is neither, and the measurement of the pinned ladder is read off this field"
+  while IFS= read -r line || [ -n "$line" ]; do
+    # The whole line is matched against the shape write_stand_in's printf writes. This one
+    # match stands where this reader held a key check and a value check for each of the five
+    # fields, and it refuses four lines those let through.
+    # A seconds of twenty digits is more than bash holds. The test [ "$seconds" -le "$longest" ]
+    # below then printed `integer expression expected` and returned 2, longest took the text
+    # itself, both window arms read false, and this verb passed the job printing that it
+    # measured the ladder inside the window. The match holds that field to six digits.
+    # A last field that read `full-ladder` with no `=` named the kept case `full-ladder`. The
+    # `=` is part of the shape the match holds every line to.
+    # A sixth field appended went into the fifth value, which was then refused as two kept
+    # names and sent the reader of this job after a case that does not exist. The match ends
+    # at the fifth field and at the end of the line.
+    # A last line with no newline was dropped by `read`, so nothing read that fetch at all.
+    # The `|| [ -n "$line" ]` of the loop header reads it.
+    [[ $line =~ ^seconds=([0-9]{1,6})\ decision=(full|shortened)\ host=([^ ]+)\ exit=([0-9]{1,3})\ full-ladder=([^ ]+)$ ]] ||
+      die "ladder-report: this line of $curl_log is not the line write_stand_in's printf writes, so the two no longer agree: $line"
+    seconds=${BASH_REMATCH[1]} decision=${BASH_REMATCH[2]} host=${BASH_REMATCH[3]} status=${BASH_REMATCH[4]} bypass=${BASH_REMATCH[5]}
     printf '  %s: %s, curl exit %s, %ss\n' "$host" "$decision" "$status" "$seconds"
     if [ "$bypass" != none ]; then
       case " $names " in
