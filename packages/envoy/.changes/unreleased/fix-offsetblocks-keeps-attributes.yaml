@@ -1,10 +1,12 @@
 kind: Fixed
 body: |-
-  A typed block now reaches the block index with the attributes its render found. `offsetBlocks`
-  built the blocks `refs.IndexBlocks` writes into `document_blocks` from the same offsets the
-  response path uses, and dropped their `Attributes` on the way, so every stored block's row
-  carried none: a `check`'s `serves` and `surface`, a `plan_task`'s `needs`, a `callout`'s `kind`
-  and `title`. Nothing failed, because nothing read them there yet - which is why this is worth
-  fixing before something does. Any filter or chain read over a typed block attribute, served from
-  the index rather than from the document, would have answered nothing and looked like a defect in
-  the thing asking.
+  The blocks handed to the block indexer now carry the attributes their render found.
+  `offsetBlocks` built those blocks from the same offsets the response path uses and dropped
+  their `Attributes` on the way, so the indexer was handed a `check` with no `serves` or
+  `surface`, a `plan_task` with no `needs`, a `callout` with no `kind` or `title`. Nothing
+  stored changes: `document_blocks` has no column for a block's attributes and this adds none,
+  so no row gains a value and no read answers differently today. What changes is that the
+  attributes reach the indexer at all, which is the prerequisite for any column or filter over
+  them: added later on top of the old constructor, the column would have been written from a
+  value that was always empty, and the defect would have looked like a fault in whatever read
+  it.
