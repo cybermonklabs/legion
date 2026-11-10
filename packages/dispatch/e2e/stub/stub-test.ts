@@ -102,16 +102,19 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
   return base.extend<{ scene: Scene; deadRecordingGuard: undefined }>({
     /** Refuses a committed recording that the row it is named for does not write any more.
      *
-     *  `e2e/tools/row-map.ts` refuses a recording no listed row owns, and that is the whole of
-     *  what a listing can see: a row whose body calls `test.skip` is still listed, and so is a
-     *  row that has stopped taking `scene`, so each of them keeps owning a recording it never
-     *  writes. The pull request stays green and the next re-record run reports the file as
-     *  written by no row any more, with the full lane of that night red beside it.
+     *  `e2e/tools/row-map.ts` refuses a recording no listed row owns, and a row the listing
+     *  marks skipped owns none. That is the whole of what a listing can see: a row whose body
+     *  calls `test.skip` is still listed as one that runs, and so is a row that has stopped
+     *  taking `scene`, so each of them keeps owning a recording it never writes. The pull
+     *  request stays green and the next re-record run reports the file as written by no row any
+     *  more, with the full lane of that night red beside it.
      *
      *  This is the half only the run can see, so it runs on every row of a replay: after the
-     *  row, a recording that exists while the row skipped or never set its scene up is a file
-     *  to delete. A recording run is left alone - it is the run that rewrites the set, and its
-     *  own comparison already names what it wrote nothing for. */
+     *  row, a recording that exists while the row skipped itself, or while the row passed
+     *  without setting its scene up, is a file to delete. A row that failed is left to its own
+     *  failure: it may have failed before `scene` was reached. A recording run is left alone -
+     *  it is the run that rewrites the set, and its own comparison already names what it wrote
+     *  nothing for. */
     deadRecordingGuard: [
       // Playwright refuses a first argument that is not a destructuring pattern.
       // biome-ignore lint/correctness/noEmptyPattern: this fixture takes no other fixture.
@@ -203,9 +206,10 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       await context.close();
       // A row this project's own `test.skip` took out wrote nothing worth keeping: its scene
       // was seeded before the body ran, and its recording would hold the page's first requests
-      // or nothing at all. Both go, the committed `.har` with them, so the set is exactly the
-      // rows that run - a `.har` left without its scene would fail the next replay on the
-      // scene's own ENOENT, which names neither the row nor the cause.
+      // or nothing at all. Both go, and so does a `.har` already at that path (the committed one
+      // in a local re-record; in the nightly the path is the fresh directory, which holds none),
+      // so the set is exactly the rows that run - a `.har` left without its scene would fail the
+      // next replay on the scene's own ENOENT, which names neither the row nor the cause.
       if (test.status === "skipped") {
         rmSync(scene, { force: true });
         rmSync(recordingPath(test, ".har"), { force: true });

@@ -14,10 +14,12 @@
 
 /** A row of `playwright test --list --reporter=json`: one test of one project. */
 export type ListedRow = {
-  /** Whether Playwright expects to run the row at all: `skipped` for a row that is skipped
-   *  where it is declared - `test.skip(title, fn)`, `test.fixme`, a `describe.skip`, or a
-   *  describe-level modifier - which the listing answers before anything runs. A row skipped
-   *  inside its own body is `passed` here, because only the run can know. */
+  /** What Playwright expects of the row, as the listing states it before anything runs:
+   *  `skipped` for a row skipped where it is declared - `test.skip(title, fn)`, `test.fixme`,
+   *  a `describe.skip`, or a describe-level `test.skip(true)` or `test.fixme()` - and `failed`
+   *  for a row marked `test.fail()`. A row skipped inside its own body, or by a describe-level
+   *  modifier whose condition is a function of a fixture, is `passed` here, because only the
+   *  run can know. */
   expectedStatus: string;
   /** The spec file, as the listing names it: relative to the config's root directory. */
   file: string;

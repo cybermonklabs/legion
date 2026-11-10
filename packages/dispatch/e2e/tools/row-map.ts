@@ -128,14 +128,17 @@ if (strayNotes.length > 0) {
 //
 // A row the listing marks `skipped` owns nothing, because it will not run: that is a row
 // skipped where it is declared - `test.fixme`, which is how a flaky row is parked,
-// `test.skip(title, fn)`, a `describe.skip`, or a describe-level modifier, which Playwright
-// runs as a `beforeAll` and so before any test-scoped fixture. The replay's own guard cannot
-// see such a row at all, for that reason, and this is where it is caught instead.
+// `test.skip(title, fn)`, a `describe.skip`, or a describe-level `test.skip(true)` or
+// `test.fixme()`. Each is decided when the file is read, so the row runs no fixture at all,
+// and the replay's own guard cannot see it; this is where it is caught instead.
 //
 // What is left to the replay is the row the listing cannot read: one that skips itself inside
 // its body, and one that has stopped taking `scene`. Both are listed and expected to run, so
 // they own their file here, and only the run knows otherwise (`deadRecordingGuard`,
-// `e2e/stub/stub-test.ts`).
+// `e2e/stub/stub-test.ts`). A describe-level modifier whose condition is a function of a
+// worker fixture is seen by neither: the listing marks its rows `passed`, and Playwright runs
+// it before any test-scoped fixture. `packages/dispatch/AGENTS.md`, "The stubbed layer", says
+// so, and every stubbed row skips inside its own body.
 const owned = new Set(
   moved.filter((row) => row.expectedStatus !== "skipped").map((row) => recordingFor(row, ".har"))
 );

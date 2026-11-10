@@ -2575,10 +2575,15 @@ It finds those too - which it could not while it re-recorded over the committed 
 pull request refuses one before a nightly meets it, in two halves, because no one reading can
 see them all. `bun e2e/tools/row-map.ts` reads the listing: it refuses a recording no listed
 row owns, and a row the listing marks `skipped` owns none, which is every row skipped where it
-is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip` or a describe-level
-modifier, none of which runs a test-scoped fixture at all. The replay refuses what a listing
-cannot read: a row that skips itself inside its body, and one that ran and set no `scene`
-(`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip`, or a describe-level
+`test.skip(true)` or `test.fixme()` - none of which runs a test-scoped fixture at all. The
+replay refuses what a listing cannot read: a row that skips itself inside its body, and one
+that passed and set no `scene` (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+Neither half sees a describe-level modifier whose condition is a function of a worker fixture,
+such as `test.skip(({ isMobile }) => !isMobile)`: the listing marks its rows `passed`, and
+Playwright decides it before any test-scoped fixture runs. So a stubbed row skips itself
+inside its own body, as every one of them does, and whoever skips a row any other way deletes
+its recordings in the same change.
 Read the recording step before you apply the artifact: the comparison runs even where that
 step failed, and a failed row leaves one of two things. One that threw while seeding wrote
 nothing, so it is named as a recording no row writes while its committed copy is sound; one
