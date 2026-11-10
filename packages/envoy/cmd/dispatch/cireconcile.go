@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -37,6 +38,29 @@ func reviewerAppID(env settingValues) (string, error) {
 	return strconv.FormatUint(id, 10), nil
 }
 
+// registeredInstance carries this process's row in the registry of live server processes from
+// the registration to whatever runs before it. The CI reconcile loop is started before
+// joinRegistry is called -- registration waits out a live peer whose signing keys do not match
+// this process's, and the loops must not wait on that -- and each of its passes records its
+// counts under that instance id (cireconcile.Reconciler.Instance), so the id reaches the pass
+// through this rather than as a value nothing holds yet.
+//
+// A pass that runs before the registration reads "" and records no row, which is the honest
+// answer: there is no process row for its record to be read against.
+type registeredInstance struct{ id atomic.Pointer[string] }
+
+// set records the id Register gave this process. It is called once, from the one goroutine that
+// boots the server, after every loop that reads it has started.
+func (r *registeredInstance) set(id string) { r.id.Store(&id) }
+
+// get is that id, and "" until the process is registered.
+func (r *registeredInstance) get() string {
+	if id := r.id.Load(); id != nil {
+		return *id
+	}
+	return ""
+}
+
 // ciReconciler builds the CI reconcile pass for the App whose key Dispatch holds, writing through
 // the listener's own CI record bucket. It returns nil when the pass cannot run: no NATS to write
 // its records to, or no App private key to sign the reads with. The bucket is bound by each pass
@@ -52,7 +76,12 @@ func reviewerAppID(env settingValues) (string, error) {
 // its requests over: the gap it leaves between two of them is a share of this interval divided by
 // the requests the work it knows of will take (cireconcile.RequestPace is the slowest it will
 // read, cireconcile.FastestRequestPace the fastest).
-func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string, interval time.Duration) (*cireconcile.Reconciler, error) {
+//
+// instance is the holder the registration fills in (registeredInstance), which each pass records
+// its row under: the loop starts before the process is registered, so a pass has to ask for the
+// id rather than be handed it.
+func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string,
+	interval time.Duration, instance *registeredInstance) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
@@ -88,5 +117,6 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		Logger:        slog.Default(),
 		Pace:          cireconcile.RequestPace,
 		PassTimeout:   interval,
+		Instance:      instance.get,
 	}, nil
 }

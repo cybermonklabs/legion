@@ -766,7 +766,10 @@ func main() {
 	// The interval is the pass's own bound as well as the loop's period: a pass reads from the
 	// cursor the pass before it left and ends on that bound, so the loop's lease is free when
 	// the next pass is due and the one line each pass logs says how far round the cycle it got.
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval)
+	// ciInstance is filled in once this process is registered, below, and each pass records its
+	// counts in ci_reconcile_passes under the id it then holds.
+	ciInstance := &registeredInstance{}
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -884,6 +887,9 @@ func main() {
 		slog.Error("dispatch: register this server process", "error", err)
 		os.Exit(1)
 	}
+	// The CI reconcile loop started before this, so it has been reading the holder and finding
+	// nothing; from here each of its passes records its counts under this process's row.
+	ciInstance.set(registration.ID)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool.

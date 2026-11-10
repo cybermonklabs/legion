@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -497,6 +498,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: delivery.SessionGroup{}, Request: updateDeliverySessionGroupInput{},
 	},
 	"DELETE /api/v1/delivery/session-groups/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	"GET /api/v1/ci-reconcile/passes":             {Status: http.StatusOK, Response: []cireconcile.PassRecord{}},
 	"GET /api/v1/me/agent-tokens":                 {Status: http.StatusOK, Response: []model.AgentToken{}},
 	"POST /api/v1/me/agent-tokens": {
 		Status: http.StatusCreated, Response: createAgentTokenResponse{}, Request: createAgentTokenInput{},

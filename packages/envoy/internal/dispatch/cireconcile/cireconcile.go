@@ -159,6 +159,16 @@ type Reconciler struct {
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
 	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded.
 	PassTimeout time.Duration
+	// Instance answers this process's row in the registry of live server processes, the id
+	// processes.Register gave it, and "" while the process holds none yet. It is what each pass
+	// records its row under (beginPass), and the registry row it names is what says later
+	// whether a pass with no end time is still running (RecentPasses).
+	//
+	// It is a function rather than the id itself because cmd/dispatch starts the loops before it
+	// registers the process: registration waits out a live peer whose signing keys do not match
+	// this one's, and a loop must not wait on that. A nil Instance, and one that answers "", is
+	// a pass that records no row at all.
+	Instance func() string
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which two mappings renamed onto one repository share as one entry:
@@ -319,7 +329,9 @@ func (c *counts) mark(head pullHead) {
 }
 
 // Pass runs one reconcile pass within ctx and logs exactly one INFO line for it: the pass line
-// below, or, for a pass that could not bind the CI record writer, the line saying so.
+// below, or, for a pass that could not bind the CI record writer, the line saying so. It also
+// records the pass in ci_reconcile_passes, which is that line again in a table a person can read
+// a day later, after the container log has rotated (passes.go).
 //
 // The pass's loop belongs to its caller, which runs it under Lease every Interval. PassTimeout is
 // that same interval, and the pass is bound at it: a pass too big for one interval ends on that
@@ -336,9 +348,17 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		defer done()
 		ctx = bounded
 	}
+	// The row this pass leaves behind, opened before it reads anything and closed on every way
+	// out below. at is the rate limit that ended the pass, read by the deferred close: a pass
+	// that ends at a limit records that, and a pass whose own bound or whose process's shutdown
+	// cut it short records its end all the same, because endPass writes on a context of its own
+	// (endWrite).
+	var at *stop
+	record := r.beginPass(ctx)
+	defer func() { r.endPass(record, &c, at) }()
 	// A limit in force ends the pass before it binds anything or reads GitHub: the App's budget is
 	// shared, and a process that waits out a limit another met is why it is recorded at all.
-	if at := r.limited(ctx, githubapp.AppScope); at != nil {
+	if at = r.limited(ctx, githubapp.AppScope); at != nil {
 		r.report(&c, at, time.Since(started))
 		return
 	}
@@ -353,11 +373,12 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		// The listener makes the CI bucket and Dispatch's NATS connects in the background, and
 		// every pass binds the writer afresh, so a pass before either, or one while NATS is down
 		// at any later moment of the process's life, is no fault: it reads GitHub nothing, logs
-		// no pass line, and a later pass binds the writer again.
+		// no pass line, and a later pass binds the writer again. Its row is closed as complete
+		// with every count at zero, which is what such a pass did.
 		r.Logger.Info("ci reconcile pass bound no CI record writer", "error", err)
 		return
 	}
-	at := r.reconcile(ctx, writer, &c)
+	at = r.reconcile(ctx, writer, &c)
 	r.report(&c, at, time.Since(started))
 }
 
