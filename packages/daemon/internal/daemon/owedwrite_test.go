@@ -161,13 +161,15 @@ func (s detachedWrites) RetireDelivery(ctx context.Context, c supervise.Claim, d
 	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.RetireDelivery(ctx, c, deliveryID) })
 }
 
-// withoutTheClaimWriteDeadline runs call on a context that keeps everything of ctx but the
-// deadline the machine put on it — Timeouts.ClaimWrite, which Machine.write installs, and not
-// Deps.Clock, which this file also sets. context.WithTimeout is no alternative, whatever value
-// it were given: it takes the earlier of parent and child, so nothing lengthens a deadline the
-// machine has already installed. The deadline has to be left behind, and the cancellation picked
-// up again, which is what the AfterFunc does: a cancellation of the decision's context would
-// still end the write under it at once, as it did before the detach.
+// withoutTheClaimWriteDeadline runs call on a context that keeps the values of ctx and drops
+// every deadline ctx carries. In these rows the only one is Timeouts.ClaimWrite, which
+// Machine.write installs, and not Deps.Clock, which this file also sets; a deadline of a parent
+// would go with it, and the guard below would not cancel on that one either.
+// context.WithTimeout is no alternative, whatever value it were given: it takes the earlier of
+// parent and child, so nothing lengthens a deadline the machine has already installed. The
+// deadline has to be left behind, and the cancellation picked up again, which is what the
+// AfterFunc does: a cancellation of the decision's context would still end the write under it at
+// once, as it did before the detach.
 //
 // No row here makes that cancellation. The rig's context is context.Background() and its stop
 // cancels nothing, so the only thing that ends a write's context in these rows is the machine's
