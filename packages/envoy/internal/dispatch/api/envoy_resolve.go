@@ -24,20 +24,20 @@ import (
 // deploy, is enough to trigger it.
 //
 // So no listener call runs with a transaction or a pooled connection held, and this file is
-// the one place the shape is spelled:
+// the one place the shape is spelled, for that call and for any other slow read a write
+// decides on:
 //
-//  1. resolve - the listener call, with nothing held;
+//  1. resolve - the slow read (the listener call, or the results write's read of the live
+//               Verification document), with nothing held;
 //  2. lock    - open the transaction and take the locks the write needs;
 //  3. verify  - re-read under those locks whatever the resolution depended on, and decide
 //               with the resolution only while the locked rows still agree with it;
 //  4. redo    - a resolution the lock contradicts is taken once more, bounded, before the
 //               write answers with its own conflict.
 //
-// The listener is not the only read the shape is for. The results write resolves the check's
-// words out of the live Verification document this way, with no listener call in it at all
-// (recordResultWithFreshWords, results.go): that read is a cold read bounded by a minute, so
-// holding the two issues' owner locks across it would make every writer of either issue wait
-// it out.
+// The results write (recordResultWithFreshWords, results.go) takes this shape for its read of
+// the check's words: a cold read bounded by a minute, which held under the two issues' owner
+// locks would make every writer of either issue wait it out.
 //
 // An outbound listener call (Envoy.Send) never runs inside a transaction at all, and this file
 // spells that half too:
@@ -80,8 +80,8 @@ const resolutionAttempts = 2
 // write owns its own transaction, and owes two things beyond opening it. It MUST re-read,
 // under the locks it takes, every row the resolution depended on, and compare: a write that
 // merely uses R without checking it against what the lock found is the bug this shape exists
-// to prevent, because the interesting case is precisely the row that moved while the listener
-// was answering. And it MUST have rolled back before it reports errStaleResolution, since
+// to prevent, because the interesting case is precisely the row that moved while the resolve
+// ran. And it MUST have rolled back before it reports errStaleResolution, since
 // resolveThenLock calls it again.
 func resolveThenLock[R, T any](
 	ctx context.Context,

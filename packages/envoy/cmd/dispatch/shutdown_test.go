@@ -1609,8 +1609,8 @@ type streamEnd struct {
 // anywhere on the Postgres instance, another database's job or another package's test on a shared
 // instance included. The socket stays open and heartbeats (fifteen seconds, the api package's
 // defaultStreamHeartbeat) for as long as that lasts, so each read is given its own deadline: a
-// heartbeat that arrives renews it and shows the socket alive, while eventsStartWait, as patient
-// as the api package's eventFeedWait, still bounds the whole wait.
+// heartbeat that arrives renews it and shows the socket alive, while eventsStartWait, twice the
+// api package's eventFeedWait, still bounds the whole wait.
 const (
 	eventsStartWait      = 60 * time.Second
 	eventsStartFrameWait = 30 * time.Second

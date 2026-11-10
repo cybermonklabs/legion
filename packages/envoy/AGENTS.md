@@ -282,7 +282,7 @@ Each item below names a task and where its code is, then notes on it.
   the session names itself in `actor`, a cookie caller is `403 HANDOFF_FORBIDDEN`);
   the phase is a lowercase slug (`^[a-z][a-z0-9-]{0,31}$`;
   Legion writes `plan`, `implement`, `test`, `review`) and the body one JSON object, stored in `handoffs.body` as the exact text sent (a `text` column, never `jsonb`) and capped at `contracts.DispatchHandoffBodyMax` bytes (`413 CAP_EXCEEDED`).
-  The version is `coalesce(max(version), 0) + 1` inside the insert, after `requireOpenIssue` takes the issue's owner lock and reads its status under it (`store.LockOwnerAndRead`; a closed issue is `409 ISSUE_CLOSED`), and `unique (issue_key, phase, version)` holds it.
+  The version is `coalesce(max(version), 0) + 1` inside the insert, after `requireOpenOwner` takes the issue's owner lock and reads its status under it (`store.LockOwnerAndRead`; a closed issue is `409 ISSUE_CLOSED`), and `unique (issue_key, phase, version)` holds it.
   The same transaction appends `handoff.recorded` `{handoff_id, phase, version}` on the issue, which never carries the body and, a session's event, notifies no one;
   a handoff writes no write advice and no reference edges.
   `GET /api/v1/issues/{key}/handoffs` lists metadata newest first, `GET .../handoffs/{phase}/latest` and `GET /api/v1/handoffs/{id}` answer one record with its body (`404 HANDOFF_NOT_FOUND`), on a closed issue too.

@@ -35,7 +35,8 @@ const slowCheckRead = 2 * time.Second
 const checkReadWait = 30 * time.Second
 
 // awaitCheckRead takes the next value the held request sends, or fails the test saying which
-// step of it never came. Every receive in this file goes through it.
+// step of it never came. Every receive the test's own goroutine makes goes through it; the held
+// read's own receives go through awaitCheckGate.
 func awaitCheckRead[T any](t *testing.T, from <-chan T, what string) T {
 	t.Helper()
 	select {
@@ -48,7 +49,8 @@ func awaitCheckRead[T any](t *testing.T, from <-chan T, what string) T {
 }
 
 // letCheckRead releases a held read, or fails the test saying which read never asked to be
-// released. Every send in this file goes through it.
+// released. Every send the test's own goroutine makes goes through it; the held read's own sends
+// go through offerCheckRead.
 func letCheckRead[T any](t *testing.T, to chan<- T, value T, what string) {
 	t.Helper()
 	select {
@@ -69,10 +71,6 @@ type slowCheckReadKey struct{}
 // rewords the check, so the route reaches its locks carrying words a version has replaced. Every
 // read after that one - the read a moved version or digest needs - says when it started and then
 // takes slowCheckRead, so the test can time a writer of the same issue against it.
-//
-// Its own waits are bounded as the test's are. They run on the request's goroutine, which
-// cannot fail the test, so a gate nobody opens ends the read with an error the route answers
-// with instead of parking that goroutine for the rest of the package's run.
 type slowCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
@@ -130,8 +128,8 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 	})
 	var releasing sync.Once
 	release := func() { releasing.Do(func() { close(reads.release) }) }
-	// However this test ends, the held resolve is let go: a failure before the release would
-	// otherwise park the measured request's goroutine for the rest of the package's run.
+	// However this test ends, the held resolve is let go at once: a failure before the release
+	// would otherwise leave the measured request's read waiting out its own bound (awaitCheckGate).
 	defer release()
 
 	issue := createInteractionIssue(t, handler, "RESL", "A check reworded under the write", "A spec\n")
@@ -186,10 +184,6 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 // (resolutionAttempts). Only the marked request's reads of that one document are held; every
 // other caller reads straight through, which is what lets the test write those versions. The
 // read counter is touched by the marked request alone, whose reads run one after another.
-//
-// Its own waits are bounded as the test's are. They run on the request's goroutine, which
-// cannot fail the test, so a handshake the test never makes ends the read with an error the
-// route answers with instead of parking that goroutine for the rest of the package's run.
 type contendedCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
@@ -244,10 +238,10 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 	recorded := make(chan *httptest.ResponseRecorder, 1)
 	go func() { recorded <- recordResult(t, marked, issue.Key, resultBody("k1", "pass", headCommit, nil)) }()
 
-	// Each held read is about to give the route the words of a digest this upload replaces: the
+	// Each held read is about to give the route the words of a version this upload replaces: the
 	// first is the route's resolve, the second the re-read it makes once its locks found that
-	// digest moved. So the route reaches its locks with stale words both times, and the second
-	// time is its last attempt.
+	// version and digest moved. So the route reaches its locks with stale words both times, and the
+	// second time is its last attempt.
 	for _, words := range []string{siblingChecksReworded, siblingChecksRewordedAgain} {
 		awaitCheckRead(t, reads.held, "the route never reached its next read of the check's words")
 		uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", words)
@@ -277,10 +271,6 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 // version replaced. Every later read of the marked request - the one a refused resolution needs
 // - goes straight through, as does every other caller's, which is what lets the test write
 // those versions.
-//
-// Its own waits are bounded as the test's are. They run on the request's goroutine, which
-// cannot fail the test, so a gate nobody opens ends the read with an error the route answers
-// with instead of parking that goroutine for the rest of the package's run.
 type restoredCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.

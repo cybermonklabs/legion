@@ -637,8 +637,9 @@ func unknownCheck(value string) error {
 //
 // Both are compared against the resolution's, though it is the version that catches every
 // rewording, since changed_version moves on each of them. The digest is the backstop for a
-// block whose text the index rewrote without that number moving. The two are read in one
-// statement, so the pair costs the same read as either of them.
+// block whose text the index rewrote without that number moving, which no writer does today:
+// refs.BlockIndexing.Queue writes both in one upsert. The two are read in one statement, so the
+// pair costs the same read as either of them.
 //
 // Neither is a read of the live document, which never happens under these locks: that read is
 // the slow one to hold the two issues' owner locks across (lockIssueOwners), since a document
