@@ -566,6 +566,7 @@ jobs:
               - 'packages/daemon/internal/githubrest/*'
               - 'packages/daemon/internal/intake/*'
               - 'packages/daemon/internal/launcher/*'
+              - 'packages/daemon/internal/leakguard/*'
               - 'packages/daemon/internal/lookpath/*'
               - 'packages/daemon/internal/memorygroup/*'
               - 'packages/daemon/internal/modeltoken/*'
