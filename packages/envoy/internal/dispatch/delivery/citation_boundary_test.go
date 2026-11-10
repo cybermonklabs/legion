@@ -80,6 +80,12 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		// Eight shapes measured in this pod against the parse, each row the answer the code gives
 		// today rather than one anybody wishes it gave.
 		{name: "a host with a port is github.com, the port being no part of the host", body: "See https://github.com:443/acme/widgets/issues/7 here.", credit: true},
+		// The digits after a colon are the port, however many there are, because the host before
+		// the colon is what decides. Measured against origin/main's own attribution.go in the same
+		// clone: main credits none of these three, so they are shapes this change adds rather than
+		// ones it restores.
+		{name: "a port no URL may carry leaves the host where it was", body: "See https://github.com:99999/acme/widgets/issues/7 here.", credit: true},
+		{name: "digits where a port should be change no host", body: "See https://github.com:443443443/acme/widgets/issues/7 here.", credit: true},
 		{name: "a citation keeps its meaning with a trailing slash", body: "See https://github.com/acme/widgets/issues/7/ here.", credit: true},
 		{name: "a tab delimits the token as a space does", body: "See\thttps://github.com/acme/widgets/issues/7\there.", credit: true},
 		{name: "a punycode host that reads like github.com is another host", body: "See https://xn--github-8m9b.com/acme/widgets/issues/7 here.", credit: false},
@@ -216,6 +222,12 @@ func TestCitedIssuesReadsAHostNameOfAHostNamesLength(t *testing.T) {
 		body := strings.Repeat("a", 65533) + "github.com/acme/widgets/issues/7"
 		if urls := citedIssues(repo, body); len(urls) != 0 {
 			t.Errorf("citedIssues over a 65,533-byte host name = %v, want none", urls)
+		}
+	})
+	t.Run("more digits after the colon than a host name is long leaves no host", func(t *testing.T) {
+		body := "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here."
+		if urls := citedIssues(repo, body); len(urls) != 0 {
+			t.Errorf("citedIssues over 300 digits after the colon = %v, want none: past a host name's length there is no host left to read", urls)
 		}
 	})
 }
