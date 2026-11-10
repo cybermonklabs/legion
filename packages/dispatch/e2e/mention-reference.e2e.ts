@@ -212,3 +212,34 @@ test("one party named twice delivers once, eleven are refused, and a person alon
     await alice.close();
   }
 });
+
+// SLOW(>=2s): a send, the record read back, and the listener watched after it.
+test("a party reference inside a fenced code block names nobody and sends nothing", async ({
+  browser,
+}) => {
+  await setLiveSessions([plannerSession]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A fenced address names nobody" });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+
+    // A fenced code block shows an address as characters: the draft quotes how a mention is
+    // written rather than making one. Nobody was picked, the reader of the record is shown a
+    // code block rather than a party, and so the comment names nobody, records no delivery and
+    // sends no frame - `c-mention-is-a-reference`'s own negative control.
+    const fence = "```";
+    await commentField(page).fill(
+      `How a mention is written:\n\n${fence}\n${plannerMention}\n${fence}`
+    );
+    const answer = await send(page, issue.key);
+    expect(answer.status()).toBe(201);
+    expect(await answer.json()).toMatchObject({ mentions: [] });
+    expect(await listComments(issue.key)).toMatchObject([{ deliveries: [], mentions: [] }]);
+    expect(await getSentMessages()).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
