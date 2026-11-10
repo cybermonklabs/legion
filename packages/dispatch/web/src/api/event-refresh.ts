@@ -399,6 +399,13 @@ function isMessageEvent(event: Event): boolean {
 // (settlement restoring one) or being resolved, which decides whether the Inbox lists its thread
 // instead. An edit, a resolution of a comment, a delivery or a claim moves no row.
 //
+// A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
+// out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
+// replies.go, over `coalesce(a.asked_of, i.assignee)`), so handing the ask from one person to
+// another makes that row appear for the person who gave it up and disappear for the person who
+// took it. The event names both of them in its `thread_logins`, which is what decides whose
+// list refreshes below.
+//
 // An issue-less `message.created` or `message.answered` is here for the Inbox's Agent rows: a
 // one-off message to a session, and that session's reply to one.
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
@@ -408,20 +415,25 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "message.answered": true,
   "ask.opened": true,
   "ask.answered": true,
+  "ask.asked_of": true,
   "ask.resolved": true,
 };
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
  * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned, each of which moves its open asks' threads into or out
- * of the Reply rows (`myRepliesOwner` in the server's replies.go).
+ * closing, reopening or being reassigned. A reassignment and a hand-on (`ask.asked_of`, among
+ * the writes above) move the same rows for the same reason: whom an open ask waits on is one
+ * expression, `coalesce(a.asked_of, i.assignee)`, and the Reply rows leave out an ask the
+ * Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so moving
+ * that person moves the ask's thread into one person's Reply rows and out of the other's.
  *
  * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is - so only theirs, and the writer's own,
- * refresh. Without it every one of those writes refreshes, except an `issue.updated` that says it
- * moved neither status nor assignee: the server names the logins on every status move, a close
- * and a reopen among them, and on every assignee move.
+ * author, which is the person whose Agent row it is, and for a hand-on the person it moved from
+ * and the one it moved to - so only theirs, and the writer's own, refresh. Without it every one
+ * of those writes refreshes, except an `issue.updated` that says it moved neither status nor
+ * assignee: the server names the logins on every status move, a close and a reopen among them,
+ * and on every assignee move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -
