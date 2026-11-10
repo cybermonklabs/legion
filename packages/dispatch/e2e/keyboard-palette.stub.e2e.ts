@@ -19,7 +19,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { selectedRow } from "./inbox-pane";
-import { openIssue } from "./keyboard-palette";
+import { openIssue, searchPath } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
@@ -106,17 +106,14 @@ const nestedArchitectureTest = stubbed(async () => {
 
 test("a failed palette search keeps its Retry action @pr", async ({ page, scene }) => {
   let searches = 0;
-  await page.route(
-    (url) => url.pathname === "/api/v1/search",
-    async (route) => {
-      searches += 1;
-      await route.fulfill({
-        body: JSON.stringify({ code: "INTERNAL", error: "search index unavailable" }),
-        contentType: "application/json",
-        status: 500,
-      });
-    }
-  );
+  await page.route(searchPath, async (route) => {
+    searches += 1;
+    await route.fulfill({
+      body: JSON.stringify({ code: "INTERNAL", error: "search index unavailable" }),
+      contentType: "application/json",
+      status: 500,
+    });
+  });
   // A failed read is retried twice, `QUERY_RETRY_DELAY_MS` apart, before the alert: page
   // timers, which the page's own clock fires.
   await page.clock.install();

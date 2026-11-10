@@ -185,16 +185,23 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 // has moved on fails `go test` as well as `envoy-dispatch openapi --check`: nobody has to remember
 // to run the command.
 func TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites(t *testing.T) {
+	if !bytes.Equal(committedOpenAPI(t), renderOpenAPI(t)) {
+		t.Fatalf("%s is stale: run `go run ./cmd/dispatch openapi --out ../../%s` in packages/envoy and commit the result",
+			OpenAPIDocumentPath, OpenAPIDocumentPath)
+	}
+}
+
+// committedOpenAPI reads the document this repository holds, which is what every generated
+// client is written from and so what a test about the contract a client is given reads.
+func committedOpenAPI(t testing.TB) []byte {
+	t.Helper()
 	// From this package to the repository root, which OpenAPIDocumentPath is written from.
 	path := filepath.Join("..", "..", "..", "..", "..", filepath.FromSlash(OpenAPIDocumentPath))
 	committed, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read the committed document: %v", err)
 	}
-	if !bytes.Equal(committed, renderOpenAPI(t)) {
-		t.Fatalf("%s is stale: run `go run ./cmd/dispatch openapi --out ../../%s` in packages/envoy and commit the result",
-			OpenAPIDocumentPath, OpenAPIDocumentPath)
-	}
+	return committed
 }
 
 // A request body's required set is what its own Go fields tag `required:"true"`, and nothing

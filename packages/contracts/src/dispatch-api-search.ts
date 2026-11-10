@@ -12,6 +12,33 @@ export const SEARCH_RESULT_KINDS = ["issue", "document", "comment", "ask", "mess
 
 export type SearchResultKind = (typeof SEARCH_RESULT_KINDS)[number];
 
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
+
 /** The four paging fields a Dispatch that supports search paging always answers together:
  *  `total` is every match of every kind, and `reachable` is how many of `total` the pages can
  *  return — each kind lists only its best `SEARCH_KIND_DEPTH` (`dispatch-tools.ts`), so an
