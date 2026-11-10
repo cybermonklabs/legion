@@ -22,7 +22,8 @@ wrapper=/opt/legion/bin/git
 # after one. The options whose value is the next argument are `jj --help`'s Global Options; the
 # attached spellings (`-R<path>`, `--repository=<path>`) are one word and need no skip. The
 # repository is kept because the configuration read below must be the one this command would
-# make: a repository's own configuration file can name a `git.executable-path` of its own.
+# make: a repository's own configuration file can name a `git.executable-path` of its own, and
+# so can the caller's own `--config`, which that read takes as well.
 repository=
 takes=
 first=
@@ -63,13 +64,42 @@ if [ "$found" != "$wrapper" ]; then
 fi
 
 # --ignore-working-copy because this is a read: a configuration read must not snapshot the
-# working copy of the repository the push is about. jj exits non-zero when nothing sets the
-# value, which is the usual case and means the bare `git` above.
-if [ -n "$repository" ]; then
-  configured=$("$real" -R "$repository" --ignore-working-copy config get git.executable-path 2>/dev/null) || configured=
-else
-  configured=$("$real" --ignore-working-copy config get git.executable-path 2>/dev/null) || configured=
-fi
+# working copy of the repository the push is about. The caller's own `--config`, `--config-file`
+# and `--config-toml` go to the read too, in the order they were written and in both spellings
+# of each, because the value the read must answer is the one the push would use: a `jj git push
+# --config git.executable-path=<another git>` names its git on the command line, which outranks
+# every configuration file, and a read without those arguments would answer for a push nobody is
+# making and pass this one through to an unwrapped git. They are selected by rebuilding the
+# positional parameters inside the command substitution, whose subshell has a copy of its own,
+# so the arguments the exec at the end hands jj are the caller's untouched. jj exits non-zero
+# when nothing sets the value, which is the usual case and means the bare `git` above.
+configured=$(
+  keep=
+  left=$#
+  while [ "$left" -gt 0 ]; do
+    arg=$1
+    shift
+    left=$((left - 1))
+    if [ -n "$keep" ]; then
+      keep=
+      set -- "$@" "$arg"
+      continue
+    fi
+    case "$arg" in
+      --config | --config-file | --config-toml)
+        keep=1
+        set -- "$@" "$arg"
+        ;;
+      --config=* | --config-file=* | --config-toml=*)
+        set -- "$@" "$arg"
+        ;;
+    esac
+  done
+  if [ -n "$repository" ]; then
+    exec "$real" -R "$repository" --ignore-working-copy "$@" config get git.executable-path 2>/dev/null
+  fi
+  exec "$real" --ignore-working-copy "$@" config get git.executable-path 2>/dev/null
+) || configured=
 case "$configured" in
   "" | git | "$wrapper") ;;
   *)
