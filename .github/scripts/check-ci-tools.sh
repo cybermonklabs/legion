@@ -43,10 +43,11 @@
 #      that install fetches the right bytes and then fails to find the tool inside them. Where
 #      that is found depends on the side the member is written on. A stale `primary_member`
 #      breaks the install that reads the primary, which for the one row that names one, uv, is
-#      .github/actions/install-uv in ci.yaml's `test` job, on every pull request that selects
-#      it; a stale member on the second side is read only where that source is, which is
-#      ci.yaml's `tool-fallback` job, a job of about half an hour (129228243370 ran 14:41:35Z
-#      to 15:08:43Z, 27 minutes). This gate says it in lint, in a second.
+#      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml),
+#      on every pull request that selects it; a stale member on the second side is read only
+#      where that source is, which is the `tool-fallback` job
+#      (.github/workflows/ci-job-tool-fallback.yaml), a job of about half an hour (129228243370
+#      ran 14:41:35Z to 15:08:43Z, 27 minutes). This gate says it in lint, in a second.
 #      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
 #      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
 #      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.

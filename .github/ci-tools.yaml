@@ -69,7 +69,8 @@
 # package and no vendor host serving this archive. That is what that search found and not a fact
 # about the world, which is why the claim a copy makes is the narrower one: that the package
 # holds these exact bytes, which .github/scripts/mirror-ci-tools.sh's read-back after the push
-# and ci.yaml's `tool-fallback` blob check are what decide.
+# and the `tool-fallback` job's blob check (.github/workflows/ci-job-tool-fallback.yaml) are what
+# decide.
 #
 # WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
 # `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
