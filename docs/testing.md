@@ -357,6 +357,28 @@ done
 The holder must release each transaction: one that never commits holds the horizon back for good,
 so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
 
+## A test that waits for the event feed's first frame
+
+The rule above bounds a *re-read*: the route answers at the horizon it has, so the test asks again.
+A test waiting for the event feed's `events_start` has nothing to ask again.
+That frame is the last thing a new subscription sends, not the first: `feedEvents` writes it only once `events.Horizon.Await` has returned
+(`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and the horizon's proof is instance-wide, so the frame is as late as the longest write transaction open anywhere on the Postgres instance.
+No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day someone holds a transaction for a minute.
+
+So the test waits on what the server says about itself.
+`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
+`openLiveEvents` (`packages/envoy/cmd/dispatch/live_events_wait_test.go`) reads the frame on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout, and polls the process's output: while that warning keeps arriving the wait goes on, and it fails when the warning stops.
+Count the occurrences, never `strings.Contains`: a contains check latches on the first warning and waits for ever.
+
+The wait still ends in a named failure, which is what the `eventFeedWait` rule above asks for; the bound is a signal rather than a clock.
+It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the process's own database — Dispatch holding up its own readers is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
+Each failure names the newest warning, so the holder is in the output.
+Every number is three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
+
+The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
+Prove it with a transaction held longer than that bound — a pulse of 12 s holds, and one 90 s holder for a deterministic red.
+Measured in this repository's own pod on 2026-11-10, `nproc` 2: with one 90 s holder the old 10 s deadline failed the test in 24.55 s, and the wait on the signal passed it in 80.54 s, having waited the hold out.
+
 ## A writer a test holds
 
 A test that needs a live socket's writer held, so that frames queue behind it while the test
