@@ -57,7 +57,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 1500 s, the 25 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 1500 s, the 25 minutes
     # this job carried, plus its slowest retried step alone — the Go module download's two
     # calls, 2 x (5 x 180 + 150) = 2100 s, above the Playwright install's 1650 s, the
     # setup-bun step's 1482 s, the workspace install's 1050 s and the ci-ok report's 600 s.
@@ -103,10 +103,10 @@ jobs:
       # go-docs is a cache family of its own. This build compiles the daemon's legion command and
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry
       # holds the listener and natsd alone, so one key for both let whichever job saved first own
-      # it. ci.yaml's header says how every family is kept. This step restores go-docs in the form
-      # docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the prefix too, on
-      # main by the exact key alone. The save-cache input names the one caller that writes the
-      # entry, and that caller is docs-pages.yaml.
+      # it. ci-budgets.md's "Caches" says how every family is kept. This step restores go-docs
+      # in the form docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the
+      # prefix too, on main by the exact key alone. The save-cache input names the one caller
+      # that writes the entry, and that caller is docs-pages.yaml.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -265,7 +265,7 @@ jobs:
         # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
         # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
         # this step posts the required ci-ok check, and a budget that cuts it between those two
-        # ladders loses the check run rather than reporting a failure (ci.yaml's Budgets note).
+        # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
         timeout-minutes: 12
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report

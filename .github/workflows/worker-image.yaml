@@ -103,7 +103,7 @@ jobs:
     # .github/scripts/check-image-trigger-paths.sh admits this call-mode term.
     if: ${{ inputs.attest_digest == '' }}
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 1800 s, the 30 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job carried, plus its slowest retried step alone — the ci-ok report's `gh api` read
     # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, carried at the 720 s budget
     # that step's own comment derives. 1800 + 720 = 2520 s -> 42 min.
@@ -313,7 +313,7 @@ jobs:
         # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
         # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
         # this step posts the required ci-ok check, and a budget that cuts it between those two
-        # ladders loses the check run rather than reporting a failure (ci.yaml's Budgets note).
+        # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
         timeout-minutes: 12
         uses: ./.github/actions/ci-ok-report
         with:

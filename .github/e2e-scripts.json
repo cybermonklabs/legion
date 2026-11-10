@@ -11,7 +11,7 @@
     "its evidence directory (empty where it takes none and keeps its work directory instead), and",
     "`timeout_minutes` the job's limit: the script's own measured duration with headroom, as its",
     "header gives it, plus the retry arithmetic of the slowest retried step the row selects, as",
-    "ci.yaml's Budgets note sets it out. Which retried step that is, is the row's own: a row",
+    "ci-budgets.md's Budgets note sets it out. Which retried step that is, is the row's own: a row",
     "whose `jj` is true carries install-jj's two `ci_tools_fetch` calls and its `mise install`",
     "of the jj release, 1482 + 450 = 1932 s; a row whose `jj` is false and whose `bun` is true",
     "carries setup-bun's two `ci_tools_fetch` calls, 2 x 741 = 1482 s; and a row with neither,",

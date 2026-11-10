@@ -78,7 +78,7 @@ jobs:
   # belongs to, though that step also builds the envoy and infra modules' commands.
   daemon:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 5400 s, the 90 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 5400 s, the 90 minutes
     # this job carried — the notices build is the long one, writing the notices of, and
     # cross-compiling, every release target of three modules on a cold module cache — plus its
     # slowest retried step alone: the notices download's two calls,
@@ -107,7 +107,7 @@ jobs:
           lookup-only: true
 
       # The modules the build below compiles, downloaded once and retried before it (the Retries
-      # note in .github/workflows/ci.yaml's header; the retried unit is the download, never the
+      # note of .github/ci-budgets.md; the retried unit is the download, never the
       # build and never the test). On that build's own condition, so a run that finds the key
       # downloads nothing. One call: the root go.work binds packages/daemon and packages/envoy,
       # and a download in either reads both modules' requirements.
@@ -167,8 +167,8 @@ jobs:
           lookup-only: true
 
       # The modules the notices script loads and cross-builds for every release target,
-      # downloaded once and retried before it (the Retries note in .github/workflows/ci.yaml's
-      # header; the retried unit is the download, never the build). On the notices step's own
+      # downloaded once and retried before it (the Retries note of .github/ci-budgets.md;
+      # the retried unit is the download, never the build). On the notices step's own
       # condition, so a run that finds that key downloads nothing. Two calls for the three module
       # directories the script builds in: in workspace mode `go mod download` with no arguments
       # downloads the pattern `all` of the whole workspace, so the first call, made in the root
@@ -219,7 +219,7 @@ jobs:
   # independent, and each build is gated on its own lookup.
   envoy:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 3600 s, the 60 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 3600 s, the 60 minutes
     # this job carried — compiling the test binary of every package of the envoy module on a
     # cold module cache is the long step, and the listener and natsd are minutes — plus its
     # slowest retried step alone: either Go module download below, 5 x 180 + 150 = 1050 s each.
@@ -246,8 +246,8 @@ jobs:
           lookup-only: true
 
       # The module the build below compiles — both builds of this job compile it, and each has a
-      # download of its own — retried before it (the Retries note in
-      # .github/workflows/ci.yaml's header; the retried unit is the download, never the build).
+      # download of its own — retried before it (the Retries note of
+      # .github/ci-budgets.md; the retried unit is the download, never the build).
       # On that build's own condition, so a run that finds the key downloads nothing.
       #
       # 180 s per attempt: 1.6 times the 113 s of the slowest cold `go mod download` measured
@@ -293,8 +293,8 @@ jobs:
 
       # The same module again, and a step of its own because the two builds answer two keys: a
       # run whose go-envoy key was already there skips the download above and still compiles
-      # here, so this build needs a retried download in front of it too (the Retries note in
-      # .github/workflows/ci.yaml's header). Where both keys missed, the download above has
+      # here, so this build needs a retried download in front of it too (the Retries note of
+      # .github/ci-budgets.md). Where both keys missed, the download above has
       # already filled the module cache and this call takes a second.
       #
       # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
@@ -333,7 +333,7 @@ jobs:
   # as ci.yaml's envoy-infra-go does.
   envoy-infra:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 2700 s, the 45 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 2700 s, the 45 minutes
     # this job carried, plus its slowest retried step alone — packages/envoy/infra's
     # `go mod download`, 5 x 180 + 150 = 1050 s. 2700 + 1050 = 3750 s -> 63 min.
     timeout-minutes: 63
@@ -358,7 +358,7 @@ jobs:
           lookup-only: true
 
       # The infra module's own workspace, downloaded once and retried before the vet and the
-      # builds below (the Retries note in .github/workflows/ci.yaml's header; the retried unit is
+      # builds below (the Retries note of .github/ci-budgets.md; the retried unit is
       # the download, never the build). On that build's own condition, so a run that finds the
       # key downloads nothing. One call: packages/envoy/infra's go.work binds it and
       # packages/envoy, and a download in it reads both modules' requirements.
@@ -405,7 +405,7 @@ jobs:
   # which is the whole of what is saved.
   elan:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 1800 s, the 30 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job was written with — one toolchain download and one build of the model on a miss,
     # and a run that finds the key costs the checkout alone — plus its slowest retried step
     # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 741 s, this job's
@@ -424,7 +424,7 @@ jobs:
           lookup-only: true
 
       # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
-      # 741 s (the Budgets note in .github/workflows/ci.yaml's header) -> 13 min.
+      # 741 s (the Budgets note of .github/ci-budgets.md) -> 13 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
         timeout-minutes: 13

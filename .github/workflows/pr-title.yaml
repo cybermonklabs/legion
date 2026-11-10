@@ -88,7 +88,7 @@ permissions: {}
 jobs:
   pr-title:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 600 s, the 10 minutes
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
     # this job carried, plus its slowest retried step alone — check-pr-text.sh's five `gh api`
     # ladders, 5 x (5 x 30 + 150) = 1500 s, a whole number of minutes, so that step's own budget
     # takes one more and this job takes it too. 600 + 1560 = 2160 s -> 36 min.

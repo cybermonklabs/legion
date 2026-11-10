@@ -267,7 +267,7 @@
 #      every row of .github/ci-images.yaml` is this tree's instance: its reads are urllib's
 #      inside .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by
 #      hand.
-#      This is the rule ci.yaml's Budgets note already writes for a reader — a job carries its
+#      This is the rule ci-budgets.md's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
 #
@@ -2067,7 +2067,7 @@ class DeclaredArithmetic:
 # one pass says, each in its own words: the loop runs the call once for each thing the run found
 # to do, the budget is written for the one the common run finds, and a run where every pass
 # exhausts its five attempts is not the transient fault a retry exists to survive but an outage
-# of the host, which ci.yaml's Budgets note leaves to the job's own ceiling rather than to the
+# of the host, which ci-budgets.md's Budgets note leaves to the job's own ceiling rather than to the
 # step's.
 #
 # A call whose per-attempt bound is written as a variable is the other kind, and it needs no
@@ -2966,7 +2966,7 @@ for budget in budgets:
                 "under one of its own steps' arithmetic cuts that step before the step's own "
                 "budget can name the site that failed, so the step's `timeout-minutes` buys "
                 "nothing: a job carries its measured duration plus the arithmetic of its "
-                "slowest retried step, which is the rule ci.yaml's Budgets note writes out. "
+                "slowest retried step, which is the rule ci-budgets.md's Budgets note writes out. "
                 f"Write `timeout-minutes: {cost // 60 + 1}` or more on this job.")
 
 for entry in EXEMPTIONS:

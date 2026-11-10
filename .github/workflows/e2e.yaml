@@ -186,7 +186,7 @@ jobs:
       # dispatch-claimant-delivery.sh runs its driver and the fake Envoy listener with bun, and
       # both import this repository's packages.
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (the Budgets note in .github/workflows/ci.yaml's header) -> 25 min.
+      # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
       - if: matrix.bun
         timeout-minutes: 25
         uses: ./.github/actions/setup-bun
@@ -208,8 +208,8 @@ jobs:
       # worker image ships, which is the one the daemon is written for.
       - if: matrix.jj
         # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-        # of the jj release, 1482 + 450 = 1932 s (the Budgets note in
-        # .github/workflows/ci.yaml's header) -> 33 min.
+        # of the jj release, 1482 + 450 = 1932 s (the Budgets note of
+        # .github/ci-budgets.md) -> 33 min.
         timeout-minutes: 33
         uses: ./.github/actions/install-jj
 
@@ -219,7 +219,7 @@ jobs:
           # and natsd.
           go-version-file: ${{ matrix.go_version_file }}
           # Only a workflow that runs on a push to main writes an Actions cache entry here, and
-          # this workflow saves none (ci.yaml's header, "Caches").
+          # this workflow saves none (.github/ci-budgets.md, "Caches").
           cache: false
 
       - name: Run the proof

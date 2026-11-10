@@ -53,8 +53,8 @@ jobs:
     # record (one step here now), 2 s the second checkout, 0 s the ci-ok report, 6 s the post
     # steps — 74 s of steps inside the 77 s the job took whole. The build step carries a budget
     # of its own, 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor, and four more steps
-    # carry one each now, each for the retries it holds (the Budgets note in
-    # .github/workflows/ci.yaml's header). The job's own two terms are that 77 s measured
+    # carry one each now, each for the retries it holds (the Budgets note of
+    # .github/ci-budgets.md). The job's own two terms are that 77 s measured
     # maximum and its slowest retried step alone — the record step, whose two `crane manifest`
     # reads are 2 x (5 x 60 + 150) = 900 s, above install-crane's one `ci_tools_fetch`
     # of 741 s, the ci-ok report's 600 s and the decide step's one `crane config` read of
@@ -107,8 +107,8 @@ jobs:
 
       # crane reads the published image's label for the publish decision below and writes the
       # pushed image's tag.
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s (the Budgets
-      # note in .github/workflows/ci.yaml's header) -> 13 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s
+      # (the Budgets note of .github/ci-budgets.md) -> 13 min.
       - uses: ./.github/actions/install-crane
         timeout-minutes: 13
 
@@ -453,8 +453,8 @@ jobs:
       # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
       # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
       # this step posts the required ci-ok check, and a budget that cuts it between those two
-      # ladders loses the check run rather than reporting a failure (the Budgets note in
-      # .github/workflows/ci.yaml's header).
+      # ladders loses the check run rather than reporting a failure (the Budgets note of
+      # .github/ci-budgets.md).
       - name: Report ci-ok when this is the run's last job
         if: always()
         timeout-minutes: 12

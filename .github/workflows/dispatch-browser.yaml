@@ -158,7 +158,7 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
       # The modules the build below compiles, downloaded once and retried before it (the
-      # Retries note in .github/workflows/ci.yaml's header; the retried unit is the download,
+      # Retries note of .github/ci-budgets.md; the retried unit is the download,
       # never the build). The shard and alone jobs made this download inside their own build
       # until the build became this job, and it comes here with it. 180 s per attempt: the
       # slowest cold `go mod download` measured is 113 s, for packages/envoy/infra, against
@@ -378,8 +378,8 @@ jobs:
       # twice is charged twice, which over-prices this step rather than under-pricing it.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
-      # Retried like every install of this repository's CI (the Retries note in
-      # .github/workflows/ci.yaml's header); 180 s per attempt, the bound every Bun install of
+      # Retried like every install of this repository's CI (the Retries note of
+      # .github/ci-budgets.md); 180 s per attempt, the bound every Bun install of
       # this repository's CI carries: 20.70 s cold on a pod, against at most 11 s over 180
       # observations in CI. .github/scripts/ci-retry.sh is sourced here by the `sh -e {0}` this
       # job's head names rather than by bash, and it is written for that: it defines one
@@ -1051,7 +1051,7 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       # The modules the build below compiles, downloaded once and retried before it (the
-      # Retries note in .github/workflows/ci.yaml's header; the retried unit is the download,
+      # Retries note of .github/ci-budgets.md; the retried unit is the download,
       # never the build). This job builds that server once, in the step below, and both its
       # processes start from what that build wrote. 180 s per attempt: the slowest cold
       # `go mod download` measured is 113 s, for packages/envoy/infra, against 77 s for
@@ -1068,8 +1068,8 @@ jobs:
       # The shard job's step of this name, at the same 1482 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
-      # Retried like every install of this repository's CI (the Retries note in
-      # .github/workflows/ci.yaml's header); 180 s per attempt, the bound every Bun install of
+      # Retried like every install of this repository's CI (the Retries note of
+      # .github/ci-budgets.md); 180 s per attempt, the bound every Bun install of
       # this repository's CI carries: 20.70 s cold on a pod, against at most 11 s over 180
       # observations in CI.
       - name: bun install --frozen-lockfile
@@ -1121,8 +1121,8 @@ jobs:
         # this repository's CI is held to, whoever makes the attempts inside it.
         timeout-minutes: 28
         run: |
-          # The download retries through .github/scripts/ci-retry.sh (the Retries note in
-          # ci.yaml's header). 300 s per attempt: this step measured at most 15 s across the 20
+          # The download retries through .github/scripts/ci-retry.sh (the Retries note of
+          # ci-budgets.md). 300 s per attempt: this step measured at most 15 s across the 20
           # most recent successful ci.yaml push runs on main, where the browsers came from the
           # runner image's cache - the 339 s in the table above is a wider window and almost all
           # of it an apt fetch this step no longer makes - and a cold Chromium is about 210 s, so
@@ -1372,8 +1372,8 @@ jobs:
       # The shard job's step of this name, at the same 1482 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
-      # Retried like every install of this repository's CI (the Retries note in
-      # .github/workflows/ci.yaml's header); 180 s per attempt, the bound every Bun install of
+      # Retried like every install of this repository's CI (the Retries note of
+      # .github/ci-budgets.md); 180 s per attempt, the bound every Bun install of
       # this repository's CI carries: 20.70 s cold on a pod, against at most 11 s over 180
       # observations in CI.
       - name: bun install --frozen-lockfile
@@ -1518,8 +1518,8 @@ jobs:
       # The shard job's step of this name, at the same 1482 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 25
-      # Retried like every install of this repository's CI (the Retries note in
-      # .github/workflows/ci.yaml's header); 180 s per attempt, the bound every Bun install of
+      # Retried like every install of this repository's CI (the Retries note of
+      # .github/ci-budgets.md); 180 s per attempt, the bound every Bun install of
       # this repository's CI carries: 20.70 s cold on a pod, against at most 11 s over 180
       # observations in CI.
       - name: bun install --frozen-lockfile
@@ -1915,7 +1915,7 @@ jobs:
         # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
         # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
         # this step posts the required ci-ok check, and a budget that cuts it between those two
-        # ladders loses the check run rather than reporting a failure (ci.yaml's Budgets note).
+        # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
         timeout-minutes: 12
         uses: ./.github/actions/ci-ok-report
         with:

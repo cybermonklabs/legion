@@ -533,7 +533,7 @@ ci_tools__tempfile() {
 #
 # WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound. The budget
 # comments of the workflows write the sum a `ci_tools_fetch` comes to and cite it through the
-# Budgets note of .github/workflows/ci.yaml's header, which points here; none of them derives
+# Budgets note of .github/ci-budgets.md, which points here; none of them derives
 # the per-ladder term again. The worst case is not the host that stalls throughout and not the
 # host that
 # fails fast: it is the mixture of the two. A pure staller spends the whole bound on each

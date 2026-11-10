@@ -95,7 +95,7 @@ case $CONCLUSION in
 esac
 
 # The read goes through retry_fetch at 30 s an attempt, the bound this repository's CI gives one
-# page of a REST route (ci.yaml's Retries note). The redirection is this shell's own and is
+# page of a REST route (ci-budgets.md's Retries note). The redirection is this shell's own and is
 # applied once: the helper buffers each attempt's output and prints the successful attempt's
 # alone, so no refused attempt's body reaches this file (ci-retry.sh's header says what gh
 # writes there).

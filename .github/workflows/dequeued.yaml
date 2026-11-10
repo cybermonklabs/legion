@@ -57,7 +57,7 @@ jobs:
   cancel-dequeued:
     runs-on: ubuntu-24.04
     # A GraphQL poll, one run list and one cancel. 300 s, the 5 minutes that gives, plus this
-    # job's slowest retried step alone, as ci.yaml's Budgets note derives one: that step holds
+    # job's slowest retried step alone, as ci-budgets.md's Budgets note derives one: that step holds
     # the timeline read, which sits inside a seven-pass poll and so costs
     # 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, the run list's 300 s and the force-cancel's 300 s,
     # 2760 s together, a whole number of minutes, so that step's own budget takes one more and
