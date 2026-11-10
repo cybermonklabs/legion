@@ -707,6 +707,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/comment-threads/by-target": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Comment threads anchored on one target, the requirement query by target: ?target= the whole quoted text of the entry a thread is anchored on, matched whole and trimmed on neither side, within ?project= or ?issue= (exactly one; 400 PROJECT_OR_ISSUE_REQUIRED for neither, 400 PROJECT_OR_ISSUE_CONFLICT for both), narrowed by ?artifact= to one document the threads are anchored in. A thread is a root comment - one that replies to nothing and answers no ask - with replies, how many replies it holds, and last_reply_at, when the newest of them was posted (null for a thread holding none; an edit, a resolve or a suggestion's acceptance leaves it where it was). Pages by key rather than by offset: limit (1-200, default 50) rows oldest first by created_at then id, and ?after= the next_after of an earlier page, which is that page's last root comment id (400 INVALID_AFTER for a value no comment carries). The answer is {threads, limit, next_after}, next_after null on the last page and the only thing that says another follows; there is no total, because an exact count of what a filter matches over a project is the expensive half of answering which threads match. A thread resolved, reopened or written between two reads moves no row across a page boundary. It replaces a GET /api/v1/search stand-in that answered a near question by meaning (dispatch://INFRA-988). */
+    get: operations["getApiV1CommentThreadsByTarget"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/comment-threads/by-thread-state": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Comment threads in one state, the requirement query by the state of the line's thread: ?state= open or resolved (400 THREAD_STATE_REQUIRED for none, 400 INVALID_THREAD_STATE for any other), within ?project= or ?issue= (exactly one; 400 PROJECT_OR_ISSUE_REQUIRED for neither, 400 PROJECT_OR_ISSUE_CONFLICT for both), narrowed by ?artifact= to one document the threads are anchored in. The state is the state of the thread's root row and all this route reads: resolving the root sets it and a later reply in the thread reopens it, while POST /api/v1/comments/{id}/resolve on a reply resolves that reply alone and leaves the thread here open. This is the thread's own state and not the requirement status of the Verified Linux spec loop's lines, which is a word with a revision behind it written in the text of the posts, whose record stays in git (dispatch://LINUX-1239) and where it will live in Dispatch is open. Its rows, its answer and its paging are GET /api/v1/comment-threads/by-target's: limit (1-200, default 50), ?after=, and {threads, limit, next_after} with no total. It replaces a GET /api/v1/search stand-in that answered a near question by meaning (dispatch://INFRA-988). */
+    get: operations["getApiV1CommentThreadsByThreadState"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/comments/{id}": {
     parameters: {
       query?: never;
@@ -1141,7 +1175,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -3443,6 +3477,17 @@ export interface components {
       error?: null | string;
       reply_to_block?: null | string;
       target?: null | string;
+    };
+    CommentThreadPage: {
+      limit: number;
+      next_after: null | string;
+      threads: components["schemas"]["CommentThreadRow"][] | null;
+    };
+    CommentThreadRow: {
+      /** Format: date-time */
+      last_reply_at: null | string;
+      replies: number;
+      root: components["schemas"]["Comment"];
     };
     CommentWriteResponse: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -7187,6 +7232,82 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["BroadcastRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1CommentThreadsByTarget: {
+    parameters: {
+      query?: {
+        target?: string;
+        project?: string;
+        issue?: string;
+        artifact?: string;
+        limit?: number;
+        after?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CommentThreadPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1CommentThreadsByThreadState: {
+    parameters: {
+      query?: {
+        state?: "open" | "resolved";
+        project?: string;
+        issue?: string;
+        artifact?: string;
+        limit?: number;
+        after?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CommentThreadPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12333,6 +12454,8 @@ export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
+export type CommentThreadPage = components["schemas"]["CommentThreadPage"];
+export type CommentThreadRow = components["schemas"]["CommentThreadRow"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
 export type CreateAgentTokenInput = components["schemas"]["CreateAgentTokenInput"];

@@ -15,6 +15,7 @@ import type {
   ClaimHolderLiveness,
   Comment,
   CommentRead,
+  CommentThreadPage,
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
@@ -2283,6 +2284,63 @@ function formatCheckResults(results: IssueCheckResults): string {
   return [`Checks of ${results.issue}:`, ...lines].join("\n");
 }
 
+/** The opening of a thread root's body on one line: its first line, cut to 120 characters, so a
+ *  page of threads stays a page a reader scans rather than the threads themselves. */
+function threadOpening(body: string): string {
+  const line = (body.split("\n").find((part) => part.trim() !== "") ?? "").trim();
+  return line.length <= 120 ? line : `${line.slice(0, 119)}…`;
+}
+
+/** One page of comment threads as `dispatch threads-by-target` and
+ *  `dispatch threads-by-thread-state` print it: a heading saying what was asked, then one block
+ *  per thread - its root's reference and author, the entry it is anchored on, its state, how many
+ *  replies it holds, when the newest of them was posted, and the root's opening words - and, when
+ *  another page follows, the command that reads it. A reply is part of its root's thread, so it is
+ *  never a block here. */
+function commentThreadPageLines(
+  tool: string,
+  page: CommentThreadPage,
+  filter: { readonly target: string } | { readonly state: string },
+  scope: Owner
+): string[] {
+  const where = scope.kind === "project" ? `project ${scope.project}` : scope.issue;
+  const asked =
+    "target" in filter
+      ? `anchored on ${JSON.stringify(filter.target)}`
+      : `in state ${filter.state}`;
+  const threads = page.threads ?? [];
+  if (threads.length === 0) {
+    return [`No comment thread of ${where} is ${asked}.`];
+  }
+  const lines = threads.map((thread) => {
+    const root = thread.root;
+    const reference =
+      root.issue_key == null ? root.id : `dispatch://${root.issue_key}/comment/${root.id}`;
+    const quote = root.anchor?.quote;
+    const anchored = quote == null || quote === "" ? "" : ` on ${JSON.stringify(quote)}`;
+    const replies = thread.replies === 1 ? "1 reply" : `${thread.replies} replies`;
+    const lastReply =
+      thread.last_reply_at == null ? "no reply yet" : `newest reply ${thread.last_reply_at}`;
+    return [
+      `- ${reference} · ${actorText(root.author)}${anchored} · ${root.resolved ? "resolved" : "open"}`,
+      `  ${replies}, ${lastReply}: ${threadOpening(root.body)}`,
+    ].join("\n");
+  });
+  const scopeFlag =
+    scope.kind === "project" ? `--project ${scope.project}` : `--issue ${scope.issue}`;
+  const filterFlag =
+    "target" in filter ? `--target ${JSON.stringify(filter.target)}` : `--state ${filter.state}`;
+  return [
+    `Comment threads of ${where} ${asked}: ${threads.length} on this page.`,
+    ...lines,
+    ...(page.next_after == null
+      ? []
+      : [
+          `Another page follows: ${commandName(tool)} ${filterFlag} ${scopeFlag} --after ${page.next_after}`,
+        ]),
+  ];
+}
+
 /** Which repository the issue targets and where it came from: its own, or resolved through its
  *  parent chain and the project's default mapping. A Dispatch server from before the repository
  *  fields sends neither field, and its answer is unknown, never none: none means the server
@@ -4458,6 +4516,40 @@ export async function executeDispatchTool(
         ...(offset === undefined ? {} : { offset }),
       });
       return searchAnswer(search, query, offset, linkBase);
+    }
+    case "dispatch_threads_by_target":
+    case "dispatch_threads_by_thread_state": {
+      const scope = documentOwner();
+      const artifactReference = optionalString(args, "artifact");
+      const artifact =
+        artifactReference === undefined
+          ? undefined
+          : (await resolveDocument(scope, artifactReference)).artifact.id;
+      const limit = optionalNumber(args, "limit");
+      const after = optionalString(args, "after");
+      const query = {
+        ...(scope.kind === "project" ? { project: scope.project } : { issue: scope.issue }),
+        ...(artifact === undefined ? {} : { artifact }),
+        ...(limit === undefined ? {} : { limit }),
+        ...(after === undefined ? {} : { after }),
+      };
+      const filter: { readonly target: string } | { readonly state: "open" | "resolved" } =
+        input.tool === "dispatch_threads_by_target"
+          ? { target: stringArg(args, "target") }
+          : { state: stringArg(args, "state") as "open" | "resolved" };
+      const page =
+        "target" in filter
+          ? await client.commentThreadsByTarget({ ...query, target: filter.target })
+          : await client.commentThreadsByThreadState({ ...query, state: filter.state });
+      return {
+        text: commentThreadPageLines(input.tool, page, filter, scope).join("\n"),
+        details: {
+          ...query,
+          ...filter,
+          threads: (page.threads ?? []).length,
+          next_after: page.next_after,
+        },
+      };
     }
     case "dispatch_related": {
       const project = stringArg(args, "project");

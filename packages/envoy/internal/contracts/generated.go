@@ -191,6 +191,14 @@ const ProjectKeyPattern = "^[A-Z][A-Z0-9]{1,9}$"
 // `dispatch search` command's account of it cannot drift apart.
 const SearchKindDepth = 100
 
+// CommentThreadPageMax is the largest page GET /api/v1/comment-threads/by-target and
+// GET /api/v1/comment-threads/by-thread-state serve, and CommentThreadPageDefault the page size
+// a caller that names no limit gets. Generated from COMMENT_THREAD_PAGE_MAX and
+// COMMENT_THREAD_PAGE_DEFAULT in packages/contracts so the two routes' bound and the
+// `dispatch threads-by-target` command's refusal cannot drift apart.
+const CommentThreadPageMax = 200
+const CommentThreadPageDefault = 50
+
 // SearchDegradedEmbedderUnavailable is GET /api/v1/search's SearchResponse.degraded value when
 // meaning search could not run for this request and search fell back to keyword-only ranking.
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string

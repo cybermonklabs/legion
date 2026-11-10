@@ -397,6 +397,43 @@ type issueCommentsQuery struct {
 	Artifact string `query:"artifact"`
 }
 
+// commentThreadsByTargetQuery is GET /api/v1/comment-threads/by-target's query: the requirement
+// query by target (comment_threads.go).
+type commentThreadsByTargetQuery struct {
+	// Target is the whole quoted text of the entry a thread is anchored on; required.
+	Target string `query:"target"`
+	// Project lists the threads of one project's issues and unlinked documents.
+	Project string `query:"project"`
+	// Issue lists the threads of one issue; exactly one of Project and Issue is required.
+	Issue string `query:"issue"`
+	// Artifact narrows the list to the threads anchored in one document.
+	Artifact string `query:"artifact"`
+	// Limit is the page size, 1 to commentThreadMaxLimit.
+	Limit int `query:"limit"`
+	// After starts the page after one thread: the next_after of an earlier page, which is that
+	// page's last root comment id.
+	After string `query:"after"`
+}
+
+// commentThreadsByThreadStateQuery is GET /api/v1/comment-threads/by-thread-state's query: the
+// requirement query by the state of the line's thread, which is not the spec loop's own
+// requirement status (comment_threads.go).
+type commentThreadsByThreadStateQuery struct {
+	// State is the thread state to list: open or resolved; required.
+	State string `query:"state" enum:"open,resolved"`
+	// Project lists the threads of one project's issues and unlinked documents.
+	Project string `query:"project"`
+	// Issue lists the threads of one issue; exactly one of Project and Issue is required.
+	Issue string `query:"issue"`
+	// Artifact narrows the list to the threads anchored in one document.
+	Artifact string `query:"artifact"`
+	// Limit is the page size, 1 to commentThreadMaxLimit.
+	Limit int `query:"limit"`
+	// After starts the page after one thread: the next_after of an earlier page, which is that
+	// page's last root comment id.
+	After string `query:"after"`
+}
+
 // credentialApproverQuery is the query GET /api/v1/credential-requests and
 // GET /api/v1/credential-grants share.
 type credentialApproverQuery struct {
@@ -677,6 +714,12 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []model.Comment{}, Params: issueCommentsQuery{},
+	},
+	"GET /api/v1/comment-threads/by-target": {
+		Status: http.StatusOK, Response: commentThreadPage{}, Params: commentThreadsByTargetQuery{},
+	},
+	"GET /api/v1/comment-threads/by-thread-state": {
+		Status: http.StatusOK, Response: commentThreadPage{}, Params: commentThreadsByThreadStateQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},

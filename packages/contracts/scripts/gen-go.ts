@@ -39,6 +39,8 @@ import {
   SEARCH_OPERATOR_PHRASE,
 } from "../src/dispatch-api";
 import {
+  COMMENT_THREAD_PAGE_DEFAULT,
+  COMMENT_THREAD_PAGE_MAX,
   DISPATCH_BLOCK_UNITS,
   DISPATCH_EVENT_BODY_MAX,
   DISPATCH_HANDOFF_BODY_MAX,
@@ -213,6 +215,14 @@ const ProjectKeyPattern = ${JSON.stringify(PROJECT_KEY_PATTERN.source)}
 // returns them. Generated from SEARCH_KIND_DEPTH in packages/contracts so the server's cut and the
 // \`dispatch search\` command's account of it cannot drift apart.
 const SearchKindDepth = ${SEARCH_KIND_DEPTH}
+
+// CommentThreadPageMax is the largest page GET /api/v1/comment-threads/by-target and
+// GET /api/v1/comment-threads/by-thread-state serve, and CommentThreadPageDefault the page size
+// a caller that names no limit gets. Generated from COMMENT_THREAD_PAGE_MAX and
+// COMMENT_THREAD_PAGE_DEFAULT in packages/contracts so the two routes' bound and the
+// \`dispatch threads-by-target\` command's refusal cannot drift apart.
+const CommentThreadPageMax = ${COMMENT_THREAD_PAGE_MAX}
+const CommentThreadPageDefault = ${COMMENT_THREAD_PAGE_DEFAULT}
 
 // SearchDegradedEmbedderUnavailable is GET /api/v1/search's SearchResponse.degraded value when
 // meaning search could not run for this request and search fell back to keyword-only ranking.
