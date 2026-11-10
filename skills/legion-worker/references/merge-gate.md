@@ -60,6 +60,9 @@ other change to the head voids it.
   failed and cancelled jobs, once, then wait — never the whole run, which runs again every job that
   succeeded too. A merge-group run is never re-run: the implementer finishes its round instead,
   and the pull request is tested again when it is queued again.
+  A required check that is red at the head is a different case, which
+  `skill://legion-worker/references/red-at-the-head.md` decides. The reviewer's re-run of a
+  cancelled or absent check neither spends the head's one re-run nor is spent by it.
   Find the run and job at the head: the head's runs
   (`gh api 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv'`),
   then each candidate run's jobs
@@ -269,6 +272,15 @@ reviewing until you finish.
   the architect is told `READY_HEAD_MOVED` and has the merger build a new READY at the new head.
   The packet's second line records the step,
   `Merge: the daemon submits pull request #<n> at <head> once READY is accepted`.
+- **A `failed_checks` ejection at an unchanged head is queued once more.** When GitHub takes the
+  pull request out of the merge queue because the group build failed a check (`failed_checks`)
+  and the head has not changed, the merger queues that same head once more. It sends the work
+  back only on a second such ejection of that head. No role re-runs a group build. GitHub does
+  re-run one, but the re-run puts nothing back in the queue, and GitHub deletes the entry's
+  branch, after which `GET /git/ref/heads/gh-readonly-queue/main/pr-<n>-<sha>` answers 404
+  (measured on cybermonklabs/legion#2811). This rule acts once dispatch://INFRA-714 gives the
+  merger the merge. Until then the daemon decides a `failed_checks` ejection itself, as the
+  bullet above says.
 - **The daemon disarms a merge no READY covers.** Auto-merge stays enabled across pushes, and the
   expected head is checked only when it is enabled, so the daemon itself disables the pull
   request's auto-merge and takes it out of a merge queue, as the implement App, on any push or

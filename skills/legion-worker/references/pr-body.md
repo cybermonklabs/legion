@@ -58,6 +58,8 @@ The one CI result an implementer waits for is a re-run: when its task names a re
 failed on its own in a `pull_request` run, it re-runs the failed jobs once (`gh run rerun <run-id> --failed`) and completes once
 the re-run settles green, woken by the pull request's checks event (`skill://envoy`, *Wait for
 CI or a merge*: subscribe, then end the turn), never by a sleep loop.
+`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: the test of
+whether the head's one re-run is already spent, and the record the role writes before it re-runs.
 A merge-group run is never re-run: the implementer finishes its round instead, and the pull request is tested again when it is queued again.
 A completion while that red still stands is sent back, at once for a required check and at the daemon's next read of the runs (within two minutes) for a required workflow.
 
@@ -158,10 +160,11 @@ and decides there, the only gate on such an issue.
   second and the concurrent run, the party it must refuse — judge whether the implementer's tests
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
-  and integration suites are CI's, read there and recorded for no later step, and no CI lane is
-  rerun as evidence. A lane GitHub shows `queued` or `in progress` is read as such: the tester
-  never waits for it, since a required red that settles sends the work back from `testing` and
-  the reviewer reads the head's checks before it approves.
+  and integration suites are CI's, read there and recorded for no later step. A lane GitHub shows
+  `queued` or `in progress` is read as such, since a required red that settles sends the work back
+  from `testing` and the reviewer reads the head's checks before it approves. A red at the head
+  that the change did not make is the tester's to re-run once, and
+  `skill://legion-worker/references/red-at-the-head.md` holds the rule.
   A `before_merge` check the implementer left with no current result is a test failure, not a gap
   for the tester to fill: record it in `failures` (each `{check, evidence}`, `check` the block id)
   with `implementerProof.verdict: "rejected"`, complete the phase with

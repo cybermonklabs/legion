@@ -38,6 +38,14 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
   ask (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`, the
   evidence on stdin) and open no second one.
+- A test you re-ran (`skill://legion-worker/references/red-at-the-head.md`) is one occurrence of
+  a known failure, not a new finding. Post the occurrence as a `dispatch comment` on the issue
+  that tracks that test, whatever that issue's status, found with `dispatch search` on the test's
+  full name. Then tell the controller, as [Send a finding to the
+  controller](#send-a-finding-to-the-controller) says. Where no issue tracks the test, or where
+  the one that does reads `done`, say so in that message, name the test, the job, the head and
+  both results, and file nothing yourself. The controller files or reopens the issue, one per
+  test, never one per occurrence.
 
 These issues are filed:
 
