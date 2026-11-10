@@ -1,19 +1,25 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
-import { publishAgentStreamFrame } from "./api";
-import { COST_RIG_IDS, expectConversationInFront, seedPinnedRigsAtLimit } from "./live-view-cost";
-import { type ViewRestore, watchViewRestore } from "./live-views";
+import { publishAgentStreamFrame, putAgentState } from "./api";
+import {
+  COST_RIG_IDS,
+  expectConversationInFront,
+  frontTurns,
+  seedPinnedRigsAtLimit,
+} from "./live-view-cost";
+import { frontLiveView, type ViewRestore, watchViewRestore } from "./live-views";
 import { openAgentFromRail } from "./rail";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 /**
  * What the agent surfaces cost in time (INFRA-812). Every row here reads a wall clock - a
- * sleeping live view at the stream's limit comes back inside 1.2 s on the fastest of up to
- * eight wakes, and the Agents page paints six hundred sessions inside 100 ms on the fastest of
- * up to twenty loads, holding the main thread for less than 150 ms in that same load - so the
- * whole file runs in the
+ * sleeping live view of an ordinary conversation comes back inside half a second on the
+ * fastest of up to five wakes, a sleeping view at the stream's limit comes back inside 1.2 s
+ * on the fastest of up to eight wakes, and the Agents page paints six hundred sessions inside
+ * 100 ms while holding the main thread for less than 150 ms, the first load inside both of
+ * those bounds of up to twenty taken - so the whole file runs in the
  * `chromium-alone` project, with the machine to itself (D14, `playwright.config.ts`'s
  * `clockSpecs` and `packages/dispatch/AGENTS.md`). Four lanes put four browsers, four Dispatch
  * servers and four Postgres servers on one machine, and a second of wall clock there holds
@@ -74,15 +80,134 @@ const replay = {
   v: 1,
 };
 
+/** The three agents R2's own case pins, by id. Each is a UUID: Dispatch's agent routes refuse
+ *  anything else, so a session named otherwise would list and have no live view at all. */
+const ORDINARY_IDS = [
+  "01a0e812-0d17-7000-8000-000000000001",
+  "01a0e812-0d17-7000-8000-000000000002",
+  "01a0e812-0d17-7000-8000-000000000003",
+];
+
+/** How many turns each of those three answers a viewer's replay request with: a conversation a
+ *  person has had, which is what R2 claims its half second for, and nowhere near the two
+ *  hundred turns of the stream's limit. */
+const ORDINARY_TURNS = 6;
+
+/** One of R2's own case: a live session for the rail to pin. `last_seen` is taken when the row
+ *  seeds, never at this module's scope, which a worker evaluates once and every later spec of
+ *  that worker ages. */
+function ordinaryRig(index: number): FakeSession {
+  return {
+    capabilities: ["aside", "btw", "steer"],
+    dir: `/workspaces/ordinary-${index + 1}`,
+    last_seen: Date.now() - 5_000,
+    machine_id: "ordinary-host",
+    roles: [],
+    session_id: ORDINARY_IDS[index],
+    title: `Ordinary ${index + 1}`,
+  };
+}
+
+/**
+ * Three live sessions, each pinned and each answering the next viewer's replay request with a
+ * six-turn conversation. The pins go one at a time, since the rail's order is the order they
+ * were made in. Three is the fewest that lets a view sleep: opening a third view puts the
+ * first to sleep at once (`features/agent-view/live-views.ts`), so the first of these is the
+ * sleeping view the ordinary wake comes back to.
+ */
+async function seedPinnedOrdinaryRigs(): Promise<void> {
+  await setLiveSessions(ORDINARY_IDS.map((_, index) => ordinaryRig(index)));
+  for (const [index, sessionID] of ORDINARY_IDS.entries()) {
+    const frames = Array.from({ length: ORDINARY_TURNS }, (_, turn) => ({
+      kind: "message",
+      message: {
+        at: 1_000 + turn * 1_000,
+        id: `m${turn}`,
+        parts: [
+          {
+            text: `Ordinary ${index + 1} turn ${turn}: the relay carries this turn to the viewer.`,
+            type: "text",
+          },
+        ],
+        role: turn % 2 === 0 ? "user" : "assistant",
+        streaming: false,
+      },
+      seq: turn + 1,
+      v: 1,
+    }));
+    await publishAgentStreamFrame(sessionID, { frames, session_id: sessionID, v: 1 }, "replay");
+    await putAgentState(sessionID, { pinned: true });
+  }
+}
+
+/** Waits until `sessionID`'s view is the one in front with its six turns drawn, which is the
+ *  ordinary conversation rebuilt from the session's replay. */
+async function expectOrdinaryConversationInFront(page: Page, sessionID: string): Promise<void> {
+  await expect(frontLiveView(page)).toHaveAttribute("data-session-id", sessionID);
+  await expect(frontTurns(page)).toHaveCount(ORDINARY_TURNS);
+}
+
 /** What each timed row claims, and the most readings it takes to find one that holds. Each row
  *  takes its readings one at a time and stops at the first inside its bound, so a machine with
  *  a free slice pays one reading and only a busy one walks toward the cap. The
  *  comment above each row says where its bound and its cap come from. */
+const ORDINARY_WAKE_MS = 500;
+const ORDINARY_WAKES = 5;
 const WAKE_MS = 1_200;
 const WAKES = 8;
 const PAINT_MS = 100;
 const LONGEST_TASK_MS = 150;
 const LOADS = 20;
+
+/** A walk's readings and the one of them its row judges. */
+interface Walk<Reading> {
+  /** The reading the row holds to its bound. */
+  judged: Reading;
+  /** Which reading of the walk that was, counting from one, so a message can name it. */
+  judgedAt: number;
+  /** Every reading taken, in the order they were taken. */
+  readings: Reading[];
+}
+
+/**
+ * One timed row's walk: readings taken one at a time, up to `cap`, stopping at the first that
+ * is `inside` the row's bounds. That one is the fastest of the walk, since every reading
+ * before it was outside them, and it is the one judged. Where the cap runs out with none
+ * inside, the judged reading is the one with the smallest `ms`, which is the floor the row
+ * failed at and reports.
+ *
+ * Why a walk rather than a median of a fixed number of readings, and where each row's cap
+ * comes from, is written above the row.
+ */
+async function walkUntilInside<Reading>(walk: {
+  cap: number;
+  inside: (reading: Reading) => boolean;
+  ms: (reading: Reading) => number;
+  take: (reading: number) => Promise<Reading>;
+}): Promise<Walk<Reading>> {
+  const readings: Reading[] = [];
+  for (let reading = 1; reading <= walk.cap; reading += 1) {
+    const taken = await walk.take(reading);
+    readings.push(taken);
+    if (walk.inside(taken)) return { judged: taken, judgedAt: reading, readings };
+  }
+  let judgedAt = 0;
+  readings.forEach((taken, index) => {
+    if (walk.ms(taken) < walk.ms(readings[judgedAt])) judgedAt = index;
+  });
+  return { judged: readings[judgedAt], judgedAt: judgedAt + 1, readings };
+}
+
+/** Where one wake's wait went, for the annotation that reports it: the three parts the page's
+ *  own socket stamped, and `not measured` for a stamp the page never reached. */
+function whereTheWakeWent(restore: ViewRestore): string {
+  const part = (ms: number | null) => (ms === null ? "not measured" : `${Math.round(ms)} ms`);
+  return (
+    `${part(restore.resubscribeMs)} to re-subscribe, ` +
+    `${part(restore.replayMs)} to the session's replay, ` +
+    `${part(restore.renderMs)} to draw it`
+  );
+}
 
 test.beforeEach(async () => {
   await resetDatabase();
@@ -105,6 +230,116 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
   }
 });
 
+// R2's own number, with no qualifier on it: a sleeping view of an ordinary conversation comes
+// back inside half a second, read as the fastest of up to five fresh wakes. The case is the
+// ordinary one - three agents pinned, each with a six-turn conversation, which is what a
+// person moving between their own agents has - and the stream's limit is the row below it,
+// bounded apart at 1.2 s. Three pins are the fewest that put a view to sleep: opening a third
+// view sleeps the first (`features/agent-view/live-views.ts`), so nothing of that view is on
+// the page and coming back to it is the session's replay again, the same wake the row below
+// takes with two hundred turns behind it rather than six.
+//
+// The bound was written after the readings rather than before them. Twelve wakes over two runs
+// at this head on 2026-11-10 read 95, 96, 218, 88, 88 and 149 ms, then 79, 114, 77, 84, 95 and
+// 91 ms: a floor of 77 ms and a worst of 218. Every part of the wait is small - 35 to 58 ms to
+// re-subscribe, 15 to 71 ms to the session's replay, 27 to 38 ms to draw it - because the draw
+// is six turns rather than the 0.25 to 0.36 s a limit-sized transcript costs. So 500 ms is
+// R2's own figure and not a margin fitted to this machine: it is over twice the worst of those
+// twelve and six times the floor.
+//
+// The walk is the one the rows below take, for the reason written above them: this machine's
+// readings move too far for a median of them to be the page's, so the row takes wakes one at a
+// time and stops at the first inside 500 ms, which is the fastest of the walk. Five is the
+// cap, and running it out is how this row fails: a view of six turns that cannot come back
+// inside half a second in any of five slices is slow in itself rather than unlucky with the
+// machine. That is what the row was seen to do: with 600 ms of spin added to the first render
+// of every live view, the five wakes read 677, 689, 679, 678 and 682 ms, the cap ran out and
+// the row failed on the fastest of them. What the floor is blind to is the other shape of a
+// regression: every wake must cross for the row to fail, so a change that makes a slow wake
+// more frequent without raising the floor passes here. Every wake taken is kept on the result
+// in the order it was taken, with the one the row judged, and each is a page of its own,
+// closed once its reading is taken.
+//
+// The clock is the page's own (`watchViewRestore`, installed before the press), as it is for
+// the row below: the first `pointerdown`, taken in the capture phase before any handler of the
+// press runs, to the first mutation in which this session's view is in front with a turn drawn
+// in it.
+//
+// This row asks for no timeout of its own. Six wakes and the seeding cost this node 18.5 and
+// 20.3 s over those two runs, about 3 s a wake, so the full cap of five costs about 17 s,
+// which the suite's 60 s budget (`playwright.config.ts`'s `testTimeout`) covers three times
+// over.
+// SLOW(>=2s): up to five fresh pages, each opening three live views in turn before the
+// sleeping one is brought back; the walk stops at the first wake inside the bound.
+test("a sleeping view of an ordinary conversation comes back with its fastest wake inside half a second", async ({
+  browser,
+}) => {
+  await seedPinnedOrdinaryRigs();
+  const context = await asUser(browser, "alice");
+  try {
+    // One wake: a page of its own, which opens the three pinned views in turn and then comes
+    // back to the first. The page is closed when its reading is taken, so nothing this row
+    // measures is a second wake on a page that has woken a view already.
+    const wakeOnce = async (wake: number) => {
+      const page = await context.newPage();
+      try {
+        await page.goto("/");
+        for (const sessionID of ORDINARY_IDS) {
+          await openAgentFromRail(page, sessionID);
+          await expectOrdinaryConversationInFront(page, sessionID);
+        }
+        // The first of the three has been asleep since the third was opened: nothing of it is
+        // mounted, it holds no subscription, and coming back to it is the session's replay
+        // again.
+        await expect(page.locator(`[data-session-id="${ORDINARY_IDS[0]}"]`)).toHaveCount(0);
+
+        const restored = await watchViewRestore(page, ORDINARY_IDS[0]);
+        await openAgentFromRail(page, ORDINARY_IDS[0]);
+        await expectOrdinaryConversationInFront(page, ORDINARY_IDS[0]);
+        const restore = await restored();
+        // Where this wake's wait went, kept on the result whether or not the row passes, as
+        // the row below keeps it: the three parts are what reading a slow wake starts from.
+        test.info().annotations.push(
+          {
+            description: `${Math.round(restore.totalMs)} ms`,
+            type: `an ordinary sleeping view came back, wake ${wake} of up to ${ORDINARY_WAKES}`,
+          },
+          {
+            description: whereTheWakeWent(restore),
+            type: `where that time went, wake ${wake} of up to ${ORDINARY_WAKES}`,
+          }
+        );
+        return restore;
+      } finally {
+        await page.close();
+      }
+    };
+
+    const walked = await walkUntilInside({
+      cap: ORDINARY_WAKES,
+      inside: (restore: ViewRestore) => restore.totalMs < ORDINARY_WAKE_MS,
+      ms: (restore: ViewRestore) => restore.totalMs,
+      take: wakeOnce,
+    });
+    const readings = walked.readings.map((taken) => `${Math.round(taken.totalMs)} ms`).join(", ");
+    test.info().annotations.push({
+      description:
+        `wake ${walked.judgedAt}, ${Math.round(walked.judged.totalMs)} ms; ` +
+        `every wake taken, in order: ${readings}`,
+      type: `the wake this row judged, ${walked.readings.length} of up to ${ORDINARY_WAKES} taken`,
+    });
+
+    expect(
+      walked.judged.totalMs,
+      `the sleeping view of a ${ORDINARY_TURNS}-turn conversation came back in ${readings} ` +
+        `over ${walked.readings.length} fresh wakes of up to ${ORDINARY_WAKES}, the fastest of ` +
+        `them wake ${walked.judgedAt} at ${Math.round(walked.judged.totalMs)} ms`
+    ).toBeLessThan(ORDINARY_WAKE_MS);
+  } finally {
+    await context.close();
+  }
+});
+
 // R2, k11's one timed claim: a sleeping view at the stream's worst case comes back inside 1.2
 // seconds, read as the fastest of up to eight fresh wakes. It is the worst case on purpose -
 // eight agents pinned, each seeded with a conversation at the stream's limit
@@ -115,7 +350,7 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
 // transcript at 0.25 to 0.36 s, which is the largest part; measured 0.66 to 0.82 s on an idle
 // `chromium-alone` machine, with 1.2 s the bound over that measured worst with margin for
 // run-to-run variance. An ordinary conversation, far below the limit, comes back well under
-// half a second.
+// half a second, which is the row above and R2's own number.
 //
 // The fastest rather than the median, because this machine's own readings move too far for a
 // median of them to be the page's. What was measured on 2026-11-10: three runs of eight wakes
@@ -166,7 +401,6 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
   test.setTimeout(240_000);
   await seedPinnedRigsAtLimit();
   const context = await asUser(browser, "alice");
-  const part = (ms: number | null) => (ms === null ? "not measured" : `${Math.round(ms)} ms`);
   try {
     // One wake: a page of its own, which opens all eight pinned views in turn and then comes
     // back to the first. The page is closed when its reading is taken, so nothing this row
@@ -197,10 +431,7 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
             type: `a sleeping view came back, wake ${wake} of up to ${WAKES}`,
           },
           {
-            description:
-              `${part(restore.resubscribeMs)} to re-subscribe, ` +
-              `${part(restore.replayMs)} to the session's replay, ` +
-              `${part(restore.renderMs)} to draw it`,
+            description: whereTheWakeWent(restore),
             type: `where that time went, wake ${wake} of up to ${WAKES}`,
           }
         );
@@ -210,30 +441,25 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
       }
     };
 
-    const wakes: { restore: ViewRestore; wake: number }[] = [];
-    for (let wake = 1; wake <= WAKES; wake += 1) {
-      const taken = { restore: await wakeOnce(wake), wake };
-      wakes.push(taken);
-      // The first wake inside the bound is the fastest of the walk, since every wake before it
-      // was over the bound, so the walk stops here and that reading is the one judged.
-      if (taken.restore.totalMs < WAKE_MS) break;
-    }
-    const judged = wakes.reduce((fastest, taken) =>
-      taken.restore.totalMs < fastest.restore.totalMs ? taken : fastest
-    );
-    const readings = wakes.map((taken) => `${Math.round(taken.restore.totalMs)} ms`).join(", ");
+    const walked = await walkUntilInside({
+      cap: WAKES,
+      inside: (restore: ViewRestore) => restore.totalMs < WAKE_MS,
+      ms: (restore: ViewRestore) => restore.totalMs,
+      take: wakeOnce,
+    });
+    const readings = walked.readings.map((taken) => `${Math.round(taken.totalMs)} ms`).join(", ");
     test.info().annotations.push({
       description:
-        `wake ${judged.wake}, ${Math.round(judged.restore.totalMs)} ms; ` +
+        `wake ${walked.judgedAt}, ${Math.round(walked.judged.totalMs)} ms; ` +
         `every wake taken, in order: ${readings}`,
-      type: `the wake this row judged, ${wakes.length} of up to ${WAKES} taken`,
+      type: `the wake this row judged, ${walked.readings.length} of up to ${WAKES} taken`,
     });
 
     expect(
-      judged.restore.totalMs,
-      `the sleeping view came back in ${readings} over ${wakes.length} fresh wakes of up to ` +
-        `${WAKES}, the fastest of them wake ${judged.wake} at ` +
-        `${Math.round(judged.restore.totalMs)} ms`
+      walked.judged.totalMs,
+      `the sleeping view came back in ${readings} over ${walked.readings.length} fresh wakes ` +
+        `of up to ${WAKES}, the fastest of them wake ${walked.judgedAt} at ` +
+        `${Math.round(walked.judged.totalMs)} ms`
     ).toBeLessThan(WAKE_MS);
   } finally {
     await context.close();
@@ -241,15 +467,16 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 });
 
 // R7, k12's one timed claim: the Agents page of six hundred sessions paints inside 100
-// milliseconds and holds the main thread for less than 150 while it does, both read off the
-// fastest of up to twenty fresh loads. The spec measured that on its prototype - drawing every
-// row cost 177 to 374 ms with a longest task of up to 290, and the windowed list 23 to 40 ms
+// milliseconds and holds the main thread for less than 150 while it does, both read off one
+// load, the first of up to twenty fresh ones that is inside both of those bounds. The spec
+// measured that on its prototype - drawing every row cost 177 to 374 ms with a longest task
+// of up to 290, and the windowed list 23 to 40 ms
 // with no long task - so what is timed here is the same thing: the page's own work drawing its
 // list of six hundred, with the whole list folded away and then drawn again. The app's cold
 // boot is no part of it, since no requirement here changed what a cold boot costs: this pod
 // takes about 140 ms to start the page whether it lists ten sessions or six hundred.
 //
-// The fastest rather than the median, because this machine's own readings move too far for a
+// A fast load rather than the median, because this machine's own readings move too far for a
 // median of them to be the page's. What was measured on 2026-11-10: three runs of twenty loads
 // read medians of 111, 109 and 101 ms against minima of 90, 57 and 59 ms, and the parent
 // commit's unmodified copy of this file failed the same bound at this head (a paint of 128 ms),
@@ -258,8 +485,8 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 // with both CPUs busy and `/proc/stat` reports 91% busy either way, both blind under gVisor
 // (measured 2026-11-10) - so a host that is slow for as long as it runs and another of this
 // pod's six roles working beside this run read the same from in here. Either way the fastest
-// load is the page's own floor: the one slice of the twenty the machine left whole, and the
-// work the page does in that slice is the work it does on a machine that is not busy
+// load of a walk is the page's own floor: the one slice of the twenty the machine left whole,
+// and the work the page does in that slice is the work it does on a machine that is not busy
 // elsewhere. The 90 ms of the worst of those three runs is a thin margin under the bound and
 // is left as it is: a page that cannot paint inside 100 ms in its best slice of twenty has
 // lost what the windowing bought. What the floor is blind to is the other shape of a
@@ -277,7 +504,9 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 // Both claims are one load's. The walk stops at the first load that paints inside 100 ms and
 // holds the thread for less than 150 ms in that same load, so the pair the row judges was
 // taken in one slice: a load that painted fast while it held the thread a quarter of a second
-// got no clean slice, and the walk goes on. When the cap runs out the row judges the fastest
+// got no clean slice, and the walk goes on. The load this row judges is therefore the first
+// one inside both bounds and not the fastest paint of the walk, which may be a load before it
+// that held the thread too long. When the cap runs out the row judges the fastest
 // paint of the loads taken and the task that same load held, so the two figures it reports are
 // still one load's. Each load is a page of its own, fresh from its own load, with one timed
 // redraw and then closed - never a second timed draw on a page that has already been timed -
@@ -309,7 +538,7 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 // they were taken, with the load the row judged, whether or not the row passes.
 // SLOW(>=2s): six hundred sessions seeded, then up to twenty pages that each list them all
 // before the one draw each of them is timed for.
-test("the Agents page paints six hundred sessions with its fastest load inside 100 ms and that load's longest task under 150", async ({
+test("the Agents page paints six hundred sessions with a load inside 100 ms whose longest task is under 150, the first of up to twenty", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -406,51 +635,49 @@ test("the Agents page paints six hundred sessions with its fastest load inside 1
           measured.drawn,
           `load ${load} of up to ${LOADS} drew ${measured.drawn} rows`
         ).toBeGreaterThan(5);
-        return { load, longest, paintMs: measured.paintMs };
+        return { longest, paintMs: measured.paintMs };
       } finally {
         await page.close();
       }
     };
 
-    const loads: { load: number; longest: number; paintMs: number }[] = [];
-    let clean: { load: number; longest: number; paintMs: number } | undefined;
-    for (let load = 1; load <= LOADS && clean === undefined; load += 1) {
-      const taken = await paintOnce(load);
-      loads.push(taken);
-      // A clean slice is one load's pair: it painted inside the paint bound and held the thread
-      // for less than the task bound while it did. A load that painted fast and held the thread
-      // too long had no clean slice, so it does not stop the walk.
-      if (taken.paintMs < PAINT_MS && taken.longest < LONGEST_TASK_MS) clean = taken;
-    }
-    // With no clean load in the whole cap, the row judges the fastest paint of the ones taken
-    // and the task that same load held, so the two figures below are still one load's.
-    const judged =
-      clean ?? loads.reduce((fastest, load) => (load.paintMs < fastest.paintMs ? load : fastest));
-    const readings = loads.map((load) => `${Math.round(load.paintMs)} ms`).join(", ");
-    const held = loads.map((load) => `${Math.round(load.longest)} ms`).join(", ");
+    // A clean slice is one load's pair: it painted inside the paint bound and held the thread
+    // for less than the task bound while it did. A load that painted fast and held the thread
+    // too long had no clean slice, so it does not stop the walk; with no clean load in the
+    // whole cap the walk judges the fastest paint of the ones taken and the task that same
+    // load held, so the two figures below are still one load's.
+    const walked = await walkUntilInside({
+      cap: LOADS,
+      inside: (load: { longest: number; paintMs: number }) =>
+        load.paintMs < PAINT_MS && load.longest < LONGEST_TASK_MS,
+      ms: (load: { longest: number; paintMs: number }) => load.paintMs,
+      take: paintOnce,
+    });
+    const readings = walked.readings.map((load) => `${Math.round(load.paintMs)} ms`).join(", ");
+    const held = walked.readings.map((load) => `${Math.round(load.longest)} ms`).join(", ");
     test.info().annotations.push({
       description:
-        `load ${judged.load}, ${Math.round(judged.paintMs)} ms painting and ` +
-        `${Math.round(judged.longest)} ms holding the thread; every load taken, in order: ` +
-        `${readings}; the thread each of them held: ${held}`,
-      type: `the load this row judged, ${loads.length} of up to ${LOADS} taken`,
+        `load ${walked.judgedAt}, ${Math.round(walked.judged.paintMs)} ms painting and ` +
+        `${Math.round(walked.judged.longest)} ms holding the thread; every load taken, in ` +
+        `order: ${readings}; the thread each of them held: ${held}`,
+      type: `the load this row judged, ${walked.readings.length} of up to ${LOADS} taken`,
     });
 
     // Soft, so a run the page held the thread through reports its paint too, and the paint
     // below is read.
     expect
       .soft(
-        judged.longest,
-        `the longest task while they painted was ${held} over ${loads.length} fresh loads of ` +
-          `up to ${LOADS}, and load ${judged.load}, the one judged, held the thread ` +
-          `${Math.round(judged.longest)} ms`
+        walked.judged.longest,
+        `the longest task while they painted was ${held} over ${walked.readings.length} fresh ` +
+          `loads of up to ${LOADS}, and load ${walked.judgedAt}, the one judged, held the ` +
+          `thread ${Math.round(walked.judged.longest)} ms`
       )
       .toBeLessThan(LONGEST_TASK_MS);
     expect(
-      judged.paintMs,
-      `six hundred sessions painted in ${readings} over ${loads.length} fresh loads of up to ` +
-        `${LOADS}, and load ${judged.load}, the one judged, in ` +
-        `${Math.round(judged.paintMs)} ms`
+      walked.judged.paintMs,
+      `six hundred sessions painted in ${readings} over ${walked.readings.length} fresh loads ` +
+        `of up to ${LOADS}, and load ${walked.judgedAt}, the one judged, in ` +
+        `${Math.round(walked.judged.paintMs)} ms`
     ).toBeLessThan(PAINT_MS);
   } finally {
     await context.close();

@@ -324,10 +324,10 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   rows the screen holds and twelve either side, a scrollbar that measures the whole list, a
   draft that survives a scroll out of the window and back, and `j` reaching a session the
   window has not drawn).
-  The one timed claim of k12 - that the fastest of up to twenty fresh loads, taken until one
-  comes in under both bounds, paints those six hundred inside 100 ms and holds the main thread
-  under 150 ms, each bound measured on this hardware to sit between the windowed page and the
-  un-windowed one - is `e2e/agent-workspace-timing.e2e.ts`, in `chromium-alone` (D14).
+  The one timed claim of k12 - that one load paints those six hundred inside 100 ms and holds
+  the main thread under 150 ms while it draws them, the first load inside both bounds of up to
+  twenty fresh ones, each bound measured on this hardware to sit between the windowed page and
+  the un-windowed one - is `e2e/agent-workspace-timing.e2e.ts`, in `chromium-alone` (D14).
 - A person's direct Send or Aside reaches an Oh My Pi session as that person's own user turn once
   the session has accepted the attempt with Dispatch, so the live view shows it from the stream,
   where the session took it. When the stream tags it with its Dispatch id (`dispatchTurns` in
@@ -473,10 +473,13 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   the same walk with the sleep rule off, where eight subscriptions stay open and eight
   conversations are drawn, and the plan's gap row: a sleeping view leaves no session
   publishing, so a frame published while no viewer is subscribed reaches nobody and the view
-  that comes back holds the session's replay and nothing else. k11's one timed claim, that a
-  sleeping view at the stream's worst case comes back inside 1.2 seconds on the fastest of up to
-  eight wakes, taken one at a time until one is under the bound, is a row of
-  `e2e/agent-workspace-timing.e2e.ts` in `chromium-alone` (D14).
+  that comes back holds the session's replay and nothing else.
+  k11's one timed claim, that a sleeping view at the stream's worst case comes back inside
+  1.2 seconds on the fastest of up to eight wakes, taken one at a time until one is under the
+  bound, is a row of `e2e/agent-workspace-timing.e2e.ts` in `chromium-alone` (D14).
+  R2's own half second is a second row of that file, walked the same way: a sleeping view of an
+  ordinary six-turn conversation comes back inside 500 ms on the fastest of up to five wakes,
+  which is the case R2 claims with no qualifier on it.
 - `web/src/api/live-socket.ts` owns the one `GET /ws/live` socket per `QueryClient`, the delivery
   view subscriptions, `useLiveSocketState`, and the shell's `useLiveSocketPill`. It reconnects
   subscriptions from their delivery revisions or event cursor: a 4001 rotation reopens at once
@@ -2638,10 +2641,11 @@ The `chromium-alone`, `firefox-alone` and `webkit-alone` projects run the rows w
 wall-clock time, with the machine to themselves.
 `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card
 draws without holding the main thread for a second, both through `e2e/main-thread-hold.ts`) and
-`e2e/agent-workspace-timing.e2e.ts` (a sleeping live view at the stream's worst case comes back
-inside 1.2 seconds on the fastest of up to eight fresh wakes, and the Agents page paints six
-hundred sessions inside 100 milliseconds on the fastest of up to twenty fresh loads, holding the
-main thread under 150 ms in that same load, INFRA-812's D14,
+`e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes back
+inside half a second on the fastest of up to five fresh wakes, a sleeping view at the stream's
+worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and the
+Agents page paints six hundred sessions inside 100 milliseconds while holding the main thread
+under 150 ms, the first load inside both of those bounds of up to twenty taken, INFRA-812's D14,
 whose untimed halves stay in `chromium` and `iphone` in
 `e2e/agent-view-cost.e2e.ts` and `e2e/agents-window.e2e.ts`).
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines

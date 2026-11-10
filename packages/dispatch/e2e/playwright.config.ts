@@ -308,10 +308,12 @@ const multiprocessProjects = [
 
 // The specs whose rows are read from the wall clock: that a card's draw holds the main thread
 // for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view at
-// the stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh
-// wakes, and the Agents page paints six hundred sessions inside 100 ms on the fastest of up to
-// twenty fresh loads, holding the main thread under 150 ms in that same load
+// `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view of
+// an ordinary conversation comes back inside half a second on the fastest of up to five fresh
+// wakes, a sleeping view at the stream's worst case comes back inside 1.2 seconds on the
+// fastest of up to eight fresh wakes, and the Agents page paints six hundred sessions inside
+// 100 ms while holding the main thread under 150 ms, the first load inside both of those
+// bounds of up to twenty taken
 // (`agent-workspace-timing.e2e.ts`, INFRA-812's D14). Four lanes on one machine leave such a
 // claim unmeasurable - the wall time of a draw holds what the other three lanes took as surely
 // as the work the page did - so these files run in the `-alone` projects at the end of this

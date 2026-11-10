@@ -496,10 +496,11 @@ tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
 (a card draws without holding the main thread for a second)
-and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view at the stream's worst case comes
-back inside 1.2 seconds on the fastest of up to eight fresh wakes, and the Agents page paints six
-hundred sessions inside 100 milliseconds on the fastest of up to twenty fresh loads, holding the
-main thread under 150 ms in that same load), and
+and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
+back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
+stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
+the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
+thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and
 `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
