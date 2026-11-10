@@ -221,11 +221,11 @@ export function legionSlotValue(item: Item): string {
   const slot = card?.slot ?? card?.tree_slot;
   return slot === undefined || slot === null ? "No slot" : String(slot);
 }
-/** A Legion phase's label as the views write it: the board column's label, and "(retro)" after
- *  Merging while the issue is in retro, whose turn is the implementer's, so a Merging issue with
- *  the implementer in a turn reads as what it is. */
+/** A Legion phase's label as the views write it: the board column's label, except that an issue
+ *  in retro reads "Retro". The board shows retro in its Merging column, but the Legion tab and
+ *  the status bar call it Retro, so every view uses one word for it. */
 export function legionPhaseLabel(label: string, phase: string): string {
-  return phase === "retro" ? `${label} (retro)` : label;
+  return phase === "retro" ? "Retro" : label;
 }
 /** A card's slot in words: its own slot, its tree root's for a child (a slot belongs to the
  *  tree's root), or none. */

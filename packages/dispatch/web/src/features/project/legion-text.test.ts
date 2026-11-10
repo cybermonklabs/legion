@@ -36,7 +36,7 @@ test("no role in a turn reads as between turns", () => {
   );
 });
 
-test("merging reads 'Merging (retro)' while the issue is in retro, whose turn is the implementer's", () => {
-  expect(legionPhaseLabel("Merging", "retro")).toBe("Merging (retro)");
+test("an issue in retro reads 'Retro' though the board shows it in its Merging column", () => {
+  expect(legionPhaseLabel("Merging", "retro")).toBe("Retro");
   expect(legionPhaseLabel("Merging", "merging")).toBe("Merging");
 });
