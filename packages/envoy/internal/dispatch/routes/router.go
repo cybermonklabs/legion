@@ -149,8 +149,9 @@ type AppContextOptions struct {
 	// replaced; zero keeps the server's twelve seconds. See api.Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
 	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
-	// observation waits before the process logs its stall warning and how often that warning
-	// repeats; zero keeps the horizon's own five and thirty seconds. See
+	// observation waits before the process logs its stall warning and how often each of that
+	// Horizon's three warnings repeats - the stall warning, the failed-observation warning and
+	// the failed-persist warning; zero keeps the horizon's own five and thirty seconds. See
 	// api.Deps.HorizonStallAfter.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration

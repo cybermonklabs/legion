@@ -264,11 +264,13 @@ func NewHorizon(db HorizonDB) *Horizon {
 // before the Horizon is shared.
 func (h *Horizon) PersistProven() { h.persist = true }
 
-// SetStallWarning replaces the thresholds of the stall warning: stallAfter, how long a pending
-// observation waits before warnStall logs it, and warnEvery, how often that warning repeats while
-// the stall stands. A zero argument leaves that threshold as it is, so a caller may set either
-// alone and one that sets neither keeps horizonStallAfter and horizonWarnEvery. Call it before the
-// Horizon is shared.
+// SetStallWarning replaces two thresholds: stallAfter, how long a pending observation waits
+// before warnStall logs it, and warnEvery, how often every warning this Horizon logs repeats -
+// the stall warning while the stall stands, the failed-observation warning of run, and the
+// failed-persist warning of writePersisted, which hold their own last-warned times but share
+// this one rate. A zero argument leaves that threshold as it is, so a caller may set either
+// alone and one that sets neither keeps horizonStallAfter and horizonWarnEvery. Call it before
+// the Horizon is shared.
 //
 // A test process needs shorter ones: warnedAt is one field of the one Horizon per process, shared
 // with the delivery hub's event seed, so at the production horizonWarnEvery a warning logged for
@@ -800,8 +802,10 @@ func (h *Horizon) stalled(now time.Time) *horizonObservation {
 // horizon pool cannot open) would have the diagnosis's QueryRow refused as a nested acquire. A
 // failed diagnosis is logged in the warning, never returned.
 func (h *Horizon) warnStall(oldest horizonObservation, pendingFor time.Duration, safe int64) {
-	// Under h.mu and deferred, so that a diagnosis that panics leaves no Horizon that never
-	// warns again (stalled returns nil while this stands).
+	// The clear is deferred so that it happens on every path out of this function, the early
+	// returns of the switch below included, and under h.mu because stalled reads it: a path
+	// that left diagnosing set would have stalled return nil for ever and silence the stall
+	// warning for the rest of the process's life.
 	defer func() {
 		h.mu.Lock()
 		h.diagnosing = false

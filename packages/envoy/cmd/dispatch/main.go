@@ -127,10 +127,11 @@ type bootConfig struct {
 	// the test hooks, sets it.
 	ListenerTakeoverWindow time.Duration
 	// HorizonStallAfter is how long a pending event-horizon observation waits before the process
-	// logs its stall warning, and HorizonWarnEvery how often that warning repeats while the stall
-	// stands, both zero for the horizon's own five and thirty seconds; only
-	// DISPATCH_TEST_HORIZON_STALL_AFTER and DISPATCH_TEST_HORIZON_WARN_EVERY, under the test
-	// hooks, set them, since a test whose wait keys on that warning cannot sit out either.
+	// logs its stall warning, and HorizonWarnEvery how often every event-horizon warning repeats
+	// - that stall warning, the failed-observation warning and the failed-persist warning - both
+	// zero for the horizon's own five and thirty seconds; only DISPATCH_TEST_HORIZON_STALL_AFTER
+	// and DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks, set them, since a test whose
+	// wait keys on the stall warning cannot sit out either.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version

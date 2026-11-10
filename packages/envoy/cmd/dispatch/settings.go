@@ -191,7 +191,7 @@ var settings = []setting{
 	{Name: "DISPATCH_TEST_HORIZON_STALL_AFTER", Default: "`5s`", Required: "no",
 		Description: "How long a test process's pending event-horizon observation waits before the process logs its stall warning, in place of the five seconds a deployment waits; a positive Go duration, for an end-to-end test whose own wait keys on that warning. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HORIZON_WARN_EVERY", Default: "`30s`", Required: "no",
-		Description: "How often a test process repeats that stall warning while the stall stands, in place of the thirty seconds a deployment repeats it at; a positive Go duration, for an end-to-end test whose own wait keys on that warning. Set only with `DISPATCH_TEST_HOOKS=1`."},
+		Description: "How often a test process repeats each of its three event-horizon warnings (the stall warning while the stall stands, the failed-observation warning and the failed-persist warning), in place of the thirty seconds a deployment repeats them at; a positive Go duration, for an end-to-end test whose own wait keys on the stall warning. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_EDIT_NOTICE_QUIET", Default: "`30s`", Required: "no",
 		Description: "How long a document stays quiet after a person's last settled version before its `artifact.human_edited` notice goes, for an end-to-end test process; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_ROSTER_UNCACHED", Required: "no",
