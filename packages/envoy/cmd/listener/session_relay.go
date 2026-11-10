@@ -883,12 +883,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// run. Such a run returns everything it holds; one that ended for a reason of its own
 	// leaves it where it is.
 	defer func() {
-		// The frames the run still has out are ended first: a term's end settles them and hands
-		// back what the settle leaves unanswered, any other end forgets them (endFrames, and
-		// settleStoppedFrames' doc in session_relay_settle.go for the rule). What comes back is
-		// named by one line each and goes to the server here with the rest, so the successor is
-		// delivered it at once rather than after the consumer's ack wait. A frame leaves the run
-		// once and under framesMu (forget, onReply), so no frame is both acked and naked.
+		// dropped is what endFrames left (its doc, and settleStoppedFrames' for a term's end);
+		// a cancelled run returns it below (release).
 		dropped := m.endFrames(ctx, run)
 		if ctx.Err() == nil {
 			pull.Stop()

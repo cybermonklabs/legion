@@ -12,34 +12,22 @@ import (
 )
 
 const (
-	// relaySettleGrace is how long a relay the term's end stopped lets the frames it has not had
-	// done or nak for be answered before it gives up on them. The term's end cancels the relay,
-	// but a frame the session may already have written must not be left unacked for the pod
-	// taking over to publish again: inside this grace the stopped relay goes on hearing the
-	// session's replies and acks each frame the session answers done, which lets the consumer's
-	// ack floor move past it once nothing below it is held. A frame the grace ends without a
-	// done is in doubt (relayFrameInDoubtLine), whether or not the session answered it received:
-	// received says the client decoded the frame, not that its host wrote the message, so only
-	// done says the session took it and no done is coming. Each frame left in doubt goes back to
-	// the server at once, with the rest of what the run held (settleStoppedFrames, whose doc has
-	// that rule).
+	// relaySettleGrace is the settle a stopped relay gives its unanswered frames: how long a
+	// relay the term's end stopped lets the frames it has had no done or nak for be answered
+	// before it gives up on them. What that settle does with them, and what it means for the
+	// pod taking the session over, is settleStoppedFrames' doc, the one statement of the rule.
 	//
-	// The pod taking a released holder's lease over waits relayFormerSettle, this grace and a
-	// margin, before it restarts a session's consumer at its ack floor (sessionRelays.relay),
-	// so the grace always ends before the successor can publish anything. A holder taken over
-	// by force - killed, its node lost, its record expired - settles nothing and is not waited
-	// for.
-	//
-	// 750 ms is that round trip with room for a loaded box. Measured on the test host over 200
+	// 750 ms is one frame's round trip - the session's reply and the relay's ack after it, all
+	// the grace has to cover - with room for a loaded box. Measured on the test host over 200
 	// frames sent one at a time, from the frame reaching the session to the consumer's ack floor
 	// passing it: p50 2.44 ms, p99 11.8 ms, slowest 37.2 ms on a quiet box, and p50 2.58 ms,
 	// p99 8.26 ms, slowest 111 ms with the rest of this package running beside it
-	// (TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace), so the grace is between six and
-	// twenty times the slowest of them. The grace is a cost as well as a cover: a frame nothing answers delays
-	// nothing but its own session, whose later messages the successor sends only after
-	// relayFormerSettle anyway, and it is paid on the shutdown path too, where
-	// sessionRelays.stop waits for it out of what the receive stop left of the shutdown's 10 s
-	// budget, and is cut short with a warning when that budget is already spent.
+	// (TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace, which gates on that p99), so the
+	// grace is many times the round trip it covers. The grace is a cost as well as a cover: a
+	// frame nothing answers delays nothing but its own session, whose later messages the
+	// successor sends only after relayFormerSettle anyway, and it is paid on the shutdown path
+	// too, where sessionRelays.stop waits for it out of what the receive stop left of the
+	// shutdown's 10 s budget, and is cut short with a warning when that budget is already spent.
 	relaySettleGrace = 750 * time.Millisecond
 	// relaySettlePoll is how often a settling relay reads whether the frames it waits for have
 	// been answered.
@@ -69,11 +57,13 @@ func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) []*relayFr
 // (sessionRelays.release): the successor is delivered each of them at once rather than after the
 // consumer's ack wait. A frame answered done inside the grace left the run at that answer
 // (onReply), so it is acked and not among these: no frame is both acked and naked. The pod
-// taking over waits relayFormerSettle, which is this grace and a margin, before it restarts the
-// consumer, so it pulls only once the grace has ended and what the grace returned is waiting
-// for it. The successor then sends again every frame above its ack floor, the one in doubt and
-// any the session answered done above a frame still held, each under its own event id; see
-// cmd/listener/README.md, "When a session can see a message twice".
+// taking over waits relayFormerSettle, which is this grace and a margin, before it restarts
+// the consumer, so it pulls only once the grace has ended and what the grace returned is
+// waiting for it; a holder taken over by force - killed, its node lost, its record expired -
+// settles nothing and is not waited for. The successor then sends again every frame above
+// its ack floor, the one in doubt and any the session answered done above a frame still
+// held, each under its own event id; see cmd/listener/README.md, "When a session can see a
+// message twice".
 func (m *sessionRelays) settleStoppedFrames(run *relayRun) []*relayFrame {
 	deadline := time.Now().Add(relaySettleGrace)
 	for m.outstanding(run) > 0 && time.Now().Before(deadline) {

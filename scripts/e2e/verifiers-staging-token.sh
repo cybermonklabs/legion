@@ -305,8 +305,9 @@ listener_url="http://127.0.0.1:$listener_port"
 # A binary that refuses to boot is a dead pid, not a slow one: say so at once, with its log,
 # instead of spending the whole window on a process that will never answer.
 wait_for_dispatch_healthz "$dispatch_url" "$dispatch_pid" "$work/dispatch.log"
-# The listener answers /healthz 200 with {"status":"starting"} before NATS is up, and /v1 is
-# 503 until then: wait for the healthy status, not for the port.
+# The listener answers /healthz 503 with {"status":"starting"} until it can serve, and /v1 is 503
+# until then: wait for the healthy status, not for the port. `curl -fs` prints nothing for that
+# 503, so each try before then reads an empty status and waits.
 for i in $(seq 1 100); do
   [ "$(curl -fs --max-time 5 "$listener_url/healthz" | jq -r .status)" = healthy ] && break
   kill -0 "$listener_pid" 2>/dev/null || fail "the listener exited during boot" "$work/listener.log"

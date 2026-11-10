@@ -140,7 +140,8 @@ test("a bar Comment on another document while a margin send is out opens its own
 // Leaving a document while a margin send is out takes the composer off screen and keeps it, with
 // the send: a refusal while the reader is away hands the draft back there, and coming back to the
 // document finds the draft, the refusal and a Retry that still sends to the send's own mark.
-test("leaving a document while a margin send is out keeps its draft and refusal for the return", async ({
+// @pr: A write the server refused: leaving the document keeps the margin composer's draft and refusal for the return.
+test("leaving a document while a margin send is out keeps its draft and refusal for the return @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

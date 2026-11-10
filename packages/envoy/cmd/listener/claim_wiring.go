@@ -98,7 +98,9 @@ func sessionEntryFromSubscribe(body subscribeBody, machineID string, delivery se
 	if delivery.relayed() {
 		entry.Delivery = session.DeliveryConsumer
 		entry.Epoch = delivery.epoch
-		entry.ConsumerStart = delivery.consumerStart
+		// The start comes off the answer, as the mode does (sessionDeliveryOutcome.relayed), so
+		// the entry the registration writes and the answer the session reads name one sequence.
+		entry.ConsumerStart = delivery.answer.ConsumerStart
 	}
 	return entry
 }

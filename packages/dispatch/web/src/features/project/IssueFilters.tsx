@@ -2,7 +2,6 @@ import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
-import { AGENT_LIST_REFILLING } from "../../api/client";
 import { projectIssuesQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -13,42 +12,23 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
-import { issueStatuses, statusText } from "./board-model";
+import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 
 /**
- * The one filter strip both issue views share: the disclosure trigger, the removable
- * active-filter chips, and the expanded Status / Labels / Search / Needs you / Unread controls,
- * all URL-backed through `useIssueFilters`. Status and Labels are the shared `MultiSelect`
- * (Status one or many, OR'd), and the strip shows Status only for the List (`showStatus`) - the
- * Board's columns are the statuses - counting and chipping it like every other filter.
+ * The Board's filter strip: the disclosure trigger, the removable active-filter chips, and the
+ * expanded Labels / Search / Needs you / Unread / Unclaimed controls, all URL-backed through
+ * `useIssueFilters`. Labels is the shared `MultiSelect`; the Board has no Status control of its
+ * own, because its columns are the statuses.
  */
-export function IssueFilters({
-  project,
-  showStatus,
-}: {
-  project: string;
-  showStatus: boolean;
-}): ReactNode {
+export function IssueFilters({ project }: { project: string }): ReactNode {
   const filters = useIssueFilters();
-  const { labels, setLabels, setStatuses, statuses } = filters;
-  const shownStatuses = showStatus ? statuses : [];
-  const activeFilterCount = filters.activeFilterCount + shownStatuses.length;
-  const activeFilters = [
-    ...shownStatuses.map((status) => ({
-      // A `?status=` the app does not know stays visible under its own key: the filter still
-      // applies (and matches nothing), so the chip must name what the URL says.
-      label: `Status: ${statusText(status)}`,
-      remove: () => setStatuses(statuses.filter((current) => current !== status)),
-    })),
-    ...filters.activeFilters,
-  ];
+  const { activeFilterCount, activeFilters, labels, setLabels } = filters;
   const noIdentityFiltersExpanded = labels.length > 0;
   // The saved preference is the only owner of the open state: the strip reads it when it mounts
   // and when the signed-in identity resolves, never because the filter count moved. Arriving from
   // another page, tab or project mounts a new strip, so that read covers the filters the route
-  // brings. On a strip that is up the count moves when the reader filters in it, when the view
-  // toggle folds `?status=` in or out (the List counts it, the Board does not), and when Back or
+  // brings. On a strip that is up the count moves when the reader filters in it, and when Back or
   // Forward crosses entries of the Issues tab. A re-read would collapse the strip the moment the
   // last filter goes (clearing the search box), taking the control being typed in with it, or
   // open or close it against the reader's choice on the others, while its trigger and chips
@@ -60,7 +40,7 @@ export function IssueFilters({
     (open) => (open ? "expanded" : "collapsed"),
     { failed: noIdentityFiltersExpanded, pending: noIdentityFiltersExpanded }
   );
-  const [openPicker, setOpenPicker] = useState<"labels" | "status" | undefined>(undefined);
+  const [openPicker, setOpenPicker] = useState<"labels" | undefined>(undefined);
 
   useEffect(() => {
     if (!filtersExpanded) setOpenPicker(undefined);
@@ -101,34 +81,10 @@ export function IssueFilters({
             {label}
           </Chip>
         ))}
-        {filters.unclaimedUnchecked === undefined ? null : (
-          <p
-            className={`text-sm ${textSecondaryOnCanvas}`}
-            data-testid="unclaimed-unchecked"
-            role="status"
-          >
-            Couldn't check which claims have lapsed, so every claim counts as held:{" "}
-            {filters.unclaimedUnchecked === "refilling"
-              ? AGENT_LIST_REFILLING
-              : "Envoy listener unreachable."}
-          </p>
-        )}
+        <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
       </div>
       {filtersExpanded ? (
         <div className="mb-4 flex flex-wrap items-end gap-3" id="project-issue-filters">
-          {showStatus ? (
-            <MultiSelect
-              emptyMessage="No matching status."
-              label="Status"
-              onChange={setStatuses}
-              onOpenChange={(open) => setOpenPicker(open ? "status" : undefined)}
-              open={openPicker === "status"}
-              optionLabel={statusText}
-              options={issueStatuses}
-              searchLabel="Search statuses"
-              selected={statuses}
-            />
-          ) : null}
           <MultiSelect
             emptyMessage="No labels yet."
             label="Labels"
@@ -151,12 +107,7 @@ export function IssueFilters({
               value={filters.search}
             />
           </label>
-          <Chip onClick={() => filters.setNeedsYou(!filters.needsYou)} selected={filters.needsYou}>
-            Needs you
-          </Chip>
-          <Chip onClick={() => filters.setUnread(!filters.unread)} selected={filters.unread}>
-            Unread
-          </Chip>
+          <IssueFlagChips />
           <Chip
             onClick={() => filters.setUnclaimed(!filters.unclaimed)}
             selected={filters.unclaimed}
