@@ -67,10 +67,16 @@ test("the three doors open one list over the same rows, each ranking the kinds i
 
   try {
     const page = await alice.newPage();
+    // Every search the picker makes, whichever of the two paths the client picks for it: a
+    // request carrying a member a released build does not serve goes to the results route
+    // (`everyBuildReadsSearch`), and the picker's always names its door's kinds, so today
+    // every one of them lands there. The row's claim is one search per query, not the path.
     const searched: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
-      if (url.pathname === "/api/v1/search") searched.push(url.searchParams.get("q") ?? "");
+      if (url.pathname === "/api/v1/search" || url.pathname === "/api/v1/search/results") {
+        searched.push(url.searchParams.get("q") ?? "");
+      }
     });
     await page.goto(`/issues/${world.host.key}/conversation`);
     const field = commentField(page);
