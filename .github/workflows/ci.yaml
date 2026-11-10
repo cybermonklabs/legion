@@ -2665,8 +2665,8 @@ jobs:
       # was cut.
       # $GITHUB_OUTPUT rather than $GITHUB_ENV: a step of a job that writes $GITHUB_ENV or
       # $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for the whole job.
-      - id: nowhere-start
-        name: Mark when the eight installs with nowhere to go began
+      - id: mark-base-crane
+        name: Mark when the install with nowhere to go for crane began
         run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - id: base-crane
@@ -2677,6 +2677,10 @@ jobs:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
           CI_TOOLS_NPM_BASE: http://127.0.0.1:1
 
+      - id: mark-base-changie
+        name: Mark when the install with nowhere to go for changie began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - id: base-changie
         continue-on-error: true
         timeout-minutes: 11
@@ -2685,6 +2689,10 @@ jobs:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
           CI_TOOLS_NPM_BASE: http://127.0.0.1:1
 
+      - id: mark-base-jj
+        name: Mark when the install with nowhere to go for jj began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - id: base-jj
         continue-on-error: true
         timeout-minutes: 11
@@ -2692,6 +2700,10 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
           CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-bun
+        name: Mark when the install with nowhere to go for bun began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - id: base-bun
         continue-on-error: true
@@ -2709,6 +2721,10 @@ jobs:
       - name: Take elan away, so the control installs rather than finds one
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
+      - id: mark-base-elan
+        name: Mark when the install with nowhere to go for elan began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - id: base-elan
         continue-on-error: true
         timeout-minutes: 11
@@ -2716,6 +2732,10 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
           CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-uv
+        name: Mark when the install with nowhere to go for uv began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       # uv's second source is PyPI, which .github/scripts/ci-tools.sh reads through
       # CI_TOOLS_URL_BASE and not through either seam above, so that is the one this control
@@ -2726,6 +2746,10 @@ jobs:
         uses: ./base/.github/actions/install-uv
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
+
+      - id: mark-nowhere-pulumi-docker
+        name: Mark when the install with nowhere to go for the docker provider plugin began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       # The docker provider plugin has no action at the merge base at all, so its control is the
       # head's own action with its second source on a dead port: its primary meets this fault
@@ -2740,6 +2764,10 @@ jobs:
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
+
+      - id: mark-base-pulumi
+        name: Mark when the install with nowhere to go for the Pulumi CLI began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       # The Pulumi CLI is the row whose primary this job does not fault: get.pulumi.com is where
       # the docker plugin row's second source is, and faulting it would take that source down
@@ -2776,7 +2804,14 @@ jobs:
           UV: ${{ steps.base-uv.outcome }}
           PULUMI_DOCKER: ${{ steps.nowhere-pulumi-docker.outcome }}
           PULUMI_CLI: ${{ steps.base-pulumi.outcome }}
-          NOWHERE_START: ${{ steps.nowhere-start.outputs.at }}
+          CRANE_AT: ${{ steps.mark-base-crane.outputs.at }}
+          CHANGIE_AT: ${{ steps.mark-base-changie.outputs.at }}
+          JJ_AT: ${{ steps.mark-base-jj.outputs.at }}
+          BUN_AT: ${{ steps.mark-base-bun.outputs.at }}
+          ELAN_AT: ${{ steps.mark-base-elan.outputs.at }}
+          UV_AT: ${{ steps.mark-base-uv.outputs.at }}
+          PULUMI_DOCKER_AT: ${{ steps.mark-nowhere-pulumi-docker.outputs.at }}
+          PULUMI_CLI_AT: ${{ steps.mark-base-pulumi.outputs.at }}
         run: |
           set -euo pipefail
           echo "a merge base from before this change reads none of the CI_TOOLS_* seams, so each of these installs has the one source it always had: the release asset this fault holds for crane, changie, jj, bun, elan and uv, and get.pulumi.com, which this job does not fault, behind the dead proxy the pulumi step carries for that reason"
@@ -2790,16 +2825,25 @@ jobs:
             echo "::error::the install with nowhere to go for$wrong served bytes with its primary behind the fault or behind a dead proxy and its second source pointed at a dead port, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the passes below would then say nothing about the second source" >&2
             exit 1
           fi
-          # The eight together, measured over the 56 green runs of this job's current layout
-          # between 2026-11-09T19:38Z and 2026-11-10T10:51Z: their per-step maxima add to
-          # 1121 s, and end to end, which is what this clock reads, the greatest was 1106 s and
-          # the median 975 s. One step held to its 660-second bound costs at least
-          # 1121 - 255 + 660 = 1526 s, the 255 being the greatest the docker plugin reached.
-          # 1400 s sits 278 s above the greatest sum and 126 s below the smallest a hang gives.
-          elapsed=$(( $(date +%s) - NOWHERE_START ))
-          echo "  the eight took ${elapsed}s together, against 1106 s the greatest ever measured and 1400 s the bound of this check"
-          if [ "$elapsed" -gt 1400 ]; then
-            echo "::error::the eight installs with nowhere to go took ${elapsed}s, past the 1400 s this check allows, so at least one of them did not fail for the reason this control names: a step the runner ends at its own timeout-minutes leaves outcome=failure behind it, which the test above accepts, and the wall time is the only thing that tells a hang from a refusal; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to 11 minutes, and its log for 'The action has timed out.'" >&2
+          # Each install's own window: from its own mark to the mark of the install after it,
+          # and for the last of them to this step's own time. No install of this job may take
+          # 600 seconds. A step the runner ends at its bound takes about 660 to 672 s, and the
+          # longest single install measured over 2422 executions between 2026-11-09T19:38Z and
+          # 2026-11-10T10:51Z is 326 s, so 600 s leaves room on either side and reads no retry
+          # ladder's length, which a clock over the group did not. A window also names the
+          # install that hung, which a clock over the group cannot.
+          previous=""
+          slow=""
+          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "this check:$(date +%s)"; do
+            if [ -n "$previous" ]; then
+              seconds=$(( ${pair#*:} - ${previous#*:} ))
+              echo "  the install with nowhere to go for ${previous%%:*} took ${seconds}s"
+              [ "$seconds" -lt 600 ] || slow="$slow ${previous%%:*}"
+            fi
+            previous=$pair
+          done
+          if [ -n "$slow" ]; then
+            echo "::error::the install with nowhere to go for$slow took 600 seconds or more, which no install of this job does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
             exit 1
           fi
 

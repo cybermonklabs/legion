@@ -119,7 +119,8 @@
 #       Writes the control file the origin reads, with those rows or with none, and prints what
 #       it wrote.
 #       It also marks where both logs stand, so the `report` after it prints the lines of its own
-#       case and of no other.
+#       case and of no other, and the second it ran in, so that `report` reads how long the
+#       install between the two took.
 #       Every case calls it, the cases that corrupt nothing included: the control file is one
 #       file for the whole job, and a case that did not empty it would read the case before it.
 #
@@ -164,9 +165,11 @@
 #       stopping at the first install that refuses.
 #       Every case of this job is a refusal, so the outcome it holds the step to is `failure`;
 #       the row the case is about is given rather than worked out of the case's name.
-#       It fails when the step did not fail, when `--expect-source` names a source this case's
-#       reading does not, and when `--expect-untried` names a source the origin served for this
-#       case's row after all.
+#       It fails when the step did not fail, when the install took INSTALL_BOUND seconds or more
+#       — the reading that tells a step the runner ended at its `timeout-minutes` from a step
+#       that refused the payload, since both leave `outcome=failure` behind them — when
+#       `--expect-source` names a source this case's reading does not, and when
+#       `--expect-untried` names a source the origin served for this case's row after all.
 #
 # HOW `--expect-source` IS READ.
 # A composite action writes its refusal to the job's log, and no later step can read that log, so
@@ -230,6 +233,16 @@ RESERVED_SUFFIX=".invalid"
 # Both answers are the proxy's own and immediate, so this is spent only where nothing answers at
 # all, which is the reading the probe refuses the job for.
 PROBE_BOUND=15
+
+# The seconds no install of a case may reach, read by `report` over the mark `corrupt` wrote.
+# Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
+# step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
+# `report` holds a case to, so a hung install would otherwise pass as a refusal.
+# A step held to its bound takes about 660 to 672 s, and the longest single install measured
+# over 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z is 326 s (`install-jj`
+# on slow runs), so this leaves 274 s over the slowest healthy install and at least 60 s under
+# the fastest a held step can be, and it reads no ladder's length.
+INSTALL_BOUND=600
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . "$root/.github/scripts/ci-tools.sh"
@@ -1116,10 +1129,12 @@ corrupt() {
   done
   printf '%s\n' "$*" > "$control"
   # Where both logs stand now, so the `report` of this case prints its own lines and no earlier
-  # case's. Every case calls this verb, so every case has a mark of its own.
+  # case's, and when this case began, so that `report` reads how long its install took.
+  # Every case calls this verb, so every case has a mark of its own.
   {
     printf 'origin=%s\n' "$([ -f "$origin_log" ] && wc -l < "$origin_log" || echo 0)"
     printf 'fault=%s\n' "$([ -f "$fault_log" ] && wc -l < "$fault_log" || echo 0)"
+    printf 'started=%s\n' "$(date +%s)"
   } > "$mark"
   if [ "$#" -eq 0 ]; then
     note "the origin now serves every row whole"
@@ -1284,6 +1299,20 @@ report() {
   # Every case of this job is a refusal, so this is the one outcome a case is held to.
   local wanted=failure problems=0
 
+  # How long this case's install took, read from the mark its own `corrupt` wrote immediately
+  # before it. The time is read here rather than given as an argument, so that the reading can
+  # never drift away from the step it measures.
+  # A mark whose started= line is missing or unreadable stops the rig: a case read with no clock
+  # is exactly the case this clock exists to catch, so it may not pass quietly.
+  local started elapsed
+  started=$(sed -n 's/^started=//p' "$mark")
+  case $started in
+    '' | *[!0-9]*)
+      die "report: the mark of case '$name' holds '${started:-no started= line}', so this rig cannot read how long that install took, and that reading is the one thing that tells an install the runner ended at its timeout-minutes from an install that refused the payload"
+      ;;
+  esac
+  elapsed=$(($(date +%s) - started))
+
   local served asked
   served=$(case_lines "$origin_log" origin)
   asked=$(case_lines "$fault_log" fault)
@@ -1300,9 +1329,14 @@ report() {
   else
     echo "    nothing: this case asked no faulted host"
   fi
+  echo "  the install of this case took ${elapsed}s, against the ${INSTALL_BOUND}s no install of this job may reach"
 
   if [ "$outcome" != "$wanted" ]; then
     echo "::error::ci-tools-proof: case $name: the install step's outcome is $outcome, and this case is the proof that the install reaches $wanted: read the step's own log above for what it did instead." >&2
+    problems=$((problems + 1))
+  fi
+  if [ "$elapsed" -ge "$INSTALL_BOUND" ]; then
+    echo "::error::ci-tools-proof: case $name: the install took ${elapsed}s, which reaches the ${INSTALL_BOUND}s no install of this job may, so the runner ended that step at its own timeout-minutes rather than the step refusing the payload: a step the runner ends leaves outcome=failure behind it, which the reading above accepts, so the wall time is the only reading that tells the two apart; read this job's step record (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and that step's log for 'The action has timed out.'" >&2
     problems=$((problems + 1))
   fi
   if [ -n "$expect_source" ]; then
