@@ -278,20 +278,34 @@ func eventsStartVerdictOf(state eventsStartState) eventsStartVerdict {
 // literal, so the warning's query= and an application_name the client set with a space in it
 // (pgAdmin sets "pgAdmin 4 - <connection>") both read as they were written; an unquoted value is
 // the token from the "=" to the next space or the line's end.
+//
+// The quoted read is keyed on an opening double quote, the one quote slog writes, and not on
+// strconv.QuotedPrefix's own scope, "a single-quoted, double-quoted, or backquoted Go string
+// literal". A backquote is in slog's safe set, so a value a third party chose - an
+// application_name, or the holder's query read out of pg_stat_activity - can open with one and
+// is written unquoted; read as the raw string literal it opens, such a value runs across spaces
+// and whole fields to the next backquote, which that same query can carry, and the field after
+// it is then read out of the query's text: a foreign hold read as this process's own. A value
+// that opens with a double quote and parses as no literal falls back to the unquoted read for
+// the same reason, so the walk takes exactly what slog writes and no shape more.
 func stallWarningField(warning, key string) (string, bool) {
 	for rest := warning; rest != ""; {
 		name, after, found := strings.Cut(rest, "=")
 		if !found {
 			return "", false
 		}
+		// The unquoted read, which is also where a value no quoted read takes whole ends
+		// up: the token from the "=" to the next space or the line's end.
 		var value string
-		if literal, err := strconv.QuotedPrefix(after); err == nil {
-			// QuotedPrefix answers a literal it has already parsed, so Unquote cannot fail
-			// on it.
-			unquoted, _ := strconv.Unquote(literal)
-			value, rest = unquoted, strings.TrimPrefix(after[len(literal):], " ")
-		} else {
-			value, rest, _ = strings.Cut(after, " ")
+		value, rest, _ = strings.Cut(after, " ")
+		if strings.HasPrefix(after, `"`) {
+			if literal, err := strconv.QuotedPrefix(after); err == nil {
+				// A literal QuotedPrefix has already parsed cannot fail to unquote,
+				// and a value that is no literal keeps the unquoted read above.
+				if unquoted, err := strconv.Unquote(literal); err == nil {
+					value, rest = unquoted, strings.TrimPrefix(after[len(literal):], " ")
+				}
+			}
 		}
 		if name == key {
 			return value, true
@@ -402,8 +416,16 @@ func stallWarningLine(database string, pendingFor time.Duration) string {
 // a row that wants the quoted application_name of a client whose name holds a space passes it
 // with its quotes.
 func stallWarningHolder(application, database string) string {
+	return stallWarningHolderOf(application, database, `"begin; select 1"`)
+}
+
+// stallWarningHolderOf writes those same fields with the holder's query rendered as slog would
+// write what pg_stat_activity gave it, quotes and all. The query is the client's own text, like
+// the application_name beside it, so a row that needs a query of a shape no query Dispatch sends
+// has - one carrying a backquote - writes it here.
+func stallWarningHolderOf(application, database, query string) string {
 	return ` holder=backend pid=1188 xact_start=2026-11-10T02:13:59.998Z state=active` +
-		` application_name=` + application + ` database=` + database + ` query="begin; select 1"`
+		` application_name=` + application + ` database=` + database + ` query=` + query
 }
 
 // String names a verdict, so a failed row reads as the decision the wait made rather than as the
@@ -625,9 +647,18 @@ func TestStallWarningNamesDatabaseMatchesTheWholeDatabaseField(t *testing.T) {
 // client by. That the client sets it is the second trap: the name it chooses can hold the text of
 // another field, so the read must find the line's own fields rather than text the line carries,
 // and it must tell a field from one whose name ends in the key asked for.
+// The third is which values count as quoted at all: slog quotes with a double quote alone, so a
+// read that took every shape a Go string literal has would read a value a client chose, opening
+// with a backquote, as a raw literal running across the fields after it.
 func TestStallWarningNamesDatabaseRestsOnAFieldReadThatTakesAQuotedValueWhole(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
 	const foreignDatabase = "dispatch_test_cd"
+	// The client of the backquote row: an application_name opening with a backquote, which
+	// slog writes unquoted because a backquote is in its safe set, and the query that client
+	// was running, which carries the closing backquote and, after it, the text
+	// database=<this process's own database>. slog quotes the query, since it holds spaces.
+	const backquotedName = "`backfill"
+	const queryClosingTheBackquote = `"set application_name = '` + "`" + ` database=` + ownDatabase + ` backfill'"`
 	for _, tc := range []struct {
 		name        string // what the row proves
 		warning     string // the whole stall-warning line the row reads
@@ -663,6 +694,15 @@ func TestStallWarningNamesDatabaseRestsOnAFieldReadThatTakesAQuotedValueWhole(t 
 			found:       false,
 			application: "pgAdmin 4 - dispatch",
 			namesOwn:    true,
+		},
+		{
+			name:        "a value a third party chose can open a Go raw string literal: an application_name opening with a backquote is read as the token slog wrote, because a read that took every literal strconv.QuotedPrefix takes ran that value on to the closing backquote in the holder's query and read the line's database out of the query's text, which had a foreign hold read as the process's own",
+			warning:     stallWarningHead(eventsStartOwnHoldBound) + stallWarningHolderOf(backquotedName, foreignDatabase, queryClosingTheBackquote),
+			key:         "database",
+			value:       foreignDatabase,
+			found:       true,
+			application: backquotedName,
+			namesOwn:    false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
