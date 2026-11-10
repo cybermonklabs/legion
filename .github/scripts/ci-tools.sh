@@ -527,10 +527,12 @@ ci_tools__tempfile() {
 # that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
 # 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
 # which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
-# against a port that refuses at once took 1m3.064s and exited 7. In job 129743677408 of
-# .github/workflows/ci.yaml, each negative-control step that drives one ladder measured about
-# 64 s, and each step that drives two ladders measured about 126 s, so 126 s is two ladders and
-# not one.
+# against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
+# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: the eight
+# negative controls, which each drive two ladders because their primary meets the fault and
+# their second source is a dead port, measured 104 to 127 s, while the head's own eight
+# installs and the eight second-source cases, which each drive one, measured about 64 s. So
+# 126 s is two ladders and not one. No negative control of that job drives a single ladder.
 # The hang is the other shape. It costs 124 s with the bound, where the ladder without the
 # bound costs about ten minutes. So a row's primary costs about one minute before the second
 # source is read against a source that refuses at once, and about two minutes against a host

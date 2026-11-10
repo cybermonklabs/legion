@@ -2376,9 +2376,9 @@ jobs:
     # The budget, added up from the slowest run this job can have, the way the tool-fallback-arm
     # job below adds up its own: the job's set-up, the two checkouts and the runner's download of
     # the actions (1), the two steps that read the package and the manifest, and `stage`, which
-    # moves about 165 MB over the real sources while the network is whole and so keeps the pinned
-    # ladder (2), the jj-primary case, which runs before the fault (1), the fault and its probe,
-    # whose two requests are bounded at 15 s each (1), the one case that keeps the pinned ladder,
+    # fetches about 303 MB over the real sources while the network is whole and so keeps the
+    # pinned ladder (2), the jj-primary case, which runs before the fault (1), the fault and its
+    # probe, whose two requests are bounded at 15 s each (1), the one case that keeps the ladder,
     # the head's own `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds
     # at a minute in which a new attempt may start plus one last attempt of the row's `max_time`
     # of 60 s (2), the other steps whose primary the fault or a dead port holds, each now about
@@ -2558,7 +2558,7 @@ jobs:
       # which is exactly what the base-bun control must not find.
       # It runs here, immediately before the fault comes up, and the window it may run in is
       # the one between `stage` and that step. It cannot run above `stage`, because `stage`
-      # fetches about 165 MB from the real sources while the network is whole and must keep
+      # fetches about 303 MB from the real sources while the network is whole and must keep
       # the pinned ladder for them, and because $GITHUB_PATH reaches the steps after the step
       # that writes it and not that step itself.
       # It cannot stay straight after `stage` either, which is where it ran before: the
