@@ -209,6 +209,27 @@ func (l *Ledger) publishEvents() {
 	}
 }
 
+// ranOutTheCommitBound names err a database too busy to serve the call (store.ErrPoolBusy) when
+// ctx - the bound store.CommitContext puts on the work a commit does - ran out while that work
+// was still before the COMMIT itself. Nothing of the transaction committed: these statements
+// run inside it and it is rolled back, so the request is refused 503 DATABASE_BUSY and the
+// client may send the whole write again (admission.WriteUnserved). Unnamed, the bare
+// context deadline pgx answers such a statement with is a failure no rule knows, which answers
+// the client 500 INTERNAL (INFRA-592: a ten-times load with the database proxy frozen answered
+// POST /api/v1/artifacts/{id}/edits that way, on the announcement). A COMMIT the server did
+// send and the database never answered is store.ErrCommitTimeout, whose outcome nobody knows,
+// and this never covers it: it names only the statements run before the COMMIT is reached.
+//
+// A failure of any other kind, and one met while the bound still stood - a stall of the socket,
+// which store.DatabaseStalled names and which rolls the transaction back too - is returned as
+// it is.
+func ranOutTheCommitBound(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%w: the commit's bound passed before the COMMIT was sent, and the transaction rolled back: %w", store.ErrPoolBusy, err)
+}
+
 // commit is Commit up to the publish. Another transaction can run between the two, and tests
 // call them apart to hold that window open.
 //
@@ -217,7 +238,8 @@ func (l *Ledger) publishEvents() {
 // to the commit itself. A request whose client goes away or whose deadline passes mid-commit
 // would otherwise cut the commit short, leave its outcome unknown and fail every room the
 // transaction wrote, a room's peers losing their connection over a write that may well have
-// committed.
+// committed. A statement of that work the bound runs out before the COMMIT is sent is a
+// refusal the client may repeat, not an outcome nobody knows (ranOutTheCommitBound).
 func (l *Ledger) commit(ctx context.Context) error {
 	ctx, cancel := store.CommitContext(ctx)
 	defer cancel()
@@ -226,6 +248,7 @@ func (l *Ledger) commit(ctx context.Context) error {
 		err = l.announceAppends(ctx)
 	}
 	if err != nil {
+		err = ranOutTheCommitBound(ctx, err)
 		_ = l.tx.Rollback(context.Background())
 		l.endRebuilds()
 		l.fail(err)

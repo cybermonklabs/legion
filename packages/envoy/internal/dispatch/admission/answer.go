@@ -26,18 +26,21 @@ const (
 	// acquire bound for a connection, or the database stopped answering on the connection it
 	// held. Answered 503. Nothing of the call that failed committed - that is what tells it from
 	// CodeCommitOutcomeUnknown - though a write may have committed an earlier statement of its
-	// own before the bound that failed it, its idempotency key's claim among them.
+	// own before the bound that failed it, its idempotency key's claim among them. A read whose
+	// call the database never answered is this too, the COMMIT of its read-only transaction
+	// included: a read commits nothing, so nothing of it can be in doubt.
 	CodeDatabaseBusy = "DATABASE_BUSY"
 	// CodeRequestTimeout is a read that ran past its deadline (WithDeadline,
 	// WithDeadlineUntilAnswer), answered 503. Only reads have a deadline: a write runs to
 	// completion once admitted.
 	CodeRequestTimeout = "REQUEST_TIMEOUT"
-	// CodeCommitOutcomeUnknown is a call the server sent and never got an answer to, which may
-	// have committed: a commit (store.ErrCommitTimeout), or a statement a write ran outside any
-	// transaction, which commits itself (store.ErrStatementOutcomeUnknown). Answered 500 with no
-	// Retry-After: a 503 with one would tell the client to send a write the server may already
-	// have applied, so the client reads what the write would have written before sending it
-	// again, or sends it again under its Idempotency-Key.
+	// CodeCommitOutcomeUnknown is a call of a request that wrote which the server sent and never
+	// got an answer to, so it may have committed: the commit of its transaction
+	// (store.ErrCommitTimeout), or a statement it ran outside any transaction, which commits
+	// itself (store.ErrStatementOutcomeUnknown). Answered 500 with no Retry-After: a 503 with
+	// one would tell the client to send a write the server may already have applied, so the
+	// client reads what the write would have written before sending it again, or sends it again
+	// under its Idempotency-Key.
 	CodeCommitOutcomeUnknown = "COMMIT_OUTCOME_UNKNOWN"
 )
 
@@ -108,8 +111,8 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //
 // Its order is the order the causes are told apart:
 //
-//   - a call the server sent and never got an answer to, which may have committed: a commit
-//     (store.ErrCommitTimeout), or - where wrote is true - a statement a pool ran outside any
+//   - a call the server sent and never got an answer to, which may have committed, where wrote
+//     is true: a commit (store.ErrCommitTimeout), or a statement a pool ran outside any
 //     transaction, which commits itself (store.ErrStatementOutcomeUnknown): 500
 //     COMMIT_OUTCOME_UNKNOWN with no Retry-After (writeOutcomeUnknown). It is told first
 //     because its outcome, unlike every other failure's, is unknown, so the operator's log
@@ -136,7 +139,8 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //     read off the error here as well as inside the store, because a statement inside a
 //     transaction runs on pgx directly, never passes through a pool's own error mapping, and
 //     rolls back with the transaction it was in;
-//   - a statement a pool ran outside any transaction, met by a request that wrote nothing: 503
+//   - a call the database never answered, met by a request that wrote nothing: the COMMIT of
+//     its read-only transaction, or a statement a pool ran outside any transaction. 503
 //     DATABASE_BUSY, since what a read runs commits nothing however the database answered it,
 //     and a client that sends the read again only reads.
 //
@@ -155,7 +159,7 @@ func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error, wrote 
 	if unserved(w, ctx, err) {
 		return true
 	}
-	if store.IsStatementOutcomeUnknown(err) {
+	if store.IsCommitTimeout(err) || store.IsStatementOutcomeUnknown(err) {
 		writeDatabaseBusy(w, err)
 		return true
 	}
@@ -163,14 +167,18 @@ func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error, wrote 
 }
 
 // unknownOutcome names the call err is of where the database never answered it and it may have
-// committed - "commit" or "statement" - and is empty for every other error. A commit is one
-// whatever the request is; a statement a pool ran outside any transaction is one only where the
-// request may have written, since a read's statements commit nothing (WriteUnserved's wrote).
+// committed - "commit" or "statement" - and is empty for every other error. A request that
+// wrote nothing has none: its transaction is read-only, so a COMMIT of it the database never
+// answered committed nothing whatever became of it, and a statement it ran outside a
+// transaction commits nothing either (WriteUnserved's wrote). Such a request is refused as busy
+// instead, with no ERROR line, since there is no unknown outcome to record.
 func unknownOutcome(err error, wrote bool) string {
 	switch {
+	case !wrote:
+		return ""
 	case store.IsCommitTimeout(err):
 		return "commit"
-	case wrote && store.IsStatementOutcomeUnknown(err):
+	case store.IsStatementOutcomeUnknown(err):
 		return "statement"
 	}
 	return ""

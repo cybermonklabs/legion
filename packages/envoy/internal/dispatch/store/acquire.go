@@ -198,11 +198,18 @@ func stalled(ctx context.Context, err error) bool {
 // DatabaseStalled reports whether err is a stall (stalled) after which nothing the caller asked
 // for can have committed, so its request may be refused as busy and sent again. Every stall a
 // caller meets outside this package's pools is one: a statement inside a transaction, which
-// rolls back. A statement one of these pools ran outside a transaction is not, unless pgconn
-// marks it safe to retry; poolBusy names that one ErrStatementOutcomeUnknown, and this reports
-// false for it so its caller answers the unknown outcome rather than a retry.
+// rolls back. Two are not, and this reports false for both, so the caller answering a client
+// tells it the outcome is unknown rather than offering it a retry that could write twice:
+//
+//   - a statement one of these pools ran outside a transaction, which commits itself, unless
+//     pgconn marks it safe to retry; poolBusy names that one ErrStatementOutcomeUnknown;
+//   - a COMMIT this server sent that the database never answered, which may have committed the
+//     transaction; commitTimedOut names that one ErrCommitTimeout, whatever shape the stall
+//     took - the commit's own bound passing, or the socket timing out under it. commitTimedOut
+//     reads this predicate to tell the second shape, on the error before it is named, so what
+//     is excluded here is the named error alone.
 func DatabaseStalled(ctx context.Context, err error) bool {
-	return stalled(ctx, err) && !errors.Is(err, ErrStatementOutcomeUnknown)
+	return stalled(ctx, err) && !errors.Is(err, ErrStatementOutcomeUnknown) && !errors.Is(err, ErrCommitTimeout)
 }
 
 // Unserved reports whether err is any call a bound of this server's ended before the database

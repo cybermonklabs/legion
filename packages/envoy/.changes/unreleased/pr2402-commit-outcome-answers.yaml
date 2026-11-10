@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  An answer now says only what the server knows about the commit a request's database call was
+  part of. Three things were wrong. A write whose `COMMIT` the database never answered was
+  refused `503 DATABASE_BUSY` with `Retry-After`, telling the client nothing had committed and
+  to send the write again, although the `COMMIT` had reached the database and may have been
+  applied: an unanswered commit is excluded from the stall a request may repeat
+  (`store.DatabaseStalled`), so it is the `500 COMMIT_OUTCOME_UNKNOWN` with no `Retry-After`
+  that a commit cut off at its own bound already was. A read whose read-only transaction's
+  `COMMIT` went unanswered was answered the same unknown outcome, with an ERROR line, although
+  such a transaction writes nothing: the store now names a read-only transaction's unanswered
+  `COMMIT` a busy database, and a request that wrote nothing is refused `503 DATABASE_BUSY`
+  whichever call the database left unanswered. And a document write whose last statements inside
+  the transaction - the settlement credit and the announcement, which run on the commit's own
+  bound before the `COMMIT` - ran that bound out was answered `500 INTERNAL` with an
+  `API handler failed` line, although the `COMMIT` was never sent and the transaction rolled
+  back; it is now refused `503 DATABASE_BUSY` with `Retry-After`, which the client may repeat.

@@ -64,9 +64,11 @@ func TestWriteUnservedTellsTheCausesApartInOrder(t *testing.T) {
 		{"the client went away", cancelledRequest(), context.Canceled, true, 0, "", true},
 		{"the client went away while the pool was busy", cancelledRequest(), busy, true, 0, "", true},
 		{"the pool was busy", context.Background(), busy, true, http.StatusServiceUnavailable, CodeDatabaseBusy, true},
-		// A commit the database never answered may have committed whatever the request is, so
-		// it is never offered the retry a busy pool is.
-		{"a commit ran out its bound", context.Background(), commitCutOff, true, http.StatusInternalServerError, CodeCommitOutcomeUnknown, true},
+		// A commit the database never answered may have committed where the request wrote;
+		// where it wrote nothing its transaction was read-only, so the commit committed
+		// nothing and the request is refused as busy, with no unknown outcome to record.
+		{"a write's commit ran out its bound", context.Background(), commitCutOff, true, http.StatusInternalServerError, CodeCommitOutcomeUnknown, true},
+		{"a read's commit ran out its bound", context.Background(), commitCutOff, false, http.StatusServiceUnavailable, CodeDatabaseBusy, true},
 		// The statement a pool ran outside a transaction turns on the one fact its caller
 		// holds: a write's may have written, a read's commits nothing.
 		{"a write's statement outside a transaction", context.Background(), statementUnknown, true, http.StatusInternalServerError, CodeCommitOutcomeUnknown, true},
