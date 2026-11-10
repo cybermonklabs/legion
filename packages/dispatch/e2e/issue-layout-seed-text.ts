@@ -11,7 +11,7 @@
  * would draw a shortened third sentence and fail c-three-things.
  */
 export const SUMMARY_SENTENCES = [
-  "The issue page draws one ordered body in place of eight tabs.",
+  "The issue page draws one ordered body in place of nine tabs.",
   "Every property that carries a value is visible at every width.",
   "The reasoning behind each requirement is reachable without leaving the page, because every " +
     "node the issue holds — its documents, its decisions, its checks, its plan tasks and the " +

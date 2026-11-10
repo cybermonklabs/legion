@@ -176,7 +176,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
       path: testInfo.outputPath(`issue-tab-conversation-${testInfo.project.name}.png`),
     });
 
-    // Every address the eight tabs answered still resolves (dispatch://INFRA-1196 R19), so a
+    // Every address the nine tabs answered still resolves (dispatch://INFRA-1196 R19), so a
     // chord opens its address; four of them are a preset's own and the rest open the Tree
     // preset, whose content the address names.
     for (const [key, address] of [
@@ -743,7 +743,7 @@ test.describe("issue page", () => {
 
 /**
  * The tree's own keyboard, which is c-keyboard of dispatch://INFRA-1196: every row of the key
- * table in the spec's Design section, the eight chords the page bound before the redesign, the
+ * table in the spec's Design section, the nine chords the page bound before the redesign, the
  * one Tab stop, the arrows, the focused row clear of the sticky header, `t f`, `$mod+Alt+m`, and
  * the WAI-ARIA tree pattern. Each row reads the page through `e2e/issue-page.ts` and spells no
  * selector of its own. The rows above about the project List and the Board are untouched: they
@@ -1003,7 +1003,7 @@ test("every chord the page bound before the redesign brings a target on screen w
 }) => {
   const { context, page } = await openTree(browser);
   try {
-    // The preset chords of the key table, which hold five of the eight the page bound before this
+    // The preset chords of the key table, which hold five of the nine the page bound before this
     // change: `t d`, `t k`, `t s` and `t p`, with `t t` the table's own addition.
     const chords = [
       { preset: PRESET_NAMES.tree, second: "t" },

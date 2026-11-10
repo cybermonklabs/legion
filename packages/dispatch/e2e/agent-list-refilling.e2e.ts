@@ -183,7 +183,7 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await openIssueConversation(page, fixture.issueKey);
   // The issue's ask card shows its own recipients notice in the Conversation and the margin, so
   // the subscribers' own notice is read where the subscribers live: the page's panel, under its
-  // People section (dispatch://INFRA-1196 R12), which is where the eight tabs' header used to
+  // People section (dispatch://INFRA-1196 R12), which is where the nine tabs' header used to
   // carry them.
   const people = page.locator('[data-margin-section="people"]');
   await expect(refillingNotice(people)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });

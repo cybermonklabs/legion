@@ -287,7 +287,7 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
 // SLOW(>=2s): a real upload the Activity list links, and the keyboard tour of the five presets
 // with each tab's box measured, at 1440 px and at 390 px.
 //
-// The eight tabs are gone (dispatch://INFRA-1196 R3): the row is five presets, and how many
+// The nine tabs are gone (dispatch://INFRA-1196 R3): the row is five presets, and how many
 // artifacts an issue carries is the node menu's, not a tab's badge, so the `Artifacts (N)`
 // assertions this test carried are retired with it - what they proved, that the live feed
 // refreshes the page's own counts without a reload, is proved here on the Activity list.
@@ -345,7 +345,7 @@ test("an uploaded document is linked from the Activity list and the presets fit 
   };
   // Each tab is a touch target of its own at 1440 px too, and no taller than the row it shares:
   // the floor is the 44 px a finger needs and the ceiling is what keeps five of them one row
-  // (`web/src/styles.css`). The eight-tab page was held to the same pair of numbers, and this
+  // (`web/src/styles.css`). The nine-tab page was held to the same pair of numbers, and this
   // is the reading that carries them over.
   const isATouchTarget = async (tab: Locator, label: string) => {
     const height = (await tab.boundingBox())?.height ?? 0;

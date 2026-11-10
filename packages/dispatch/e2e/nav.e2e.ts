@@ -112,7 +112,7 @@ test("issue tabs are URL-driven and keyboard-navigable, and titles follow direct
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     await expect(page).toHaveTitle(`${issue.key} · ${issue.title} · Dispatch`);
-    // The eight tabs are five presets now (dispatch://INFRA-1196 R3), each with an address of
+    // The nine tabs are five presets now (dispatch://INFRA-1196 R3), each with an address of
     // its own, and the issue's own address is the Tree preset's. The children are a section of
     // every preset rather than a tab, and `/children` still resolves.
     await expect(page.getByRole("tab", { name: "Tree" })).toHaveAttribute("aria-selected", "true");

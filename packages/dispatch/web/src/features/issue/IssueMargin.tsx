@@ -184,7 +184,7 @@ export function IssueMarginPanel({
                   retrying={subscribers.unsubscribe.isPending}
                 />
               ) : null}
-              {/* Everyone who worked the issue, running or not, which the eight-tab page gave a tab
+              {/* Everyone who worked the issue, running or not, which the nine-tab page gave a tab
               of its own. It is read only once a reader opens it, so the panel costs the page no
               request on an address that does not name it (R20). */}
               <button

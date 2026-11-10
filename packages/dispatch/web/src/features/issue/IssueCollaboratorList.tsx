@@ -107,7 +107,7 @@ function Worked({
  * click from the conversation it had; a person is their login as plain text, as everywhere.
  *
  * It is drawn in the People section of the issue page's one right-hand panel, behind that
- * section's own disclosure (dispatch://INFRA-1196 R12, `IssueMargin.tsx`), where the eight-tab
+ * section's own disclosure (dispatch://INFRA-1196 R12, `IssueMargin.tsx`), where the nine-tab
  * page gave it a tab of its own.
  */
 export function IssueCollaboratorList({ issueKey }: { issueKey: string }): ReactNode {

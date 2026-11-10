@@ -256,7 +256,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-children",
     path: (seed) => `/issues/${seed.issue}/children`,
     pattern: "/issues/:key/*",
-    // The child's own row, not the section: `#issue-children-panel` went with the eight tab
+    // The child's own row, not the section: `#issue-children-panel` went with the nine tab
     // panels, and the children are a section of the page the tree sits under
     // (`web/src/features/issue/IssueChildren.tsx`), drawn at every address and open from
     // Tailwind's `md` for a reader who has never shut it (`useChildrenSection.ts`) - so the
@@ -343,7 +343,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // key in one run and the title in the other; this waits for the document and that answer
     // together.
     //
-    // `verification-tab` went with the eight tab panels. This address opens the Checks preset
+    // `verification-tab` went with the nine tab panels. This address opens the Checks preset
     // and keeps the Verification document beside the tree, in the preset's own panel
     // `#issue-verification-panel` (`RoleDocumentPanel.tsx`, whose Checks half gives the
     // document no frame because the checks themselves are rows of the tree), so the panel's

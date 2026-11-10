@@ -113,7 +113,7 @@ test("Conversation owns the route, lists one card per message newest first, and 
     await expect(subscribedAgents.getByText("Planner (e2e)", { exact: true })).toBeVisible();
     await expect(subscribedAgents.getByText("ghost-session-0000", { exact: true })).toHaveCount(0);
 
-    // The eight tabs are five presets (dispatch://INFRA-1196 R3), so the ordered label list
+    // The nine tabs are five presets (dispatch://INFRA-1196 R3), so the ordered label list
     // this test carried is the presets' own, and `/conversation` is the panel's `words` state
     // rather than a tab of its own.
     await expect(

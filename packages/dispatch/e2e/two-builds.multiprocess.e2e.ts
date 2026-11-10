@@ -413,7 +413,7 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     {
       route: "/issues/:key/*",
-      // The child's own row, not a panel: `#issue-children-panel` went with the eight tab
+      // The child's own row, not a panel: `#issue-children-panel` went with the nine tab
       // panels, and the children are a section of the page the tree sits under
       // (`web/src/features/issue/IssueChildren.tsx`), drawn at every address and open from
       // Tailwind's `md` for a reader who has never shut it (`useChildrenSection.ts`). The row

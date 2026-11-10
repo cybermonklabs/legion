@@ -13,9 +13,10 @@ the Inbox at `/`, an issue workspace at `/issues/:key/*`, and the
 repository-to-project settings page at `/settings`; TanStack Query and the live socket's events
 feed keep the issue, Inbox, documents, and sidebar current.
 
-The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
-Conversation, Children, Artifacts, and Activity tabs; the Conversation lists one card per
-conversation and the Activity tab holds the issue's whole event history. The Spec document
+The desktop shell has a sidebar, issue content, and review margin. Issue content is one ordered
+body: the issue's nodes drawn as a folded tree, with five presets over it — Tree, Decisions,
+Checks, Spec and Plan — and the conversation, the activity, the collaborators and the issue's
+own properties in the panel beside it, where the nine tabs the page drew before stood. The Spec
 renders and edits through `@legion/proof-editor`, with Yjs presence and margin-linked marks. The
 margin holds Comments and Pinned. Each issue-owned anchored comment thread is one card with flat
 replies, inline reply and author-edit controls, mark-aligned cross-hover, and resolved history

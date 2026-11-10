@@ -9,7 +9,7 @@ import { blockNodeId } from "./tree-drafts";
  * What one address of the issue page says (dispatch://INFRA-1196 R19,
  * `dispatch://INFRA-1196/artifact/plan-md#b-t9`).
  *
- * Every address the old page's eight tabs answered still resolves, and this module is the one
+ * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which node the page unfolds the path to
  * and puts the focus on, which state the conversation is in, whether the node menu is open, and
  * which version of the preset's document is pinned. `refs/routes.ts` still parses the address;

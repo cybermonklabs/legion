@@ -996,7 +996,7 @@ export async function expectActivePreset(page: Page, name: string): Promise<void
 }
 
 /** The identity block's one actions control, open. Close, reopen and the control that gives the
- *  issue a parent are behind it now (R11), where the eight-tab page drew them as bare buttons.
+ *  issue a parent are behind it now (R11), where the nine-tab page drew them as bare buttons.
  *  The control toggles, so this opens it only while it is shut: a spec that asks twice leaves
  *  the actions on screen rather than hiding them again. */
 export async function openIssueActions(page: Page): Promise<void> {

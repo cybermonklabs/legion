@@ -148,7 +148,7 @@ function keepPartOnScreen(found: HTMLElement, takes: HTMLElement, left: number):
 
 /**
  * Every chord the page binds, which is the `t` table of the spec's Design section. Each one
- * opens an address and puts the focus in what that address draws: the eight the page bound
+ * opens an address and puts the focus in what that address draws: the nine the page bound
  * before the redesign keep the addresses their tabs had, every one of which still resolves
  * (R19), and `t t` and `t f` are the two the table adds.
  *
@@ -233,7 +233,7 @@ const CHORDS: readonly {
     path: (key) => buildIssuePath({ key, kind: "artifacts" }),
     tab: "artifacts",
   },
-  // `s k p c h a v d` are taken, so the collaborators, whose tab was the last of the eight,
+  // `s k p c h a v d` are taken, so the collaborators, whose tab was the last of the nine,
   // keep `t o`. The address opens them in the panel (`IssueMargin.tsx`), so the chord leaves
   // the reader there.
   {
