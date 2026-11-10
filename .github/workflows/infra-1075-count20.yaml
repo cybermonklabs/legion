@@ -1,0 +1,226 @@
+name: INFRA-1075 -count=20
+
+# TEMPORARY, the INFRA-1075 -count=20 runs: the four calls two of the issue's checks ask for, in
+# one run at a commit of this pull request whose `packages/envoy` tree equals the head's (a commit
+# that adds this file alone is such a commit, so `git diff --quiet <this commit> <head> --
+# packages/envoy` exits 0).
+#
+#   * Check 97f10c0b (A3) asks for `go test -count=20` on the two tests this change fixed:
+#     TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone (./internal/dispatch/embedqueue/) and
+#     TestAnUploadHoldsNoIssueLockWhileTheStoreWrites (./internal/dispatch/api/).
+#   * Check d4286dad (A8) asks for `go test -count=20` on the session-answers plan test and on
+#     TestTwoAnnouncersAtOnceAnnounceAndPublishOnce, against the non-durable service. The
+#     session-answers plan test is TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange,
+#     the one test of packages/envoy/internal/dispatch/sessionanswers, which explains the
+#     session-answers read (`sessionanswers.List`, what GET /api/v1/agents/{session_id}/answers
+#     serves) as a custom plan and as a generic one; TestTwoAnnouncersAtOnceAnnounceAndPublishOnce
+#     is in ./internal/dispatch/startup/.
+#
+# One job, because both checks ask for one run and one Postgres: the service below is the envoy-go
+# job's own, the same image at the same digest with the same five settings read back, so "against
+# the non-durable service" is true of every call here. The job restores the same go-envoy-test
+# cache family envoy-go restores and pulls the same test images, so the four calls build and run
+# in the lane's own environment rather than in one of this file's making.
+#
+# Each call is a step of its own that prints its own verdict, and the last step prints one line per
+# call into the job summary, so the run can be read without opening a log.
+#
+# Delete this file once both checks are recorded (dispatch://INFRA-1075).
+on:
+  workflow_dispatch:
+  push:
+    branches: [legion/INFRA-1075]
+
+# Every run is wanted: a later push does not cancel a -count=20 run already going.
+concurrency:
+  group: infra-1075-count20-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+# Reading the tree and the caches is all this workflow does; it reports no check.
+permissions:
+  contents: read
+
+env:
+  # ci.yaml's proxy fall-through, for the reason its env block gives.
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  count20:
+    runs-on: ubuntu-24.04
+    # The sum of the four calls' own limits, 5 + 1 + 4 + 4 = 14 minutes, plus 6 for the checkout,
+    # the Go setup, the cache restore, the image pull and the service's start. The calls are four
+    # steps and run one after another, so the sum is the job's worst case rather than the longest
+    # of them.
+    timeout-minutes: 20
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # ci.yaml's envoy-go service, at its digest, with its settings, its shared memory and its
+        # health check, for the reasons that job's own service gives.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      # Load-bearing: storetest.Open skips every test that opens the store when
+      # DISPATCH_TEST_DATABASE_URL is unset, and a skip is a pass that proves nothing. All four
+      # tests open it.
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image would be one more registry pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    defaults:
+      run:
+        working-directory: packages/envoy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # The go-envoy-test family envoy-go restores, at the same key and the same paths, exclusion
+      # and all, so these four packages build from the cache the real job builds from. This
+      # workflow saves no entry.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      # The settings the service's command: asks for, read back from the server itself, because a
+      # command the runner does not pass through leaves the server up on the image's defaults
+      # rather than failing, and a run of these four calls against a durable server would answer
+      # neither check. envoy-go's own read-back step says the rest.
+      - name: Read the disposable service's settings back
+        run: |
+          id="${{ job.services.postgres.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
+      # Every image a test of these packages can start, pulled first for the reason the action
+      # gives: envoy-go's own list, so a call here fails on its test rather than on a registry.
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/tests3/seaweedfs.go Image
+      # Check 97f10c0b's first call. -timeout 5m: the test took 12.23 s at the head (run
+      # 42908785579, the envoy-go job's envoy-go-test-json-1 artifact, unit.json), and 12.23 x 20 =
+      # 244.6 s, so 5m, the smallest whole minute above it. The test takes no t.Parallel, so its
+      # twenty runs are serial and that product is the call's own work.
+      - name: 'go test -count=20: the embedqueue boot-drain-and-pass test'
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/count20"
+          s=0
+          go test -timeout 5m -count=20 -run '^TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone$' ./internal/dispatch/embedqueue/ || s=$?
+          if [ "$s" -eq 0 ]; then
+            echo pass > "$RUNNER_TEMP/count20/embedqueue"
+            echo "PASS: 20 runs of TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone"
+          else
+            echo "fail (exit $s)" > "$RUNNER_TEMP/count20/embedqueue"
+            echo "::error::20 runs of TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone failed (exit $s)"
+          fi
+          exit "$s"
+      # Check 97f10c0b's second call. -timeout 1m: the test took 2.16 s at the head, and 2.16 x 20
+      # = 43.2 s, so 1m, the smallest whole minute above it. That reading is run 42908785579's
+      # envoy-go-race-api-test-json-1 artifact (race-api.json), the same run's, because the
+      # envoy-go artifact does not carry this package: the unit step's package list excludes
+      # ./internal/dispatch/api and its race-impossible call runs ten other tests of it by name.
+      # It is therefore a reading under the race detector, which is slower than the plain run this
+      # call makes, and the test takes t.Parallel, so its twenty runs overlap.
+      - name: 'go test -count=20: the API upload-holds-no-issue-lock test'
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/count20"
+          s=0
+          go test -timeout 1m -count=20 -run '^TestAnUploadHoldsNoIssueLockWhileTheStoreWrites$' ./internal/dispatch/api/ || s=$?
+          if [ "$s" -eq 0 ]; then
+            echo pass > "$RUNNER_TEMP/count20/api"
+            echo "PASS: 20 runs of TestAnUploadHoldsNoIssueLockWhileTheStoreWrites"
+          else
+            echo "fail (exit $s)" > "$RUNNER_TEMP/count20/api"
+            echo "::error::20 runs of TestAnUploadHoldsNoIssueLockWhileTheStoreWrites failed (exit $s)"
+          fi
+          exit "$s"
+      # Check d4286dad's first call: the session-answers plan test, the one test of
+      # internal/dispatch/sessionanswers. -timeout 4m: the test took 11.58 s at the head (run
+      # 42908785579, unit.json), and 11.58 x 20 = 231.6 s, so 4m, the smallest whole minute above
+      # it. The test takes t.Parallel, so its twenty runs overlap.
+      - name: 'go test -count=20: the session-answers plan test'
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/count20"
+          s=0
+          go test -timeout 4m -count=20 -run '^TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange$' ./internal/dispatch/sessionanswers/ || s=$?
+          if [ "$s" -eq 0 ]; then
+            echo pass > "$RUNNER_TEMP/count20/sessionanswers"
+            echo "PASS: 20 runs of TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange"
+          else
+            echo "fail (exit $s)" > "$RUNNER_TEMP/count20/sessionanswers"
+            echo "::error::20 runs of TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange failed (exit $s)"
+          fi
+          exit "$s"
+      # Check d4286dad's second call. -timeout 4m: the test took 9.71 s at the head (run
+      # 42908785579, unit.json), and 9.71 x 20 = 194.2 s, so 4m, the smallest whole minute above
+      # it. The test takes t.Parallel, so its twenty runs overlap.
+      - name: 'go test -count=20: the two-announcers test'
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/count20"
+          s=0
+          go test -timeout 4m -count=20 -run '^TestTwoAnnouncersAtOnceAnnounceAndPublishOnce$' ./internal/dispatch/startup/ || s=$?
+          if [ "$s" -eq 0 ]; then
+            echo pass > "$RUNNER_TEMP/count20/startup"
+            echo "PASS: 20 runs of TestTwoAnnouncersAtOnceAnnounceAndPublishOnce"
+          else
+            echo "fail (exit $s)" > "$RUNNER_TEMP/count20/startup"
+            echo "::error::20 runs of TestTwoAnnouncersAtOnceAnnounceAndPublishOnce failed (exit $s)"
+          fi
+          exit "$s"
+      # One line per call, in the log and in the job summary, so the run's answer to both checks
+      # is read without opening a step. A call whose step never ran reads "did not run" rather
+      # than passing by omission, and this step fails unless all four passed.
+      - name: The four verdicts
+        if: ${{ !cancelled() }}
+        run: |
+          report="$RUNNER_TEMP/count20/report.txt"
+          mkdir -p "$RUNNER_TEMP/count20"
+          : > "$report"
+          status=0
+          verdict() {
+            v=$(cat "$RUNNER_TEMP/count20/$1" 2>/dev/null || true)
+            [ -n "$v" ] || v="did not run"
+            printf '%s: %s\n' "$v" "$2" >> "$report"
+            [ "$v" = pass ] || status=1
+          }
+          verdict embedqueue "go test -count=20 -run '^TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone\$' ./internal/dispatch/embedqueue/"
+          verdict api "go test -count=20 -run '^TestAnUploadHoldsNoIssueLockWhileTheStoreWrites\$' ./internal/dispatch/api/"
+          verdict sessionanswers "go test -count=20 -run '^TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange\$' ./internal/dispatch/sessionanswers/"
+          verdict startup "go test -count=20 -run '^TestTwoAnnouncersAtOnceAnnounceAndPublishOnce\$' ./internal/dispatch/startup/"
+          cat "$report"
+          { echo '### INFRA-1075 -count=20'; echo; echo '```'; cat "$report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" -eq 0 ] || echo "::error::a -count=20 call did not pass; the lines above say which"
+          exit "$status"
