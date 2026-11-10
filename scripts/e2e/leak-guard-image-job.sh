@@ -51,7 +51,12 @@
 #                                    requires a workload to select by `nodeSelector`. Its value is
 #                                    in the deployment's own declaration, which this public
 #                                    repository does not carry, so it is an input and never a
-#                                    literal here. `LEAK_GUARD_NODE_SELECTOR` sets it too.
+#                                    literal here. `LEAK_GUARD_NODE_SELECTOR` sets it too. It must
+#                                    be a class the namespace's admission allows
+#                                    `runtimeClassName: gvisor` on, which this Job always sets: a
+#                                    class that admits no sandbox is refused at the create, the
+#                                    policy naming every class and the runtimeClassName it takes,
+#                                    and nothing of the arm is left.
 #   --namespace <namespace>          optional: the namespace to run in. The default is the one the
 #                                    pod's own credential names, read from
 #                                    /var/run/secrets/kubernetes.io/serviceaccount/namespace.

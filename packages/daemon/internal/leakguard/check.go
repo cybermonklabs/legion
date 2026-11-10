@@ -106,9 +106,6 @@ func promptsNothing(noAnswer string) []string {
 // answers no credential; a path that names nothing at all fails the child's credential read too,
 // which is the same closed door.
 func noAnswer(env []string) string {
-	if env == nil {
-		env = os.Environ()
-	}
 	if path, ok := lookpath.On(value(env, "PATH"), "false"); ok {
 		return path
 	}
@@ -133,12 +130,13 @@ type child struct {
 // program is where name is, read from the base environment's PATH rather than from this
 // process's: the environment a guard is given decides which bash, git and gh its children are,
 // and exec resolves a bare name against the parent's own PATH instead. A name that is already a
-// path, and one that PATH holds nothing of, is left as it is.
-func (g *Guard) program(name string) string {
+// path, and one that PATH holds nothing of, is left as it is. The lookup is made for every
+// child: a program that appeared on PATH since the last one is the program this child must run.
+func program(base []string, name string) string {
 	if strings.ContainsRune(name, filepath.Separator) {
 		return name
 	}
-	if path, ok := lookpath.On(value(g.base(), "PATH"), name); ok {
+	if path, ok := lookpath.On(value(base, "PATH"), name); ok {
 		return path
 	}
 	return name
@@ -148,9 +146,12 @@ func (g *Guard) program(name string) string {
 // together. The error is a child that could not be run at all, the caller's bound running out
 // among them: a status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
-	cmd := exec.CommandContext(ctx, g.program(c.argv[0]), c.argv[1:]...)
+	// One read of the base environment for the child, which both the program lookup and the
+	// child's own environment are built from.
+	base := g.base()
+	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir
-	cmd.Env = g.env(c.env...)
+	cmd.Env = g.env(base, c.env...)
 	cmd.Stdin = c.stdin
 	cmd.ExtraFiles = c.files
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole

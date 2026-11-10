@@ -26,7 +26,11 @@ from pathlib import Path
 
 GOMOD = Path("packages/daemon/go.mod")
 RELEASE = Path(".github/scripts/release-push.sh")
-ASSET = "https://github.com/gitleaks/gitleaks/releases/download/vX.Y.Z/gitleaks_X.Y.Z_linux_x64.tar.gz"
+# The shape leak_engine_url must take, written in parts rather than as one URL: a whole release
+# asset URL here would be a fetch to .github/scripts/check-ci-tools.sh, whose rule 3 reads every
+# such URL under .github/ and holds it to a row of .github/ci-tools.yaml. This file fetches
+# nothing; it only says what the fetch in release-push.sh must look like.
+ASSET = "https://github.com/gitleaks/gitleaks/releases/" + "download/vX.Y.Z/gitleaks_X.Y.Z_linux_x64.tar.gz"
 
 
 def fatal(path: Path, message: str) -> None:

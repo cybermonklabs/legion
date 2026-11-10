@@ -18,7 +18,8 @@ import (
 // from the check on purpose. A pod's gh is `legion gh`, which calls this guard, so a read that
 // looked like any other gh call would call the guard again, and the guard again: the exemption
 // `legion gh` makes for the check's own visibility read — that exact argv for that exact slug —
-// covers this read too, because it is the same argv and the same variable.
+// covers this read too, because it is built from the same VisibilityReadVar and
+// VisibilityReadArgs this read is.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
 	g.mu.Lock()
 	cached, ok := g.seen[slug]
@@ -40,13 +41,26 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 	return visibility, nil
 }
 
+// VisibilityReadVar is the environment variable the shared public leak check's own visibility
+// read carries, naming the repository it reads. It is exported with VisibilityReadArgs because
+// `legion gh` has to let exactly this read through unchecked, and an exemption written from a
+// second copy of these strings is one an edit here would silently part from: the two sides
+// parted means a first write to another owner's repository recurses without end.
+const VisibilityReadVar = "PUBLIC_LEAK_CHECK_VISIBILITY_READ"
+
+// VisibilityReadArgs is the visibility read's argv for slug, gh's own name aside, which is the
+// shape `legion gh`'s exemption matches a call against.
+func VisibilityReadArgs(slug string) []string {
+	return []string{"api", "--hostname", "github.com", "repos/" + slug, "--jq", ".visibility"}
+}
+
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
 // own. GH_HOST names the host for a gh that has no configuration of its own to read it from,
 // beside the --hostname the argv already carries.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	status, printed, err := g.run(ctx, child{
-		argv: []string{"gh", "api", "--hostname", "github.com", "repos/" + slug, "--jq", ".visibility"},
-		env:  []string{"PUBLIC_LEAK_CHECK_VISIBILITY_READ=" + slug, "GH_HOST=github.com"},
+		argv: append([]string{"gh"}, VisibilityReadArgs(slug)...),
+		env:  []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com"},
 	})
 	if err != nil {
 		return "", err

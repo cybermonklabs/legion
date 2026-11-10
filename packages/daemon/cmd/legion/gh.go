@@ -142,19 +142,20 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 //
 //	gh api --hostname github.com repos/<slug> --jq .visibility
 //
-// for exactly the slug PUBLIC_LEAK_CHECK_VISIBILITY_READ names, which must itself be a
-// repository GitHub could have (ghrepo.Parse), so that a variable someone else set lets through
-// one read of one repository and nothing else. leakguard's own visibility reader sets the same
-// variable and sends the same argv (Guard.ghVisibility), so this one exemption serves both.
+// for exactly the slug the check's variable names, which must itself be a repository GitHub
+// could have (ghrepo.Parse), so that a variable someone else set lets through one read of one
+// repository and nothing else. Both halves come from leakguard, whose own visibility reader
+// (Guard.ghVisibility) is built from the same two, so the exemption and the read it exempts
+// cannot part.
 func ghVisibilityRead(argv []string, env map[string]string) bool {
-	slug := env["PUBLIC_LEAK_CHECK_VISIBILITY_READ"]
+	slug := env[leakguard.VisibilityReadVar]
 	if slug == "" {
 		return false
 	}
-	if _, err := ghrepo.Parse("PUBLIC_LEAK_CHECK_VISIBILITY_READ", slug); err != nil {
+	if _, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug); err != nil {
 		return false
 	}
-	return slices.Equal(argv, []string{"api", "--hostname", "github.com", "repos/" + slug, "--jq", ".visibility"})
+	return slices.Equal(argv, leakguard.VisibilityReadArgs(slug))
 }
 
 // ghForwardedSignals are the signals runGhChild passes on to the gh it started: what a terminal

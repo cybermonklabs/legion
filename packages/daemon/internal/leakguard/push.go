@@ -21,6 +21,12 @@ var gitPins = []string{
 	"-c", "core.fsmonitor=false",
 }
 
+// gitArgv is one git command with the pins in front of it, which is how every git of this
+// package is started: a shape written out twice is one a later pin can be added to once.
+func gitArgv(args ...string) []string {
+	return append(append([]string{"git"}, gitPins...), args...)
+}
+
 // Update is one line of what git hands a pre-push hook on standard input: the ref being pushed,
 // the commit it is at, the ref it is being pushed to, and the commit the destination holds there.
 // A sha of all zeros means the ref is not there: on the local side a deletion, on the remote side
@@ -114,8 +120,11 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 		return err
 	}
 	public, err := g.scanThrough(ctx, what, RepoFromURL(req.URL))
-	if err != nil || !public {
+	if err != nil {
 		return err
+	}
+	if !public {
+		return nil
 	}
 	records, err := g.pushRecords(ctx, req)
 	if err != nil {
@@ -191,7 +200,7 @@ func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 	if sha == "" || zeroSHA(sha) {
 		return false, nil
 	}
-	status, _, err := g.run(ctx, child{argv: append(append([]string{"git"}, gitPins...), "cat-file", "-e", sha+"^{commit}"), dir: dir})
+	status, _, err := g.run(ctx, child{argv: gitArgv("cat-file", "-e", sha+"^{commit}"), dir: dir})
 	if err != nil {
 		return false, err
 	}
@@ -317,7 +326,7 @@ func short(commit string) string {
 // where git itself does: a record this package could not read is a setup failure, never a push
 // read as clean.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := append(append([]string{"git"}, gitPins...), args...)
+	argv := gitArgv(args...)
 	status, printed, err := g.run(ctx, child{argv: argv, dir: dir})
 	if err != nil {
 		return "", err

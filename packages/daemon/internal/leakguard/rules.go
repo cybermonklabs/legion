@@ -43,10 +43,10 @@ var compiled = sync.OnceValues(compile)
 // config.Translate compiles each pattern with regexp.MustCompile, which panics on a pattern it
 // cannot read rather than returning an error: a daemon that embedded a broken rule file would
 // otherwise die where it should refuse the write and say why.
-func compile() (compiled *rules, err error) {
+func compile() (built *rules, err error) {
 	defer func() {
 		if panicked := recover(); panicked != nil {
-			compiled, err = nil, fmt.Errorf("the embedded private-name rules did not compile: %v", panicked)
+			built, err = nil, fmt.Errorf("the embedded private-name rules did not compile: %v", panicked)
 		}
 	}()
 	// A viper of this package's own, never the package-level one: the global viper is a process's

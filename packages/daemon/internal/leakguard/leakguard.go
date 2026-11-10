@@ -79,7 +79,9 @@ type Guard struct {
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	return &Guard{opts: opts, noAnswer: noAnswer(opts.Env), seen: map[string]Visibility{}}
+	g := &Guard{opts: opts, seen: map[string]Visibility{}}
+	g.noAnswer = noAnswer(g.base())
+	return g
 }
 
 // base is the environment the guard's children start from before anything is added to it: the
@@ -91,11 +93,11 @@ func (g *Guard) base() []string {
 	return os.Environ()
 }
 
-// env is the environment a child of this guard starts from: the base environment, the names that
-// make a credential prompt fail closed, and extra on top, which wins over both because exec takes
-// the last value of a name.
-func (g *Guard) env(extra ...string) []string {
-	base := g.base()
+// env is the environment a child of this guard starts from: base, the names that make a
+// credential prompt fail closed, and extra on top, which wins over both because exec takes the
+// last value of a name. The base is the caller's rather than read here, so that a child costs
+// one copy of the process environment and not two (Guard.run).
+func (g *Guard) env(base []string, extra ...string) []string {
 	out := make([]string, 0, len(base)+4+len(extra))
 	out = append(out, base...)
 	out = append(out, promptsNothing(g.noAnswer)...)
@@ -171,8 +173,11 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 		return err
 	}
 	public, err := g.scanThrough(ctx, what, req.Repo)
-	if err != nil || !public {
+	if err != nil {
 		return err
+	}
+	if !public {
+		return nil
 	}
 	title, body, _ := strings.Cut(req.Text, "\n")
 	return g.rules(ctx, what, []Record{{Label: "the title", Text: title}, {Label: "the body", Text: body}})

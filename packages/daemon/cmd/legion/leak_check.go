@@ -92,7 +92,7 @@ func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) i
 	kind := flags.Arg(0)
 	text, err := io.ReadAll(leakCheckStdin)
 	if err != nil {
-		return leakCheckReport(stderr, kind, &leakguard.SetupFailure{Why: "the text could not be read", Err: err})
+		return leakCheckReport(stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
 	}
 	guard := leakguard.New(leakguard.Options{})
 	return leakCheckReport(stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
