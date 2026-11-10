@@ -18719,6 +18719,15 @@
           "decisions_artifact_id": {
             "type": "string"
           },
+          "design_gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "external_links": {
             "items": {
               "$ref": "#/components/schemas/ExternalLink"
@@ -18892,6 +18901,7 @@
           "artifacts",
           "open_asks",
           "children",
+          "design_gates",
           "referenced_by_count"
         ],
         "type": "object"
@@ -21854,6 +21864,12 @@
           "approved_version": {
             "type": "integer"
           },
+          "design_gates": {
+            "items": {
+              "$ref": "#/components/schemas/SupersededApprovalGate"
+            },
+            "type": "array"
+          },
           "version": {
             "type": "integer"
           }
@@ -21862,6 +21878,26 @@
           "approved_version",
           "version",
           "approved_by"
+        ],
+        "type": "object"
+      },
+      "SupersededApprovalGate": {
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "decisions",
+              "criteria",
+              "spec"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "step"
         ],
         "type": "object"
       },
