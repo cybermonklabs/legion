@@ -1556,6 +1556,28 @@ ladder_report() {
     host=${host#*=}
     status=${status#*=}
     bypass=${bypass#*=}
+    # The five key checks above catch a line whose fields moved. These five catch the other
+    # half of the same fault: a field whose key is right and whose value this reader cannot
+    # read. Without them `[ "$seconds" -le "$longest" ]` fails with `integer expression
+    # expected` and returns 2, so `longest` takes the text itself, both window arms below then
+    # read false, and this verb passes the job with no refusal at all. The same hole reaches
+    # `[ "$status" -eq 0 ]`, which is the test the refusal of a shortened fetch that served the
+    # bytes is read from. So a writer that starts printing something else is refused here, and
+    # every arithmetic test below runs on a number.
+    case $seconds in
+      "" | *[!0-9]*) die "ladder-report: this line of $curl_log measures seconds=$seconds, where this reader holds the seconds of a fetch to bare digits and nothing else: the measurement below is read with [ … -le … ], [ … -lt … ] and [ … -gt … ], which fail on text and let the job pass with no refusal" ;;
+    esac
+    case $decision in
+      full | shortened) ;;
+      *) die "ladder-report: this line of $curl_log holds decision=$decision, where this reader knows the two words full and shortened only: every branch below compares against those two words, so this fetch would fall through all of them and no reading of this job would see it" ;;
+    esac
+    [ -n "$host" ] ||
+      die "ladder-report: this line of $curl_log holds an empty host=, where this reader holds the host of a fetch to a name: an empty one names no source in the warnings and the refusals below, which carry the host to the reader of this job"
+    case $status in
+      "" | *[!0-9]*) die "ladder-report: this line of $curl_log holds exit=$status, where this reader holds curl's exit to bare digits and nothing else: the refusal of a shortened fetch that served the bytes is read with [ … -eq 0 ], which fails on text and takes that refusal off the job" ;;
+    esac
+    [ -n "$bypass" ] ||
+      die "ladder-report: this line of $curl_log holds an empty full-ladder=, where this reader holds that field to none or to the name the case carries: an empty one is neither, and the measurement of the pinned ladder is read off this field"
     printf '  %s: %s, curl exit %s, %ss\n' "$host" "$decision" "$status" "$seconds"
     if [ "$bypass" != none ]; then
       case " $names " in
