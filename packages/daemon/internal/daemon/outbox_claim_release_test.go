@@ -506,9 +506,15 @@ func testReleaseClaimLane(t *testing.T) {
 		_, delivered := publisher.snapshot()
 		return len(client.statusWrites()) == 1 && len(delivered) == 1
 	})
-	if left := outboxRowsOf(t, pool, claimIssue); left != 1 {
-		t.Fatalf("rows left on %s = %d, want the waiting release alone", claimIssue, left)
-	}
+	// The two rows' effects are observed above, and each row is deleted in the transaction that
+	// follows its own effect, so the count falls to the waiting release rather than being at it the
+	// instant the effects are seen: reading it here finds 2 whenever a deletion has not committed
+	// yet (measured at outbox_claim_release_test.go:510, run of 2026-11-10 at d1a7d1ca85dd). Only
+	// the release's row may remain, and it remains for the whole of this wait, so a count that
+	// settles at one is the assertion and a count that rises again would fail the wait's next read.
+	testwait.Eventually(t, "the two rows gone and the waiting release alone left on "+claimIssue, func() bool {
+		return outboxRowsOf(t, pool, claimIssue) == 1
+	})
 	if got := client.statusWrites(); !slices.Equal(got, []string{"icebox"}) {
 		t.Fatalf("statuses written = %v, want the one icebox write", got)
 	}

@@ -96,24 +96,66 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
 // since Clone registered that cleanup first.
 //
-// The pool's first connection is opened here rather than left to the test's first statement, and
-// it is opened through testdb.OnConnect, so a reset at accept is retried where it would otherwise
-// end the test with nothing run: pgxpool.New establishes nothing, so a server that resets this
-// process's 790th connection of the run answers at the first Acquire, which is inside whatever
-// the test was doing (measured: TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled,
-// "read: connection reset by peer" at 0.12 s, run 16 of 20 on 2026-11-09). Ping is what opens it,
-// and the retry's own count is in testdb.DropLine.
+// Every connection the pool will use is opened here rather than left to the test, and each is
+// opened through testdb.OnConnect, so a reset at accept is retried where it would otherwise end
+// the test with nothing run: pgxpool.New establishes nothing, and its own Constructor
+// (pgxpool/pool.go) calls pgx.ConnectConfig once with no retry of its own, so a connection the
+// pool opens on demand is reset inside whatever the test was doing. Measured twice: a first
+// connection at 0.12 s (TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled, run 16
+// of 20 on 2026-11-09) and a later one mid-test (TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt,
+// mapping_refresh_test.go:846, run 13 of the campaign of 2026-11-10, seed 1794300552752315934),
+// whose run's own line read "1220 connects, 0 needed a retry" because the counter never saw that
+// attempt.
+//
+// Warming to MaxConns is what covers the second: the pool hands back idle connections rather than
+// opening new ones, and MaxConnIdleTime (30 minutes) and MaxConnLifetime (an hour) both exceed any
+// test of this module, so the warmed set is the set the test uses. What it does not cover is a
+// connection the server drops mid-test, which the pool replaces through that same unretried
+// Constructor; covering that needs a retry inside pgx, which only duplicate Fallbacks give, and
+// those would retry SQLSTATE 53300 — the connection cap's own refusal — where transientConnect
+// cannot reach. The cap's silence is R5's evidence, so the narrower fix is the right one and this
+// comment is the record of what it leaves open.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
-	t.Cleanup(pool.Close)
-	if err := testdb.OnConnect(func() error { return pool.Ping(context.Background()) }); err != nil {
-		t.Fatalf("the cloned database's pool opened no connection: %v", err)
-	}
+	warmed := warm(t, pool)
+	t.Cleanup(func() {
+		// Read before Close, which keeps the counters but is where the pool's life ends: every
+		// connection beyond the warmed ones is an establishment pgxpool made itself, through the
+		// Constructor OnConnect cannot reach.
+		testdb.CountUnwarmedConnects(pool.Stat().NewConnsCount(), warmed)
+		pool.Close()
+	})
 	return pool
+}
+
+// warm opens every connection pool may hold, each through testdb.OnConnect, and hands them all
+// back: acquiring them all at once is what makes the pool open each one, and releasing them leaves
+// them idle for the test's own acquires. A pool whose MaxConns the configuration leaves at pgx's
+// default holds four.
+func warm(t testing.TB, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	held := make([]*pgxpool.Conn, 0, pool.Config().MaxConns)
+	defer func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	}()
+	for range pool.Config().MaxConns {
+		var conn *pgxpool.Conn
+		if err := testdb.OnConnect(func() error {
+			var err error
+			conn, err = pool.Acquire(context.Background())
+			return err
+		}); err != nil {
+			t.Fatalf("the cloned database's pool opened no connection: %v", err)
+		}
+		held = append(held, conn)
+	}
+	return int64(len(held))
 }
 
 // cloneStatement returns the create database that makes name a copy of the template's files rather

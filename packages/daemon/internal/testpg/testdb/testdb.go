@@ -199,6 +199,26 @@ var dropCounts struct {
 	longest atomic.Int64
 }
 
+// unwarmedConnects is how many connections the pools of this test process opened that the fixture
+// did not open itself: each pool's pgxpool Stat().NewConnsCount() at teardown, less the ones the
+// fixture established through OnConnect when it warmed the pool.
+//
+// It is the denominator the reset this retry exists for has no rate without. OnConnect covers
+// every establishment the fixture makes; a pool that grows past its warmed set, or replaces a
+// connection a health check destroyed, establishes one through pgxpool's own Constructor, which
+// has no retry (measured: mapping_refresh_test.go:846 died of a reset while its run's line read
+// "1220 connects, 0 needed a retry"). Two reset events across a campaign say nothing about how
+// wide that path is; this count is how many chances it had.
+var unwarmedConnects atomic.Int64
+
+// CountUnwarmedConnects records that a pool opened made connections beyond the warmed ones.
+// internal/testpg calls it when a pool it warmed is torn down.
+func CountUnwarmedConnects(made, warmed int64) {
+	if beyond := made - warmed; beyond > 0 {
+		unwarmedConnects.Add(beyond)
+	}
+}
+
 // Drop drops the database name through exec: plainly, then again while Postgres answers SQLSTATE
 // 55006 (object_in_use) up to dropWindow, and `with (force)` as the last attempt.
 //
@@ -254,10 +274,10 @@ func Drop(ctx context.Context, exec execer, name string) error {
 
 // DropLine is one line naming what this process's drops did, for the package Main that prints it.
 func DropLine() string {
-	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s; %d connects, %d needed a retry",
+	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s; %d connects, %d needed a retry, %d opened outside the warm set",
 		dropCounts.drops.Load(), dropCounts.retried.Load(), dropCounts.forced.Load(),
 		time.Duration(dropCounts.longest.Load()).Round(time.Millisecond),
-		connectCounts.opened.Load(), connectCounts.retried.Load())
+		connectCounts.opened.Load(), connectCounts.retried.Load(), unwarmedConnects.Load())
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is
