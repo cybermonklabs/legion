@@ -62,8 +62,10 @@ if (url === undefined || url === "") {
  * act an agent did not do. `source_session` is read alone and never `source`: the two are
  * different kinds — `source` is `agent` for every agent's publish — so a message with no session
  * would otherwise carry a sender that belongs to no half. Such a publish is one Envoy accepts
- * (`SourceSession` carries no `omitempty`, and `packages/envoy/AGENTS.md` says a message without
- * it acts as no session and is not refused), so it is no defect of the listener: it is a message
+ * (`packages/envoy/AGENTS.md`: a message without a session acts as no session and is not
+ * refused, and `contracts.Envelope` writes `source_session` with `omitempty`, so the key is
+ * absent rather than empty, which is the shape this parse meets), so it is no defect of the
+ * listener: it is a message
  * this rig cannot attribute, and every message a scenario scores must be attributable, which is
  * why it is written as `unreadable` rather than scored. */
 const Envelope = z.looseObject({

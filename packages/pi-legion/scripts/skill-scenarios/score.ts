@@ -1031,36 +1031,40 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // Every read of the record this run made, with the phases its answer carried: a call the tool
   // refused is no answer of its own and is left out, as `read_record requires issue` is, which an
   // agent then makes again with the issue.
-  const reads = steps(entries)
-    .map((step) => ({ step, answer: results.get(step.id) }))
-    .filter(({ answer }) => answer !== undefined && answer.failed !== true)
-    .filter(({ step, answer }) => readsTheRecord(step, answer))
-    .map(({ step, answer }) => ({
-      at: answer?.at ?? "",
-      phases: readPhases(step.tool, answer),
-    }));
+  const reads = steps(entries).flatMap((step) => {
+    const answer = results.get(step.id);
+    if (answer === undefined || answer.failed === true) return [];
+    const phases = recordRead(step, answer);
+    return phases === undefined ? [] : [{ at: answer.at, phases }];
+  });
   const approvedAt = review?.event === "APPROVE" ? review.at : undefined;
   const afterApproval =
     approvedAt === undefined ? [] : reads.filter((read) => read.at > approvedAt);
   const readAfter = afterApproval.find((read) => read.phases.includes("accepting"))?.at;
+  const toldImplementer =
+    readAfter !== undefined && publishedTo(runDir, sender, "implementer", [world.head], readAfter);
+  // Everything the case turns on but the read and the message it orders. A run that fails on its
+  // own evidence — a review that names another head, a finding written on neither file, a push
+  // in the round — failed whatever the reviewer was shown, so it stays a failure below.
+  const otherwise =
+    reviewCase === "defect"
+      ? review?.event === "REQUEST_CHANGES"
+      : review?.event === "APPROVE" && head && onDoc && onWorkflow && pushes === 0;
   // A read after the approval whose answer holds no record at all leaves what the reviewer was
   // shown unknown, so the run says nothing about the step either way: that is this reader's limit
   // and a rig error, which `scoreRuns` makes of a throw, rather than a round that read no record.
-  if (readAfter === undefined && afterApproval.some((read) => read.phases.length === 0))
+  // It is the whole run's verdict that is unknown, and only a run that would otherwise pass has
+  // one: a rig error takes a run out of both counts, so a run already failing on evidence this
+  // reader did read would be moved out of the denominator by a limit that decided nothing.
+  if (
+    otherwise &&
+    readAfter === undefined &&
+    afterApproval.some((read) => read.phases.length === 0)
+  )
     throw new Error(
       "a read_record after the approval was answered with no record this can read, so what the reviewer was shown is unknown"
     );
-  const toldImplementer =
-    readAfter !== undefined && publishedTo(runDir, sender, "implementer", [world.head], readAfter);
-  const pass =
-    reviewCase === "defect"
-      ? review?.event === "REQUEST_CHANGES"
-      : review?.event === "APPROVE" &&
-        head &&
-        onDoc &&
-        onWorkflow &&
-        pushes === 0 &&
-        toldImplementer;
+  const pass = otherwise && (reviewCase === "defect" || toldImplementer);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1165,64 +1169,54 @@ function jsonObjectsIn(text: string): unknown[] {
   }
   return found;
 }
-/** Every phase a `read_record` was answered with, which is empty when its answer holds no record
- * this can read.
- *
- * Where the answer lives is decided by the tool that carried the call, in the one place that
- * knows the routes: the native `legion` call answers in `details`, a `write` to `xd://legion`
- * answers in `details.xdev.inner`, and an `eval` cell answers in the text it printed. One schema
- * reads all three, and the record is parsed and never matched, so a cell that prints the word
- * `accepting` without a record is no answer. An empty list is the reader's limit and never a step
- * the agent did not take, which is why the caller makes such a read a rig error rather than a
- * failure. */
-function readPhases(
-  tool: string,
-  result: { text: string; details: unknown } | undefined
-): string[] {
-  if (result === undefined) return [];
-  const answers =
-    tool === "write"
-      ? [XdevResult.safeParse(result.details).data?.xdev.inner]
-      : tool === "eval"
-        ? jsonObjectsIn(result.text)
-        : [result.details];
-  return answers.flatMap((answer) => {
-    const read = RecordAnswer.safeParse(answer);
-    return read.success ? [read.data.record.phase] : [];
-  });
-}
-/** Whether a call asked the `legion` tool to read the record, on any route a session can reach it
- * by. The op is read, never the word: the native call and a `write` to `xd://legion` name it in
- * their arguments, where it is parsed out, and an `eval` cell holds it inside code, so a cell
- * counts as the call whose answer carries a record. A `handoff_complete` summary that mentions
- * `read_record` is no read — the deep pass of 2026-11-10 added that sentence to a passing run's
- * summary and the run scored a rig error. */
-function readsTheRecord(
-  step: { tool: string; args: Record<string, unknown> },
-  result: { text: string; details: unknown } | undefined
-): boolean {
-  if (step.tool === "legion") return step.args.op === "read_record";
-  if (step.tool === "write") {
-    if (step.args.path !== "xd://legion") return false;
-    const content = typeof step.args.content === "string" ? step.args.content : "";
-    return jsonObjectsIn(content).some(
-      (named) => z.looseObject({ op: z.literal("read_record") }).safeParse(named).success
-    );
-  }
-  // A cell holds the op inside its code, so the op is read there: `op` given the value
-  // `read_record`, in any of the shapes a language writes that pair in. A cell that built its
-  // arguments elsewhere is read by its answer instead, which carries the record itself. The bare
-  // word is never enough, which is what keeps a `handoff_complete` summary that mentions
-  // `read_record` out of this.
-  if (step.tool === "eval")
-    return (
-      READ_RECORD_OP.test(strings(step.args).join("\n")) || readPhases("eval", result).length > 0
-    );
-  return false;
-}
-/** The `read_record` op as a cell's own code names it: the key `op` and that value, however the
- * language spells the pair. */
+/** The `read_record` op as the call's own arguments name it, whatever carried the call: the key
+ * `op` given that value, in the shapes a JSON body and a cell's code write the pair in. */
 const READ_RECORD_OP = /\bop\b\s*["']?\s*[:=]\s*["']read_record["']/;
+/** A `read_record` the run made, read as the phases its answer carried, or `undefined` when the
+ * call is no read of the record at all. One `switch` over the tool that carried the call, since
+ * the tool decides both halves of the question: whether the call asked for the record, and where
+ * the answer to it lives.
+ *
+ * The op is read and never the word. The native `legion` call names it as an argument of its
+ * own and answers in `details`; a `write` to `xd://legion` names it in the content it carries
+ * and answers in `details.xdev.inner`, the tool's own result one level down; a cell names it in
+ * its code and answers in the text it printed, and a cell that built its arguments elsewhere is
+ * read by that answer alone. A `handoff_complete` whose summary mentions `read_record` is no
+ * read — the deep pass of 2026-11-10 added that sentence to a passing run and the run scored a
+ * rig error. The record is parsed and never matched, so a cell that prints the word `accepting`
+ * without a record answers nothing.
+ *
+ * An empty list is the reader's limit and never a step the agent did not take, which is why the
+ * caller makes such a read a rig error rather than a failure. */
+function recordRead(
+  step: { tool: string; args: Record<string, unknown> },
+  answer: { text: string; details: unknown }
+): string[] | undefined {
+  const phases = (answers: unknown[]) =>
+    answers.flatMap((carried) => {
+      const read = RecordAnswer.safeParse(carried);
+      return read.success ? [read.data.record.phase] : [];
+    });
+  switch (step.tool) {
+    case "legion":
+      return step.args.op === "read_record" ? phases([answer.details]) : undefined;
+    case "write": {
+      if (step.args.path !== "xd://legion") return undefined;
+      const content = typeof step.args.content === "string" ? step.args.content : "";
+      const named = jsonObjectsIn(content).some((body) => OpNamed.safeParse(body).success);
+      return named ? phases([XdevResult.safeParse(answer.details).data?.xdev.inner]) : undefined;
+    }
+    case "eval": {
+      const printed = phases(jsonObjectsIn(answer.text));
+      if (READ_RECORD_OP.test(strings(step.args).join("\n"))) return printed;
+      return printed.length > 0 ? printed : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+/** The op as a body written beside the call names it, hoisted so it is built once. */
+const OpNamed = z.looseObject({ op: z.literal("read_record") });
 /** One line of `<run>/published.jsonl`. The file is the recorder's own record of its run as much
  * as of the run's messages (record-publishes.ts): it opens with `recording`, written once the
  * subscription is registered with the server, ends with `closed`, written when the rig stops it,
@@ -4420,11 +4414,14 @@ if (import.meta.main) {
     // whether the message the rule names was among them. Two readers of one fact disagreed
     // before this (2026-11-09): a publish made from `eval` scored `toldReviewer` while the
     // reviewer half booted with an empty prompt.
-    // A run whose first agent left no session header is a rig error the score reports, and the
-    // harness must not die of it first: `rig.sh`'s reviewer_wake runs under `set -e`, so a throw
-    // here would end the run with "the reviewer half never started" and hide the real reason.
-    // Printing an empty list leaves the next half with no wake, which is what a run that
-    // published nothing leaves, and `scoreRuns` then names the missing session itself.
+    // Every throw is caught here, not the missing session alone, and that is deliberate: the
+    // harness must not die of a reader's limit first. `rig.sh`'s reviewer_wake runs under
+    // `set -e`, so a throw would end the run with "the reviewer half never started" and hide
+    // whatever the real reason was — a transcript with no session header, a `published.jsonl`
+    // line this cannot parse, any of them. Printing an empty list leaves the next half with no
+    // wake, which is what a run that published nothing leaves, and the reason goes to stderr.
+    // Nothing is lost by catching widely: the score reads the same files afterwards and throws
+    // there too, so the run is a rig error naming the real reason either way.
     const runDir = rest[0] ?? "";
     const role = rest[1] ?? "";
     try {
