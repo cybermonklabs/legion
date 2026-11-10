@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -438,6 +439,32 @@ func TestOnlyADocumentAddressCarriesADocument(t *testing.T) {
 	}
 }
 
+// Which words of a path are an issue key is text.IsIssueKey's to say, the grammar a reference is
+// parsed by (`text/refs.go`'s issueKeyPattern), so a path this handler opens a document at and a
+// reference naming that document agree on what an issue key is.
+func TestADocumentAddressNamesAnIssueKeyAsDispatchMintsOne(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want bool
+	}{
+		{"/issues/CORE-1", true},
+		{"/issues/C0RE2-10/spec", true},
+		{"/issues/AB-1/artifacts/notes-md", true},
+		{"/issues/C-1", false},
+		{"/issues/CORE-01", false},
+		{"/issues/CORE-0", false},
+		{"/issues/core-1", false},
+		{"/issues/VERYLONGKEY-1", false},
+		{"/issues/CORE-1x", false},
+		{"/issues/CORE", false},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+test.path, nil)
+		if _, ok := documentAddress(request, test.path); ok != test.want {
+			t.Fatalf("%s opened a document: %v, want %v", test.path, ok, test.want)
+		}
+	}
+}
+
 // A browser that kept a page it was sent before - another reader's document, or one this reader
 // may no longer read - must never be told to use it again. The document page carries no
 // validator, so there is nothing for an If-None-Match to match, and the whole page is answered.
@@ -533,6 +560,102 @@ func TestADocumentReadPastItsBudgetSendsTheShell(t *testing.T) {
 	}
 	if got := response.Header().Get("Cache-Control"); got != pageCacheControl {
 		t.Fatalf("the shell's Cache-Control = %q, want %q", got, pageCacheControl)
+	}
+}
+
+// pageWithADraw is a page handler whose draw is draw's, over a dashboard build of one page, with
+// nothing but the budget between the reader and it. The draw is given rather than seeded,
+// because what these two rows read is what the page does with a draw that takes its own time -
+// a caller check waiting on the sign-in issuer, a fold that watches no context - and no document
+// can be made to do that on purpose.
+func pageWithADraw(
+	t *testing.T,
+	budget time.Duration,
+	draw func(context.Context, *http.Request, api.FirstScreenAddress) api.FirstScreen,
+) (*router, string) {
+	t.Helper()
+	webDist := t.TempDir()
+	page := filepath.Join(webDist, "index.html")
+	if err := os.WriteFile(page, []byte(firstScreenPage), 0o600); err != nil {
+		t.Fatalf("write dashboard index: %v", err)
+	}
+	_, appContext := newTestRouter(t)
+	appContext.WebDistDir = webDist
+	appContext.firstScreenBudget = budget
+	return &router{ctx: appContext, firstScreen: draw}, page
+}
+
+// theDocumentAddress is the address these two rows open.
+const theDocumentAddress = "/issues/CORE-1/artifacts/notes-md"
+
+// A draw that is still out when the budget is spent costs the reader nothing but the document:
+// the page goes out, as the shell, there and then.
+//
+// The budget has to bound the draw from outside it, because nothing inside watches it all the
+// way: the caller check can wait on the sign-in issuer for up to the 15 s of
+// identity.Membership's refresh, and the fold of a cold document (docs/fold.go) takes no context
+// at all. The draw here takes none either, which is how it stands for both. Before the budget
+// was spent outside the draw this row did not fail - it hung, which is what a reader got.
+func TestADrawStillOutWhenTheBudgetIsSpentSendsTheShell(t *testing.T) {
+	drawing := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	page, path := pageWithADraw(t, beatenFirstScreenBudget,
+		func(context.Context, *http.Request, api.FirstScreenAddress) api.FirstScreen {
+			close(drawing)
+			<-release
+			return api.FirstScreen{Drawn: true, HTML: `<p data-block-id="b-1">The document</p>`}
+		})
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+		page.servePageForDocument(response, request, path, theDocumentAddress)
+		answered <- response
+	}()
+
+	// Not a verdict on the clock: the draw above never ends on its own, so a page that waits for
+	// it waits for ever, and this bound is only what turns that into a failure rather than a
+	// hung test.
+	select {
+	case response := <-answered:
+		if response.Code != http.StatusOK {
+			t.Fatalf("the page past its budget: status=%d", response.Code)
+		}
+		if response.Body.String() != firstScreenPage {
+			t.Fatalf("a draw still out past the budget reached the page:\n%s", response.Body.String())
+		}
+		if got := response.Header().Get("Cache-Control"); got != pageCacheControl {
+			t.Fatalf("the shell's Cache-Control = %q, want %q", got, pageCacheControl)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the page waited on a draw that watches no context: the budget bounded nothing")
+	}
+	<-drawing
+}
+
+// The budget is the page's, not a deadline on the read: a context cancelled under a running
+// query makes pgx close the connection it was on (outbox/lease.go), so a database slow enough to
+// cost pages their documents would also cost the pool a connection for every page view. The draw
+// is handed a detached context and the page stops waiting for it instead.
+func TestTheDrawTheBudgetBeatIsNotCancelledUnderIt(t *testing.T) {
+	drawn := make(chan error, 1)
+	page, path := pageWithADraw(t, beatenFirstScreenBudget,
+		func(ctx context.Context, _ *http.Request, _ api.FirstScreenAddress) api.FirstScreen {
+			drawn <- ctx.Err()
+			return api.FirstScreen{}
+		})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+	page.servePageForDocument(response, request, path, theDocumentAddress)
+
+	if response.Body.String() != firstScreenPage {
+		t.Fatalf("the page past its budget drew:\n%s", response.Body.String())
+	}
+	if err := <-drawn; err != nil {
+		t.Fatalf("the draw ran under a context the budget had already ended (%v): a query on it would cost the pool its connection", err)
 	}
 }
 

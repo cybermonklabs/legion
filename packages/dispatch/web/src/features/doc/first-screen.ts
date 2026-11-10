@@ -2,7 +2,7 @@
  * The document's opening blocks, as the page's own server drew them into the page it sent.
  *
  * A reader who opens a document's address with a session that may read it is sent its first
- * blocks as HTML (`internal/dispatch/pmdoc/first_screen.go`, `routes/router.go`'s
+ * blocks as HTML (`internal/dispatch/pmdoc/first_screen.go`, `routes/first_screen.go`'s
  * `servePageForDocument`): up to 30 top-level blocks or 16 KB, with each block's `data-block-id`
  * on it, drawn by the same rules this page's own preview draws them by. They are on the screen
  * as the page is parsed - before the entry chunk has downloaded, let alone read the document -
@@ -18,9 +18,31 @@
  * document are never handed to another.
  */
 
-/** The element `web/index.html` keeps for the server's draw, after `#root` because `createRoot`
- *  clears what it mounts into. */
-const FIRST_SCREEN_ID = "first-screen";
+/** The element `web/index.html` keeps for the server's draw: `#first-screen`, a child of
+ *  `<body>` after `#root`, because `createRoot` clears what it mounts into. It is looked for
+ *  among `<body>`'s own children and never by id alone, because an id is one namespace for the
+ *  whole page and the document's own text writes into it: milkdown gives a heading that carries
+ *  no id the slug of its text, so a document opening with a heading called "First screen" is
+ *  drawn as `<h2 id="first-screen">` inside the live editor. A lookup by id alone found that
+ *  heading once the server's element had been taken, and a tab switch then removed it from the
+ *  editor, where ProseMirror read the removal as the reader's own edit and every reader of the
+ *  document got it (dispatch://INFRA-341). Nothing the page draws can be matched here: React
+ *  mounts into `#root` and a portal into a container of its own, so no element the editor draws
+ *  is ever a child of `<body>`. */
+const FIRST_SCREEN_SELECTOR = "body > #first-screen";
+
+/** The server's own element, kept once found: the only element this module ever takes blocks
+ *  from or removes. It is looked for again only while the page holds none, since a page that
+ *  has let go of this one has let go of it for good. */
+let serverElement: HTMLElement | null = null;
+
+function serverDraw(): HTMLElement | null {
+  if (serverElement !== null && serverElement.isConnected) {
+    return serverElement;
+  }
+  serverElement = document.querySelector<HTMLElement>(FIRST_SCREEN_SELECTOR);
+  return serverElement;
+}
 
 /** The address the server drew the blocks for. */
 const ADDRESS_ATTRIBUTE = "data-first-screen-address";
@@ -50,7 +72,7 @@ let drawnFor: string | undefined;
  *  document's own surface draw its preview before its text has arrived: those blocks are the
  *  reader's document, and they are on the screen already. */
 export function firstScreenAwaits(address: string): boolean {
-  const drawn = document.getElementById(FIRST_SCREEN_ID)?.firstElementChild ?? null;
+  const drawn = serverDraw()?.firstElementChild ?? null;
   const awaits = drawn !== null && drawn.getAttribute(ADDRESS_ATTRIBUTE) === address;
   if (awaits) {
     drawnFor = address;
@@ -69,7 +91,7 @@ export function theServerDrewTheFirstScreen(address: string): boolean {
  *  drawn in removed, so nothing of it is left behind whether or not the caller uses them.
  *  `undefined` where the page carries no draw, or one for another address. */
 export function takeFirstScreen(address: string): DocumentFragment | undefined {
-  const host = document.getElementById(FIRST_SCREEN_ID);
+  const host = serverDraw();
   const drawn = host?.firstElementChild ?? null;
   if (host === null || drawn === null || drawn.getAttribute(ADDRESS_ATTRIBUTE) !== address) {
     return undefined;
@@ -87,7 +109,7 @@ export function dropFirstScreen(address: string): void {
   if (drawnFor !== undefined && drawnFor !== address) {
     drawnFor = undefined;
   }
-  const host = document.getElementById(FIRST_SCREEN_ID);
+  const host = serverDraw();
   const drawn = host?.firstElementChild ?? null;
   if (host !== null && (drawn === null || drawn.getAttribute(ADDRESS_ATTRIBUTE) !== address)) {
     host.remove();

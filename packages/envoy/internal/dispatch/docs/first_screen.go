@@ -8,8 +8,8 @@ import (
 
 // FirstScreenHTML is the HTML of artifactID's opening blocks, for the page a reader opens the
 // document at (routes.servePage, dispatch://INFRA-341 R11): up to pmdoc.FirstScreenBlocks of them
-// and no more than pmdoc.FirstScreenBytes, with complete saying whether that is the whole
-// document.
+// and no more than pmdoc.FirstScreenBytes, and "" where the document's first block alone passes
+// that (pmdoc.FirstScreenHTML).
 //
 // It draws from the tree this server holds - a write's own fork, or the resident room - and,
 // where no room holds the document, from a fold of its stored state (storedTree), which is a
@@ -19,17 +19,17 @@ import (
 //
 // A document with no stored state draws nothing, and so does one the reader's own address names
 // before it has any content.
-func (s *Service) FirstScreenHTML(ctx context.Context, artifactID string) (string, bool, error) {
+func (s *Service) FirstScreenHTML(ctx context.Context, artifactID string) (string, error) {
 	tree, held, err := s.heldTree(ctx, artifactID)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	if !held {
 		tree, err = s.storedTree(ctx, artifactID)
 		if err != nil {
-			return "", false, err
+			return "", err
 		}
 	}
-	html, complete := pmdoc.FirstScreenHTML(tree)
-	return html, complete, nil
+	html, _ := pmdoc.FirstScreenHTML(tree)
+	return html, nil
 }
