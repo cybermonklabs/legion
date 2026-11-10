@@ -95,6 +95,22 @@ export function useTableRecovery(project: string, report: (text: string) => void
                 : "All changes saved."
         );
       }
+      if (event.kind === "discarded") {
+        // A discarded write no longer exists, so the record must not go on claiming it: the
+        // step goes with it, which keeps `settle` from waiting on a row that is gone and lets
+        // the resume work that step out from the server again.
+        const owner = owned.current.get(event.write.id);
+        const held = current.current;
+        if (
+          owner?.step &&
+          held &&
+          owner.action === held.id &&
+          held.writes[owner.step] !== undefined
+        ) {
+          const { [owner.step]: _discarded, ...rest } = held.writes;
+          remember({ ...held, writes: rest });
+        }
+      }
       if (event.kind !== "refused") owned.current.delete(event.write.id);
     });
     return () => {
@@ -114,12 +130,13 @@ export function useTableRecovery(project: string, report: (text: string) => void
       remember(next);
       return next;
     },
-    key: (step: string, id?: string) => {
-      const key = newSendKey();
-      const record = current.current;
-      if (id && record?.id === id)
-        remember({ ...record, writes: { ...record.writes, [step]: key } });
-      return key;
+    /** The keys of the writes a step of `id`'s action is about to send, kept with the record so
+     *  a resume can wait on them. One storage write and one render for the whole batch: a
+     *  250-row action records its keys once, not once per issue. */
+    record: (steps: Readonly<Record<string, string>>, id?: string) => {
+      const held = current.current;
+      if (id && held?.id === id && Object.keys(steps).length)
+        remember({ ...held, writes: { ...held.writes, ...steps } });
     },
     watch: (key: string, issue: string) => {
       const row = writes.rows().find((value) => value.key === key);

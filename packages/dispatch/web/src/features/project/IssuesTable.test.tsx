@@ -1,7 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: a column resize is a press, a drag and a release with no click, which user-event has no form for.
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -663,7 +662,10 @@ test("a refused merge move leaves the source open and does not post the close re
     ],
     "?group=epic"
   );
-  await user.click(await screen.findByRole("button", { name: "Epic actions ▾" }));
+  // The childless target epic keeps a heading of its own, so the merge starts from the source's.
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
   await user.selectOptions(
     screen.getByRole("combobox", { name: "Merge into another epic" }),
     "CORE-2"
@@ -914,9 +916,76 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
   expect(measured.filter((name) => name === "issues-table-scroll" || name === "THEAD")).toEqual([]);
 });
 
+// What moves the box's top edge is the content above it, which no row count reports: the box
+// and the block above it are observed instead. happy-dom has no `ResizeObserver`, so the stub
+// is the geometry — what the table observes, and what a notice appearing there fires.
+test("the box is measured through an observer over itself and the content above it", async () => {
+  const live: { elements: Element[]; fire: () => void }[] = [];
+  const original = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    readonly elements: Element[] = [];
+    constructor(callback: ResizeObserverCallback) {
+      live.push({
+        elements: this.elements,
+        fire: () => callback([], this as unknown as ResizeObserver),
+      });
+    }
+    observe(element: Element) {
+      this.elements.push(element);
+    }
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  restores.push(() => {
+    globalThis.ResizeObserver = original;
+  });
+  table([issue("CORE-1")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const box = screen.getByTestId("issues-table-scroll");
+  const above = screen.getByRole("region", { name: "Project issues" }).firstElementChild;
+  if (!above) throw new Error("The table has no content above it");
+  const watching = [...live].reverse().find((entry) => entry.elements.includes(box));
+  if (!watching) throw new Error("Nothing observes the table's box");
+  expect(watching.elements).toContain(above);
+  const measured: string[] = [];
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    measured.push(
+      this instanceof HTMLElement ? (this.dataset.testid ?? this.tagName) : this.tagName
+    );
+    return new DOMRect(0, 0, 1000, 600);
+  });
+  restores.push(() => rect.mockRestore());
+  watching.fire();
+  expect(measured).toContain("issues-table-scroll");
+});
+
+// An epic becomes a heading through the rows that belong to it. Taking the last one out leaves
+// it with no heading to be, so it must keep its own row rather than leave the view.
+test("an epic left with no children is still a row while grouped by epic", async () => {
+  const user = userEvent.setup();
+  // The listing answers from this array, so the move takes the child out of the epic there too.
+  const rows = [
+    issue("CORE-1", { labels: ["epic"], title: "Source" }),
+    issue("CORE-2", { parent: "CORE-1" }),
+  ];
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    rows[1] = issue("CORE-2");
+    return savedIssue("CORE-2") as never;
+  });
+  restores.push(() => send.mockRestore());
+  table(rows, "?group=epic");
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
+  const row = await screen.findByRole("row", { name: "CORE-1 Source" });
+  expect(within(row).getByRole("checkbox", { name: "Select CORE-1" })).toBeDefined();
+});
+
 // TanStack hands a resize to the state the reader owns, not to the widths a narrow window
 // derives from it, so a drag on a phone leaves the saved desktop key and title widths alone.
 test("resizing a column on a phone leaves the saved key and title widths alone", async () => {
+  const user = userEvent.setup();
   localStorage.setItem(
     "dispatch.project-table.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
@@ -931,9 +1000,11 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
   const header = await screen.findByRole("columnheader", { name: /Status/ });
   const handle = header.querySelector(".cursor-col-resize");
   if (!handle) throw new Error("The Status column has no resize edge");
-  fireEvent.mouseDown(handle, { clientX: 100 });
-  fireEvent.mouseMove(document, { clientX: 160 });
-  fireEvent.mouseUp(document, { clientX: 160 });
+  await user.pointer([
+    { keys: "[MouseLeft>]", target: handle, coords: { clientX: 100 } },
+    { target: document.body, coords: { clientX: 160 } },
+    { keys: "[/MouseLeft]", target: document.body, coords: { clientX: 160 } },
+  ]);
   await waitFor(() => {
     const saved = JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}");
     expect(saved.sizing.status).toBeGreaterThan(128);
@@ -979,16 +1050,18 @@ test("a retried Move reports in the ordinary wording while an action waits to be
   expect(screen.getByRole("region", { name: "Interrupted table action" })).toBeDefined();
 });
 
-// Whether the merge reason was posted is the reason write's own key, kept with the record. A
-// sentence anyone may comment on the source issue must not stand in for it.
-test("a resumed merge posts no second reason when its reason write is already recorded", async () => {
+// On a resume the server decides whether the reason was posted: the source's own messages,
+// compared as the whole sentence the merge builds.
+test("a resumed merge posts no second reason when the source already holds it", async () => {
   const user = userEvent.setup();
   const paths: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     paths.push(request.path);
     return savedIssue("CORE-1") as never;
   });
-  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
+    { message: { body: "Merged into CORE-2 (“Target”) from the issues table." } },
+  ] as never);
   restores.push(() => {
     send.mockRestore();
     messages.mockRestore();
@@ -1003,7 +1076,7 @@ test("a resumed merge posts no second reason when its reason write is already re
         keys: [],
         source: "CORE-1",
         target: "CORE-2",
-        writes: { reason: "already-sent" },
+        writes: {},
       },
     })
   );
@@ -1015,5 +1088,58 @@ test("a resumed merge posts no second reason when its reason write is already re
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() => expect(paths).toEqual(["/api/v1/issues/CORE-1"]));
   expect(paths.some((path) => path.endsWith("/messages"))).toBe(false);
-  expect(messages).not.toHaveBeenCalled();
+});
+
+// A refused reason the reader discards leaves no write behind, so the record must not go on
+// claiming it: Finish posts the reason itself, and only then closes the source.
+test("a resumed merge whose discarded reason never landed posts it before closing", async () => {
+  const user = userEvent.setup();
+  const paths: string[] = [];
+  let refuseReason = true;
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    paths.push(request.path);
+    if (refuseReason && request.path.endsWith("/messages"))
+      throw new ApiError(403, { error: "Message refused", code: "FORBIDDEN" });
+    return savedIssue("CORE-1") as never;
+  });
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
+  restores.push(() => {
+    send.mockRestore();
+    messages.mockRestore();
+  });
+  const { client } = table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Source" }),
+      issue("CORE-2", { labels: ["epic"], title: "Target" }),
+    ],
+    "?group=epic"
+  );
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
+  await screen.findByRole("alert");
+  const refused = writesOf(client)
+    .rows()
+    .find((write) => write.status === "refused");
+  if (!refused) throw new Error("The merge reason was not refused");
+  writesOf(client).discard(refused.id);
+  refuseReason = false;
+  await waitFor(() =>
+    expect(
+      JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").action?.writes.reason
+    ).toBeUndefined()
+  );
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
+  await waitFor(() =>
+    expect(paths).toEqual([
+      "/api/v1/issues/CORE-1/messages",
+      "/api/v1/issues/CORE-1/messages",
+      "/api/v1/issues/CORE-1",
+    ])
+  );
 });

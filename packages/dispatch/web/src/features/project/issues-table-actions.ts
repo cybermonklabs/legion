@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import { newSendKey } from "../../lib/send-key";
 import { plainWrite, useWrites } from "../writes/write-store";
 import {
   buildItems,
@@ -60,9 +61,15 @@ async function settledWithLimit<T, R>(
   return results;
 }
 
+/** The one sentence a merge records on the source issue, written and recognised in one place.
+ *  A resume compares the whole sentence against the source's own messages, because the server
+ *  is what knows whether it was posted: a recorded key only says a write was made. */
 const mergeReason = (into: string, title: string) =>
   `Merged into ${into} (“${title}”) from the issues table.`;
 
+/** What an interrupted action of each kind says it left behind, and how it is finished. The
+ *  record's kind union is the only list of kinds: a new one fails to compile until both are
+ *  written for it. */
 interface ResumableAction {
   describe: (record: TableAction) => string;
   resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;
@@ -91,14 +98,7 @@ export function useIssueTableActions({
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
 
-  const request = <T>(
-    value: WriteRequest<T>,
-    label: string,
-    issue: string,
-    id?: string,
-    step = issue
-  ) => {
-    const key = recovery.key(step, id);
+  const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
     const answer = writes.run({
       kind: plainWrite,
       detail: null,
@@ -114,17 +114,23 @@ export function useIssueTableActions({
     return answer;
   };
   const apply = async (operations: readonly Patch[], id?: string) => {
-    const results = await settledWithLimit(operations, WRITES_IN_FLIGHT, async ({ key, input }) => {
-      const answer = await request(
-        issuePatchRequest(key, input),
-        `Update ${key} from the issues table`,
-        key,
-        id
-      );
-      if (answer !== null) mergeIssue(client, answer);
-      setMoved((current) => new Set([...current, key]));
-      return key;
-    });
+    const sends = operations.map((operation) => ({ ...operation, write: newSendKey() }));
+    recovery.record(Object.fromEntries(sends.map(({ key, write }) => [key, write])), id);
+    const results = await settledWithLimit(
+      sends,
+      WRITES_IN_FLIGHT,
+      async ({ key, input, write }) => {
+        const answer = await request(
+          issuePatchRequest(key, input),
+          `Update ${key} from the issues table`,
+          key,
+          write
+        );
+        if (answer !== null) mergeIssue(client, answer);
+        setMoved((current) => new Set([...current, key]));
+        return key;
+      }
+    );
     const failed = results.flatMap((result, index) =>
       result.status === "rejected"
         ? [{ key: operations[index]?.key ?? "Unknown issue", error: result.reason }]
@@ -191,6 +197,32 @@ export function useIssueTableActions({
         : `Moved ${named(open)} to the epic “${titleOf(epic)}”.`) + skipped;
     void perform(said, () => apply(open.map((key) => ({ key, input: { parent: epic } }))));
   };
+  /** The rank writes of a start-next action, sent in order, stopping the moment the reader
+   *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
+   *  is how the attempt names what did not move. The answer says whether the action is still
+   *  the one in hand when the last write landed. */
+  const runStartNext = async (
+    record: TableAction,
+    current: readonly Item[],
+    failure: (remaining: readonly string[], error: unknown) => string = (_remaining, error) =>
+      error instanceof Error ? error.message : String(error)
+  ) => {
+    const operations = startNextWrites(current, record.keys);
+    for (const [index, operation] of operations.entries()) {
+      if (!recovery.active(record.id)) return false;
+      try {
+        await apply([operation], record.id);
+      } catch (error) {
+        throw new Error(
+          failure(
+            operations.slice(index).map(({ key }) => key),
+            error
+          )
+        );
+      }
+    }
+    return recovery.active(record.id);
+  };
   const startNext = (keys: readonly string[]) => {
     if (!canBegin()) return;
     const queued = queuedInOrder(items, keys);
@@ -201,8 +233,7 @@ export function useIssueTableActions({
       });
       return;
     }
-    const operations = startNextWrites(items, queued);
-    if (!operations.length) {
+    if (!startNextWrites(items, queued).length) {
       setNotice({
         kind: "success",
         text: `${named(queued)} already ${queued.length === 1 ? "starts" : "start"} next.`,
@@ -213,20 +244,13 @@ export function useIssueTableActions({
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
       async () => {
-        for (const [index, operation] of operations.entries()) {
-          if (!recovery.active(record.id)) return undefined;
-          try {
-            await apply([operation], record.id);
-          } catch (error) {
-            throw new Error(
-              `Did not move up: ${operations
-                .slice(index)
-                .map(({ key }) => key)
-                .join(", ")}. ${error instanceof Error ? error.message : String(error)}`
-            );
-          }
-        }
-        if (!recovery.active(record.id)) return undefined;
+        const ran = await runStartNext(
+          record,
+          items,
+          (remaining, error) =>
+            `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
+        );
+        if (!ran) return undefined;
         recovery.dismiss();
         return queued;
       }
@@ -252,7 +276,8 @@ export function useIssueTableActions({
     setNaming(undefined);
     setDuplicateEpic(undefined);
     const record = recovery.begin({ kind: "newEpic", keys: open });
-    const key = recovery.key("create", record.id);
+    const key = newSendKey();
+    recovery.record({ create: key }, record.id);
     await perform(
       `Made the epic “${title}” from ${named(open)}.${skipped}`,
       async () => {
@@ -306,18 +331,19 @@ export function useIssueTableActions({
     const from = record.source;
     const into = record.target;
     if (!from || !into || !recovery.active(record.id)) return;
-    // The reason write's own key says whether it was sent: a sentence anyone may comment does
-    // not. The text check is the second answer, for a record that lost its key, and it compares
-    // the whole sentence the writer builds.
-    const saved = recovery.current.current;
+    // Whether the reason was posted is the server's answer on a resume: a recorded key says
+    // only that a write was made, and a write discarded in Pending changes leaves that key
+    // behind. `settle` has already waited on any write of this action still in flight, so a
+    // reason that landed is in the source's messages, compared as the whole sentence.
     const alreadySaid =
       resumed &&
-      (saved?.writes.reason !== undefined ||
-        (await api.listIssueMessages(from)).some(
-          ({ message }) => message.body === mergeReason(into, titleOf(into))
-        ));
+      (await api.listIssueMessages(from)).some(
+        ({ message }) => message.body === mergeReason(into, titleOf(into))
+      );
     if (!recovery.active(record.id)) return;
-    if (!alreadySaid)
+    if (!alreadySaid) {
+      const reason = newSendKey();
+      recovery.record({ reason }, record.id);
       await request(
         {
           method: "POST",
@@ -326,9 +352,9 @@ export function useIssueTableActions({
         },
         `Record the merge reason on ${from}`,
         from,
-        record.id,
-        "reason"
+        reason
       );
+    }
     if (recovery.active(record.id))
       await apply([{ key: from, input: { status: "done" } }], record.id);
   };
@@ -386,13 +412,10 @@ export function useIssueTableActions({
       describe: (record) =>
         `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
       resume: async (record, current) => {
-        for (const operation of startNextWrites(
-          buildItems(current, () => ""),
-          record.keys
-        )) {
-          if (!recovery.active(record.id)) return;
-          await apply([operation], record.id);
-        }
+        await runStartNext(
+          record,
+          buildItems(current, () => "")
+        );
       },
     },
     merge: {
@@ -440,7 +463,7 @@ export function useIssueTableActions({
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,
-    setUnansweredEpic: (_value: undefined) => {
+    dismissUnansweredEpic: () => {
       setUnansweredEpic(undefined);
       recovery.dismiss();
     },
