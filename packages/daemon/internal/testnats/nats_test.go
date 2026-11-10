@@ -176,6 +176,104 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
+// The stream a test is handed must be empty. A create that comes back holding an earlier test's
+// work, which URL's purge says how a create can do, fails the test there, naming each message by
+// subject, stream sequence and stored time and each consumer by name, rather than reaching the
+// test as a count it reads later and reads as its own. A stream holding a consumer and no message
+// names the consumer alone: there is no message to name, and a sequence nothing stored is not
+// one. A stream whose range holds a deleted sequence names the stored messages after that gap and
+// counts the rest right: with more messages than the failure names one by one, the last of the
+// named ones is the message that far past the gap, and the remainder is the count of what is left.
+func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
+	js := JetStream(t)
+	for _, row := range []struct {
+		name   string
+		stream string
+		leave  func(t *testing.T, stream jetstream.Stream)
+		want   []string
+		unwant []string
+	}{
+		{
+			name:   "a message",
+			stream: "ALREADY_FULL",
+			leave: func(t *testing.T, _ jetstream.Stream) {
+				if _, err := js.Publish(t.Context(), "full.one", []byte("x")); err != nil {
+					t.Fatalf("publish: %v", err)
+				}
+			},
+			want: []string{"ALREADY_FULL is not empty at its create", "message 1 full.one stored "},
+		},
+		{
+			name:   "a consumer and no message",
+			stream: "ALREADY_CONSUMED",
+			leave: func(t *testing.T, stream jetstream.Stream) {
+				if _, err := stream.CreateConsumer(t.Context(), jetstream.ConsumerConfig{Durable: "left-behind"}); err != nil {
+					t.Fatalf("create consumer: %v", err)
+				}
+			},
+			want:   []string{"ALREADY_CONSUMED is not empty at its create", "consumer left-behind"},
+			unwant: []string{"message"},
+		},
+		{
+			name:   "messages with a deleted sequence between them",
+			stream: "ALREADY_GAPPED",
+			leave: func(t *testing.T, stream jetstream.Stream) {
+				// Twelve messages with sequence 2 deleted leave eleven stored, two more than the
+				// failure names one by one. A loop that stepped sequence by sequence would stop
+				// ten sequences in, at the stored message 10 rather than 11, and a remainder
+				// counted over the range rather than over the messages named would print one
+				// more than the one message left.
+				for i := 1; i <= 12; i++ {
+					if _, err := js.Publish(t.Context(), fmt.Sprintf("full.%d", i), []byte("x")); err != nil {
+						t.Fatalf("publish full.%d: %v", i, err)
+					}
+				}
+				if err := stream.DeleteMsg(t.Context(), 2); err != nil {
+					t.Fatalf("delete the message at sequence 2: %v", err)
+				}
+			},
+			want: []string{
+				"ALREADY_GAPPED is not empty at its create",
+				"message 1 full.1 stored ",
+				"message 11 full.11 stored ",
+				"and 1 more",
+			},
+			unwant: []string{"message 2", "not found"},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			config := jetstream.StreamConfig{Name: row.stream, Subjects: []string{"full.>"}}
+			stream, err := js.CreateStream(t.Context(), config)
+			if err != nil {
+				t.Fatalf("create the stream: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := js.DeleteStream(context.Background(), row.stream); err != nil {
+					t.Errorf("delete the stream: %v", err)
+				}
+			})
+			row.leave(t, stream)
+			again := &fatalRecorder{TB: t}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				CreateStream(again, js, config)
+			}()
+			<-done
+			for _, want := range row.want {
+				if !strings.Contains(again.message, want) {
+					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say %q", again.message, want)
+				}
+			}
+			for _, unwant := range row.unwant {
+				if strings.Contains(again.message, unwant) {
+					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say no %q", again.message, unwant)
+				}
+			}
+		})
+	}
+}
+
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
 type fatalRecorder struct {
 	testing.TB
