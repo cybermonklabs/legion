@@ -361,7 +361,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-		c.update_round, c.updated_at,
+		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token
 		where c.project = $1 and c.issue = $2 order by c.token`, project, issue)
@@ -371,14 +371,16 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	defer claims.Close()
 	for claims.Next() {
 		var c pods.IdleClaim
-		var role, state, kinds string
+		var role, state, kinds, suspendedBy string
 		var servingGeneration int64
 		var activityAt, reminder, lastTurn *time.Time
 		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
-			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt, &lastTurn); err != nil {
+			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
+			&c.HasProcess, &suspendedBy, &lastTurn); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
 		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
+		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
 		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
 		if kinds != "" {

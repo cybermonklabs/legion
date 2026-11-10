@@ -29,3 +29,28 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 	_, drifted := imageDrift(pod, r.image)
 	return !drifted
 }
+
+// IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox
+// is called: the one name the six role claims of the issue share, which its pod carries too
+// (SandboxName, through issueSandboxName), read from the Sandbox the runtime's store holds. One
+// call answers both because the name is read off the same object the presence is, and a release
+// that takes the pod down records the name it took.
+//
+// It is the informer's store and never an API call: the idle pass asks this of every pod of the
+// project on every tick, and a read per pod against the API server would cost the apiserver a
+// request a pod a minute to answer what the runtime already watches. Anything that leaves the
+// Sandbox unread — an issue key no name can be built from, a store that cannot answer, a
+// Sandbox the store does not hold — answers present false with no name, which holds the pod
+// rather than releasing it: a pod whose Sandbox cannot be read is one this daemon knows nothing
+// about, and guessing it gone would release a pod the runtime still runs.
+func (r *Runtime) IssueSandbox(issue string) (string, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return "", false
+	}
+	s, err := r.storedSandbox(name)
+	if err != nil || s == nil {
+		return "", false
+	}
+	return name, true
+}

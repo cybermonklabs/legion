@@ -22,11 +22,15 @@ import (
 // cost nothing.
 const idleTickInterval = time.Minute
 
-// issuePodImages is the runtime's answer to "is this issue's pod on the image the configuration
-// names?" (sandbox.Runtime.IssuePodRunsConfiguredImage). A runtime that runs no pods implements
-// none, and the daemon then releases nothing, which is also what `runtime: tmux` wants.
-type issuePodImages interface {
+// issuePods is what the idle pass asks the runtime about an issue's pod, which is everything
+// about a release the daemon's own Postgres does not hold: whether the pod runs the image the
+// configuration names (sandbox.Runtime.IssuePodRunsConfiguredImage), and whether the runtime
+// still holds the issue's Sandbox and under what name (sandbox.Runtime.IssueSandbox). A runtime
+// that runs no pods implements neither, and the daemon then releases nothing, which is also what
+// `runtime: tmux` wants.
+type issuePods interface {
 	IssuePodRunsConfiguredImage(issue string) bool
+	IssueSandbox(issue string) (name string, present bool)
 }
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval), and
@@ -34,7 +38,7 @@ type issuePodImages interface {
 // period. It returns at once — running no ticker at all — when release is off: `idle_minutes: 0`,
 // or a runtime that is not Kubernetes, which has no pod to release and no image to compare.
 func (w *workflowRuntime) tickIdle(ctx context.Context) {
-	if w.idlePeriod <= 0 || w.idleStore == nil || w.idleImages == nil {
+	if w.idlePeriod <= 0 || w.idleStore == nil || w.idleRuntime == nil {
 		return
 	}
 	interval := w.idleTick
@@ -84,7 +88,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // recordPodRelease).
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := time.Now().UTC()
-	onConfiguredImage := w.idleImages.IssuePodRunsConfiguredImage(issue)
+	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {

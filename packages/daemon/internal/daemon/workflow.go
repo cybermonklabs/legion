@@ -98,13 +98,14 @@ type workflowRuntime struct {
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
 	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
-	// daemon's store, which holds the idle view and the release's mark, and idleImages the
-	// runtime's reading of an issue pod's image; both nil when release is off. idleTick is the
-	// tick's period, zero being idleTickInterval; a test shortens it.
-	idlePeriod time.Duration
-	idleStore  *store.Store
-	idleImages issuePodImages
-	idleTick   time.Duration
+	// daemon's store, which holds the idle view and the release's mark, and idleRuntime the
+	// runtime the pass asks about the pod itself — its image, its Sandbox (issuePods); both nil
+	// when release is off. idleTick is the tick's period, zero being idleTickInterval; a test
+	// shortens it.
+	idlePeriod  time.Duration
+	idleStore   *store.Store
+	idleRuntime issuePods
+	idleTick    time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -875,18 +876,19 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
-// issue's pod runs the image the configuration names.
+// issue's pod runs the image the configuration names and whether it still holds the issue's
+// Sandbox (issuePods).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
 		return
 	}
-	images, ok := supervision.supervisor.deps.Runtime.(issuePodImages)
+	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
 	if !ok {
-		w.log.Warn("idle release: the runtime reads no pod image, so no pod is released")
+		w.log.Warn("idle release: the runtime reads no issue pod, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleStore, w.idleImages = k.IdleRelease.Idle(), supervision.supervisor.store, images
+	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 

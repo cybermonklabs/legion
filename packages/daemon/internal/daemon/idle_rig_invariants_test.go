@@ -23,7 +23,7 @@ type idleRigSaveWatch struct {
 	runtime.Runtime
 	bundler   runtime.WorkspaceBundler
 	suspender runtime.IssueSuspender
-	images    issuePodImages
+	pods      issuePods
 	observe   func()
 }
 
@@ -37,7 +37,11 @@ func (w *idleRigSaveWatch) SuspendIssue(ctx context.Context, issue, tree string,
 }
 
 func (w *idleRigSaveWatch) IssuePodRunsConfiguredImage(issue string) bool {
-	return w.images.IssuePodRunsConfiguredImage(issue)
+	return w.pods.IssuePodRunsConfiguredImage(issue)
+}
+
+func (w *idleRigSaveWatch) IssueSandbox(issue string) (string, bool) {
+	return w.pods.IssueSandbox(issue)
 }
 
 // A release saves the workspace's unpushed work while the role whose shim builds it is still
@@ -59,13 +63,13 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 	if !ok {
 		t.Fatal("the rig's runtime suspends no issue")
 	}
-	images, ok := inner.(issuePodImages)
+	podRuntime, ok := inner.(issuePods)
 	if !ok {
-		t.Fatal("the rig's runtime reads no pod image")
+		t.Fatal("the rig's runtime reads no issue pod")
 	}
 	var saves int
 	var atSave supervise.Claim
-	rig.sup.deps.Runtime = &idleRigSaveWatch{Runtime: inner, bundler: bundler, suspender: suspender, images: images,
+	rig.sup.deps.Runtime = &idleRigSaveWatch{Runtime: inner, bundler: bundler, suspender: suspender, pods: podRuntime,
 		observe: func() {
 			saves++
 			atSave = rig.machine.Claim()
