@@ -1,8 +1,10 @@
 package delivery
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -77,7 +79,7 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 
 		// Eight shapes measured in this pod against the parse, each row the answer the code gives
 		// today rather than one anybody wishes it gave.
-		{name: "a host with a port is github.com, a credit main refused and this change gives", body: "See https://github.com:443/acme/widgets/issues/7 here.", credit: true},
+		{name: "a host with a port is github.com, the port being no part of the host", body: "See https://github.com:443/acme/widgets/issues/7 here.", credit: true},
 		{name: "a citation keeps its meaning with a trailing slash", body: "See https://github.com/acme/widgets/issues/7/ here.", credit: true},
 		{name: "a tab delimits the token as a space does", body: "See\thttps://github.com/acme/widgets/issues/7\there.", credit: true},
 		{name: "a punycode host that reads like github.com is another host", body: "See https://xn--github-8m9b.com/acme/widgets/issues/7 here.", credit: false},
@@ -116,11 +118,92 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 	}
 }
 
-// TestCitedIssuesReadsOneMatchInBoundedWork holds the two ends of the bound the citation reader
-// works under: a body may be any size and a match still costs one bounded read, and a URL longer
-// than that bound is no citation at all. The bodies are built rather than written out, because a
-// row of a table cannot hold 65,533 bytes and still be read by a person.
-func TestCitedIssuesReadsOneMatchInBoundedWork(t *testing.T) {
+// TestCitedIssuesCreditsEveryCitationItsWordEnds holds the citations a body carries when one
+// citation ends and another begins without a space between them. Running text separates items
+// with punctuation — a comma, a semicolon, an ampersand, a plus, a closing bracket — and a bare
+// `#N` reference or a Markdown link may stand immediately before a URL. `main` credits every row
+// below, so a row that loses one is a citation this change took away from the default branch.
+//
+// The expected lists are what `main` answers, measured at origin/main, and they are written out
+// rather than described: a reader comparing two implementations needs the answer, not a rule.
+func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
+	const repo = "acme/widgets"
+	const seven = "https://github.com/acme/widgets/issues/7"
+	const nine = "https://github.com/acme/widgets/issues/9"
+	const twelve = "https://github.com/acme/widgets/issues/12"
+	for _, row := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		{name: "two citations joined by a comma", body: "github.com/acme/widgets/issues/7,github.com/acme/widgets/issues/9", want: []string{seven, nine}},
+		{name: "joined by a semicolon", body: "github.com/acme/widgets/issues/7;github.com/acme/widgets/issues/9", want: []string{seven, nine}},
+		{name: "joined by an ampersand", body: "github.com/acme/widgets/issues/7&github.com/acme/widgets/issues/9", want: []string{seven, nine}},
+		{name: "joined by a plus", body: "github.com/acme/widgets/issues/7+github.com/acme/widgets/issues/9", want: []string{seven, nine}},
+		{name: "the first carrying a scheme", body: "https://github.com/acme/widgets/issues/7,github.com/acme/widgets/issues/9", want: []string{seven, nine}},
+		{name: "each in brackets of its own", body: "(github.com/acme/widgets/issues/7)(github.com/acme/widgets/issues/9)", want: []string{seven, nine}},
+		{name: "after a bare reference and a comma", body: "#12,github.com/acme/widgets/issues/7", want: []string{twelve, seven}},
+		{name: "after a bracketed bare reference", body: "Fixes (#12)github.com/acme/widgets/issues/7", want: []string{twelve, seven}},
+		{name: "as the target of a Markdown link", body: "See [acme/widgets#7](github.com/acme/widgets/issues/7)", want: []string{seven}},
+		{name: "as the target of a link whose text is a bare reference", body: "See [#7](github.com/acme/widgets/issues/7)", want: []string{seven}},
+		{name: "after bold markers and a colon", body: "**#7**:github.com/acme/widgets/issues/7", want: []string{seven}},
+		{name: "after a word that ends in a slash and a colon", body: "Related issues/PRs:github.com/acme/widgets/issues/7", want: []string{seven}},
+		{name: "scheme-relative inside brackets", body: "(//github.com/acme/widgets/issues/7)", want: []string{seven}},
+		{name: "scheme-relative inside square brackets", body: "[//github.com/acme/widgets/issues/7]", want: []string{seven}},
+
+		// The refusals that must survive whatever ends a word: a host inside another URL's path
+		// is not a citation, however the prose brackets it.
+		{name: "another host's path, bracketed", body: "See https://example.test/(GitHub.com/acme/widgets/issues/7) here.", want: nil},
+		{name: "another host's path, plain", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", want: nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if urls := citedIssues(repo, row.body); !slices.Equal(urls, row.want) {
+				t.Errorf("citedIssues(%q, %q) = %v, want %v", repo, row.body, urls, row.want)
+			}
+		})
+	}
+}
+
+// TestCitedIssuesCostsNoMoreForACitationFarFromASpace is the cost test, written so that it fails
+// on the shape it guards against rather than on a clock. Two bodies of the same length carry the
+// same 200 citations and differ only in what separates them: spaces, which end a word at once,
+// and commas, which do not. A reader that walks back to the nearest space pays the body's length
+// for every match and the comma body costs many times the space one; a reader that reads a
+// bounded run pays the same for both.
+//
+// Measured in this pod at this head, best of three each: 5.83 ms and 5.05 ms, a ratio under one.
+// The same bodies against the walk this change replaced (ebb65528's reader): 5.74 ms and
+// 134.77 ms, a ratio of 23. The bound below is 8, which no linear reader approaches and no
+// walking one meets.
+func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
+	const repo = "acme/widgets"
+	one := "github.com/acme/widgets/issues/7"
+	prose := strings.Repeat("a", 65536)
+	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
+	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
+	best := func(body string) time.Duration {
+		var quickest time.Duration
+		for attempt := 0; attempt < 3; attempt++ {
+			started := time.Now()
+			citedIssues(repo, body)
+			if took := time.Since(started); quickest == 0 || took < quickest {
+				quickest = took
+			}
+		}
+		return quickest
+	}
+	space, comma := best(bySpace), best(byComma)
+	if comma > 8*space {
+		t.Errorf("citing %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space)
+	}
+}
+
+// TestCitedIssuesReadsAHostNameOfAHostNamesLength holds the two ends of what a host may be. A
+// citation after a word of 65,533 bytes is credited, because the word before it is no part of
+// the host; a run of 65,533 host bytes ending in the citation is refused, because a host name
+// that long is no host name. The bodies are built rather than written out, since a row of a
+// table cannot hold 65,533 bytes and still be read by a person.
+func TestCitedIssuesReadsAHostNameOfAHostNamesLength(t *testing.T) {
 	const repo = "acme/widgets"
 	const cited = "https://github.com/acme/widgets/issues/7"
 	t.Run("a citation after a word of 65,533 bytes", func(t *testing.T) {
@@ -129,10 +212,10 @@ func TestCitedIssuesReadsOneMatchInBoundedWork(t *testing.T) {
 			t.Errorf("citedIssues over a 65,533-byte word = %v, want %s and nothing else", urls, cited)
 		}
 	})
-	t.Run("a body of 65,533 bytes with no space in it cites nothing", func(t *testing.T) {
+	t.Run("a host name of 65,533 bytes is no host name", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + "github.com/acme/widgets/issues/7"
 		if urls := citedIssues(repo, body); len(urls) != 0 {
-			t.Errorf("citedIssues over a 65,533-byte word with the citation inside it = %v, want none: a URL that long is no citation", urls)
+			t.Errorf("citedIssues over a 65,533-byte host name = %v, want none", urls)
 		}
 	})
 }
