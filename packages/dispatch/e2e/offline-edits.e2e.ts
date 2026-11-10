@@ -147,7 +147,8 @@ test("unsent edits are named, then cleared after acknowledgement and a connected
 
 // SLOW(>=2s): four document loads across two tabs, each with a Yjs restore of its own.
 // @webkit @firefox: IndexedDB-backed recovery, here two tabs' two connections to one store.
-test("two disconnected tabs restore each browser-held edit once @webkit @firefox", async ({
+// @pr: A two-context race: two disconnected tabs each restore their own held edit, once.
+test("two disconnected tabs restore each browser-held edit once @webkit @firefox @pr", async ({
   browser,
 }) => {
   const issue = await makeIssue();
@@ -196,7 +197,10 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
 });
 
 // SLOW(>=2s): three document loads, two status writes and two admissions decided at socket open.
-test("read-only admission preserves edits until a later read-write reload", async ({ browser }) => {
+// @pr: The live document's admission: a read-only admission keeps the reader's edits until a later read-write reload.
+test("read-only admission preserves edits until a later read-write reload @pr", async ({
+  browser,
+}) => {
   const issue = await makeIssue();
   const alice = await asUser(browser, "alice");
   const paragraph = "survives a read-only admission";

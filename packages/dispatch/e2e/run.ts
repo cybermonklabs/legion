@@ -37,6 +37,7 @@ import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 
+import { projectsOnCommandLine } from "./configurations";
 import {
   laneCountVariable,
   laneVariable,
@@ -130,11 +131,16 @@ function fail(error: unknown): never {
 const playwrightEngines = ["chromium", "firefox", "webkit"] as const;
 type PlaywrightEngine = (typeof playwrightEngines)[number];
 
-/** The one project of e2e/playwright.config.ts whose name does not hold its engine's: `iphone`
- *  is an iPhone's viewport in Chromium. Every other project is named for its engine
- *  (`chromium-plain-http`, `firefox-alone`, `webkit-iphone`), and a name this cannot read takes
- *  every engine of the mode, so a project added there is never skipped here. */
-const namedProjectEngines: Readonly<Record<string, PlaywrightEngine>> = { iphone: "chromium" };
+/** The projects of e2e/playwright.config.ts whose names do not hold their engine's: `iphone`
+ *  and `stub-phone` are an iPhone's viewport in Chromium, and `stub` is Chromium at the desktop
+ *  width. Every other project is named for its engine (`chromium-plain-http`, `firefox-alone`,
+ *  `webkit-iphone`), and a name this cannot read takes every engine of the mode, so a project
+ *  added there is never skipped here. */
+const namedProjectEngines: Readonly<Record<string, PlaywrightEngine>> = {
+  iphone: "chromium",
+  stub: "chromium",
+  "stub-phone": "chromium",
+};
 
 /** Whether `argv` runs Playwright's test runner, the only command this starts that launches a
  *  browser: `playwright test`, with or without the runner that resolves it (`bunx`, `npx`). A
@@ -143,18 +149,6 @@ function runsPlaywrightTests(argv: readonly string[]): boolean {
   const runner = argv.findIndex((word) => /(^|\/)playwright(\.js)?$/.test(word));
   if (runner === -1 || argv[runner + 1] !== "test") return false;
   return !argv.slice(runner + 2).includes("--list");
-}
-
-/** The projects `--project` names on the command line, in either spelling Playwright takes. */
-function projectsOnCommandLine(argv: readonly string[]): readonly string[] {
-  const projects: string[] = [];
-  for (const [index, word] of argv.entries()) {
-    if (word === "--project") {
-      const named = argv[index + 1];
-      if (named !== undefined) projects.push(named);
-    } else if (word.startsWith("--project=")) projects.push(word.slice("--project=".length));
-  }
-  return projects;
 }
 
 /** The engines the projects this run would run launch: two-process mode has the one Chromium

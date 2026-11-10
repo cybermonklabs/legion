@@ -16,7 +16,8 @@ test.beforeEach(async () => {
 });
 
 // @firefox: native editing over what follows a block's last line break.
-test("typing over the whole last line of a code block replaces that line @firefox", async ({
+// @pr: The code-block editing family's one row on the lane: typing over a block's last line must replace that line and nothing else.
+test("typing over the whole last line of a code block replaces that line @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

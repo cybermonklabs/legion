@@ -176,6 +176,11 @@ report_port() {
   printf '%s\n' "${_match##*[!0-9]}"
 }
 
+# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
+port_answers() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one
 # socket that listens on PORT: its inode from the LISTEN row (state 0A) of /proc/net/tcp and
 # /proc/net/tcp6, and each process with a descriptor naming socket:[<inode>]. It fails when no

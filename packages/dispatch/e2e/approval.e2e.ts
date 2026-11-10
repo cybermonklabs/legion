@@ -66,7 +66,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a spec's approval is a human review pinned to its version: requested by the agent, answered in the Inbox, stale after an edit, changes requested from the header", async ({
+// @pr: Create through answer to close: an approval requested, answered in the Inbox, made stale by an edit, and changes requested from the header.
+test("a spec's approval is a human review pinned to its version: requested by the agent, answered in the Inbox, stale after an edit, changes requested from the header @pr", async ({
   browser,
 }) => {
   await createProject({ key: "GATE", name: "Gate" });
@@ -161,7 +162,8 @@ test("a spec's approval is a human review pinned to its version: requested by th
   }
 });
 
-test("a reason longer than the server takes shows the server's own refusal in the Request changes dialog", async ({
+// @pr: A write the server refuses: a reason past the server's bound shows the server's own words in the Request changes dialog.
+test("a reason longer than the server takes shows the server's own refusal in the Request changes dialog @pr", async ({
   browser,
 }) => {
   await createProject({ key: "LONGREASON", name: "Long reason" });

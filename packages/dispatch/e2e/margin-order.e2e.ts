@@ -26,7 +26,8 @@ test.beforeEach(async () => {
 // The server writes RFC 3339 and drops trailing fractional zeros, so two replies in one second come
 // back as strings of different widths, and as text `…01.12Z` sorts after `…01.123456Z`, the later
 // time. The margin lists the replies in the order they were written.
-test("the margin lists replies written in the same second in the order they were written", async ({
+// @pr: The margin's order is read from the server's own timestamps, which two replies in one second sort wrongly as text.
+test("the margin lists replies written in the same second in the order they were written @pr", async ({
   browser,
 }) => {
   await createProject({ key: "ORDER", name: "Reply order" });
