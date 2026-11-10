@@ -278,7 +278,6 @@ with the row it belongs to and whether it was corrupted.
 """
 
 import http.server
-import io
 import json
 import os
 import re
@@ -296,6 +295,8 @@ document = yaml.safe_load(manifest.read_text()) or {}
 ROWS = document.get("tools") or []
 GHCR_BLOB = re.compile(r"^/ghcr/v2/(?P<path>.+)/blobs/sha256:(?P<digest>[0-9a-f]{64})$")
 NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
+# The size of one read of a payload, which is the size of one write to the socket.
+CHUNK = 64 * 1024
 
 
 # The source words each route is reached by, which is what decides the row a request is about:
@@ -375,23 +376,27 @@ def corrupted_rows():
     return set(control.read_text().split())
 
 
-def member_data_end(body, member):
+def member_data_end(file, member):
     """Where that member's own stored bytes end inside that zip, or None where the archive
     holds no such member. The local header is read for its two length fields, because the extra
-    field a writer puts there is not the one the central directory carries."""
+    field a writer puts there is not the one the central directory carries.
+    The archive is read from the open file rather than from a body in memory, because a payload
+    is never held whole here."""
     try:
-        with zipfile.ZipFile(io.BytesIO(body)) as held:
+        with zipfile.ZipFile(file) as held:
             info = held.getinfo(member)
-        head = body[info.header_offset:info.header_offset + 30]
+        file.seek(info.header_offset)
+        head = file.read(30)
         name_length, extra_length = struct.unpack("<HH", head[26:30])
         return info.header_offset + 30 + name_length + extra_length + info.compress_size
     except (KeyError, OSError, struct.error, zipfile.BadZipFile):
         return None
 
 
-def corrupted_body(row, name, body):
-    """That body with one byte changed: the smallest edit that moves the sha256 of what the
-    reader of these bytes is held to.
+def corrupted_offset(row, name, file, size):
+    """The one byte a corrupted case changes, as an offset into the payload file: the smallest
+    edit that moves the sha256 of what the reader of these bytes is held to, and None for a file
+    of no bytes, which has no byte to change.
     For most names it is the last byte of the file, which is what the row's digest is of, and
     for a gzipped tarball it is part of the framing `tar -xz` reads, so the member read refuses
     it before any digest does.
@@ -402,11 +407,13 @@ def corrupted_body(row, name, body):
     row's `digest` answers for, and python3's zipfile then hands over no member at all, because
     the CRC the archive carries for it no longer matches what it holds.
     """
+    if size == 0:
+        return None
     if name.endswith((".whl", ".zip")):
-        end = member_data_end(body, str(row.get("second_member") or ""))
+        end = member_data_end(file, str(row.get("second_member") or ""))
         if end is not None:
-            return body[: end - 1] + bytes([body[end - 1] ^ 0x01]) + body[end:]
-    return body[:-1] + bytes([body[-1] ^ 0x01])
+            return end - 1
+    return size - 1
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -422,20 +429,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not file.is_file():
             self.answer(404, b"ci-tools-proof: the rig staged no payload for this row\n", row["name"], "no")
             return
-        body = file.read_bytes()
         corrupt = row["name"] in corrupted_rows()
-        if corrupt:
-            body = corrupted_body(row, name, body)
-        self.answer(200, body, row["name"], "yes" if corrupt else "no")
+        with open(file, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            flip = corrupted_offset(row, name, handle, size) if corrupt else None
+            handle.seek(0)
+            self.serve(handle, size, flip, row["name"], "yes" if corrupt else "no")
 
     def answer(self, status, body, row, corrupt):
+        """One of the small answers this program holds in memory: the ghcr token and the two
+        refusals."""
+        self.log_served(status, len(body), row, corrupt)
+        self.send_headers(status, len(body))
+        self.wfile.write(body)
+
+    def serve(self, file, size, flip, row, corrupt):
+        """That payload, copied from the file to the socket a chunk at a time and never held
+        whole, with the one byte a corrupted case changes flipped in the chunk that carries it.
+        It is read this way because the largest payload this manifest pins is 119816773 bytes:
+        one request for it held those bytes twice, the body read whole and the corrupting
+        path's copy of it, while the fault proxy in front of this origin relays 64 KiB at a
+        time."""
+        self.log_served(200, size, row, corrupt)
+        self.send_headers(200, size)
+        sent = 0
+        while sent < size:
+            chunk = file.read(min(CHUNK, size - sent))
+            if not chunk:
+                break
+            if flip is not None and sent <= flip < sent + len(chunk):
+                chunk = bytearray(chunk)
+                chunk[flip - sent] ^= 0x01
+            self.wfile.write(chunk)
+            sent += len(chunk)
+
+    def log_served(self, status, count, row, corrupt):
         with open(logfile, "a") as log:
-            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={len(body)}\n")
+            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={count}\n")
+
+    def send_headers(self, status, count):
         self.send_response(status)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(count))
         self.send_header("Content-Type", "application/octet-stream")
         self.end_headers()
-        self.wfile.write(body)
 
     def log_message(self, *args):
         """The log above is the one this rig reads, one line per request and in its own words."""
@@ -1096,9 +1132,9 @@ corrupt() {
 
 # flip_last_byte <file>: that file with its last byte changed, and the sha256 it has afterwards.
 # It is the origin's own corruption rule for a file nothing takes a member out of (write_origin
-# above), applied to a file on the runner rather than to a body in memory: the smallest edit
-# that moves the sha256 of the whole file, and the one that leaves an archive's own framing
-# alone until the digest is read.
+# above), applied to a file that stays on the runner rather than to one the origin serves: the
+# smallest edit that moves the sha256 of the whole file, and the one that leaves an archive's own
+# framing alone until the digest is read.
 # The cases whose corrupted bytes are a binary on the runner rather than a body the origin
 # serves use it.
 flip_last_byte() {
