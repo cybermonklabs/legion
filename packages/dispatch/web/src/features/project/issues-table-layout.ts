@@ -1,15 +1,22 @@
 import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  BOX_BORDERS,
   COLUMN_MIN,
   COLUMN_SIZES,
   COMPACT_COLUMN_MIN,
   keyColumnWidth,
+  PHONE_KEY_SHARE,
   PHONE_PINNED_SHARE,
+  PHONE_PRIMARY_MIN,
   PINNED,
   PINNED_SHARE,
 } from "./issues-table-model";
 import { readLayout, writeLayout } from "./issues-table-storage";
+
+/** A table that names no primary column: one array, so the hook's default never changes
+ *  identity and the widths are not recomputed for a new empty list on every render. */
+const NO_PRIMARIES: readonly string[] = [];
 
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
@@ -28,13 +35,15 @@ export function useTableLayout(
   longestKeyChars = 0,
   {
     hiddenByDefault,
-    keyHoldsTitle = false,
+    primaryColumns = NO_PRIMARIES,
   }: {
     /** Which columns this surface opens with hidden; a reader's own choice still wins. */
     hiddenByDefault?: Readonly<Record<string, boolean>>;
-    /** Whether below 640 px the title is drawn under the key in the Key cell. The Key column
-     *  then takes the room the two shared, and the Title column is not pinned beside it. */
-    keyHoldsTitle?: boolean;
+    /** The columns this table keeps below 640 px, in the order it draws them. Where it names
+     *  any, the title is drawn under the key in the Key cell rather than in a column of its
+     *  own, and the key and these columns share the box's width between them. Naming none
+     *  leaves the table as it is at every width. */
+    primaryColumns?: readonly string[];
   } = {}
 ) {
   const saved = useMemo(() => readLayout(project, hiddenByDefault), [project, hiddenByDefault]);
@@ -75,10 +84,20 @@ export function useTableLayout(
     const budget = boxWidth * (boxWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
     if (boxWidth < 640) {
       widths.key = Math.max(COMPACT_COLUMN_MIN.key ?? widths.key ?? 88, keyFloor);
-      if (keyHoldsTitle) {
-        // The title is a second line inside the Key cell, so the key column takes the room the
-        // two had between them and the title column is left out of the pinned pair.
-        widths.key = Math.max(widths.key, budget - (widths.select ?? 44));
+      if (primaryColumns.length > 0) {
+        // The title is a second line inside the Key cell, so the row is the Key column and the
+        // primary columns, and the two share the box between them: the key takes a little over
+        // half, the primaries split what is left evenly, and the key gives way where their
+        // floors need more — the table fits the box, so nothing is cut and nothing scrolls
+        // sideways. A key is never shortened for it: its floor wins over the share.
+        const room = Math.max(0, boxWidth - BOX_BORDERS);
+        const floors = primaryColumns.length * PHONE_PRIMARY_MIN;
+        widths.key = Math.max(
+          widths.key,
+          Math.min(Math.round(room * PHONE_KEY_SHARE), room - floors)
+        );
+        const each = Math.floor(Math.max(0, room - widths.key) / primaryColumns.length);
+        for (const id of primaryColumns) widths[id] = Math.max(PHONE_PRIMARY_MIN, each);
         return { sizing: widths, pinned: ["select", "key"] };
       }
       widths.title = Math.max(
@@ -96,13 +115,16 @@ export function useTableLayout(
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && width() > budget) pinned.pop();
     return { sizing: widths, pinned };
-  }, [boxWidth, sizing, longestKeyChars, keyHoldsTitle]);
+  }, [boxWidth, sizing, longestKeyChars, primaryColumns]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;
     if (!box) return;
     const bounds = box.getBoundingClientRect();
-    setBoxWidth(bounds.width);
+    // A box with no layout yet measures 0 wide: a grid inside a container that is not shown,
+    // or the instant before the first paint of a full-page capture. Zero is not a phone, so
+    // the last width that was real stands until the box is measured again.
+    if (bounds.width > 0) setBoxWidth(bounds.width);
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
     const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
     const rowsHeight = firstRows.reduce(

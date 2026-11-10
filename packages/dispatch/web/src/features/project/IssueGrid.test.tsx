@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -69,7 +69,20 @@ function harness(issues: IssueSummary[] = [issue("CORE-1"), issue("CORE-2")]) {
   });
 }
 
+/** What the box measures now. A test changes it through `remeasure`, which is the window
+ *  resize the hook listens for; happy-dom lays nothing out, so this is the only width there is. */
+let measuredWidth = 1000;
+
+/** The box's new width, and the resize that makes the table read it. */
+async function remeasure(width: number) {
+  measuredWidth = width;
+  await act(async () => {
+    window.dispatchEvent(new Event("resize"));
+  });
+}
+
 function draw(tree: ReactNode, boxWidth = 1000) {
+  measuredWidth = boxWidth;
   // The unit DOM has no layout engine, and the grid's rows are virtual: supply the box's own
   // height, which is all the virtualizer measures, and its width, which is what decides whether
   // the table is drawn for a phone.
@@ -84,7 +97,7 @@ function draw(tree: ReactNode, boxWidth = 1000) {
   HTMLElement.prototype.getBoundingClientRect = function bounds(this: HTMLElement) {
     const measured = rect.call(this) as DOMRect;
     if (this.dataset.testid !== "issue-grid-scroll") return measured;
-    return { ...measured.toJSON(), width: boxWidth, height: 600 } as DOMRect;
+    return { ...measured.toJSON(), width: measuredWidth, height: 600 } as DOMRect;
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -317,4 +330,84 @@ test("a phone keeps the primary columns and reads the title under the key", asyn
     ?.closest("td") as HTMLElement;
   expect(within(keyCell).getByText("CORE-1")).toBeDefined();
   expect(within(keyCell).getByText("The pager reads the rows it shows")).toBeDefined();
+});
+
+// happy-dom lays nothing out, so what is asserted is what decides the wrap in a browser: the
+// row may shrink below the width of its contents, and wraps rather than widening the page.
+test("the pager wraps inside a 390 box instead of widening the page", async () => {
+  harness();
+  const view = draw(
+    <IssueGrid<Row>
+      columns={["key", hoursColumn]}
+      label="Finished issues"
+      layoutKey="CORE.finished"
+      project="CORE"
+      rows={[{ hours: 9, key: "CORE-1" }]}
+    />,
+    390
+  );
+  await screen.findByRole("table", { name: "Finished issues" });
+  const pager = view.container.querySelector<HTMLElement>("[data-testid=issues-table-pager]");
+  if (pager === null) throw new Error("the grid drew no pager");
+  expect(pager.className).toContain("flex-wrap");
+  expect(pager.className).toContain("min-w-0");
+  expect(pager.className).not.toContain("shrink-0");
+  for (const piece of pager.querySelectorAll("span")) {
+    expect(piece.className).toContain("min-w-0");
+  }
+});
+
+test("at 390 the key and two primary columns fit the box between them", async () => {
+  harness([issue("CORE-1", { title: "A title long enough to need both of its lines" })]);
+  const view = draw(
+    <IssueGrid<Row>
+      columns={[
+        "key",
+        "title",
+        { ...hoursColumn, primary: true },
+        { ...hoursColumn, header: "Rounds", id: "rounds", primary: true },
+        { ...hoursColumn, header: "Extra", id: "extra" },
+      ]}
+      label="Finished issues"
+      layoutKey="CORE.finished"
+      project="CORE"
+      rows={[{ hours: 9, key: "CORE-1" }]}
+    />,
+    390
+  );
+  const grid = await screen.findByRole("table", { name: "Finished issues" });
+  expect(Number.parseFloat(grid.style.width)).toBeLessThanOrEqual(390);
+  // The two primaries are drawn, each wide enough to say something; the rest is in the picker.
+  const widths = [...grid.querySelectorAll("thead th")].map((head) =>
+    Number.parseFloat((head as HTMLElement).style.width)
+  );
+  expect(widths).toHaveLength(3);
+  expect(Math.min(...widths.slice(1))).toBeGreaterThanOrEqual(96);
+  expect(widths.reduce((sum, width) => sum + width, 0)).toBeLessThanOrEqual(390);
+  expect(view.container.querySelectorAll("[data-grid-key-title]")).toHaveLength(1);
+});
+
+// A box inside a container that is not shown, and the instant before a full-page capture's
+// first paint, both measure 0 wide. Reading that as a phone drew the phone's table at 1280.
+test("a measured width of zero leaves the layout as it was", async () => {
+  harness([issue("CORE-1")]);
+  const view = draw(
+    <IssueGrid<Row>
+      columns={["key", "title", { ...hoursColumn, primary: true }]}
+      label="Finished issues"
+      layoutKey="CORE.finished"
+      project="CORE"
+      rows={[{ hours: 9, key: "CORE-1" }]}
+    />,
+    1280
+  );
+  const grid = await screen.findByRole("table", { name: "Finished issues" });
+  const wide = grid.style.width;
+  expect(within(grid).getByRole("columnheader", { name: /Title/ })).toBeDefined();
+
+  await remeasure(0);
+
+  expect(within(grid).getByRole("columnheader", { name: /Title/ })).toBeDefined();
+  expect(view.container.querySelector("[data-grid-key-title]")).toBeNull();
+  expect(grid.style.width).toBe(wide);
 });

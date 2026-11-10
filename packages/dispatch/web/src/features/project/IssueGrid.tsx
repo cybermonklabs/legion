@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   type ColumnDef,
   type ColumnFiltersState,
+  flexRender,
   getCoreRowModel,
   getFilteredRowModel,
   getPaginationRowModel,
@@ -18,8 +19,8 @@ import {
   borderDefault,
   linkHoverText,
   linkText,
-  surfaceBg,
   textMutedOnCanvas,
+  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { buildIssuePath } from "../refs/routes";
@@ -27,16 +28,19 @@ import { COLUMN_LABELS, useIssueTableColumns } from "./issues-table-columns";
 import { ColumnsMenu, IssueTablePager } from "./issues-table-controls";
 import { useProjectIssueItems } from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
-import { ALL_ROWS, type ColumnId, type Item, PAGE_SIZES } from "./issues-table-model";
+import {
+  ALL_ROWS,
+  type ColumnId,
+  type Item,
+  PAGE_SIZES,
+  PHONE_PRIMARY_MIN,
+} from "./issues-table-model";
 import { IssueRow, TableHeaderCell } from "./issues-table-rows";
 
 /** A grid that draws every row of its page measures none of them: nothing reads a row's height
  *  when the box has no height of its own. */
 const NO_MEASURE = () => {};
 
-/** The width of the trailing cell every row keeps, where the Issues tab draws its hover action
- *  and a grid draws nothing: one table shape, so a column's width means the same on both. */
-const ACTION_WIDTH = 104;
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 
 /**
@@ -168,27 +172,27 @@ export function IssueGrid<Row extends { key: string }>({
 }): ReactNode {
   const [params, setParams] = useSearchParams();
   /** Which columns a narrow screen keeps: the caller's registry picks and its own columns that
-   *  ask for it. Empty means this grid has no narrow layout of its own. */
-  const primaryIds = useMemo(
-    () =>
-      new Set<string>([
-        ...(primary ?? []),
-        ...columns.flatMap((entry) =>
-          typeof entry !== "string" && entry.primary === true ? [entry.id] : []
-        ),
-      ]),
-    [columns, primary]
-  );
-  const layoutOptions = useMemo(() => ({ keyHoldsTitle: primaryIds.size > 0 }), [primaryIds.size]);
+   *  ask for it. Empty means this grid has no narrow layout of its own. Held by its contents
+   *  rather than by the identity of the `columns` array a caller rebuilds on every render, so
+   *  the widths are computed when the list itself changes. */
+  const named = [
+    ...(primary ?? []),
+    ...columns.flatMap((entry) =>
+      typeof entry !== "string" && entry.primary === true ? [entry.id] : []
+    ),
+  ].join("\u0000");
+  const primaryColumns = useMemo(() => (named === "" ? [] : named.split("\u0000")), [named]);
+  const primarySet = useMemo(() => new Set(primaryColumns), [primaryColumns]);
+  const layoutOptions = useMemo(() => ({ primaryColumns }), [primaryColumns]);
   const layout = useTableLayout(
     layoutKey,
     useMemo(() => rows.reduce((most, row) => Math.max(most, row.key.length), 0), [rows]),
     layoutOptions
   );
   const { attachBox, boxHeight, boxWidth, pagerRef, responsive, scrollRef } = layout;
-  /** Below 640 px, in a grid that named its primary columns: the key carries the title and the
-   *  rest of the columns wait in the picker. */
-  const narrow = boxWidth < 640 && primaryIds.size > 0;
+  /** Below 640 px, in a grid that named its primary columns: the key carries the title, those
+   *  columns share the rest of the box, and everything else waits in the picker. */
+  const narrow = boxWidth < 640 && primaryColumns.length > 0;
   const userState = useQuery(userStateQuery());
   const registry = useAgentRegistry(false);
   const { allItems, hasLegion } = useProjectIssueItems(project, { wantsDone: true, registry });
@@ -208,11 +212,34 @@ export function IssueGrid<Row extends { key: string }>({
   const registryColumns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion);
   const tableColumns = useMemo<ColumnDef<Item>[]>(() => {
     const byId = new Map(registryColumns.map((column) => [column.id, column]));
+    /** A column beside the key on a phone: it may be drawn as narrow as the share it was given,
+     *  and what does not fit ends in an ellipsis with the whole of it on the cell's hover. The
+     *  Key column is left alone, because the title under the key wraps to a second line. */
+    const narrowed = (column: ColumnDef<Item>, id: string): ColumnDef<Item> =>
+      !narrow || id === "key"
+        ? column
+        : {
+            ...column,
+            minSize: PHONE_PRIMARY_MIN,
+            cell: (context) => {
+              const value = context.getValue();
+              return (
+                <span
+                  className="block min-w-0 truncate"
+                  title={typeof value === "string" && value !== "" ? value : undefined}
+                >
+                  {column.cell === undefined
+                    ? (value as ReactNode)
+                    : flexRender(column.cell, context)}
+                </span>
+              );
+            },
+          };
     return columns.flatMap((entry) => {
       if (typeof entry === "string") {
         const found = byId.get(entry);
         if (found === undefined) return [];
-        if (entry !== "key" || (keyHref === undefined && !narrow)) return [found];
+        if (entry !== "key" || (keyHref === undefined && !narrow)) return [narrowed(found, entry)];
         // The Key column goes where the caller sends it: the Legion tab's rows open an issue's
         // timeline rather than its page, and the keyboard's open follows the same link. Below
         // 640 px it carries the title as a second line, because a row needs both and a phone
@@ -234,13 +261,16 @@ export function IssueGrid<Row extends { key: string }>({
                     </Link>
                   </span>
                   {narrow ? (
-                    <Link
-                      className={`line-clamp-2 min-w-0 break-words ${linkText} ${linkHoverText}`}
+                    // Not a link: below 1280 px every anchor is a 44 px box that lays itself
+                    // out as a flex row (styles.css), which a two-line clamp cannot survive.
+                    // The key above it is the link, and the whole row opens from the keyboard.
+                    <span
+                      className={`line-clamp-2 min-w-0 break-words ${textSecondaryOnCanvas}`}
                       data-grid-key-title
-                      to={href}
+                      title={row.original.issue.title}
                     >
                       {row.original.issue.title}
-                    </Link>
+                    </span>
                   ) : null}
                 </span>
               );
@@ -254,49 +284,52 @@ export function IssueGrid<Row extends { key: string }>({
         return found === undefined ? undefined : custom.value(found.row, found.item);
       };
       return [
-        {
-          id: custom.id,
-          header: () =>
-            custom.info === undefined ? (
-              custom.header
-            ) : (
-              <span className="flex items-center gap-1">
-                {custom.header}
-                <InfoHint label={`About ${custom.id}`}>{custom.info}</InfoHint>
-              </span>
-            ),
-          accessorFn: readValue,
-          sortUndefined: "last",
-          // The first press reads smallest first, as every registry column does.
-          sortDescFirst: false,
-          enableColumnFilter: custom.filter !== false && custom.filter !== undefined,
-          filterFn:
-            custom.filter === "text"
-              ? "includesString"
-              : (row, _id, picks: string[]) => {
-                  const value = readValue(row.original);
-                  return value !== undefined && picks.includes(String(value));
-                },
-          size: custom.size ?? 160,
-          minSize: 116,
-          meta: {
-            control: true,
-            // What the column picker calls it: its own header where that is words, else the
-            // registry's name for an id it shares, else the id.
-            label:
-              typeof custom.header === "string"
-                ? custom.header
-                : (COLUMN_LABELS[custom.id as ColumnId] ?? custom.id),
-            ...(custom.filter === "text" ? { text: true } : {}),
-          },
-          cell: ({ row }) => {
-            const found = rowFor.get(row.original.issue.key);
-            if (found === undefined) return null;
-            return custom.cell === undefined
-              ? (custom.value(found.row, found.item) ?? null)
-              : custom.cell(found.row, found.item);
-          },
-        } satisfies ColumnDef<Item>,
+        narrowed(
+          {
+            id: custom.id,
+            header: () =>
+              custom.info === undefined ? (
+                custom.header
+              ) : (
+                <span className="flex items-center gap-1">
+                  {custom.header}
+                  <InfoHint label={`About ${custom.id}`}>{custom.info}</InfoHint>
+                </span>
+              ),
+            accessorFn: readValue,
+            sortUndefined: "last",
+            // The first press reads smallest first, as every registry column does.
+            sortDescFirst: false,
+            enableColumnFilter: custom.filter !== false && custom.filter !== undefined,
+            filterFn:
+              custom.filter === "text"
+                ? "includesString"
+                : (row, _id, picks: string[]) => {
+                    const value = readValue(row.original);
+                    return value !== undefined && picks.includes(String(value));
+                  },
+            size: custom.size ?? 160,
+            minSize: 116,
+            meta: {
+              control: true,
+              // What the column picker calls it: its own header where that is words, else the
+              // registry's name for an id it shares, else the id.
+              label:
+                typeof custom.header === "string"
+                  ? custom.header
+                  : (COLUMN_LABELS[custom.id as ColumnId] ?? custom.id),
+              ...(custom.filter === "text" ? { text: true } : {}),
+            },
+            cell: ({ row }) => {
+              const found = rowFor.get(row.original.issue.key);
+              if (found === undefined) return null;
+              return custom.cell === undefined
+                ? (custom.value(found.row, found.item) ?? null)
+                : custom.cell(found.row, found.item);
+            },
+          } satisfies ColumnDef<Item>,
+          custom.id
+        ),
       ];
     });
   }, [columns, registryColumns, rowFor, keyHref, narrow]);
@@ -342,12 +375,12 @@ export function IssueGrid<Row extends { key: string }>({
    *  all because the Key cell carries it. A column the reader has shown or hidden is theirs. */
   const visibility = useMemo(() => {
     if (!narrow) return layout.visibility;
-    const narrowed: Record<string, boolean> = {};
+    const hidden: Record<string, boolean> = {};
     for (const id of shownIds) {
-      if (id !== "key" && !primaryIds.has(id)) narrowed[id] = false;
+      if (id !== "key" && !primarySet.has(id)) hidden[id] = false;
     }
-    return { ...narrowed, ...layout.visibility, title: false };
-  }, [narrow, shownIds, primaryIds, layout.visibility]);
+    return { ...hidden, ...layout.visibility, title: false };
+  }, [narrow, shownIds, primarySet, layout.visibility]);
 
   const table = useReactTable({
     data: items,
@@ -421,7 +454,7 @@ export function IssueGrid<Row extends { key: string }>({
         <table
           aria-label={label}
           className="w-max min-w-full table-fixed border-separate border-spacing-0 text-sm"
-          style={{ width: table.getTotalSize() + ACTION_WIDTH }}
+          style={{ width: table.getTotalSize() }}
         >
           <thead>
             {table.getHeaderGroups().map((group) => (
@@ -441,10 +474,6 @@ export function IssueGrid<Row extends { key: string }>({
                     setOrder={layout.setOrder}
                   />
                 ))}
-                <th
-                  className={`sticky top-0 z-20 border-b ${borderDefault} ${surfaceBg}`}
-                  style={{ width: ACTION_WIDTH }}
-                />
               </tr>
             ))}
           </thead>

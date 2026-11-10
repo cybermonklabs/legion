@@ -448,6 +448,16 @@ export const ISSUES_TAB_HIDDEN: Readonly<Record<string, boolean>> = {
  *  and title are what identify a row, so they take most of it. */
 export const PINNED_SHARE = 0.6;
 export const PHONE_PINNED_SHARE = 0.85;
+/** What a table's box takes for its own border, left and right: the width its columns may use
+ *  is what `getBoundingClientRect` measures less this. */
+export const BOX_BORDERS = 2;
+/** Below 640 px, in a table that names its primary columns: how much of the box the Key column
+ *  takes, with the title drawn under the key inside it. A little over half, so a title reads in
+ *  two lines while the columns beside it stay wide enough to say something. */
+export const PHONE_KEY_SHARE = 0.55;
+/** The narrowest a primary column is drawn there. Below this a phase name, a wait or a bar says
+ *  nothing, so the Key column gives way instead. */
+export const PHONE_PRIMARY_MIN = 96;
 
 export interface View {
   sorting: SortingState;

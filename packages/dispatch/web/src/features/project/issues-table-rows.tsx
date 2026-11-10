@@ -82,7 +82,13 @@ export function TableHeaderCell({
         {column.columnDef.meta?.control ? (
           // The header draws its own controls, so the sort is a mark beside them: a press on a
           // hint or a switch inside the header sorts nothing, and no button nests in another.
-          <span className="flex min-w-0 items-center gap-1">
+          // A header with a switch of its own is wider than a phone's column, so there its
+          // parts wrap — the name on one line, the switch under it — rather than standing side
+          // by side and reaching past the table's box. The header a column supplies is laid out
+          // by its own row of parts, so the wrap reaches into it as well as this row.
+          <span
+            className={`flex min-w-0 items-center gap-1 ${compact ? "flex-wrap [&>span]:min-w-0 [&>span]:flex-wrap" : ""}`}
+          >
             {flexRender(column.columnDef.header, header.getContext())}
             {column.getCanSort() ? (
               <button
@@ -158,8 +164,8 @@ export function IssueRow({
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
   moved?: ReadonlySet<string>;
-  /** Moves the issue to the head of Legion's queue; a grid that acts on nothing gives none,
-   *  and the row keeps the trailing cell empty so every table has one shape. */
+  /** Moves the issue to the head of Legion's queue. A grid acts on nothing and gives none; its
+   *  rows then end at their last column, rather than carrying an empty cell with no header. */
   onStartNext?: (key: string) => void;
   row: Row<Item>;
 }): ReactNode {
@@ -191,18 +197,20 @@ export function IssueRow({
           </td>
         );
       })}
-      <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-        {onStartNext !== undefined && queue !== undefined && queue > 1 ? (
-          <button
-            className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onClick={() => onStartNext(issue.key)}
-            type="button"
-          >
-            Start next
-          </button>
-        ) : null}
-      </td>
+      {onStartNext === undefined ? null : (
+        <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
+          {queue !== undefined && queue > 1 ? (
+            <button
+              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              disabled={busy}
+              onClick={() => onStartNext(issue.key)}
+              type="button"
+            >
+              Start next
+            </button>
+          ) : null}
+        </td>
+      )}
     </tr>
   );
 }
