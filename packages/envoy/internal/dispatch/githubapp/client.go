@@ -251,6 +251,23 @@ const AppScope = "app"
 // requests are counted under.
 func InstallationScope(id int64) string { return "installation:" + strconv.FormatInt(id, 10) }
 
+// GraphQLScope is the scope of every GraphQL query the App makes, which GitHub budgets apart
+// from the REST calls made with the same token: a GraphQL query is charged in points against a
+// budget of its own, and GitHub answers a query past it with HTTP 200 and an `errors` entry of
+// type RATE_LIMITED rather than with the 403 or 429 a REST call over its budget gets
+// (GraphQLRateLimit).
+//
+// It is one scope for the App rather than one for each installation, where the REST scopes are
+// two. A limit on GraphQL must leave every REST call going -- a GraphQL budget spent says
+// nothing about the REST budget of the installation whose token spent it, and the Dispatch
+// processes read far more over REST than they query -- which is what a scope of its own buys.
+// Within GraphQL the App is held whole: the secondary limits a batched read trips (points a
+// minute, concurrent queries) are the App's rather than one installation's, GitHub warns that
+// requests sent inside a limit may get an integration banned, and a process that meets the
+// limit under one installation can name this scope before it has a token for any of them, so
+// every process stops querying at once rather than each finding the limit for itself.
+const GraphQLScope = "graphql"
+
 // Option configures a Client New builds.
 type Option func(*Client)
 
@@ -624,6 +641,15 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // private repository ("cannot be searched... do not have permission") -- GraphQL's `search`
 // connection does not share that restriction, which is why delivery/github_prs.go's merged-PR
 // search uses this instead of REST search.
+//
+// It is held by two of the shared rate limits rather than one. The token's own installation
+// scope holds it as it holds every REST call made with that token (request), and GraphQLScope
+// holds it as GitHub's separate GraphQL budget: a query sent while either is in force is not
+// sent at all and answers a held *RateLimitError, and an answer GraphQLRateLimit reads as a
+// GraphQL limit -- the HTTP 200 with a RATE_LIMITED error GitHub answers a spent GraphQL budget
+// with, which request's own REST detection cannot see -- is recorded under GraphQLScope and
+// returned as that error rather than as an answer. The caller therefore never has to tell a
+// rate-limited 200 from a good one.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
@@ -632,7 +658,28 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("encode GraphQL request: %w", err)
 	}
-	return c.request(ctx, c.TokenScope(token), http.MethodPost, c.base+"/graphql", "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
+	if c.limits != nil {
+		wait, recorded, err := c.limits.Wait(ctx, GraphQLScope)
+		switch {
+		case err != nil:
+			slog.Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", GraphQLScope, "error", err)
+		case wait > 0:
+			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
+		}
+	}
+	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodPost, c.base+"/graphql", "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
+	if err != nil || c.limits == nil {
+		return body, status, header, err
+	}
+	limited := GraphQLRateLimit(status, header, body)
+	if limited == nil {
+		return body, status, header, nil
+	}
+	limited.Scope = GraphQLScope
+	if err := c.limits.Record(ctx, GraphQLScope, limited.Wait); err != nil {
+		slog.Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
+	}
+	return body, status, header, limited
 }
 
 // Token returns an installation access token, minting one only when the

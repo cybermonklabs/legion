@@ -162,18 +162,84 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 	if status != http.StatusTooManyRequests && status != http.StatusForbidden {
 		return nil
 	}
-	retryAfter := header.Get("Retry-After")
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
-	if status == http.StatusForbidden && retryAfter == "" && !exhausted && !bytes.Contains(bytes.ToLower(body), []byte("rate limit")) {
+	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !bytes.Contains(bytes.ToLower(body), []byte("rate limit")) {
 		return nil
 	}
-	limited := &RateLimitError{Status: status, Wait: time.Minute, Body: string(body)}
-	if seconds, err := strconv.Atoi(retryAfter); err == nil {
-		limited.Wait = time.Duration(seconds) * time.Second
-	} else if reset, err := strconv.ParseInt(header.Get("X-Ratelimit-Reset"), 10, 64); err == nil && exhausted {
-		limited.Wait = max(time.Until(time.Unix(reset, 0)), 0)
+	return &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
+}
+
+// GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells four
+// different ways and none of them the way it spells a rate-limited REST call. A query past the
+// App's primary GraphQL budget is answered HTTP 200 with an `errors` entry of type RATE_LIMITED
+// and a null `data`, so a caller reading the status alone sees a good answer and a caller
+// reading `data` alone sees an empty one. The request that spends the last point is answered
+// with its data and `x-ratelimit-remaining: 0`. A secondary limit -- too many points a minute,
+// too many queries at once -- is answered either 200 or 403, with a `retry-after` header, or
+// with a message about exceeding a secondary rate limit and no header at all.
+//
+// All four are read here, at either status: an `errors` entry of type RATE_LIMITED, no requests
+// remaining, a `retry-after`, or a secondary-limit message in the body. The wait is
+// Retry-After's seconds when GitHub gives them, else the time until x-ratelimit-reset when no
+// requests remain, else the minute GitHub asks for when it gives neither. Any other status goes
+// to RateLimit, which reads the 429 as it reads one on a REST path.
+//
+// It is deliberately readier to call an answer a limit than RateLimit is. A GraphQL query that
+// is a rate limit read as an answer is a page of data the caller silently records none of,
+// while a good answer read as a limit costs a pass its remaining queries and nothing else, and
+// GitHub warns that querying inside a limit may get an integration banned.
+func GraphQLRateLimit(status int, header http.Header, body []byte) *RateLimitError {
+	if status != http.StatusOK && status != http.StatusForbidden {
+		return RateLimit(status, header, body)
 	}
-	return limited
+	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
+	if !exhausted && header.Get("Retry-After") == "" && !graphQLRateLimited(body) && !secondaryRateLimited(body) {
+		return nil
+	}
+	return &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
+}
+
+// graphQLRateLimited reports whether a GraphQL answer's `errors` hold the entry GitHub answers a
+// spent GraphQL budget with. A body that is not the envelope at all -- which cannot be a 200
+// from GitHub's GraphQL endpoint -- holds no such entry and is no limit: the caller's own decode
+// then reports it as the malformed answer it is.
+func graphQLRateLimited(body []byte) bool {
+	var answer struct {
+		Errors []struct {
+			Type string `json:"type"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return false
+	}
+	for _, entry := range answer.Errors {
+		if entry.Type == "RATE_LIMITED" {
+			return true
+		}
+	}
+	return false
+}
+
+// secondaryRateLimited reports whether an answer's body carries GitHub's own wording for a
+// secondary rate limit, which is all a secondary limit gives when it comes with no header and
+// no error type: "You have exceeded a secondary rate limit". The message is matched on the
+// phrase alone, since GitHub has worded the rest of the sentence more than one way.
+func secondaryRateLimited(body []byte) bool {
+	return bytes.Contains(bytes.ToLower(body), []byte("secondary rate limit"))
+}
+
+// rateLimitWait is how long GitHub asks for before the next request under a limit it answered
+// with: Retry-After's seconds, else the time until x-ratelimit-reset when the answer says no
+// requests remain, else the one minute GitHub asks for when it gives neither. A reset already
+// past is no wait at all rather than a negative one.
+func rateLimitWait(header http.Header, exhausted bool) time.Duration {
+	if seconds, err := strconv.Atoi(header.Get("Retry-After")); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+	if reset, err := strconv.ParseInt(header.Get("X-Ratelimit-Reset"), 10, 64); err == nil && exhausted {
+		return max(time.Until(time.Unix(reset, 0)), 0)
+	}
+	return time.Minute
 }
 
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:

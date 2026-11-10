@@ -55,6 +55,29 @@ type fakeGitHub struct {
 	// more requests to one path so, and no others.
 	limitEverything bool
 	limitOnce       map[string]int
+	// stalls is how long one path's answer is held back before it is given, which is how a test
+	// makes GitHub slower than the pass's own bound (stall).
+	stalls map[string]time.Duration
+	// The state the GraphQL stand-in holds beside the REST one (graphql_test.go): the queries
+	// it was asked, the heads whose Checks fields it refuses, the pages of one repository it
+	// refuses whole, the rate limits it answers the next queries with, and how long one page's
+	// answer is held back.
+	queries       []fakeQuery
+	refusedChecks map[string]struct{}
+	refusedPages  map[string]map[int]struct{}
+	graphQLLimits []graphQLLimit
+	graphQLStalls map[string]time.Duration
+	// queryTakes is how long every query's answer takes, which is what a test of the pass's
+	// GraphQL pacing measures the pass against, and inFlight and mostInFlight how many queries
+	// the stand-in was answering at once, which for a pass that queries serially is one.
+	queryTakes   time.Duration
+	inFlight     int
+	mostInFlight int
+	// verbatim is the captured answer the next query about one repository is given byte for
+	// byte, and cursorPages the page each cursor such an answer carried names
+	// (answerQueryWith).
+	verbatim    map[string]string
+	cursorPages map[string]int
 }
 
 // fakeRepository is what GET /repos/{owner}/{repo} answers: the name GitHub itself gives the
@@ -84,16 +107,22 @@ type fakeRequest struct {
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
 	f := &fakeGitHub{
-		t:         t,
-		mux:       http.NewServeMux(),
-		installID: 1,
-		repos:     map[string]fakeRepository{},
-		pulls:     map[string][]fakePull{},
-		runs:      map[string][]object{},
-		suites:    map[string][]object{},
-		etags:     map[string]string{},
-		limitOnce: map[string]int{},
+		t:             t,
+		mux:           http.NewServeMux(),
+		installID:     1,
+		repos:         map[string]fakeRepository{},
+		pulls:         map[string][]fakePull{},
+		runs:          map[string][]object{},
+		suites:        map[string][]object{},
+		etags:         map[string]string{},
+		limitOnce:     map[string]int{},
+		stalls:        map[string]time.Duration{},
+		refusedChecks: map[string]struct{}{},
+		refusedPages:  map[string]map[int]struct{}{},
+		graphQLStalls: map[string]time.Duration{},
+		cursorPages:   map[string]int{},
 	}
+	f.mux.HandleFunc("POST /graphql", f.answerQuery)
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		_, known := f.repos[r.PathValue("owner")+"/"+r.PathValue("repo")]
@@ -179,7 +208,19 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.limitOnce[r.URL.Path] = left - 1
 		limited = true
 	}
+	stall := f.stalls[r.URL.Path]
 	f.mu.Unlock()
+	if stall > 0 {
+		// GitHub is slower to answer this than the pass has left. The caller giving up on the
+		// request closes its context here, so the answer is abandoned at once rather than held
+		// until the wait is over, which would keep the server's own Close waiting at the end of
+		// the test.
+		select {
+		case <-time.After(stall):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if limited {
 		// GitHub's own answer to an exhausted rate limit.
 		w.Header().Set("X-RateLimit-Remaining", "0")
@@ -305,6 +346,18 @@ func (f *fakeGitHub) rateLimitNext(path string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.limitOnce[path]++
+}
+
+// stall holds back every answer to path by wait, as GitHub answering a poller slowly does. A
+// wait of zero answers it as fast as every other path again.
+func (f *fakeGitHub) stall(path string, wait time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if wait <= 0 {
+		delete(f.stalls, path)
+		return
+	}
+	f.stalls[path] = wait
 }
 
 // received is every request the stand-in has been sent, oldest first.

@@ -64,8 +64,10 @@ var errTooManyPages = fmt.Errorf("the listing did not end within %d pages", maxP
 // kept, each conditional on that page's ETag, and then, while the last page read came back full,
 // the page after it, which no pass has an ETag for. It stops at the first page that is not full.
 //
-// It counts each request against the pass's own total, which the pace is left between, and
-// against tally, the count the pass's log line reports this listing under.
+// It counts each request against the pass's own total and against the REST reads among them,
+// which the pace is left between, and against tally, the count the pass's log line reports
+// this listing under; a page GitHub answers 304 is counted again among the REST reads that
+// cost the budget nothing.
 func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int, kept []pageOf[T], read func(ctx context.Context, page int, etag string) (conditionalPage[T], error)) ([]pageOf[T], error) {
 	var pages []pageOf[T]
 	for number := 1; number <= maxPages; number++ {
@@ -75,6 +77,7 @@ func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int,
 		}
 		r.pace(ctx, c)
 		c.requests++
+		c.restRequests++
 		*tally++
 		answer, err := read(ctx, number, before.etag)
 		if err != nil {
@@ -82,6 +85,7 @@ func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int,
 		}
 		page := pageOf[T]{etag: answer.etag, items: answer.items, full: answer.full, modified: true}
 		if answer.notModified {
+			c.restNotModified++
 			// A 304 should repeat the ETag it matched, and a kept ETag is better than no ETag if
 			// it does not.
 			page = pageOf[T]{etag: cmp.Or(answer.etag, before.etag), items: before.items, full: before.full}
@@ -99,22 +103,24 @@ func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int,
 // nil for every other outcome: a head the pass could not read is named at WARN and the pass goes
 // on to the next.
 func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead, c *counts) *stop {
-	c.heads++
 	kept := r.kept(writer, head)
 	runs, err := readPages(ctx, r, c, &c.headRequests, kept.runs, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
 		answer, err := r.GitHub.CommitCheckRuns(ctx, head.token, head.owner, head.repo, head.sha, page, etag)
 		return objectPage(answer), err
 	})
 	if err != nil {
-		return r.headFailed(err, head, c)
+		return r.headFailed(ctx, err, head, c)
 	}
 	suites, err := readPages(ctx, r, c, &c.headRequests, kept.suites, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
 		answer, err := r.GitHub.CommitCheckSuites(ctx, head.token, head.owner, head.repo, head.sha, page, etag)
 		return objectPage(answer), err
 	})
 	if err != nil {
-		return r.headFailed(err, head, c)
+		return r.headFailed(ctx, err, head, c)
 	}
+	// Both listings are in, so this head was read: a head the pass's own ending cut off before
+	// that is no head the pass read, and is the head the next pass takes the cycle up at.
+	c.heads++
 	wanted, changedRecord, ok := r.record(ctx, writer, head, runs, suites)
 	if changedRecord {
 		// A head's runs and suites all write the one record cistore.Key names, so a head whose
@@ -166,14 +172,26 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 	return state
 }
 
-// headFailed reports one head's failed read. A rate limit ends the pass (the stop it answers);
-// every other failure drops what the pass kept of the head, so the next pass reads it in full,
-// and leaves the pass to the next head.
-func (r *Reconciler) headFailed(err error, head pullHead, c *counts) *stop {
-	delete(r.heads, head.key())
+// headFailed reports one head's failed read, and tells a read that was cut short from one that
+// failed.
+//
+// A cut is the pass ending rather than the head: its own bound or its caller's cancellation,
+// and a rate limit GitHub answered or another process recorded. The head keeps everything the
+// Reconciler holds of it, including the ETags that make the next read of it cost the App's
+// budget nothing, it is named at no WARN, and it is not counted among the heads the pass read:
+// the cursor names it, and the next pass reads it from the start.
+//
+// Every other failure is the head's own. It drops what the pass kept of that head, so the next
+// pass reads it in full, and leaves the pass to the head after it.
+func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c *counts) *stop {
+	if r.over(ctx, c) {
+		return nil
+	}
 	if at := stopAt(err, head.scope); at != nil {
 		return at
 	}
+	c.heads++
+	delete(r.heads, head.key())
 	var tooLarge *githubapp.ResponseTooLargeError
 	if errors.As(err, &tooLarge) {
 		// GitHub's answer is past what githubapp reads at all, so this head cannot be read: it is

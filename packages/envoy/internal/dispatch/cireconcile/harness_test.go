@@ -221,6 +221,39 @@ func (h *harness) listHead() {
 	h.github.setPullRequests(gitHubRepository, fakePull{number: 7, sha: headSHA})
 }
 
+// listHeads makes the stand-in answer with these open pull requests of the mapped repository,
+// as listHead does for the one head most tests reconcile. The pass reads a repository's heads
+// in pull request number order whatever order they are given in here, which is what a test of
+// the cursor reads back out of the stand-in's own log of the requests it was sent.
+func (h *harness) listHeads(pulls ...fakePull) {
+	h.github.setRepository(rowRepository, gitHubRepository, repositoryID)
+	h.github.setPullRequests(gitHubRepository, pulls...)
+}
+
+// queriesFor is how many GraphQL queries the stand-in was asked about one repository, however
+// many pages those queries covered.
+func (h *harness) queriesFor(repository string) int {
+	asked := 0
+	for _, query := range h.github.queriesAsked() {
+		if query.repository == repository {
+			asked++
+		}
+	}
+	return asked
+}
+
+// pagesAsked is the pages of one repository the stand-in was queried for since the query at
+// from, in the order it was asked: the slice of the one order a pass took.
+func (h *harness) pagesAsked(from int, repository string) []int {
+	var asked []int
+	for _, query := range h.github.queriesAsked()[from:] {
+		if query.repository == repository {
+			asked = append(asked, query.page)
+		}
+	}
+	return asked
+}
+
 // pass runs one reconcile pass.
 func (h *harness) pass() {
 	h.t.Helper()
@@ -302,6 +335,46 @@ func (h *harness) record() (state cistore.State, revision uint64, ok bool) {
 		h.t.Fatalf("the record is not JSON: %v", err)
 	}
 	return state, entry.Revision(), true
+}
+
+// recordOf is the record of any head of the mapped repository, and nil when the bucket holds
+// none: record answers for the one head most tests reconcile, and a test of the cursor reads
+// heads the pass reached at other pages.
+func (h *harness) recordOf(pull fakePull, number int64) *cistore.State {
+	h.t.Helper()
+	return h.stateAt(gitHubRepository, number, pull.sha)
+}
+
+// stateAt is the record of one head of any repository, keyed as the pass keys it: the owner and
+// name GitHub itself gives the repository, the pull request number and the head commit. It is
+// nil when the bucket holds no such record.
+func (h *harness) stateAt(repository string, number int64, sha string) *cistore.State {
+	h.t.Helper()
+	state, _ := h.recordAt(repository, number, sha)
+	return state
+}
+
+// recordAt is stateAt with the record's revision beside it, which is what a test comparing a
+// record across a pass reads.
+func (h *harness) recordAt(repository string, number int64, sha string) (*cistore.State, uint64) {
+	h.t.Helper()
+	owner, name, ok := strings.Cut(repository, "/")
+	if !ok {
+		h.t.Fatalf("%q is no owner/name", repository)
+	}
+	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
+	if err != nil {
+		h.t.Fatalf("open the CI bucket: %v", err)
+	}
+	entry, err := kv.Get(cistore.Key(owner, name, strconv.FormatInt(number, 10), sha))
+	if err != nil {
+		return nil, 0
+	}
+	var state cistore.State
+	if err := json.Unmarshal(entry.Value(), &state); err != nil {
+		h.t.Fatalf("the record is not JSON: %v", err)
+	}
+	return &state, entry.Revision()
 }
 
 // post sends the listener's real webhook handler one GitHub event, as GitHub sends it.

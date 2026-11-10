@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
@@ -44,7 +45,14 @@ func reviewerAppID(env settingValues) (string, error) {
 // at boot must not stop the boot; a pass before then reads GitHub nothing and says so. Its App
 // client obeys the GitHub rate limits every process shares, in the database's github_rate_limits,
 // since GitHub budgets the App rather than a process.
-func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string) (*cireconcile.Reconciler, error) {
+//
+// interval is the period the loop runs the pass on, which is the pass's own bound: a pass too big
+// for one interval ends on it, logs its line and leaves the next pass the cursor it reached, so
+// the loop's lease is never held past the pass that is due next. It is also what the pass spreads
+// its requests over: the gap it leaves between two of them is a share of this interval divided by
+// the requests the work it knows of will take (cireconcile.RequestPace is the slowest it will
+// read, cireconcile.FastestRequestPace the fastest).
+func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string, interval time.Duration) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
@@ -79,5 +87,6 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		ReviewerAppID: reviewer,
 		Logger:        slog.Default(),
 		Pace:          cireconcile.RequestPace,
+		PassTimeout:   interval,
 	}, nil
 }

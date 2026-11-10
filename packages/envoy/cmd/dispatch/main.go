@@ -759,24 +759,27 @@ func main() {
 	// from GitHub and records the completed checks Envoy's record of that head lacks. It is a
 	// timer that stays, as the webhook redelivery sweep and the delivery reconcile beside it are:
 	// GitHub has no feed of the webhook it never delivered, so there is nothing to wake on.
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID)
+	ciReconcileInterval := cireconcile.Interval
+	if boot.CIReconcileInterval > 0 {
+		ciReconcileInterval = boot.CIReconcileInterval
+	}
+	// The interval is the pass's own bound as well as the loop's period: a pass reads from the
+	// cursor the pass before it left and ends on that bound, so the loop's lease is free when
+	// the next pass is due and the one line each pass logs says how far round the cycle it got.
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
 	}
 	if reconciler != nil {
-		interval := cireconcile.Interval
-		if boot.CIReconcileInterval > 0 {
-			interval = boot.CIReconcileInterval
-		}
-		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", interval)
+		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, leases, cireconcile.Lease, interval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, leases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
