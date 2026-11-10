@@ -400,6 +400,25 @@ var streamGenerations = map[int]struct {
 			"notifications.envoy.kept.>",
 		},
 	},
+	// Generation 3 adds the listener's resume lane, the subject the stream carries the floor each
+	// deleted session consumer stopped at (SessionResumeSubjectPrefix, listenerOwnStreamLanes),
+	// which main's #3417 added to the stream's subjects.
+	3: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.kept.>",
+			"notifications.envoy.resume.>",
+		},
+	},
 }
 
 // The stream this build ensures has exactly the settings pinned for its generation: a change to

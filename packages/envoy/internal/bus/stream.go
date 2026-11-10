@@ -379,7 +379,7 @@ func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
 // (keepStream), so while two builds run, the older one never reverts what the newer one set.
 // The consumer cap (streamMaxConsumers) takes none: like the copies and the byte limit it is
 // only ever raised, so two builds that compile different caps never lower each other's.
-const streamConfigGeneration = 2
+const streamConfigGeneration = 3
 
 // streamGenerationKey is the stream metadata key that holds the generation of its settings. A
 // stream without it was last set by a build before generations: generation 0.

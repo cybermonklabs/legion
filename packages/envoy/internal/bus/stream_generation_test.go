@@ -77,6 +77,61 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 	}
 }
 
+// The resume lane generation 3 added to the stream's subjects survives the build of the
+// generation before it, which compiles that generation's subjects and carries no such lane
+// (streamGenerations): this build creates the stream, stamped with its own generation and
+// carrying the lane, and the older build's start and its keeper, played here with the pinned
+// settings of the generation before this one, leave every subject as they found it.
+//
+// Playing the older build with this binary is stricter than that build is: the real one stops at
+// the generation arm of its start and of its keeper, since the stream is stamped above its own
+// generation, while this binary, whose generation the stream carries, runs the reconciliation
+// underneath. So the lane survives both keep rules, the generation arm the older build stops at
+// (ensureStreamWithConfig, keepStream) and the reconciliation it would reach without that arm,
+// which keeps a deployed subject overlapping none of its own (reconcileSubjects) and removes
+// none in the keeper (keptSubjects).
+func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
+	resumeLane := SessionResumeSubjectPrefix + ">"
+	row, ok := streamGenerations[streamConfigGeneration-1]
+	if !ok {
+		t.Fatalf("generation %d has no pinned row to play the build before this one with", streamConfigGeneration-1)
+	}
+	if slices.Contains(row.subjects, resumeLane) {
+		t.Fatalf("generation %d already carries %s, so it plays no build without the lane", streamConfigGeneration-1, resumeLane)
+	}
+	older := *streamCfg
+	older.Subjects, older.MaxAge, older.Duplicates = row.subjects, row.maxAge, row.duplicates
+
+	uri := testnats.URL(t)
+	js := rawJetStream(t, uri)
+	client, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("this build connects: %v", err)
+	}
+	t.Cleanup(client.Close)
+	stamped := deployedStream(t, js).Config
+	if got, want := stamped.Metadata[generationKey], strconv.Itoa(streamConfigGeneration); got != want {
+		t.Fatalf("stream generation = %q, want this build's %s", got, want)
+	}
+	if !slices.Contains(stamped.Subjects, resumeLane) {
+		t.Fatalf("stream subjects = %v, want this build's stream to carry %s", stamped.Subjects, resumeLane)
+	}
+
+	subjects, err := ensureStreamWithConfig(js, &older, capsAnUnsetStream)
+	if err != nil {
+		t.Fatalf("the build before this one starts: %v", err)
+	}
+	if !slices.Contains(subjects, resumeLane) {
+		t.Fatalf("the start of the build before this one leaves subjects %v, want %s among them", subjects, resumeLane)
+	}
+	if _, err := keepStream(js, &older, capsAnUnsetStream); err != nil {
+		t.Fatalf("the keeper of the build before this one: %v", err)
+	}
+	if got := deployedStream(t, js).Config.Subjects; !slices.Equal(got, stamped.Subjects) {
+		t.Fatalf("stream subjects = %v after the build before this one started and kept the stream, want %v as it found them", got, stamped.Subjects)
+	}
+}
+
 // A stream without a generation (a build before generations) or with an older one is reconciled
 // and stamped with this build's generation.
 func TestAnOwningClientStampsItsGenerationOnAnUnstampedStream(t *testing.T) {
