@@ -172,13 +172,13 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 }
 
 // The stream a test is handed must be empty. A create that comes back holding an earlier test's
-// work — the store a delete of that same name left where it was, which URL's purge states and
-// cites — fails the test there, naming each message by subject, stream sequence and stored time
-// and each consumer by name, rather than reaching the test as a count it reads later and reads as
-// its own. A stream holding a consumer and no message names the consumer alone: there is no
-// message to name, and a sequence nothing stored is not one. A stream whose range holds deleted
-// sequences names the messages it does hold and counts only those, so a gap neither spends one of
-// the ten places nor makes the count of the rest wrong.
+// work, which URL's purge says how a create can do, fails the test there, naming each message by
+// subject, stream sequence and stored time and each consumer by name, rather than reaching the
+// test as a count it reads later and reads as its own. A stream holding a consumer and no message
+// names the consumer alone: there is no message to name, and a sequence nothing stored is not
+// one. A stream whose range holds a deleted sequence names the stored messages after that gap and
+// counts the rest right: with more messages than the failure names one by one, the last of the
+// named ones is the message that far past the gap, and the remainder is the count of what is left.
 func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 	js := JetStream(t)
 	for _, row := range []struct {
@@ -213,9 +213,14 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 			name:   "messages with a deleted sequence between them",
 			stream: "ALREADY_GAPPED",
 			leave: func(t *testing.T, stream jetstream.Stream) {
-				for _, subject := range []string{"full.one", "full.two", "full.three"} {
-					if _, err := js.Publish(t.Context(), subject, []byte("x")); err != nil {
-						t.Fatalf("publish %s: %v", subject, err)
+				// Twelve messages with sequence 2 deleted leave eleven stored, two more than the
+				// failure names one by one. A loop that stepped sequence by sequence would stop
+				// ten sequences in, at the stored message 10 rather than 11, and a remainder
+				// counted over the range rather than over the messages named would print one
+				// more than the one message left.
+				for i := 1; i <= 12; i++ {
+					if _, err := js.Publish(t.Context(), fmt.Sprintf("full.%d", i), []byte("x")); err != nil {
+						t.Fatalf("publish full.%d: %v", i, err)
 					}
 				}
 				if err := stream.DeleteMsg(t.Context(), 2); err != nil {
@@ -224,12 +229,11 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 			},
 			want: []string{
 				"ALREADY_GAPPED is not empty at its create",
-				"message 1 full.one stored ",
-				"message 3 full.three stored ",
+				"message 1 full.1 stored ",
+				"message 11 full.11 stored ",
+				"and 1 more",
 			},
-			// The deleted sequence is named by nothing and counted as nothing: no read of it, and
-			// no "and 1 more" from counting its failed read as a message named.
-			unwant: []string{"message 2", "not found", "and "},
+			unwant: []string{"message 2", "not found"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

@@ -327,11 +327,11 @@ const (
 // the create is retried on exactly that answer, every 50 ms; any other error fails the test at
 // once.
 //
-// The stream the create answers is read once and must be empty. A delete of that same name before
-// it can leave the store where it is, and a create then loads that store again, which is a
-// different thing from the directory race above and is stated where URL purges. A stream handed
-// to a test holding an earlier test's messages makes that test count them as its own, so the
-// failure names them here, instead of surfacing as a count the test reads fifty lines later.
+// The stream the create answers is read once and must be empty; the purge in URL says how a
+// create can come back holding an earlier stream's store. A stream handed to a test holding an
+// earlier test's messages makes that test count them as its own, so the failure names them here,
+// instead of surfacing as a count the test reads later: in the failure this guard was written
+// for, the row took its stream at consumer_lag_test.go:30 and read the count at :50.
 func CreateStream(t testing.TB, js jetstream.JetStream, config jetstream.StreamConfig) jetstream.Stream {
 	t.Helper()
 	var stream jetstream.Stream
@@ -369,7 +369,8 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	var named uint64
 	for seq := info.State.FirstSeq; named < info.State.Msgs && named < namedInFailure; {
 		// Step by the first stored message at or after seq, so a run of deleted sequences costs
-		// one read rather than one read each, and none of the places below is spent on one.
+		// one read rather than one read each, and none of the namedInFailure messages this names
+		// is spent on one.
 		message, err := stream.GetMsg(t.Context(), seq, jetstream.WithGetMsgSubject(">"))
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			break
@@ -392,7 +393,7 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	if err := consumers.Err(); err != nil {
 		held = append(held, fmt.Sprintf("list its consumers: %v", err))
 	}
-	t.Fatalf("stream %s is not empty at its create: a stream of this name, deleted before this create, left %s",
+	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in URL says how that happens)",
 		name, strings.Join(held, "; "))
 }
 
