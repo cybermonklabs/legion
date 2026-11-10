@@ -8,10 +8,14 @@
 --
 -- The release carrying 20261107234701 reads and writes the old table nowhere. Production ran
 -- fleet_commit 05b61565b99556f5ab71a347eb9db0c60a8e9da5 with schema_version 20261107234701 when
--- this migration was written, which is why no running build loses a table it reads. A deploy
--- that carries this drop can no longer roll back to a build from before 20261107234701's
--- release, whose results read writes the table. That is the shape of
--- 0141_drop_broadcast_idempotency_keys (cmd/dispatch/README.md, "Database migrations").
+-- this migration was written, which is why no running build loses a table it reads. A build
+-- from before 20261107234701's release still serves on the schema this drop leaves, but it
+-- reads and writes the table in its results read: each of those statements fails, and that
+-- build logs it at WARN and asks GitHub instead (delivery.CommitOnDefaultBranch at
+-- 0a8fa2eb~1). So a rollback past that release answers every after_merge and default_branch
+-- check with one GitHub compare read on every results read, and two WARN lines with it. That
+-- is the rollback cost of a contracting drop, as 0141_drop_broadcast_idempotency_keys has one
+-- (cmd/dispatch/README.md, "Database migrations").
 --
 -- No `if exists`: 20261102122400 creates the table unconditionally, so every database recording
 -- that version holds it, and `if exists` would pass over a schema that is not the one we think

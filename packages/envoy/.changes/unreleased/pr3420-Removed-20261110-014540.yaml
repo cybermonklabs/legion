@@ -4,5 +4,6 @@ body: |-
   commit on this branch" since the release before, keyed by the branch as well as the repository
   and the commit, and no running build reads or writes the old table.
 
-  A deploy that carries this migration can no longer roll back to a build from before that
-  release, whose results read writes the dropped table.
+  A rollback past that release still serves, but its results read finds no cache: every
+  `after_merge` and `default_branch` check then reads GitHub on each results read, and logs two
+  WARN lines with it.

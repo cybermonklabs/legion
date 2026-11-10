@@ -1919,7 +1919,8 @@ A new table, as above; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
 It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
-`20261107234701_branch_commits` below took that answer over, keyed by the branch as well and seeded by a merge with its own merge commit on the base branch, and `20261110004829_drop_default_branch_commits` dropped this table; after that drop no deploy can fall back to a build from before `20261107234701`'s release.
+`20261107234701_branch_commits` below took that answer over, keyed by the branch as well and seeded by a merge with its own merge commit on the base branch, and `20261110004829_drop_default_branch_commits` drops this table.
+A build from before `20261107234701`'s release still serves on the schema that drop leaves, but its results read finds no cache: every `after_merge` and `default_branch` check reads GitHub on each results read, and logs `dispatch: read a commit's default-branch answer` and `dispatch: record a commit's default-branch answer` at WARN.
 A new table, as above; its census answers `0`.
 
 Migration `20261107234701_branch_commits` creates `branch_commits`, what Dispatch's GitHub App answered about one commit of one branch of one repository: whether that branch carries it.
