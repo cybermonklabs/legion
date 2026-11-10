@@ -170,6 +170,33 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
+// The stream a test is handed must be empty. A create that comes back holding messages — the
+// store the delete before it left behind, adopted by a create of the same name (URL's reset) —
+// fails the test there, naming each message by subject, stream sequence and stored time, rather
+// than reaching the test as a count it reads later and reads as its own.
+func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
+	js := JetStream(t)
+	config := jetstream.StreamConfig{Name: "ALREADY_FULL", Subjects: []string{"full.>"}}
+	if _, err := js.CreateStream(t.Context(), config); err != nil {
+		t.Fatalf("create the stream: %v", err)
+	}
+	if _, err := js.Publish(t.Context(), "full.one", []byte("x")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	again := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		CreateStream(again, js, config)
+	}()
+	<-done
+	for _, want := range []string{"ALREADY_FULL is not empty at its create", "message 1 full.one stored "} {
+		if !strings.Contains(again.message, want) {
+			t.Errorf("CreateStream of a stream holding a message failed with %q, want it to say %q", again.message, want)
+		}
+	}
+}
+
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
 type fatalRecorder struct {
 	testing.TB

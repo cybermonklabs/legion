@@ -13,8 +13,9 @@
 // server, emptied for each test exactly as the container is, starts no container, and Main removes
 // nothing; one set without the other fails the test, since a half-named server is a mistake rather
 // than a reason to fall back to Docker. The reset holds the server for one test of one test binary
-// at a time, and waits for every client connection to it to end, so the server is the tests' alone
-// and the packages using it run one after another (go test -p 1).
+// at a time, waits for every client connection to it to end, and empties each stream before it
+// deletes it, so the server is the tests' alone and the packages using it run one after another
+// (go test -p 1).
 package testnats
 
 import (
@@ -102,7 +103,9 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset deletes every stream, so a test creates its own there with CreateStream.
+// The reset then purges each stream and deletes it, so a test creates its own there with
+// CreateStream and finds it empty: a deleted stream's store outlives the delete that answered,
+// and an emptied one carries nothing into the next test (the purge, below).
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
@@ -140,6 +143,27 @@ func URL(t testing.TB) string {
 		t.Fatalf("list the NATS server's streams: %v", err)
 	}
 	for _, name := range streams {
+		// Purge before the delete, so the store this delete leaves behind holds nothing. The
+		// server answers a stream delete before it is done with that stream's store (CreateStream
+		// below, on the other half of the same race), and a create of the same name arriving in
+		// that window can come back holding the deleted stream's messages: the new stream's own
+		// Created is new, the messages inside it carry their original stored times, and the
+		// account read below reports no stream in between. The next test then counts a previous
+		// test's messages as its own.
+		//
+		// Measured in an issue pod on 2026-11-10 (dispatch://INFRA-2583), against nats-server
+		// 2.10.22, the line this package's image is, under a load of four busy loops on its two
+		// CPUs, one round being create, publish 12, delete, create again, read: 9 of 10,000
+		// rounds of delete-then-create came back holding all 12 messages, and 0 of 10,000 rounds
+		// that purged first did. A purge is one request per stream, and the server answers it
+		// when the store is empty.
+		stream, err := js.Stream(t.Context(), name)
+		if err != nil {
+			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
+		}
+		if err := stream.Purge(t.Context()); err != nil {
+			t.Fatalf("purge the NATS server's stream %s: %v", name, err)
+		}
 		if err := js.DeleteStream(t.Context(), name); err != nil {
 			t.Fatalf("empty the NATS server of stream %s: %v", name, err)
 		}
@@ -283,6 +307,11 @@ const (
 // answers the create "error creating store for stream". No API says when the goroutine has run, so
 // the create is retried on exactly that answer, every 50 ms; any other error fails the test at
 // once.
+//
+// The stream the create answers is read once and must be empty: the other half of that same race
+// is a create that adopts the store its delete left behind (URL's reset), and a stream handed to
+// a test holding a previous test's messages makes that test count them as its own. The failure
+// names them where they come from, instead of surfacing as a count the test reads later.
 func CreateStream(t testing.TB, js jetstream.JetStream, config jetstream.StreamConfig) jetstream.Stream {
 	t.Helper()
 	var stream jetstream.Stream
@@ -294,7 +323,47 @@ func CreateStream(t testing.TB, js jetstream.JetStream, config jetstream.StreamC
 	if err != nil {
 		t.Fatalf("create stream %s: %v", config.Name, err)
 	}
+	assertCreatedEmpty(t, stream, config.Name)
 	return stream
+}
+
+// namedInFailure bounds the messages assertCreatedEmpty names one by one; it counts the rest.
+const namedInFailure = 10
+
+// assertCreatedEmpty fails the test when the stream just created holds a message or a consumer,
+// naming each message by subject, stream sequence and stored time and each consumer by name. It
+// costs one STREAM.INFO round trip on a clean create, and reads nothing else unless the stream is
+// not empty.
+func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
+	t.Helper()
+	info, err := stream.Info(t.Context())
+	if err != nil {
+		t.Fatalf("read stream %s after creating it: %v", name, err)
+	}
+	if info.State.Msgs == 0 && info.State.Consumers == 0 {
+		return
+	}
+	var held []string
+	for seq := info.State.FirstSeq; seq <= info.State.LastSeq && len(held) < namedInFailure; seq++ {
+		message, err := stream.GetMsg(t.Context(), seq)
+		if err != nil {
+			held = append(held, fmt.Sprintf("message %d: %v", seq, err))
+			continue
+		}
+		held = append(held, fmt.Sprintf("message %d %s stored %s", seq, message.Subject, message.Time.Format(time.RFC3339Nano)))
+	}
+	if left := int(info.State.Msgs) - len(held); left > 0 {
+		held = append(held, fmt.Sprintf("and %d more", left))
+	}
+	consumers := stream.ConsumerNames(t.Context())
+	for consumer := range consumers.Name() {
+		held = append(held, "consumer "+consumer)
+	}
+	if err := consumers.Err(); err != nil {
+		held = append(held, fmt.Sprintf("list its consumers: %v", err))
+	}
+	t.Fatalf("stream %s is not empty at its create, holding what no test of this run published: %s",
+		name, strings.Join(held, "; "))
 }
 
 // retryStreamStoreFailure runs create again while it fails with the server's stream store
