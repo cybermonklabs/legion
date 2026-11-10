@@ -1033,16 +1033,16 @@ func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if err := consumers.Delete(ctx, session, nil); err != nil {
+	if err := consumers.Delete(ctx, session); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("the consumer's info after the delete = %v, want ErrSessionConsumerNotFound", err)
 	}
-	if err := consumers.Delete(ctx, session, nil); err != nil {
+	if err := consumers.Delete(ctx, session); err != nil {
 		t.Fatalf("a second Delete of a consumer the stream no longer holds = %v, want no error", err)
 	}
-	if err := consumers.Delete(ctx, "ses.dotted", nil); err != nil {
+	if err := consumers.Delete(ctx, "ses.dotted"); err != nil {
 		t.Fatalf("Delete of a session id that names no consumer = %v, want no error", err)
 	}
 }
@@ -1076,7 +1076,7 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 		t.Fatalf("the pending start after the faulted create = %d, %t; want %d", start, ok, held)
 	}
 
-	if err := consumers.Delete(ctx, session, nil); err != nil {
+	if err := consumers.Delete(ctx, session); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if start, ok := consumers.pendingStart("s-" + session); ok {
@@ -1146,7 +1146,7 @@ func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, acked)
 
-	if err := consumers.Delete(ctx, session, nil); err != nil {
+	if err := consumers.Delete(ctx, session); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	away := publishStored(t, owner, agent, "stored while the session was away")
@@ -1216,5 +1216,204 @@ func TestTheResumeLaneIsTheListenersOwn(t *testing.T) {
 	}
 	if !StreamCaptures(SessionResumeSubject("ses_abc")) {
 		t.Errorf("the stream does not capture %s, so no resume floor would survive a delete", SessionResumeSubject("ses_abc"))
+	}
+}
+
+// DeleteListed deletes a session's consumer from the info its caller already holds, as the
+// sweep does: it reads every session consumer in a few paged requests (ListSessionConsumers) and
+// then deletes from what it read, where Delete reads the info itself. The floor it records is
+// the listed info's, so the session comes back where its delivery stopped either way.
+func TestDeleteListedDeletesFromTheListedInfoAndRecordsItsFloor(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_delete_listed"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	acked := publishStored(t, owner, agent, "acked")
+	pull := pullSession(t, consumers, session)
+	msg := next(t, pull)
+	if msg.StreamSeq != acked {
+		t.Fatalf("first message = %d, want %d", msg.StreamSeq, acked)
+	}
+	if err := msg.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	pull.Stop()
+	waitForAckFloor(t, consumers, session, acked)
+
+	listed, err := consumers.ListSessionConsumers(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if listed[session] == nil {
+		t.Fatalf("the list holds no consumer for %s (%d listed)", session, len(listed))
+	}
+	if err := consumers.DeleteListed(ctx, session, listed[session]); err != nil {
+		t.Fatalf("DeleteListed: %v", err)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after DeleteListed = %v, want ErrSessionConsumerNotFound", err)
+	}
+	floor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
+	if err != nil || !recorded || floor != acked {
+		t.Fatalf("the resume record after DeleteListed = %d, %t, %v; want the floor %d recorded", floor, recorded, err, acked)
+	}
+}
+
+// A delete that finds no consumer finds one a restart deleted and did not create again
+// (RestartAtFloor), and the pending start that restart left is the only position anyone holds
+// for the session. So the delete records the sequence before it on the resume lane before it
+// drops that start: dropping it with nothing recorded would leave the session's position
+// nowhere, and the next registration would create its consumer at the stream's end, past every
+// message stored since the floor. A session that never had a consumer has no position to
+// record, and that delete is still no error and writes nothing.
+func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_delete_missing"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	acked := publishStored(t, owner, agent, "acked")
+	held := publishStored(t, owner, agent, "held")
+	pull := pullSession(t, consumers, session)
+	first := next(t, pull)
+	if first.StreamSeq != acked {
+		t.Fatalf("first message = %d, want %d", first.StreamSeq, acked)
+	}
+	if err := first.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if msg := next(t, pull); msg.StreamSeq != held {
+		t.Fatalf("second message = %d, want %d left unacked", msg.StreamSeq, held)
+	}
+	pull.Stop()
+	waitForAckPending(t, consumers, session, 1)
+	waitForAckFloor(t, consumers, session, acked)
+
+	// A restart whose create faults leaves the consumer deleted and its start pending, which is
+	// the state a listener killed between the two is in when the sweep reaches that session.
+	consumers.SetCreateFault(func(string) error { return errors.New("the create faulted") })
+	if _, err := consumers.RestartAtFloor(ctx, session, []string{agent}); err == nil {
+		t.Fatal("RestartAtFloor whose create faulted reported no error")
+	}
+	consumers.SetCreateFault(nil)
+	if start, ok := consumers.pendingStart("s-" + session); !ok || start != held {
+		t.Fatalf("the pending start after the faulted create = %d, %t; want %d", start, ok, held)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after the faulted restart = %v, want it deleted", err)
+	}
+
+	if err := consumers.Delete(ctx, session); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	floor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
+	if err != nil || !recorded || floor != held-1 {
+		t.Fatalf("the resume record after a delete that found no consumer = %d, %t, %v; want the floor %d, the sequence before the pending start it dropped", floor, recorded, err, held-1)
+	}
+	if start, ok := consumers.pendingStart("s-" + session); ok {
+		t.Fatalf("the pending start after the delete = %d, want none: the next registration would undo the delete", start)
+	}
+	away := publishStored(t, owner, agent, "stored while the session was away")
+	start, err := consumers.Ensure(ctx, session, []string{agent}, 0)
+	if err != nil || !start.Created || start.StartSeq != held {
+		t.Fatalf("Ensure after the delete = %+v, %v; want the consumer created at %d, the sequence after the recorded floor", start, err, held)
+	}
+	again := pullSession(t, consumers, session)
+	for _, want := range []uint64{held, away} {
+		msg := next(t, again)
+		if msg.StreamSeq != want {
+			t.Fatalf("after the delete got seq %d, want %d", msg.StreamSeq, want)
+		}
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+		}
+	}
+	requireNoMessage(t, again, 300*time.Millisecond)
+
+	const never = "ses_never_had_a_consumer"
+	if err := consumers.Delete(ctx, never); err != nil {
+		t.Fatalf("Delete of a session that never had a consumer = %v, want no error", err)
+	}
+	if _, recorded, err := consumers.resumeFloor(ctx, never, streamIDOf(t, consumers)); err != nil || recorded {
+		t.Fatalf("the resume lane of a session that never had a consumer holds a record = %t, %v; want none written", recorded, err)
+	}
+}
+
+// The threshold a listener derives stands above the bound on when its sweep deletes a consumer,
+// for every set of windows a deployment runs: the sweep records the consumer's resume floor
+// before it deletes and the server's own removal records nothing, so a consumer the server takes
+// first costs its session every message stored while it was away. The case that the 1 hour
+// backstop alone fails is a session bucket whose MaxAge stands well above the gone horizon,
+// since the sweep waits for the record to leave the bucket.
+func TestInactiveThresholdForStandsAboveTheSweepsBound(t *testing.T) {
+	for _, tc := range []struct {
+		name                                    string
+		recordLife, reapInterval, sweepInterval time.Duration
+	}{
+		{"the default windows", time.Hour, time.Minute, 5 * time.Minute},
+		{"a session bucket aged well above the gone horizon", 24 * time.Hour, time.Minute, 5 * time.Minute},
+		{"a raised horizon and slower passes", 6 * time.Hour, 10 * time.Minute, 30 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := InactiveThresholdFor(tc.recordLife, tc.reapInterval, tc.sweepInterval)
+			bound := tc.recordLife + tc.reapInterval + tc.sweepInterval
+			if got <= bound {
+				t.Errorf("InactiveThresholdFor(%s, %s, %s) = %s, want it above the sweep's bound of %s: the server would remove the consumer before the sweep could record its floor",
+					tc.recordLife, tc.reapInterval, tc.sweepInterval, got, bound)
+			}
+			if got < SessionConsumerInactiveThreshold {
+				t.Errorf("InactiveThresholdFor(%s, %s, %s) = %s, want at least the floor %s",
+					tc.recordLife, tc.reapInterval, tc.sweepInterval, got, SessionConsumerInactiveThreshold)
+			}
+		})
+	}
+}
+
+// It is total: a window the caller passes as zero or negative counts as zero, so no
+// configuration derives a threshold below the floor the constant sets.
+func TestInactiveThresholdForIsNeverBelowItsFloor(t *testing.T) {
+	if got := InactiveThresholdFor(0, 0, 0); got != SessionConsumerInactiveThreshold {
+		t.Errorf("InactiveThresholdFor(0, 0, 0) = %s, want the floor %s", got, SessionConsumerInactiveThreshold)
+	}
+	for _, windows := range [][3]time.Duration{
+		{-time.Hour, 0, 0},
+		{0, -time.Minute, 0},
+		{0, 0, -5 * time.Minute},
+		{-time.Hour, -time.Minute, -5 * time.Minute},
+		{time.Hour, -time.Minute, -5 * time.Minute},
+	} {
+		if got := InactiveThresholdFor(windows[0], windows[1], windows[2]); got < SessionConsumerInactiveThreshold {
+			t.Errorf("InactiveThresholdFor(%s, %s, %s) = %s, want at least the floor %s",
+				windows[0], windows[1], windows[2], got, SessionConsumerInactiveThreshold)
+		}
+	}
+}
+
+// A consumer created after SetInactiveThreshold carries the threshold set, which is how a
+// listener gives every consumer the one its own windows derive (InactiveThresholdFor). A value
+// that is zero or negative leaves the threshold as it is, so no configuration turns the server's
+// backstop off.
+func TestAConsumerCreatedAfterSetInactiveThresholdCarriesIt(t *testing.T) {
+	_, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const want = 2 * time.Hour
+	consumers.SetInactiveThreshold(want)
+	consumers.SetInactiveThreshold(0)
+	consumers.SetInactiveThreshold(-time.Minute)
+	const session = "ses_threshold_set"
+	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	info, err := consumers.Info(ctx, session)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if info.Config.InactiveThreshold != want {
+		t.Fatalf("the consumer's inactive threshold = %s, want the %s set before it was created", info.Config.InactiveThreshold, want)
 	}
 }

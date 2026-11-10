@@ -159,26 +159,6 @@ func KeptRoleCursorSubject(role string) string {
 	return KeptTopicPrefix + "cursor." + role
 }
 
-// SessionResumeSubjectPrefix begins the listener's resume lane (SessionResumeSubject).
-const SessionResumeSubjectPrefix = NotificationTopicPrefix + "envoy.resume."
-
-// SessionResumeSubject is the lane the listener records session sessionID's consumer resume floor
-// on before it deletes that consumer (SessionConsumers.Delete), one message per session, read back
-// when a registration that carries no resume point creates the consumer again
-// (SessionConsumers.Ensure). Without it a session that comes back with no resume point of its own
-// would start at the stream's end and lose what was published while it was away.
-//
-// The record expires with the stream's own MaxAge (streamDuplicateWindow, 72 hours), which is the
-// stream's retention, so a floor older than that named a sequence the stream no longer holds.
-//
-// The listener alone publishes under the prefix and reads it, no session may register a topic
-// reaching it (ReachesPrivateStreamSubject), and no consumer of the notification stream delivers
-// one: the stream carries the prefix (streamCarriedSubjects) where no consumer filter does
-// (StreamSubjects).
-func SessionResumeSubject(sessionID string) string {
-	return SessionResumeSubjectPrefix + sessionID
-}
-
 // streamDuplicateWindow covers the entire retained notification lifetime, so
 // an outbox retry after a crash before published_at is recorded cannot create a
 // second retained Dispatch event while the original remains observable, and a
@@ -220,6 +200,17 @@ var streamSubjects = []string{
 // both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
 // carried by the stream and kept out of every consumer's filter by that one list.
 var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+
+// ListenerOwnLane reports whether topic lies under one of the listener's own lanes
+// (listenerOwnStreamLanes): every subject topic matches is inside the kept lane or the resume
+// lane, under NATS wildcard rules (SubjectContains). It is the one test a caller makes of such a
+// topic - the publish route refuses one, since a session writing a drain cursor or a resume
+// floor would take over a role's lane or move another session's delivery (cmd/listener/api.go) -
+// so a lane added to that list is covered wherever it is asked, and no caller lists a lane of
+// its own.
+func ListenerOwnLane(topic string) bool {
+	return slices.ContainsFunc(listenerOwnStreamLanes, func(lane string) bool { return SubjectContains(lane, topic) })
+}
 
 // streamCarriedSubjects is every subject the stream itself carries: the notification subjects
 // and the listener's own lanes (listenerOwnStreamLanes).
@@ -367,14 +358,14 @@ func StreamCaptures(topic string) bool {
 // 668 live. That population was live + 72 x rate: 4,551 to 5,206 by the first reading and 6,068
 // to 6,447 by the second.
 //
-// What bounds the population today is not that threshold but two deletes, which it only backs up
+// What bounds the population today is not that threshold but two deletes it only backs up
 // (SessionConsumerInactiveThreshold): a deregistration deletes the session's consumer
-// (cmd/listener/api.go), and the listener's sweep deletes the consumer of every session the
-// session registry judges gone, at most 256 a pass, every ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL,
-// 5 minutes by default (cmd/listener/session_consumer_sweep.go). The population is therefore the
-// live sessions, plus those that ended in the last sweep interval - about 7 at the rates above -
-// plus the consumers a hub still holds from before the sweep existed, which drain 256 a pass. The
-// readings stand as what the cap was sized against, and are now an upper bound on what it covers.
+// (cmd/listener/api.go) and the sweep deletes the consumer of every session the registry judges
+// gone, at most 256 a pass (cmd/listener/session_consumer_sweep.go), so the population is the
+// live sessions, plus the sessions that ended without deregistering, which keep their consumers
+// about the gone horizon plus one ENVOY_SESSION_REAP_INTERVAL plus one sweep interval after
+// their last registration - about 60 to 85 at the rates above - plus the consumers a hub still
+// holds from before the sweep existed.
 //
 // dispatch://INFRA-514's capacity gate asks for at least twice the larger of the stream's consumer
 // count and that measured population, so the gate's own number is 9,102 to 12,894 across the two

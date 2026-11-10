@@ -932,3 +932,34 @@ func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
 		t.Fatalf("streamCfg.MaxConsumers = %d, want 24000", streamCfg.MaxConsumers)
 	}
 }
+
+// ListenerOwnLane answers for every lane the stream carries for the listener itself, over that
+// one list rather than over the lanes a caller happens to remember: a lane added to
+// listenerOwnStreamLanes is covered here, and so wherever a caller asks (the publish route's
+// refusal, cmd/listener/api.go). A notification topic, and a wildcard wider than any lane, are
+// no lane of the listener's.
+func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
+	for _, lane := range listenerOwnStreamLanes {
+		prefix, ok := strings.CutSuffix(lane, ">")
+		if !ok {
+			t.Fatalf("the listener's lane %q does not end in >, so a topic under it cannot be named here", lane)
+		}
+		for _, topic := range []string{lane, prefix + "a-topic", prefix + "a.deeper.topic", prefix + "*"} {
+			if !ListenerOwnLane(topic) {
+				t.Errorf("ListenerOwnLane(%q) = false, want true: it lies under the listener's own lane %q", topic, lane)
+			}
+		}
+	}
+	for _, topic := range []string{
+		"notifications.agent.ses_a",
+		"notifications.dispatch.issue.KEY-1.ask.answered",
+		ExceptionTopicPrefix + contracts.AgentSubject("ses_a"),
+		"notifications.envoy.deliver.ses_a",
+		"notifications.envoy.>",
+		"notifications.>",
+	} {
+		if ListenerOwnLane(topic) {
+			t.Errorf("ListenerOwnLane(%q) = true, want false: no lane of the listener's holds every subject it matches", topic)
+		}
+	}
+}

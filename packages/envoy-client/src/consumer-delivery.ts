@@ -290,7 +290,9 @@ export interface ConsumerDelivery {
   persist(): void;
   /**
    * Below this point the session holds nothing unwritten: the lowest stream sequence received and
-   * not yet written, minus one, or, with none held, the highest written. Undefined before any.
+   * not yet written, minus one, or, with none held, the highest sequence the session wrote or the
+   * floor a registration answer left (`consumer_start - 1`, `answered`). Undefined only before
+   * either of those.
    */
   resumePoint(): ResumePoint | undefined;
   snapshot(): ConsumerDeliverySnapshot;
@@ -347,8 +349,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   // When each followed topic was first followed, on the host's clock.
   let follows = new Map<string, number>();
   // The resume point's stream, the frames of it received and not yet written, and the highest
-  // written, which is also where a registration answer's `consumer_start` leaves its floor
-  // (`answered`). A `nak` leaves its frame held: it comes again and is not written yet.
+  // sequence the session wrote or the floor a registration answer's `consumer_start` left
+  // (`answered`), undefined only before either. One field holds both because `restore` puts a
+  // persisted resume point straight back here, so a floor kept beside it would not survive a
+  // restart and the two would mean the same thing from the first resume on. A `nak` leaves its
+  // frame held: it comes again and is not written yet.
   let streamID: string | undefined;
   let held = new Set<number>();
   let written: number | undefined;
@@ -544,6 +549,9 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     if (frame.gap && !gapTold) tellGap("retention_gap");
     gapTold = false;
     if (frame.streamID !== streamID) {
+      // `written` is the floor a registration answer left as well as what the session wrote
+      // (`answered`), so this fires for a session that received nothing too: the stream behind
+      // that floor was replaced, so what it asked to resume from is gone.
       if (streamID !== undefined && (written !== undefined || held.size > 0)) {
         tellGap("stream_recreated");
       } else if (streamID === undefined) {

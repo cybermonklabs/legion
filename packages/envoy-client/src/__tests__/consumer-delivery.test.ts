@@ -619,6 +619,29 @@ describe("gaps", () => {
     expect(delivery.resumePoint()).toBeUndefined();
   });
 
+  // The floor a registration answer leaves is the whole point of a session that has received
+  // nothing (`answered`), and `written` holds it like a sequence the session wrote: a frame of
+  // another stream says the stream that floor stands on was replaced, so what the session asked
+  // to resume from is gone and the notice is true of it.
+  test("a frame of another stream than the answer's floor is told once", () => {
+    const { delivery, gaps } = setup();
+    delivery.answered(
+      {
+        mode: "consumer",
+        subject: deliverSubject(SESSION),
+        stream_id: STREAM,
+        gap: false,
+        consumer_start: 42,
+      },
+      [AGENT]
+    );
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 41 });
+
+    delivery.receive(relay({ seq: 1, streamID: "stream-new" }));
+
+    expect(gaps.map((notice) => notice.kind)).toEqual(["stream_recreated"]);
+  });
+
   test("a core answer tells nothing", () => {
     const { delivery, gaps } = setup();
     delivery.restore({ resume: { stream_id: "stream-old", seq: 90 }, follows: {} });
