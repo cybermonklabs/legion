@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, createProjectDocument } from "./api";
-import { documentEditor, placeCaret } from "./editor";
+import { documentEditor, holdFirstRequest, placeCaret } from "./editor";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -286,17 +286,18 @@ test("the bar opened on a project page that has not settled survives that page's
   browser,
 }) => {
   await seed();
-  // The sources read is held, so the page is still deciding where it goes while the bar opens
-  // on it; releasing it sends the redirect out from under the open bar.
-  const release = Promise.withResolvers<void>();
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    await page.route("**/api/v1/projects/*/architecture-sources", async (route) => {
-      await release.promise;
-      await route.continue();
-    });
+    // The sources read is held, so the page is still deciding where it goes while the bar opens
+    // on it; letting it through sends the redirect out from under the open bar. Awaiting the
+    // held route is also what proves the page asked: a row whose pattern stopped matching fails
+    // here rather than passing over a page that never redirected.
+    const sources = await holdFirstRequest(
+      page,
+      /\/api\/v1\/projects\/[^/]+\/architecture-sources$/u
+    );
 
     await page.goto("/projects/CORE");
     await page.locator("body").focus();
@@ -304,7 +305,7 @@ test("the bar opened on a project page that has not settled survives that page's
     const box = page.getByRole("combobox", { name: "Search" });
     await expect(box).toBeVisible();
 
-    release.resolve();
+    await (await sources.held).continue();
     await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
 
     // The redirect has landed and the bar is still there, and still the same box to type in:
@@ -313,8 +314,6 @@ test("the bar opened on a project page that has not settled survives that page's
     await box.fill("Instruments");
     await expect(box).toHaveValue("Instruments");
   } finally {
-    // A held route must never outlive the row: teardown waits on nothing.
-    release.resolve();
     await context.close();
   }
 });

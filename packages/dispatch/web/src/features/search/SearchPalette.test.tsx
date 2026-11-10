@@ -1039,30 +1039,39 @@ test("Escape closes the palette even when pressed before focus has moved into it
   }
 });
 
-test("closes the palette when navigation changes", async () => {
-  const user = userEvent.setup();
-  let closed = 0;
+/** The three rows below drive one navigation each at an open palette and count the closes. */
+function renderPaletteWithRoute(
+  control: ReactNode,
+  onClose: () => void,
+  entries: string[],
+  index?: number
+): { queryClient: QueryClient; unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
-        <RouteChanger />
-        <SearchPalette
-          onClose={() => {
-            closed += 1;
-          }}
-          open
-        />
+        <CurrentRoute />
+        {control}
+        <SearchPalette onClose={onClose} open />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return { queryClient, unmount: view.unmount };
+}
+
+test("closes the palette when navigation changes", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const view = renderPaletteWithRoute(<RouteChanger />, () => {
+    closed += 1;
+  }, ["/"]);
 
   try {
     await user.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
     await waitFor(() => expect(closed).toBe(1));
   } finally {
     view.unmount();
-    queryClient.clear();
+    view.queryClient.clear();
   }
 });
 
@@ -1072,21 +1081,9 @@ test("closes the palette when navigation changes", async () => {
 test("leaves the palette open when the route settles itself with a replace", async () => {
   const user = userEvent.setup();
   let closed = 0;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter initialEntries={["/projects/LEGION"]}>
-      <QueryClientProvider client={queryClient}>
-        <CurrentRoute />
-        <RouteSettler />
-        <SearchPalette
-          onClose={() => {
-            closed += 1;
-          }}
-          open
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = renderPaletteWithRoute(<RouteSettler />, () => {
+    closed += 1;
+  }, ["/projects/LEGION"]);
 
   try {
     await user.click(screen.getByRole("button", { name: "Settle the route" }));
@@ -1097,7 +1094,7 @@ test("leaves the palette open when the route settles itself with a replace", asy
     expect(screen.getByRole("combobox", { name: "Search" })).not.toBeNull();
   } finally {
     view.unmount();
-    queryClient.clear();
+    view.queryClient.clear();
   }
 });
 
@@ -1107,20 +1104,13 @@ test("leaves the palette open when the route settles itself with a replace", asy
 test("closes the palette when the reader goes back", async () => {
   const user = userEvent.setup();
   let closed = 0;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter initialEntries={["/projects/LEGION", "/issues/LEGION-9"]} initialIndex={1}>
-      <QueryClientProvider client={queryClient}>
-        <CurrentRoute />
-        <RouteReturner />
-        <SearchPalette
-          onClose={() => {
-            closed += 1;
-          }}
-          open
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
+  const view = renderPaletteWithRoute(
+    <RouteReturner />,
+    () => {
+      closed += 1;
+    },
+    ["/projects/LEGION", "/issues/LEGION-9"],
+    1
   );
 
   try {
@@ -1131,7 +1121,7 @@ test("closes the palette when the reader goes back", async () => {
     expect(closed).toBe(1);
   } finally {
     view.unmount();
-    queryClient.clear();
+    view.queryClient.clear();
   }
 });
 
