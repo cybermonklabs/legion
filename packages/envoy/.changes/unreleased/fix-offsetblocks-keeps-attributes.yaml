@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A typed block now reaches the block index with the attributes its render found. `offsetBlocks`
+  built the blocks `refs.IndexBlocks` writes into `document_blocks` from the same offsets the
+  response path uses, and dropped their `Attributes` on the way, so every stored block's row
+  carried none: a `check`'s `serves` and `surface`, a `plan_task`'s `needs`, a `callout`'s `kind`
+  and `title`. Nothing failed, because nothing read them there yet - which is why this is worth
+  fixing before something does. Any filter or chain read over a typed block attribute, served from
+  the index rather than from the document, would have answered nothing and looked like a defect in
+  the thing asking.
