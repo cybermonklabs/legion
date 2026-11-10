@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -1823,8 +1824,16 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	ctx := context.Background()
 	realGH := filepath.Join(t.TempDir(), "gh")
 	// The stand-in answers `legion gh`'s reads of a command's help (`[<command>] --help`) with the
-	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests, and
-	// every other run with the GH_CONFIG_DIR it was given.
+	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
+	// shared public leak check's own read of a repository's visibility — the one call `legion gh`
+	// hands gh unchecked, and the read the guard makes for every call that names a destination —
+	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. The variable
+	// that read carries is the guard's own exported one (leakguard.VisibilityReadVar), which
+	// `legion gh`'s exemption is written from too, so a rename cannot part this stand-in from the
+	// read it answers. It reports `public` because that is the answer which runs the whole guard
+	// over the call — a private or internal destination skips the in-process rule pass — and
+	// because any other word is no visibility GitHub reports, which refuses the call as a setup
+	// failure rather than letting this test read which gh ran.
 	help, err := filepath.Abs(filepath.Join("..", "..", "..", "cmd", "legion", "testdata", "gh-help"))
 	if err != nil {
 		t.Fatal(err)
@@ -1833,8 +1842,21 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n  echo public\n  exit 0\nfi\n" +
 		"printf 'real gh %s\\n' \"$GH_CONFIG_DIR\"\n"
 	if err := os.WriteFile(realGH, []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Every `legion gh` call passes the leak guard, and a guard that can resolve no shared public
+	// leak check refuses the call. This pane stands for an operator's own machine, which under the
+	// tmux runtime carries that check itself — Legion installs none there, the check arrives
+	// through its own installer, and a machine without it refuses every public write — so the pane
+	// is given a stand-in check that clears every call, named in PUBLIC_LEAK_CHECK as the check
+	// itself says to name it, the way the guard's own tests and cmd/legion/gh_test.go hand it one.
+	// What this test reads is which `legion` and which gh the pane resolves, not what the guard
+	// refuses, which cmd/legion's own tests read.
+	check := filepath.Join(t.TempDir(), "public-leak-check.sh")
+	if err := os.WriteFile(check, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r := newRig(t, func(o *Options) { o.GH = realGH })
@@ -1849,6 +1871,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 	spec := r.spec("LEGION-10", "LEGION-10", claim.RoleArchitect)
 	spec.Env["PATH"] = decoy + ":" + os.Getenv("PATH")
+	spec.Env["PUBLIC_LEAK_CHECK"] = check
 
 	loc, err := r.rt.Spawn(ctx, spec)
 	if err != nil {
@@ -1864,10 +1887,12 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 	// The agent's bash tool inherits OMP's environment: resolve and run `legion` and `gh` exactly
 	// there, in a directory that is no clone of another owner's repository, as the agent's
-	// workspace is not (this test's own directory is a clone of sjawhar's).
+	// workspace is not (this test's own directory is a clone of sjawhar's). PUBLIC_LEAK_CHECK is
+	// copied with the rest because the guard resolves the shared check from the environment the
+	// `legion gh` this shell starts was handed, and a call that resolves none is refused.
 	shell := exec.Command("/bin/sh", "-c", "command -v legion; legion version; command -v gh; gh api repos/sjawhar/legion-smoke --jq .full_name; gh pr list")
 	shell.Dir = t.TempDir()
-	for _, name := range []string{"PATH", "HOME", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"} {
+	for _, name := range []string{"PATH", "HOME", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "PUBLIC_LEAK_CHECK"} {
 		shell.Env = append(shell.Env, name+"="+env[name])
 	}
 	out, err := shell.CombinedOutput()
