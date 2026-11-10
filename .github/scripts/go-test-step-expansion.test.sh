@@ -3,9 +3,9 @@
 # line runs, and which shapes it refuses rather than guesses at.
 #
 # Only the line reader. What the script makes of a command - the packages a `go test -list` names,
-# the pairs two steps share, the exceptions - needs both Go modules' test binaries built, which
-# is minutes of compile and why no CI job runs that script (its own header says so). This harness
-# needs no Go at all: every case is one line of text.
+# the pairs two steps share, the exceptions - needs all three Go modules' test binaries built,
+# which is minutes of compile and why no CI job runs that script (its own header says so). This
+# harness needs no Go at all: every case is one line of text.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -114,8 +114,10 @@ text = f"go test -count=1 {sys.argv[1]} ./internal/textcheck/"
 try:
     command = ex.parse_go_test(step, text, [])
 except ex.Refused:
-    # A refusal by name is a reading: the pattern reaches no package list and no count.
-    print("no yes")
+    # A refusal is no reading: it leaves the rule with nothing to say about the pattern, which is
+    # the hole the two checks below are here to find. A refusal must therefore fail this case, so
+    # print what neither check accepts rather than an answer one of them would take.
+    print("refused refused")
 else:
     # `text` is the line itself and holds the pattern whatever the parse made of it, so the
     # question is whether any field the parse writes holds it.

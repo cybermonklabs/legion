@@ -694,6 +694,37 @@ FINALIZERS_STEP = "Test the document service under the cleanup detector"
 FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
 
 
+# ---------------------------------------------------------------- reading a Go file as text
+# Two lanes below read Go source as text rather than with a toolchain, because this script runs
+# where no Go is guaranteed: the daemon lane holds PLUGIN_PACK_TESTS to the tests its package
+# declares (hold_plugin_pack_tests), and the envoy lane finds the tests only a plain run covers
+# (race_impossible_tests_of). Both look for an identifier the compiler reads, so both blank what
+# it does not read first.
+def go_code_only(text: str) -> str:
+    """`text` with every comment, string and rune literal blanked out and its newlines kept, so a
+    name found in what is left is an identifier the compiler reads, at its own offset."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = -1 if end < 0 else end + 2
+        elif text[i] in "\"'`":
+            quote, end = text[i], i + 1
+            while end < n and text[end] != quote:
+                end += 2 if quote != "`" and text[end] == "\\" else 1
+            end = min(end + 1, n)
+        else:
+            out.append(text[i])
+            i += 1
+            continue
+        end = n if end < 0 else end
+        out.append("".join(c if c == "\n" else " " for c in text[i:end]))
+        i = end
+    return "".join(out)
+
+
 # ---------------------------------------------------------------- the text checks
 # The package each of the three modules keeps the tests whose subject is text in: a guide's
 # wording, a file copied from one tree to another, the imports a package may have. The
@@ -787,8 +818,10 @@ go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -time
 #   * agentmodels_omp_test.go:186 probes a plugin it writes itself and reads no file of the
 #     repository. It is here because it is the other test of agentmodels_omp_test.go, and RULES is
 #     keyed on the source file rather than on the test: with both of that file's tests in this job,
-#     no test of it runs outside this job, and what the plugin-pack gate declares below stays the
-#     whole truth about the file however it grows.
+#     no test of that file runs outside this job, so what the plugin-pack gate declares below is
+#     the whole truth about the file. The check under this list is what holds that, rather than a
+#     reader noticing: it refuses a test of that file this list does not name, and a name this
+#     list holds that the package no longer declares.
 # Their reads - the lockfile, the two plugin packages, what their prepack reads, and skills/ - are
 # inputs of this one job rather than of the daemon's whole Go suite, so a lockfile-only change, or
 # a change to one skill, runs these tests and no other daemon Go test (dispatch://INFRA-1413, A4).
@@ -809,6 +842,73 @@ if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
                      f"nothing skips them there; name that package's step here, or move the -skip to the step that "
                      f"runs them")
 DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
+
+
+# A top-level test of a Go test file, in the one shape read here: `func TestName(t *testing.T) {`
+# beginning in column 0, which is the shape `go test` runs a test of a package by. A method
+# (`func (s *suite) TestName(`), a declaration with any other signature, and a `func Test…` inside
+# another function - which gofmt indents - are none of them this and are read as no test. The
+# parameter's name is the file's own, or absent; TestMain takes a *testing.M and is the package's
+# entry point rather than a test. A test written in a shape this does not know is one the check
+# below cannot see, so teach this pattern that shape rather than leaving the test unseen.
+GO_TOP_LEVEL_TEST = re.compile(r"^func (Test(?:[^\Wa-z]\w*)?)\((?:\w+ )?\*testing\.T\) *\{", re.M)
+PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
+# The one file of that package this job took whole, so the list above speaks for the file and not
+# only for the tests it happens to name.
+PLUGIN_PACK_WHOLE_FILE = f"{PLUGIN_PACK_SOURCE}/agentmodels_omp_test.go"
+
+
+def hold_plugin_pack_tests():
+    """Refuse a PLUGIN_PACK_TESTS that is no longer the truth about internal/daemon's tests: a
+    name this list holds that no top-level test of the package declares, and a top-level test of
+    agentmodels_omp_test.go this list does not hold. Held to nothing, both pass every other check
+    green while a test leaves this job: the -run matches the names that are left, the -skip stops
+    naming the test, so the daemon-go race step runs it - and daemon_go_tests' filter names
+    neither skills/** nor scripts/pi-plugin-prepack.sh, whose reads are declared on the
+    plugin-pack gate below and keyed on these test names, so a skill edit runs that test in no job
+    at all. The second rule is agentmodels_omp_test.go's alone, because that whole file moved into
+    this job and the gate's declaration therefore speaks for the file however it grows.
+    promptreferences_omp_test.go is not such a file - only its pack test moved, its other test,
+    TestThePromptReferenceProbeOnTheRealOhMyPi, runs in the daemon-go race step, and that file's
+    reads stay on a RULES row keyed on the file - so widening the rule to it would refuse a test
+    that belongs where it is. The files are read as text (GO_TOP_LEVEL_TEST over go_code_only, so
+    a `func Test…` in a comment or a string counts for nothing), since this script runs where no
+    Go toolchain is guaranteed. A file of the package that writes none of these names and is not
+    the whole-file one can declare none of them, so it is passed over unread: the package's tests
+    are 3.8 MB and go_code_only walks a file character by character."""
+    declared, whole_file = set(), None
+    for path in sorted(Path(PLUGIN_PACK_SOURCE).glob("*_test.go")):
+        text = path.read_text()
+        here = path.as_posix()
+        if here != PLUGIN_PACK_WHOLE_FILE and not any(name in text for name in PLUGIN_PACK_TESTS):
+            continue
+        names = GO_TOP_LEVEL_TEST.findall(go_code_only(text))
+        declared.update(names)
+        if here == PLUGIN_PACK_WHOLE_FILE:
+            whole_file = names
+    gone = ", ".join(name for name in sorted(PLUGIN_PACK_TESTS) if name not in declared)
+    if gone:
+        raise ValueError(f"PLUGIN_PACK_TESTS names {gone}, which no top-level `func Test…(t *testing.T)` of "
+                         f"{PLUGIN_PACK_SOURCE} declares: the -run matches nothing of that name, and the -skip "
+                         f"skips nothing, so a test renamed out of this list runs in the daemon-go race step with "
+                         f"none of this gate's reads on that job's filter. Follow the rename here, or take the "
+                         f"name out and give the test's reads back to a RULES row keyed on the file it is in")
+    if whole_file is None:
+        raise ValueError(f"PLUGIN_PACK_TESTS is the whole truth about {PLUGIN_PACK_WHOLE_FILE}, which is not there "
+                         f"to read; follow the file here, or, where its tests have moved out of this job, take "
+                         f"them out of this list and give their reads back to RULES rows keyed on the files they "
+                         f"are in now")
+    unnamed = ", ".join(name for name in sorted(whole_file) if name not in PLUGIN_PACK_TESTS)
+    if unnamed:
+        raise ValueError(f"{PLUGIN_PACK_WHOLE_FILE} declares {unnamed}, which PLUGIN_PACK_TESTS does not name: "
+                         f"this job took that file whole, so the plugin-pack gate's reads are all of the file's "
+                         f"reads only while this list names every test of it. A test of it this list leaves out "
+                         f"runs in the daemon-go race step instead, whose filter names neither skills/** nor "
+                         f"scripts/pi-plugin-prepack.sh. Add the name to this list, or move the test to a file of "
+                         f"its own and give its reads a RULES row keyed on that file")
+
+
+hold_plugin_pack_tests()
 
 
 # ---------------------------------------------------------------- the envoy race lane
@@ -885,31 +985,6 @@ GO_BRACE = re.compile(r"[{}]")
 GO_BUILD_LINE = re.compile(r"^//go:build +(.+?) *$", re.M)
 RACE_ENABLED = re.compile(r"\braceEnabled\b")
 RACE_ENABLED_DECLARATION = re.compile(r"^const +raceEnabled\b|^\t*raceEnabled +=", re.M)
-
-
-def go_code_only(text: str) -> str:
-    """`text` with every comment, string and rune literal blanked out and its newlines kept, so a
-    name found in what is left is an identifier the compiler reads, at its own offset."""
-    out, i, n = [], 0, len(text)
-    while i < n:
-        if text.startswith("//", i):
-            end = text.find("\n", i)
-        elif text.startswith("/*", i):
-            end = text.find("*/", i + 2)
-            end = -1 if end < 0 else end + 2
-        elif text[i] in "\"'`":
-            quote, end = text[i], i + 1
-            while end < n and text[end] != quote:
-                end += 2 if quote != "`" and text[end] == "\\" else 1
-            end = min(end + 1, n)
-        else:
-            out.append(text[i])
-            i += 1
-            continue
-        end = n if end < 0 else end
-        out.append("".join(c if c == "\n" else " " for c in text[i:end]))
-        i = end
-    return "".join(out)
 
 
 def go_top_level_spans(code: str, path) -> list:
