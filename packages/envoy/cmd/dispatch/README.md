@@ -2219,6 +2219,23 @@ Its input is each row's own content: it never reads one side of a projection to 
 It is safe to run again, since a row that already names its node is skipped, so a run interrupted anywhere carries on from where it stopped.
 It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
 
+### Erasing a node
+
+`envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
+It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
+
+It removes, in one transaction: the tuples out of the node, the tuples whose far end it is, every projection row of it (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, the `artifact_versions` rows whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
+It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document and its version.
+
+It refuses to remove anything until it has listed what it would.
+With `--node` alone it reads all of the above, prints it, rolls back and exits 1; run again with `--confirm` it prints the same list and removes it.
+It refuses too — before removing anything — when a row that is not part of the node points at its projection through a nullable reference: a reply whose `reply_to` names an erased comment is somebody else's words, and an ask handed back through it is that ask's own history.
+
+What went is recorded in `graph_erasures`: the node, the counts, and the versions and reviews the erase ended, with who ran it (the database role, the account and the host) and when.
+That row holds no erased text, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
+Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
+A node the store does not hold is exit 2, naming it.
+
 ### The view over the store
 
 Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and the cutover test on each of the four arms whose relations the store now writes.

@@ -273,6 +273,16 @@ type myAnswersQuery struct {
 	Offset int `query:"offset"`
 }
 
+// personNodesQueryParams is GET /api/v1/people/{login}/nodes's query: the page, and nothing
+// else. The route takes no kind, filter or traversal from its caller, so this struct is the
+// whole of what it reads (person_nodes.go).
+type personNodesQueryParams struct {
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
 // myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
 // them in, the page that state takes, and the one thread owner it may be narrowed to.
 type myRepliesQuery struct {
@@ -572,6 +582,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: personNodesQueryParams{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {

@@ -1150,6 +1150,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/me/answers", {}, page);
   }
 
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
+  }
+
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
    *  `kind` is the comma list the route takes (`reply` alone by default, `reply,agent` for the
    *  Inbox's own rows), `state` is `unread` (the default), `inbox` - every row of their Inbox,

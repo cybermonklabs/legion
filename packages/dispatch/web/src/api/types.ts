@@ -206,6 +206,8 @@ export type {
   MyReplyRow,
   MyReplyThreadRow,
   OpenAskOwner,
+  PersonNode,
+  PersonNodes,
   PersonSignInResp,
   PersonSignInsResponse,
   ProgressCount,

@@ -328,6 +328,7 @@ func routeProbePath(pattern string) string {
 		{"{id}", "00000000-0000-0000-0000-000000000001"},
 		{"{session_id}", "s1"},
 		{"{block_id}", "b1"},
+		{"{login}", "alice"},
 		{"{owner}", "owner"},
 		{"{repo}", "repo"},
 		{"{slug}", "spec"},
@@ -502,6 +503,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 		"GET /api/v1/users",
+		// A person's own page is no older row either: it reads what one person wrote and what
+		// reached them, so a credential that proves no person has no business on it.
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",

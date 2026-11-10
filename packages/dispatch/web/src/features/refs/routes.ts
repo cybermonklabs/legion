@@ -1141,6 +1141,14 @@ export function routeIsInbox(pathname: string): boolean {
 /** The signed-in person's answers and ask replies (`AnswersPage`), linked from the Inbox page. */
 export const ANSWERS_PATH = "/answers";
 
+/** One person's page (`PersonPage`), linked from the signed-in login in the rail. */
+export const PERSON_PATH = "/people/:login";
+
+/** The page of the person this login names. */
+export function buildPersonPath(login: string): string {
+  return `/people/${encodeURIComponent(login)}`;
+}
+
 /** The live agent view's route pattern, shared by the router and `routeFillsViewport`. */
 export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
 

@@ -8261,6 +8261,70 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/people/{login}/nodes": {
+      "get": {
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets.",
+        "operationId": "getApiV1PeopleByLoginNodes",
+        "parameters": [
+          {
+            "name": "login",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonNodes"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "description": "List projects.",
@@ -20221,6 +20285,77 @@
         "required": [
           "kind",
           "to_id"
+        ],
+        "type": "object"
+      },
+      "PersonNode": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "href": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "relations",
+          "title",
+          "created_at",
+          "href"
+        ],
+        "type": "object"
+      },
+      "PersonNodes": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PersonNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person",
+          "rows",
+          "total",
+          "limit",
+          "offset"
         ],
         "type": "object"
       },

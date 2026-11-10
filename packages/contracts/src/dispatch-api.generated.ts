@@ -2064,6 +2064,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/people/{login}/nodes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets. */
+    get: operations["getApiV1PeopleByLoginNodes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects": {
     parameters: {
       query?: never;
@@ -4737,6 +4754,22 @@ export interface components {
       artifact?: components["schemas"]["Artifact"];
       kind: string;
       to_id: string;
+    };
+    PersonNode: {
+      /** Format: date-time */
+      created_at: string;
+      href: string;
+      id: string;
+      kind: string;
+      relations: string[] | null;
+      title: string;
+    };
+    PersonNodes: {
+      limit: number;
+      offset: number;
+      person: string;
+      rows: components["schemas"]["PersonNode"][] | null;
+      total: number;
     };
     PersonSignInResp: {
       /** Format: date-time */
@@ -10510,6 +10543,42 @@ export interface operations {
       };
     };
   };
+  getApiV1PeopleByLoginNodes: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        login: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PersonNodes"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Projects: {
     parameters: {
       query?: {
@@ -12228,6 +12297,8 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type PersonNode = components["schemas"]["PersonNode"];
+export type PersonNodes = components["schemas"]["PersonNodes"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];

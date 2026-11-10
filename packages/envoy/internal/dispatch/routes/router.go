@@ -774,8 +774,12 @@ func isBrowserRoute(normalized string) bool {
 	}
 	// Issue routes carry user-controlled segments (artifact slugs, ask/comment
 	// ids) that may legitimately contain a dot, so the file-extension
-	// heuristic below must never apply to them.
+	// heuristic below must never apply to them. A person's page carries one
+	// too, and it always holds a dot: a login is an email.
 	if normalized == "/issues" || strings.HasPrefix(normalized, "/issues/") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "/people/") {
 		return true
 	}
 	return !strings.Contains(filepath.Base(normalized), ".")
