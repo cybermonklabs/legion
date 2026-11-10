@@ -1315,6 +1315,11 @@ func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settl
 	return startDispatchProcessWith(t, databaseURL, dispatchOptions{SettleDelay: settleDelay})
 }
 
+// testHorizonStallWarning is the stall and repeat threshold every process these tests start runs
+// the event horizon's warning at. A wait in these tests keys on that warning, so the signal must
+// arrive inside a test's own patience rather than at the production five and thirty seconds.
+const testHorizonStallWarning = 250 * time.Millisecond
+
 // startDispatchProcessWith starts Dispatch under options: a home of its own, nothing from the
 // caller's environment, and a loopback port the kernel chose and the test holds from that moment,
 // which the process inherits as DISPATCH_LISTEN_FD and serves on, so no other program can take the
@@ -1341,6 +1346,9 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 		"DISPATCH_PORT":                    strconv.Itoa(held.Port),
 		"DISPATCH_WEB_DIST":                home,
 		"DISPATCH_TEST_HOOKS":              "1",
+		// Both thresholds, so the stall warning arrives and repeats inside a test's patience.
+		"DISPATCH_TEST_HORIZON_STALL_AFTER": testHorizonStallWarning.String(),
+		"DISPATCH_TEST_HORIZON_WARN_EVERY":  testHorizonStallWarning.String(),
 	}
 	if options.NATSURL == "" {
 		environment["DISPATCH_NATS_DISABLED"] = "1"

@@ -102,6 +102,10 @@ const (
 	// the log.
 	horizonStallAfter = 5 * time.Second
 	horizonWarnEvery  = 30 * time.Second
+	// StallWarning is the message warnStall logs. A test in another package (cmd/dispatch)
+	// matches it to tell "the server is waiting on a transaction" from "the server is wedged",
+	// so rewording it is a contract change, which that test catches.
+	StallWarning = "dispatch: event horizon held back by an open transaction; live event readers wait for it"
 	// horizonDiagnosisTimeout bounds the stall warning's query of pg_stat_activity, which runs
 	// after the observation and must never hold up a reader for long.
 	horizonDiagnosisTimeout = 2 * time.Second
@@ -250,6 +254,25 @@ func NewHorizon(db HorizonDB) *Horizon {
 // horizonPersistEvery, so a process that starts later can read the log above it (Persisted). Call it
 // before the Horizon is shared.
 func (h *Horizon) PersistProven() { h.persist = true }
+
+// SetStallWarning replaces the thresholds of the stall warning: stallAfter, how long a pending
+// observation waits before warnStall logs it, and warnEvery, how often that warning repeats while
+// the stall stands. A zero argument leaves that threshold as it is, so a caller may set either
+// alone and one that sets neither keeps horizonStallAfter and horizonWarnEvery. Call it before the
+// Horizon is shared.
+//
+// A test process needs shorter ones: warnedAt is one field of the one Horizon per process, shared
+// with the delivery hub's event seed, so at the production horizonWarnEvery a warning logged for
+// the hub can hold the next one back for 30 s, and a test that keys on the warning would then see
+// no signal while a transaction genuinely held the horizon.
+func (h *Horizon) SetStallWarning(stallAfter, warnEvery time.Duration) {
+	if stallAfter > 0 {
+		h.stallAfter = stallAfter
+	}
+	if warnEvery > 0 {
+		h.warnEvery = warnEvery
+	}
+}
 
 // Persisted answers the H some process persisted (PersistProven), when it is a value of the event
 // log as it stands now, and 0 when none is. Every event at or below it is final: finality is
@@ -786,7 +809,7 @@ func (h *Horizon) warnStall(oldest horizonObservation, pendingFor time.Duration,
 		}
 		attrs = append(attrs, "state", state, "application_name", application, "database", database, "query", query)
 	}
-	h.log().Warn("dispatch: event horizon held back by an open transaction; live event readers wait for it", attrs...)
+	h.log().Warn(StallWarning, attrs...)
 }
 
 // log is the warnings' sink: logger, or slog.Default at the time of the warning when it is nil.

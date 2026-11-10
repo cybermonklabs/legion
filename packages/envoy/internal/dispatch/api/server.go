@@ -142,6 +142,15 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning, and how often that warning
+	// repeats while the stall stands (events.Horizon.SetStallWarning). Zero keeps the horizon's
+	// own five and thirty seconds; a deployment leaves both zero, and only a test process sets
+	// another (cmd/dispatch: DISPATCH_TEST_HORIZON_STALL_AFTER and
+	// DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks), so a test whose wait keys on that
+	// warning sees it inside its own patience.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -221,6 +230,10 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace the horizon stall warning's five- and
+	// thirty-second thresholds; see Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
 	// Deps.TestHookTimeout.
 	TestHookTimeout time.Duration
@@ -305,6 +318,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
