@@ -87,6 +87,10 @@ func TestEveryWriteOfASaturatingBurstIsAnsweredWithinTheServersBound(t *testing.
 		status  int
 		err     error
 		elapsed time.Duration
+		// body is what the server said, kept for the one answer the drive reports when it sees
+		// a status it does not allow: a 500's code and message name which fault it was, which
+		// is the difference between a bound the server applied and a defect (INFRA-179).
+		body string
 	}
 	answers := make([]answer, writes)
 	var running sync.WaitGroup
@@ -99,7 +103,7 @@ func TestEveryWriteOfASaturatingBurstIsAnsweredWithinTheServersBound(t *testing.
 			defer cancel()
 			start := time.Now()
 			got, err := server.editWithin(ctx, copies[index], "Section 0", with)
-			answers[index] = answer{status: got.status, err: err, elapsed: time.Since(start)}
+			answers[index] = answer{status: got.status, err: err, elapsed: time.Since(start), body: string(got.body)}
 		}()
 	}
 	running.Wait()
@@ -120,7 +124,7 @@ func TestEveryWriteOfASaturatingBurstIsAnsweredWithinTheServersBound(t *testing.
 		default:
 			otherwise++
 			if otherwiseSample == "" {
-				otherwiseSample = fmt.Sprintf("%d in %s", got.status, got.elapsed.Round(time.Millisecond))
+				otherwiseSample = fmt.Sprintf("%d in %s: %s", got.status, got.elapsed.Round(time.Millisecond), got.body)
 			}
 		}
 	}
@@ -145,7 +149,8 @@ func TestEveryWriteOfASaturatingBurstIsAnsweredWithinTheServersBound(t *testing.
 			slowest.Round(time.Millisecond), answerWithin, docs.WriteRequestBound, answerMargin)
 	}
 	if otherwise != 0 {
-		t.Errorf("%d writes were answered neither 200 nor 503 (%s), want a write applied or refused and nothing else", otherwise, otherwiseSample)
+		t.Errorf("%d writes were answered neither 200 nor 503 (%s), want a write applied or refused and nothing else:\n%s",
+			otherwise, otherwiseSample, server.output.tail())
 	}
 
 	// An applied write is in the store, exactly once: the bound refuses a write that has not

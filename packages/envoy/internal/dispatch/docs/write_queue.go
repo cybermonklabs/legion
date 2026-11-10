@@ -133,6 +133,19 @@ const syncFrameTargetBytes = 64 << 10
 // before this was set: a browser handing a room's whole state back 56 times offered a silent
 // socket 168,315,448 bytes, 2.3 times the budget, and no socket was closed; twenty such sockets
 // took 3.08 GB of relays and held about 21 MB each, which is 512 frames rather than the budget
-// (INFRA-179). Raising it costs no memory the budget does not already bound: the bytes close a
-// socket first by construction.
+// (INFRA-179). Raising it costs no memory the budget does not already bound: a queue of this many
+// frames is under the budget's bytes unless the frames are smaller than the sync target.
+//
+// Which they are, for a keystroke: a one-character update relayed into a room is about 60 bytes
+// (measured 2026-11-10, the throttled reader's own figures: 299 bytes over 5 frames), so 1,121 of
+// them is 67 KB and the count closes a socket while the budget holds almost nothing. That is the
+// bound's own shape rather than a gap in it - no frame count bounds bytes, and no byte budget
+// bounds a queue's length - and closing is the right answer either way: ygo closes the socket and
+// the browser reconnects and resyncs, losing no edit (provider/websocket/peer.go:934-962). What it
+// means for a reader is measured: a reader at one frame every 250 ms in a room another browser is
+// flooding with whole states cannot take frames off faster than the flood puts them on, so the
+// count fills and that reader is closed - which is why
+// TestAThrottledReaderIsNotClosedByTheWriteQueueBudget measures its honest reader before it opens
+// the flood, and why the budget's claim is about what one socket can make the server hold rather
+// than about never closing a slow reader in a flooded room.
 const peerWriteQueueFrames = peerWriteQueueBytes/syncFrameTargetBytes + 1

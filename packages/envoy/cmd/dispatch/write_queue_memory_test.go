@@ -739,48 +739,14 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 		t.Fatalf("the browser on a slow link stopped reading during the burst: %v", ended)
 	}
 
-	// The socket that never reads runs after the burst, in the room the slow browser is still
-	// draining: the two are weighed against one budget apiece, and what this drive is about is
-	// the honest one - that a reader on a slow link is never closed for the budget, and holds
-	// everything the room does once it has drained.
-	//
-	// The silent one is recorded rather than required. Neither path fills a socket's queue to
-	// peerWriteQueueBytes: a sync answer's frames are split at about 64 KiB since sjawhar/ygo
-	// v1.55.1-sami.3, and a relayed frame does not reach the queue whole either, so a socket
-	// tops out near 20 MB whatever is offered it. Measured on 2026-11-06: one socket offered
-	// 168,315,448 bytes of relayed whole states was never closed and the server held 65,056,784
-	// bytes above idle for it; twenty offered 3.08 GB held 407,779,688 between them. Where the
-	// rest of a relayed fill goes is unknown and wants a measurement inside the fork, not a
-	// drive (TestASocketThatNeverReadsIsClosedWithinItsWriteQueueBudget says the same). So the
-	// budget closes nothing here, and the drive says so rather than waiting two minutes for a
-	// close that is not coming.
-	silent := server.openSilent(t, source)
-	sent, asked := silent.flood(floodFramesPerSocket)
-	if closed, found := writeQueueCloseWithin(t, server, source, 10*time.Second); found {
-		requireBudgetFigures(t, closed, "the socket that never reads", int64(silent.handoff))
-		t.Logf("the socket that never reads asked for %d whole states of %d (%v) and was closed on the %s path with %d bytes queued and a %d-byte frame refused, against its %d-byte budget",
-			sent, floodFramesPerSocket, asked, closed.path, closed.queued, closed.frame, closed.budget)
-	} else {
-		t.Logf("the socket that never reads asked for %d whole states of %d (%v) and nothing closed it: its queue never reached the %d-byte budget",
-			sent, floodFramesPerSocket, asked, peerWriteQueueBytesForTest)
-	}
-	// The flood is ended here rather than left for the rest of the drive. Nothing closes the
-	// silent socket now that its queue never reaches the budget, so its ninety-six unanswered
-	// asks would have the server writing whole states at it for the two minutes the slow
-	// browser spends draining - and the slow browser is what this drive is about. Left
-	// running, it read 63 frames in that window and the server dropped it with a 1006
-	// (INFRA-179, measured 2026-11-06). The silent socket's point is made the moment its queue
-	// has been weighed.
-	_ = silent.connection.Close()
-
 	// The slow browser drains at its own rate until it holds everything the room does.
 	want := canonicalState(t, typing.state(t))
 	deadline := time.Now().Add(2 * time.Minute)
 	for !bytes.Equal(canonicalState(t, slow.state()), want) {
 		if time.Now().After(deadline) {
 			read, frames, _, ended := slow.taken()
-			t.Fatalf("the browser on a slow link did not hold the room's whole document after 2m: it had read %d frames and %d bytes, and its reading ended with %v",
-				frames, read, ended)
+			t.Fatalf("the browser on a slow link did not hold the room's whole document after 2m: it had read %d frames and %d bytes, and its reading ended with %v:\n%s",
+				frames, read, ended, server.output.tail())
 		}
 		time.Sleep(throttledReadInterval)
 	}
@@ -823,6 +789,43 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 		}
 		time.Sleep(throttledReadInterval)
 	}
+	// Now the socket that never reads, in the room the slow browser has drained: the two are
+	// weighed against one budget apiece, and the honest one has made its point already.
+	//
+	// It runs here rather than beside the drain. A flood's answers are relayed into the room, so
+	// the frames of ninety-six whole states reach the honest reader's queue as well, and that
+	// queue is bounded by a frame count too (ygo's PeerWriteQueueSize, peerWriteQueueFrames:
+	// 1,121 frames). A reader at one frame every 250 ms cannot take them off faster than the
+	// flood puts them on, so the count fills and ygo closes it - rightly, since a closed socket
+	// reconnects and resyncs (sjawhar/ygo v1.55.1-sami.9, provider/websocket/peer.go:934-962) -
+	// and the drive measured the honest reader against a room another browser was flooding
+	// rather than against its own lag. Run after the drain it measures what it means to, and a
+	// close here is the flood's own doing and no longer this drive's subject (INFRA-179,
+	// measured 2026-11-10: with the flood beside the drain, the honest reader was closed 1006
+	// after 78 of its frames with the queue at its 1,121-frame cap, in one run of four).
+	//
+	// The silent one is recorded rather than required. Neither path fills a socket's queue to
+	// peerWriteQueueBytes: a sync answer's frames are split at about 64 KiB since sjawhar/ygo
+	// v1.55.1-sami.3, and a relayed frame does not reach the queue whole either, so a socket
+	// tops out near 20 MB whatever is offered it. Measured on 2026-11-06: one socket offered
+	// 168,315,448 bytes of relayed whole states was never closed and the server held 65,056,784
+	// bytes above idle for it; twenty offered 3.08 GB held 407,779,688 between them. Where the
+	// rest of a relayed fill goes is unknown and wants a measurement inside the fork, not a
+	// drive (TestASocketThatNeverReadsIsClosedWithinItsWriteQueueBudget says the same). So the
+	// budget closes nothing here, and the drive says so rather than waiting two minutes for a
+	// close that is not coming.
+	silent := server.openSilent(t, source)
+	sent, asked := silent.flood(floodFramesPerSocket)
+	if closed, found := writeQueueCloseWithin(t, server, source, 10*time.Second); found {
+		requireBudgetFigures(t, closed, "the socket that never reads", int64(silent.handoff))
+		t.Logf("the socket that never reads asked for %d whole states of %d (%v) and was closed on the %s path with %d bytes queued and a %d-byte frame refused, against its %d-byte budget",
+			sent, floodFramesPerSocket, asked, closed.path, closed.queued, closed.frame, closed.budget)
+	} else {
+		t.Logf("the socket that never reads asked for %d whole states of %d (%v) and nothing closed it: its queue never reached the %d-byte budget",
+			sent, floodFramesPerSocket, asked, peerWriteQueueBytesForTest)
+	}
+	_ = silent.connection.Close()
+
 	t.Logf("%d keystrokes and a %d-byte handoff in %s left the slow reader %d bytes behind when the burst ended: it had read %d frames and %d bytes of the %d frames and %d bytes it ended with, and the lag is %.4f per cent of its %d-byte budget",
 		burstKeystrokes, len(handoff), typedFor.Round(time.Millisecond), drained-atBurstEnd, framesAtEnd, atBurstEnd, frames, drained,
 		100*float64(drained-atBurstEnd)/float64(peerWriteQueueBytesForTest), peerWriteQueueBytesForTest)
