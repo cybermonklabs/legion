@@ -139,6 +139,26 @@ func TestTheSweepKeepsTheConsumerOfASessionOnAnotherMachine(t *testing.T) {
 	rig.requireConsumer(t, sessionID)
 }
 
+// A task that does not hold its machine's durable binding serves no session consumer of that
+// machine (sessionRelays.owned, the same binding the relays follow), so it sweeps none: its
+// pass does nothing, however plainly its copy of the bucket says the session has ended. Every
+// other row of this file holds the binding, so without this one the whole cmd/listener suite
+// passes with that gate taken out of sessionConsumerSweep.trusted (measured at 726f91df8).
+func TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding(t *testing.T) {
+	rig := newSweepRig(t)
+	const sessionID = "ses_sweep_unbound_task"
+	rig.register(t, sessionID)
+	rig.now.advance(sweepLapse)
+	rig.requireState(t, sessionID, session.Gone)
+	// A relay set whose binding this task does not hold: owned is false, as it is on the task
+	// of a machine whose other task took the binding.
+	rig.sweep.relays = &sessionRelays{}
+
+	rig.sweep.pass(context.Background())
+
+	rig.requireConsumer(t, sessionID)
+}
+
 // A listener whose copy of the session bucket has not been read yet would find every session of
 // the fleet gone and delete every consumer on the stream. A pass over such a copy deletes
 // nothing, however plainly the copy says the session has ended.
