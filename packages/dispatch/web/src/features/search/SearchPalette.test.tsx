@@ -8,7 +8,6 @@ import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
-import userEvent from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -56,6 +55,29 @@ const results: SearchResult[] = [
 /** The last argument of every search the bar makes: React Query's own abort signal, which the
  *  bar hands the client so a search it has moved on from is dropped rather than waited for. */
 const aborts = { signal: expect.anything() };
+
+/**
+ * Every row of this file runs on a held clock.
+ *
+ * Each keystroke arms two timers of the bar's own (`useTieredSearch.ts`): a 150 ms debounce,
+ * after which it searches the words alone, and a 500 ms meaning pause, after which it searches
+ * again by meaning and that fused order replaces the list. Which of the two has fired when a
+ * row asserts is what the row reads, and on the real clock the machine decides it: a loaded pod
+ * crosses the pause inside a press, and the row then reads a list it was not written for. Held,
+ * the row decides instead - `searchFor` below moves the clock the debounce's length and stops
+ * there, and a row that means the pause to fire moves past 500 ms and says so - so a row reads
+ * the same list on a busy pod as on an idle one.
+ *
+ * The clock is installed here rather than row by row because every row of the file wants it,
+ * and `realClock()` below is what brings the real one back on every path out of a row, one that
+ * throws included. Each row's user is `userOnFakeClock()`, which this install has to come
+ * before: user-event waits between the events of one interaction through `setTimeout`, so a
+ * user built any other way never finishes a press under a held clock.
+ */
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+afterEach(realClock);
 
 /**
  * An issue hit's row is a reference to that issue, which reads the issue's summary to draw it.
@@ -151,17 +173,22 @@ function renderPalette({
   return { queryClient, unmount: view.unmount };
 }
 
+/** Types `query` into the box and waits for the hits it brings. The 150 ms keystroke debounce
+ *  is moved past here, so the search for these words goes out and answers; the 500 ms meaning
+ *  pause is left standing, so what a row reads after this is the keyword tier's list. A row
+ *  that means the pause to fire moves the clock past it itself. */
 async function searchFor(user: UserEvent, query: string): Promise<HTMLInputElement> {
   const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
   await user.clear(input);
   await user.click(input);
   await user.paste(query);
+  await tick(150);
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
   return input;
 }
 
 test("renders grouped results with marked snippets and dims a done issue", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
@@ -187,7 +214,7 @@ test("renders grouped results with marked snippets and dims a done issue", async
 });
 
 test("says how many matches a query has when the page holds fewer", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     reachable: 300,
@@ -207,7 +234,7 @@ test("says how many matches a query has when the page holds fewer", async () => 
 });
 
 test("renders document-owned results under the document and opens their discussion", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
       {
@@ -247,7 +274,7 @@ test("renders document-owned results under the document and opens their discussi
 });
 
 test("an ask hit says where it stands and shows its latest answer", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const answer = {
     at: "2026-10-01T00:00:00Z",
     selected: ["Brass", "Steel"],
@@ -306,7 +333,7 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
 // The answer's three-line clamp is CSS only: whatever text reaches the option is its accessible
 // name, so a long answer is cut to its start before it renders.
 test("an ask hit shows only the start of a long answer, cut at a word with an ellipsis", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const text = `Keep **both** frames. ${"The meridian ring stays level. ".repeat(80)}zenithward`;
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -354,7 +381,7 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
 // for that document all the same, an issue's and a project's alike. The hrefs are read against
 // the page's origin, which happy-dom's `about:blank` does not have.
 test("a hit in a long-named document previews that document", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const slug = "a".repeat(2683);
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -415,7 +442,7 @@ test("a hit in a long-named document previews that document", async () => {
 });
 
 test("does not query below two characters", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();
 
@@ -424,6 +451,9 @@ test("does not query below two characters", async () => {
     await user.clear(input);
     await user.click(input);
     await user.paste("a");
+    // Past both of the bar's timers - the 150 ms keystroke debounce and the 500 ms meaning
+    // pause - so a search of one character would have gone out by now if the bar made one.
+    await tick(600);
 
     expect(search).not.toHaveBeenCalled();
     expect(screen.getByText("Type at least 2 characters")).not.toBeNull();
@@ -435,7 +465,6 @@ test("does not query below two characters", async () => {
 });
 
 test("names the limit instead of querying over it, and queries at it", async () => {
-  jest.useFakeTimers();
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();
@@ -466,7 +495,6 @@ test("names the limit instead of querying over it, and queries at it", async () 
       )
     );
   } finally {
-    realClock();
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();
@@ -474,7 +502,7 @@ test("names the limit instead of querying over it, and queries at it", async () 
 });
 
 test("arrow keys move aria-activedescendant and Enter navigates to the active href", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
@@ -516,7 +544,7 @@ function issueHit(key: string): SearchResult {
 }
 
 test("a refetch that re-ranks the hits leaves the highlight on the hit the reader sees", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
   const view = renderPalette();
@@ -551,7 +579,7 @@ function bothTiers(
 }
 
 test("a pause searches by meaning too, and its order re-ranks the list under the highlight", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockImplementation(
     bothTiers([first, second], [second, first])
@@ -567,7 +595,9 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
 
     // The pause asks the same query again, without the flag, and the fused order it answers
     // replaces the list. The highlighted row is still in that list, so it keeps the highlight
-    // and Enter still opens the row the reader is looking at.
+    // and Enter still opens the row the reader is looking at. The clock crosses the 500 ms
+    // pause here deliberately: this row is about what firing it does.
+    await tick(500);
     await waitFor(() => expect(search.mock.calls).toHaveLength(2), { timeout: 3000 });
     expect(search.mock.calls[1]?.[0]).toBe("astrolabe");
     expect(search.mock.calls[1]?.[1]).toEqual({});
@@ -584,7 +614,7 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
 });
 
 test("a re-rank that drops the highlighted hit leaves no row highlighted, and Enter opens nothing", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockImplementation(bothTiers([first, second], [first]));
   const view = renderPalette();
@@ -595,7 +625,9 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
     expect(input).toHaveAttribute("aria-activedescendant", optionId(second));
 
     // The pause's order drops the row the reader had arrowed to. Nothing takes its place: the
-    // head would be a row they never chose, and the next Enter would open it.
+    // head would be a row they never chose, and the next Enter would open it. The clock
+    // crosses the 500 ms pause here deliberately: this row is about what firing it does.
+    await tick(500);
     await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
     await user.keyboard("{Enter}");
@@ -614,7 +646,7 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
 });
 
 test("a background refresh that fails keeps the hits the query has, and the highlight on its hit", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
   const view = renderPalette();
@@ -678,7 +710,7 @@ function optionIds(): string[] {
 }
 
 test("a query found inside an action's label lists the action below the hits, and Enter opens the first hit", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -690,6 +722,8 @@ test("a query found inside an action's label lists the action below the hits, an
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce, after which the search for these words goes out and answers.
+    await tick(150);
     await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
     expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
 
@@ -705,7 +739,7 @@ test("a query found inside an action's label lists the action below the hits, an
 });
 
 test("while the search is in flight no action found inside its label is highlighted, so Enter runs nothing", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -718,6 +752,8 @@ test("while the search is in flight no action found inside its label is highligh
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce, after which the search goes out; this one never answers.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
@@ -738,7 +774,7 @@ test("while the search is in flight no action found inside its label is highligh
 });
 
 test("a search that finds nothing still leaves an action found inside its label unhighlighted", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
@@ -749,6 +785,8 @@ test("a search that finds nothing still leaves an action found inside its label 
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce, after which the search goes out and answers with nothing.
+    await tick(150);
     await screen.findByText('No results for "issue"');
     expect(optionIds()).toEqual([CLOSE_ROW]);
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
@@ -764,7 +802,7 @@ test("a search that finds nothing still leaves an action found inside its label 
 });
 
 test("an arrow pressed before the search answers reaches no action found inside its label", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -781,6 +819,8 @@ test("an arrow pressed before the search answers reaches no action found inside 
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    // Past the debounce now, so the request for these words is out and still unanswered.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{ArrowUp}");
@@ -804,7 +844,7 @@ test("an arrow pressed before the search answers reaches no action found inside 
 });
 
 test("once the search has answered with no hit, Down takes the first action found inside its label", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
@@ -815,6 +855,8 @@ test("once the search has answered with no hit, Down takes the first action foun
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce, after which the search goes out and answers with nothing.
+    await tick(150);
     await screen.findByText('No results for "issue"');
     await user.keyboard("{ArrowDown}");
     expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
@@ -829,7 +871,7 @@ test("once the search has answered with no hit, Down takes the first action foun
 });
 
 test("while the search is out the arrows walk only the actions the query starts, which keep the highlight as hits arrive", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
     { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
@@ -850,6 +892,8 @@ test("while the search is out the arrows walk only the actions the query starts,
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce, after which the search goes out; this one never answers.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([report, triage, CLOSE_ROW]);
     expect(input).toHaveAttribute("aria-activedescendant", report);
@@ -874,7 +918,7 @@ test("while the search is out the arrows walk only the actions the query starts,
 });
 
 test("a refetch behind a stale cached answer is still out, so Down and Enter reach no action found inside its label", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -889,6 +933,9 @@ test("a refetch behind a stale cached answer is still out, so Down and Enter rea
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce alone: this row reads the list while the keyword search is out,
+    // and the 500 ms meaning pause stays unfired under every wait below it.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
     await user.keyboard("{ArrowDown}");
@@ -911,7 +958,7 @@ test("a refetch behind a stale cached answer is still out, so Down and Enter rea
 });
 
 test("once the search has failed, Down takes the first action found inside its label", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockRejectedValue(new Error("503"));
@@ -922,6 +969,8 @@ test("once the search has failed, Down takes the first action found inside its l
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The keystroke debounce, after which the search goes out and fails.
+    await tick(150);
     expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
     await user.keyboard("{ArrowDown}");
     expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
@@ -936,7 +985,6 @@ test("once the search has failed, Down takes the first action found inside its l
 });
 
 test("a background refetch keeps the actions the query starts and the hits walkable, and a highlight already among the More actions moving", async () => {
-  jest.useFakeTimers();
   const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
@@ -989,7 +1037,6 @@ test("a background refetch keeps the actions the query starts and the hits walka
     await act(async () => second.resolve(searchAnswer([hit])));
     expect(ran).toEqual([]);
   } finally {
-    realClock();
     search.mockRestore();
     unregister();
     view.unmount();
@@ -998,7 +1045,7 @@ test("a background refetch keeps the actions the query starts and the hits walka
 });
 
 test("a query that starts an action's label lists it above the hits, and Enter runs it", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -1010,6 +1057,8 @@ test("a query that starts an action's label lists it above the hits, and Enter r
     await user.clear(input);
     await user.click(input);
     await user.paste("clo");
+    // The keystroke debounce, after which the search for these words goes out and answers.
+    await tick(150);
     await waitFor(() => expect(optionIds()).toEqual([CLOSE_ROW, optionId(hit)]));
     expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
 
@@ -1025,7 +1074,7 @@ test("a query that starts an action's label lists it above the hits, and Enter r
 });
 
 test("Escape calls onClose", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
     onClose: () => {
@@ -1045,7 +1094,7 @@ test("Escape calls onClose", async () => {
 });
 
 test("Escape closes the palette even when pressed before focus has moved into it", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
     onClose: () => {
@@ -1069,7 +1118,7 @@ test("Escape closes the palette even when pressed before focus has moved into it
 
 /** The four rows below drive one navigation each at an open palette and count the closes. */
 test("closes the palette when navigation changes", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
     control: <RouteChanger />,
@@ -1091,7 +1140,7 @@ test("closes the palette when navigation changes", async () => {
 // `replace` mints a fresh `location.key` like any other navigation. The reader opened the bar
 // over that page and is still on it, so the bar stays open (dispatch://INFRA-2452).
 test("leaves the palette open when the route settles itself with a replace", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
     control: <RouteSettler />,
@@ -1118,7 +1167,7 @@ test("leaves the palette open when the route settles itself with a replace", asy
 // bar; only a `replace` that moves the address is the page correcting itself under a reader who
 // has not moved (dispatch://INFRA-2452).
 test("closes the palette when the reader goes back", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
     control: <RouteReturner />,
@@ -1145,7 +1194,7 @@ test("closes the palette when the reader goes back", async () => {
 // already shown, and that replace moves nothing. The reader followed a link, so the bar closes -
 // the Inbox drawer's owner link to the issue being read is this link (dispatch://INFRA-2452).
 test("closes the palette when a link points at the address already shown", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
     control: <SameAddressLink to="/issues/CORE-1" />,
@@ -1166,7 +1215,7 @@ test("closes the palette when a link points at the address already shown", async
 });
 
 test("shows a retryable failure when the search request fails", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockRejectedValue(new Error("500"));
   const view = renderPalette();
 
@@ -1175,6 +1224,8 @@ test("shows a retryable failure when the search request fails", async () => {
     await user.clear(input);
     await user.click(input);
     await user.paste("astrolabe");
+    // The keystroke debounce, after which the search goes out and fails.
+    await tick(150);
     expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
   } finally {
@@ -1187,7 +1238,7 @@ test("shows a retryable failure when the search request fails", async () => {
 // The three forms are offered whatever the query holds; which of them this query was read as
 // using is the answer's own reading of it, so the bar and the search never disagree.
 test("the operator forms are offered, and the answer says which the query uses", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     query: { broadened: false, operators: [SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_EXCLUDE] },
@@ -1215,7 +1266,7 @@ test("the operator forms are offered, and the answer says which the query uses",
 });
 
 test("says meaning search is not running, and still shows the hits", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     degraded: SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
@@ -1238,7 +1289,6 @@ test("says meaning search is not running, and still shows the hits", async () =>
 });
 
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
-  jest.useFakeTimers();
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
@@ -1265,7 +1315,6 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
   } finally {
-    realClock();
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();
@@ -1276,7 +1325,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 // anywhere does. The page's project rides under `number_project`, which the route reads a bare
 // issue number in and narrows nothing by, so the bar shows no chip claiming a narrowing.
 test("the page's project is the search's context, not a chip narrowing it", async () => {
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   // The bar opened over an issue reads that issue, to offer the words as a message to an agent
   // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
