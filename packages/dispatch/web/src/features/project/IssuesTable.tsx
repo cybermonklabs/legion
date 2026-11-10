@@ -43,7 +43,9 @@ import {
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
+  textPrimaryOnSurface,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { claimIsTakeable } from "../issue/ClaimChip";
@@ -590,8 +592,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
             <span
               className={`inline-flex min-h-9 items-center gap-2 rounded-full border px-3 ${borderDefault} ${surfaceMutedBg}`}
             >
-              Showing: <b className={textPrimaryOnCanvas}>{picked.label}</b>
-              <span className={textMutedOnCanvas}>
+              Showing: <b className={textPrimaryOnSurface}>{picked.label}</b>
+              <span className={textMutedOnSurfaceMuted}>
                 · {items.length} of {picked.keys.size} {picked.keys.size === 1 ? "issue" : "issues"}
               </span>
               <button
