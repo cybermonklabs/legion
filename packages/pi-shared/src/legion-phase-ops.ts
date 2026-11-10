@@ -109,12 +109,17 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
 export const PhaseOpArguments = z.discriminatedUnion(
   "op",
   [
-    operation("read_record", { issue: requiredString("read_record", "issue") }),
+    // The issue whose record it answers, the caller's own when the call names none: a worker
+    // reads the issue it works far more often than another, and the claim already names it.
+    operation("read_record", { issue: z.string().optional() }),
     operation("read_release_records", {
       since: windowStart,
     }),
     operation("handoff_complete", {
       summary: requiredString("handoff_complete", "summary"),
+      // A completion is always of the caller's own issue, which the claim names. A call that
+      // names it anyway is taken; one that names another issue is refused in executePhaseOp.
+      issue: z.string().optional(),
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -185,7 +190,8 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
  * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
  * (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
-  readRecord: "read_record returns the record of `issue` from the daemon's state. ",
+  readRecord:
+    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of resumes by wake kind and of holds by reason, " +
@@ -339,11 +345,18 @@ export async function executePhaseOp(
   }
   const args = parsed.data;
   switch (args.op) {
-    case "read_record":
-      return { record: recordFrom(await daemon.state(), args.issue) };
+    case "read_record": {
+      const issue = args.issue !== undefined && args.issue.trim() !== "" ? args.issue : claim.issue;
+      return { record: recordFrom(await daemon.state(), issue) };
+    }
     case "read_release_records":
       return releaseRecords(runtime, args.since);
     case "handoff_complete":
+      if (args.issue !== undefined && args.issue.trim() !== "" && args.issue !== claim.issue) {
+        throw new Error(
+          `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${args.issue}`
+        );
+      }
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
       // attempt from a refused one (the daemon records both under the completion's key), so its

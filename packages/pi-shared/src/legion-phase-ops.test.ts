@@ -109,7 +109,7 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(bare).not.toContain("request_backward_move");
   expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
   expect(placed).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state. handoff_complete (phase workers"
+    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. handoff_complete (phase workers"
   );
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
@@ -150,7 +150,6 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
     ],
-    [{ op: "read_record" }, "read_record requires issue"],
     [{ op: "read_release_records" }, "read_release_records requires since"],
     [{ op: "read_release_records", since: " " }, "read_release_records requires since"],
     [
@@ -198,6 +197,37 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     ready: false,
     ...REPORT,
   });
+});
+
+// Workers named their own issue on handoff_complete and left it off read_record, and both were
+// refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
+// (dispatch://INFRA-2531). Both now take the claim's own issue, and neither reaches another.
+test("read_record with no issue answers the claim's own record; handoff_complete takes its own issue and refuses another", async () => {
+  const { ops, routes, posted } = runtime();
+  const state = daemonFixture("state.json") as { issues: Record<string, unknown> };
+  await expect(executePhaseOp(ops, { op: "read_record" })).resolves.toEqual({
+    record: state.issues["LEGION-208"],
+  });
+  await expect(executePhaseOp(ops, { op: "read_record", issue: " " })).resolves.toEqual({
+    record: state.issues["LEGION-208"],
+  });
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", issue: "LEGION-209" })
+  ).rejects.toThrow(
+    new Error(
+      "handoff_complete reports this session's own issue LEGION-208; leave issue out, or name LEGION-208, not LEGION-209"
+    )
+  );
+  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/state"]);
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Done.",
+      verdict: "pass",
+      issue: "LEGION-208",
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(posted.at(-1)).not.toHaveProperty("issue");
 });
 
 /** `state.json` with a key no schema names at four depths: the top level, one issue, one worker's
