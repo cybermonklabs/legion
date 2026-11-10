@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,15 +28,17 @@ import (
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
 // (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead. nats.go v1.50.0's legacy KV watcher, which its legacy Watch, History
-// and Keys all run, arms an init timer while its scan is pending whose callback can send on the
-// channels the subscription's end has just closed, a "send on closed channel" panic in a goroutine
-// nats.go owns (kv.go:1145-1172, unfixed through v1.55.0), while the jetstream package's watcher has
-// no such timer and closes its updates only on the subscription goroutine's own exit (jetstream/
-// kv.go:1215-1366). So the legacy handle is held unexported and KeyValue forwards only the calls it
-// checks: nothing can reach the legacy handle's Watch, WatchAll, WatchFiltered, History, Keys or
-// ListKeys through a KeyValue, and a call to one does not compile. A legacy handle cannot name the
-// connection it was opened on, so every constructor takes it.
+// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) sends its
+// own request on that jetstream context's connection. nats.go v1.50.0's legacy KV watcher, which
+// its legacy Watch, History and Keys all run, arms an init timer while its scan is pending whose
+// callback can send on the channels the subscription's end has just closed, a "send on closed
+// channel" panic in a goroutine nats.go owns (kv.go:1145-1172, unfixed through v1.55.0), while
+// the jetstream package's watcher has no such timer and closes its updates only on the
+// subscription goroutine's own exit (jetstream/kv.go:1215-1366). So the legacy handle is held
+// unexported and KeyValue forwards only the calls it checks: nothing can reach the legacy
+// handle's Watch, WatchAll, WatchFiltered, History, Keys or ListKeys through a KeyValue, and a
+// call to one does not compile. A legacy handle cannot name the connection it was opened on, so
+// every constructor takes it.
 //
 // EnsureKeyValue and OpenKeyValue are how the listener and Dispatch open every bucket, and
 // WrapKeyValue pairs a legacy handle a caller already holds with its connection. A test that
@@ -50,10 +53,10 @@ type KeyValue struct {
 	// goes through.
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
-	// goes through (ReadStreamState): each read fetches the stream afresh. The jetstream handle's
-	// own Status stores the info it read in the handle's shared stream value with no lock (nats.go
-	// v1.50.0 jetstream/stream.go:460, from kv.go:1556), so two reads of one handle at once -- a
-	// watcher's stream probe beside its completion check -- race on it.
+	// goes through (ReadStreamState, GetFromLeader): each read fetches the stream afresh. The
+	// jetstream handle's own Status stores the info it read in the handle's shared stream value
+	// with no lock (nats.go v1.50.0 jetstream/stream.go:460, from kv.go:1556), so two reads of one
+	// handle at once -- a watcher's stream probe beside its completion check -- race on it.
 	streams jetstream.JetStream
 }
 
@@ -670,6 +673,131 @@ func natsKeyValid(key string) bool {
 		}
 	}
 	return true
+}
+
+// kvOperationHeader is the header nats.go marks a KV delete or a KV purge marker with, and
+// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.53.1 kv.go:304-306).
+// A read that takes a key's newest message from the bucket's stream itself (GetFromLeader) reads
+// them for itself, where nats.go's Get reads them on its caller's behalf and reports either
+// marker as a key that is not there.
+const (
+	kvOperationHeader = "KV-Operation"
+	kvDeleteMarker    = "DEL"
+	kvPurgeMarker     = "PURGE"
+)
+
+// leaderEntry is a key's newest message, read from the bucket's own stream (GetFromLeader), as
+// the nats.KeyValueEntry Get answers for that key: the bucket, the key, the value, the stream
+// sequence that is the key's revision, and the time the stream stored it. Its operation is
+// always a put, because a key whose newest message is a delete or a purge marker is reported as
+// not found rather than returned, and its Delta is 0, which is what nats.go's own entry answers
+// for a read of one key (kv.go:676-682, whose kve carries no delta either).
+type leaderEntry struct {
+	bucket   string
+	key      string
+	value    []byte
+	revision uint64
+	created  time.Time
+}
+
+func (e leaderEntry) Bucket() string             { return e.bucket }
+func (e leaderEntry) Key() string                { return e.key }
+func (e leaderEntry) Value() []byte              { return e.value }
+func (e leaderEntry) Revision() uint64           { return e.revision }
+func (e leaderEntry) Created() time.Time         { return e.created }
+func (e leaderEntry) Delta() uint64              { return 0 }
+func (e leaderEntry) Operation() nats.KeyValueOp { return nats.KeyValuePut }
+
+// GetFromLeader reads key as Get reads it, with one difference: the leader of the bucket's
+// stream answers it. It is the stream message get of that stream,
+// `$JS.API.STREAM.MSG.GET.KV_<bucket>`, asking for the newest message on the key's subject
+// `$KV.<bucket>.<key>`, sent on the connection this handle reads the bucket's stream through
+// (KeyValue.streams, as ReadStreamState's STREAM.INFO is), where Get is a direct get.
+//
+// What that buys is the one hazard a direct get carries. Every bucket this package opens is
+// created AllowDirect, so nats.go answers each of its reads with a direct get, and nats-server
+// hands such a read to any copy of the stream that is 90% caught up rather than to the leader
+// (kv.go:286-297 records the same hazard against the same bucket family, from
+// server/jetstream_cluster.go:2622-2641, v2.10.29). A copy that has not applied a Put made a
+// moment ago answers that the key is not there. A caller that only enriches what it holds can
+// read again; a caller that takes something away on the strength of a key being absent cannot,
+// because what it takes away is gone. The listener's delete of a session's JetStream consumer is
+// that caller: it re-reads the session bucket under the session's lock and deletes the consumer
+// only where the session has no record at all, so a stale miss deletes the consumer of a
+// relaunch that is live, and that session's relay stops until it registers again. A stream
+// message get is answered by the stream's leader alone, which holds every write the bucket has
+// taken, so a record the bucket holds is never absent from its answer.
+//
+// It answers in Get's vocabulary wherever it can. A key the bucket does not hold is
+// nats.ErrKeyNotFound, and so is one whose newest message is a delete or a purge marker, which
+// is how Get reports both. A key Get refuses before it sends anything is refused here before
+// anything is sent and with the same error (RefusesRead): the two read the same keys, so a
+// caller that moves from one to the other is refused the same ones. Any other answer from the
+// stream is the *nats.APIError the server sent, named with the key and the bucket.
+//
+// ctx bounds the whole read, the one request it sends included. A ctx carrying no deadline is
+// bounded by RequestTimeout, the bound every other read of a bucket's stream through this handle
+// takes (ReadStreamState), so no caller waits on this read for good.
+func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	if err := kv.RefusesRead(key); err != nil {
+		return nil, err
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, RequestTimeout)
+		defer cancel()
+	}
+	bucket := kv.Bucket()
+	named := func(err error) error {
+		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
+	}
+	request, err := json.Marshal(struct {
+		LastBySubject string `json:"last_by_subj"`
+	}{LastBySubject: "$KV." + bucket + "." + key})
+	if err != nil {
+		return nil, named(err)
+	}
+	reply, err := kv.streams.Conn().RequestWithContext(ctx, "$JS.API.STREAM.MSG.GET.KV_"+bucket, request)
+	if err != nil {
+		return nil, named(err)
+	}
+	var answer struct {
+		Message *struct {
+			Sequence uint64    `json:"seq"`
+			Header   []byte    `json:"hdrs"`
+			Data     []byte    `json:"data"`
+			Time     time.Time `json:"time"`
+		} `json:"message"`
+		Error *nats.APIError `json:"error"`
+	}
+	if err := json.Unmarshal(reply.Data, &answer); err != nil {
+		return nil, named(err)
+	}
+	switch {
+	case answer.Error != nil && errors.Is(answer.Error, nats.ErrMsgNotFound):
+		return nil, nats.ErrKeyNotFound
+	case answer.Error != nil:
+		return nil, named(answer.Error)
+	case answer.Message == nil:
+		return nil, named(errors.New("the answer names neither a message nor an error"))
+	}
+	if len(answer.Message.Header) > 0 {
+		header, err := nats.DecodeHeadersMsg(answer.Message.Header)
+		if err != nil {
+			return nil, named(err)
+		}
+		switch header.Get(kvOperationHeader) {
+		case kvDeleteMarker, kvPurgeMarker:
+			return nil, nats.ErrKeyNotFound
+		}
+	}
+	return leaderEntry{
+		bucket:   bucket,
+		key:      key,
+		value:    answer.Message.Data,
+		revision: answer.Message.Sequence,
+		created:  answer.Message.Time,
+	}, nil
 }
 
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so

@@ -22,7 +22,7 @@ import (
 // first pass past the gone horizon, or the bucket's own maximum age, whichever comes first -
 // since a pass deletes only where the bucket answers nats.ErrKeyNotFound. The server's own
 // inactive threshold is derived to stand above that bound and backs it up
-// (sessionDelivery.setInactiveThreshold). Five minutes is the cadence the listener's other
+// (inactiveThresholdFor, main.go). Five minutes is the cadence the listener's other
 // backstop loops run at, and a pass costs one consumer list on a fleet whose sessions are all
 // live.
 const defaultSessionConsumerSweepInterval = 5 * time.Minute
@@ -147,7 +147,10 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		// The info the list already answered is handed to the delete, which records the
 		// consumer's floor from it rather than reading the consumer again: a session the
 		// delete confirms gone has nobody left to move that floor.
-		if s.delivery.deleteConsumer(ctx, s.sessions, sessionID, info) {
+		remove := func(ctx context.Context) error {
+			return s.delivery.consumers.DeleteListed(ctx, sessionID, info)
+		}
+		if s.delivery.deleteConsumer(ctx, s.sessions, sessionID, remove) {
 			deleted++
 		}
 	}

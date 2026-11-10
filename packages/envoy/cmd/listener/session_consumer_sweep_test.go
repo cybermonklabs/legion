@@ -177,9 +177,10 @@ func TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady(t *testing.T) {
 
 // The copy the pass judges a session by trails the bucket, so a session this listener has not
 // caught up with reads gone here while the bucket still holds its registration. The pass
-// confirms every judgement against the bucket itself (session.SessionRegistry.Refresh) and
-// deletes nothing on a record the bucket answers, so a session another listener registered
-// keeps the consumer that delivers its messages.
+// confirms every judgement against the bucket itself, with the leader of that bucket's stream
+// answering (session.SessionRegistry.RefreshFromLeader), and deletes nothing on a record the
+// bucket answers, so a session another listener registered keeps the consumer that delivers
+// its messages.
 func TestTheSweepKeepsTheConsumerOfASessionTheBucketStillHolds(t *testing.T) {
 	// The bucket keeps its records for an hour, past the lapse below, so the record stands while
 	// the windows the registry judges age by have long passed.

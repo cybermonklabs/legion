@@ -37,16 +37,15 @@ const (
 	// still listed.
 	//
 	// One hour is the floor of the threshold and the value every consumer carries until a
-	// listener sets the one its own windows derive (InactiveThresholdFor,
-	// SessionConsumers.SetInactiveThreshold). It is the first term of that derivation's
-	// inequality: the server must not remove a consumer before the sweep that records its resume
-	// floor can delete it, and the sweep waits at least until the session's record leaves the
-	// envoy_sessions bucket, which is session.GoneHorizon (internal/session), one hour, after
-	// that session's last registration. A deployment running the default windows derives a
-	// threshold above this floor, since the reaper's pass and the sweep's own period come on top
-	// of the horizon; one that derives nothing keeps the hour, under which the server may remove
-	// a consumer the sweep would have recorded, and such a session comes back at the stream's
-	// end.
+	// listener opens its connection with the one its own windows derive (InactiveThresholdFor,
+	// WithInactiveThreshold). It is the first term of that derivation's inequality: the server
+	// must not remove a consumer before the sweep that records its resume floor can delete it,
+	// and the sweep waits at least until the session's record leaves the envoy_sessions bucket,
+	// which is session.GoneHorizon (internal/session), one hour, after that session's last
+	// registration. A deployment running the default windows derives a threshold above this
+	// floor, since the reaper's pass and the sweep's own period come on top of the horizon; one
+	// that derives nothing keeps the hour, under which the server may remove a consumer the
+	// sweep would have recorded, and such a session comes back at the stream's end.
 	SessionConsumerInactiveThreshold = 1 * time.Hour
 )
 
@@ -60,7 +59,7 @@ const (
 const inactiveThresholdMargin = 15 * time.Minute
 
 // InactiveThresholdFor is the inactive threshold a listener running these windows gives every
-// session consumer it creates (SessionConsumers.SetInactiveThreshold), in place of
+// session consumer it creates, passing it at the connection (WithInactiveThreshold), in place of
 // SessionConsumerInactiveThreshold: the threshold that stands above the sweep's worst bound, so
 // the server never removes a consumer the sweep would have deleted itself.
 //
@@ -142,8 +141,9 @@ type SessionConsumers struct {
 	client *Client
 	// ackWait is SessionConsumerAckWait, shortened by a test that waits out a redelivery.
 	ackWait time.Duration
-	// inactiveThreshold is SessionConsumerInactiveThreshold, shortened by a test that waits out
-	// the server's own removal of an idle consumer.
+	// inactiveThreshold is the threshold the connection was opened with
+	// (WithInactiveThreshold), SessionConsumerInactiveThreshold where it named none, and is
+	// shortened by a test that waits out the server's own removal of an idle consumer.
 	inactiveThreshold time.Duration
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
@@ -171,6 +171,11 @@ type SessionConsumers struct {
 // through the proxy and under the remote-NATS rule the environment names, reconnects forever, and
 // dials a replacement for a connection nats.go gave up on. A pull (Pull) started on a connection
 // that was replaced ends with an error, and its caller pulls again.
+//
+// Every consumer this handle creates or updates carries the inactive threshold options name
+// (WithInactiveThreshold), and SessionConsumerInactiveThreshold where they name none: it is read
+// once, here, so no consumer is created before the deployment's threshold is in hand and nothing
+// writes that field while a create reads it.
 func ConnectSessionConsumers(urls []string, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {
@@ -179,7 +184,7 @@ func ConnectSessionConsumers(urls []string, options ...ConnectOption) (*SessionC
 	return &SessionConsumers{
 		client:            client,
 		ackWait:           SessionConsumerAckWait,
-		inactiveThreshold: SessionConsumerInactiveThreshold,
+		inactiveThreshold: parseConnectOptions(options).inactiveThreshold,
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
 	}, nil
@@ -187,23 +192,6 @@ func ConnectSessionConsumers(urls []string, options ...ConnectOption) (*SessionC
 
 // Close closes the connection; a pull in progress ends.
 func (s *SessionConsumers) Close() { s.client.Close() }
-
-// SetInactiveThreshold makes d the inactive threshold every consumer created or updated from
-// here on carries (applySettings), in place of SessionConsumerInactiveThreshold: the listener
-// sets it at start to the threshold its own session windows derive (InactiveThresholdFor), so a
-// deployment whose session records outlive the default windows keeps each consumer until its
-// own sweep can delete it and record the resume floor. A d that is zero or negative leaves the
-// threshold as it is, since no deployment turns the server's backstop off, and the default
-// stands for a listener that derives nothing.
-//
-// It is set at start, before any call that reaches a consumer, which is what makes the write
-// safe against the reads every later create and update make of it.
-func (s *SessionConsumers) SetInactiveThreshold(d time.Duration) {
-	if d <= 0 {
-		return
-	}
-	s.inactiveThreshold = d
-}
 
 // SetCreateFault makes every consumer create call fault(consumer name) first and fail, unsent,
 // with the error it returns; nil removes it. It is a seam for tests, which fail the create of a

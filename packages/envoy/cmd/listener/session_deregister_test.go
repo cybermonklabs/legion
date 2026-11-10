@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,27 +172,26 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 // consumer is created again (bus.SessionResumeSubject). A publish to either through the route
 // would let any bearer rewind a role's drain or choose where another session's delivery
 // resumes, so the route refuses every topic under one (bus.ListenerOwnLane) and stores nothing.
-// The rows are the listener's own lanes themselves, so a lane the stream gains is covered here
-// rather than waiting for somebody to name it.
+// The rows are the listener's own lanes themselves (bus.ListenerOwnLanes), so a lane the stream
+// gains is covered here rather than waiting for somebody to name it.
 func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 	d, client := keptRoleDeps(t)
-	lanes := listenerOwnLanes()
+	lanes := bus.ListenerOwnLanes()
 	if len(lanes) == 0 {
 		t.Fatal("the listener owns no lane of the stream; this row has nothing to refuse")
 	}
 	for _, lane := range lanes {
-		// The lane as a refusal names it and as every topic under it begins: the subject
-		// pattern the stream carries without its trailing wildcard.
-		prefix := strings.TrimSuffix(lane, ">")
-		subject := prefix + "mine"
+		// bus spells a lane as every topic under it begins and as a refusal names it
+		// (bus.ListenerOwnLanes), so a topic of that lane is the lane and a name.
+		subject := lane + "mine"
 		t.Run(subject, func(t *testing.T) {
 			recorder, _ := publishThrough(d,
 				`{"topic":"`+subject+`","source":"agent","message":"{\"floor\":1,\"stream_id\":\"mine\"}"}`)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("publish to %s: status %d, body %s; want 400", subject, recorder.Code, recorder.Body.String())
 			}
-			if body := recorder.Body.String(); !strings.Contains(body, prefix) {
-				t.Fatalf("the refusal of %s is %q, want it to name the lane %s it lies under", subject, body, prefix)
+			if body := recorder.Body.String(); !strings.Contains(body, lane) {
+				t.Fatalf("the refusal of %s is %q, want it to name the lane %s it lies under", subject, body, lane)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -294,6 +294,70 @@ func TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt(t *testing.T
 	}
 	if entry := rig.entry(t, sessionID); entry.Epoch != "epoch-2" || entry.Delivery != session.DeliveryConsumer {
 		t.Fatalf("the session entry is %+v, want the relaunch's registration in consumer delivery at epoch-2", entry)
+	}
+	rig.requireConsumer(t, sessionID)
+}
+
+// laggingFollowerBucket is the session bucket as a copy that has not caught up answers a direct
+// get: a key whose record the stream's leader holds reads nats.ErrKeyNotFound, and every such
+// read is counted. The leader's read of a key does not come through here - it is a stream
+// message get sent on the bucket's own jetstream context (bus.KeyValue.GetFromLeader), not a
+// call on this handle - so the count is the direct gets alone.
+type laggingFollowerBucket struct {
+	natsgo.KeyValue
+	gets *atomic.Int64
+}
+
+func (kv laggingFollowerBucket) Get(string) (natsgo.KeyValueEntry, error) {
+	kv.gets.Add(1)
+	return nil, natsgo.ErrKeyNotFound
+}
+
+// The read a consumer delete makes under the session's lock is the one the leader of the
+// session bucket's stream answers, not the direct get every other read of that bucket makes
+// (session.SessionRegistry.RefreshFromLeader). On a replicated bucket a direct get is answered
+// by whichever copy is near enough to current, so a copy that has not applied a relaunch's
+// registration answers not found for a session that is live, and a delete reading it would
+// take the live relaunch's consumer - pausing that relay until its next heartbeat registered
+// the session again.
+//
+// The server these rows run against is one node holding one copy, so it can lag by nothing and
+// no row here can make a follower answer late. What this one shows instead is which read the
+// delete asks for, with the loss the other read costs put in front of it: the bucket's direct
+// get is made to answer not found for a live registration, as a lagging follower answers it,
+// and the delete is run against that bucket. A delete reading the direct get takes this live
+// registration's consumer; the delete as it stands reads the leader, which holds the record,
+// keeps the consumer, and makes no direct get at all. That the leader read is really answered
+// by the stream's leader is read off the wire in bus's own row (internal/bus, GetFromLeader).
+func TestTheConsumerDeleteReadsTheSessionBucketsLeader(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_delete_reads_the_leader"
+	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
+		"delivery":{"consumer":true,"epoch":"e"}}`)
+	rig.requireConsumer(t, sessionID)
+	directGets := &atomic.Int64{}
+	swapSessionBucket(t, rig.harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return laggingFollowerBucket{KeyValue: kv, gets: directGets}
+	})
+	ctx := context.Background()
+	if _, err := rig.harness.sessions.Refresh(ctx, sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the direct get of %s answers %v, want %v: this row needs the answer a copy that is behind gives", sessionID, err, natsgo.ErrKeyNotFound)
+	}
+	if _, err := rig.harness.sessions.RefreshFromLeader(ctx, sessionID); err != nil {
+		t.Fatalf("the leader's read of %s: %v, want the live registration the bucket holds", sessionID, err)
+	}
+	// The two reads above are the row's own; what the delete reads is counted from here.
+	directGets.Store(0)
+
+	gone := rig.deps.consumers.deleteConsumer(ctx, rig.harness.sessions, sessionID, func(ctx context.Context) error {
+		return rig.deps.consumers.consumers.Delete(ctx, sessionID)
+	})
+
+	if gone {
+		t.Error("the delete reported the consumer gone; the bucket's leader holds this session's registration, so the consumer that delivers to it must stand")
+	}
+	if made := directGets.Load(); made != 0 {
+		t.Errorf("the delete made %d direct get(s) of the session bucket, want none: a copy that is behind answers one, and its not-found takes the consumer of a live session", made)
 	}
 	rig.requireConsumer(t, sessionID)
 }

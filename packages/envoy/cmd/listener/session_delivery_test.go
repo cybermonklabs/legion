@@ -46,7 +46,12 @@ func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegist
 func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
 	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
-	delivery := connectSessionDelivery([]string{url}, harness.config.logger)
+	// The connection is opened with the threshold this listener's own windows derive, as main
+	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
+	// deployment with these windows would give it.
+	delivery := connectSessionDelivery([]string{url},
+		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval, harness.config.logger),
+		harness.config.logger)
 	t.Cleanup(delivery.close)
 	if delivery.consumers == nil {
 		t.Fatal("the session-consumer connection did not open")
@@ -648,7 +653,10 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 	// the deregistration's and the sweep's, writes no line of its own while the backoff stands
 	// (sessionDelivery.deleteConsumer), where one per delete is what a hub whose user may not
 	// manage session consumers at all would otherwise carry.
-	if rig.deps.consumers.deleteConsumer(context.Background(), rig.harness.sessions, "ses_ungranted_gone", nil) {
+	deleteUngranted := func(ctx context.Context) error {
+		return rig.deps.consumers.consumers.Delete(ctx, "ses_ungranted_gone")
+	}
+	if rig.deps.consumers.deleteConsumer(context.Background(), rig.harness.sessions, "ses_ungranted_gone", deleteUngranted) {
 		t.Fatal("the delete of ses_ungranted_gone's consumer reported the consumer gone; this user may make no session consumer call at all")
 	}
 	if lines := strings.Count(rig.harness.logs.String(), "sessions stay on core delivery until the grant carries them"); lines != 1 {
@@ -678,22 +686,24 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 
 // The threshold the server removes an idle session consumer after is the deployment's own, not
 // the compiled floor: the listener derives it from the windows its own session registry runs
-// with and sets it before it creates any consumer. On a deployment whose session bucket keeps a
-// record far longer than its gone horizon, that record's life is what the sweep waits on, so
-// the threshold must stand above the bucket's age plus a reaper pass and a sweep pass - a
-// consumer the server removed first would take with it the only record of where that session's
-// delivery stopped. Every consumer the listener creates from then on carries the value.
+// with and gives it to the session-consumer connection before that connection creates
+// anything. On a deployment whose session bucket keeps a record far longer than its gone
+// horizon, that record's life is what the sweep waits on, so the threshold must stand above
+// the bucket's age plus a reaper pass and a sweep pass - a consumer the server removed first
+// would take with it the only record of where that session's delivery stopped. Every consumer
+// the listener creates carries the value, which is what the rig's own connection is opened
+// with (newSessionConsumerRigOn, as main opens it).
 //
 // That the arithmetic above the three windows is right is bus.InactiveThresholdFor's own row
-// (internal/bus); what this row is about is the listener handing it its own windows.
+// (internal/bus), and that a connection hands its threshold to every consumer is
+// bus.WithInactiveThreshold's; what this row is about is the listener handing it its own
+// windows.
 func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
+	// A bucket that keeps a record for well past the horizon, as a deployment that raised
+	// ENVOY_SESSION_MAX_AGE has.
 	const (
-		// A bucket that keeps a record for well past the horizon, as a deployment that raised
-		// ENVOY_SESSION_MAX_AGE has.
-		bucketAge     = 2 * time.Hour
-		horizon       = time.Minute
-		reapInterval  = 5 * time.Minute
-		sweepInterval = 5 * time.Minute
+		bucketAge = 2 * time.Hour
+		horizon   = time.Minute
 	)
 	rig := newSessionConsumerRig(t,
 		session.WithSessionTTL(bucketAge),
@@ -704,11 +714,13 @@ func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
 		t.Fatalf("the rig's session bucket keeps a record for %s, want %s: this row needs an age above its gone horizon", ttl, bucketAge)
 	}
 
-	threshold := rig.deps.consumers.setInactiveThreshold(rig.harness.sessions, reapInterval, sweepInterval)
+	// The derivation the rig's connection was opened with, read from the same windows and the
+	// same two intervals a deployment that sets neither runs.
+	threshold := inactiveThresholdFor(rig.harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval, rig.harness.config.logger)
 
-	if bound := bucketAge + reapInterval + sweepInterval; threshold <= bound {
+	if bound := bucketAge + defaultSessionReapInterval + defaultSessionConsumerSweepInterval; threshold <= bound {
 		t.Fatalf("the inactive threshold is %s, want it above this deployment's sweep bound %s: a record kept %s, the reaper's pass %s, the sweep's pass %s",
-			threshold, bound, bucketAge, reapInterval, sweepInterval)
+			threshold, bound, bucketAge, defaultSessionReapInterval, defaultSessionConsumerSweepInterval)
 	}
 	const sessionID = "ses_inactive_threshold"
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
@@ -718,6 +730,6 @@ func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
 		t.Fatalf("read the consumer of %s: %v", sessionID, err)
 	}
 	if info.Config.InactiveThreshold != threshold {
-		t.Fatalf("the consumer of %s carries an inactive threshold of %s, want the %s the listener set", sessionID, info.Config.InactiveThreshold, threshold)
+		t.Fatalf("the consumer of %s carries an inactive threshold of %s, want the %s this listener's windows derive", sessionID, info.Config.InactiveThreshold, threshold)
 	}
 }

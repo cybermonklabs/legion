@@ -834,6 +834,33 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 	})
 }
 
+// inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
+// this deployment's own windows derive it (bus.InactiveThresholdFor): main reads it before it
+// opens the session-consumer connection and gives it to that connection, so every consumer the
+// listener creates carries it (connectSessionDelivery, bus.WithInactiveThreshold).
+//
+// It must stand above the sweep's worst bound - the session's record leaves the bucket, the
+// sweep's next pass deletes the consumer - because a consumer the server removes first takes
+// the session's position with it: the resume floor is recorded by the listener's own delete and
+// by nothing else, so a session whose consumer the server removed is created again at the
+// stream's end and loses every message stored while it was away.
+//
+// The record's life is the longer of the gone horizon and the bucket's maximum age, since
+// either can be what drops the record: the reaper deletes it a pass after the horizon, and the
+// bucket itself drops it at that age. The value and the three windows it came from are logged
+// once at start, so an operator can read why their deployment carries the threshold it does.
+func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweepInterval time.Duration, logger *logging.Logger) time.Duration {
+	_, goneHorizon := sessions.Windows()
+	recordLife := max(goneHorizon, sessions.TTL())
+	threshold := bus.InactiveThresholdFor(recordLife, reapInterval, sweepInterval)
+	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
+		slog.String("inactive_threshold", threshold.String()),
+		slog.String("record_life", recordLife.String()),
+		slog.String("reap_interval", reapInterval.String()),
+		slog.String("sweep_interval", sweepInterval.String()))
+	return threshold
+}
+
 func main() {
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
@@ -1248,15 +1275,16 @@ func main() {
 	// The session consumers a registration asks for are managed on a connection of their own
 	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
 	// delivery, which a listener of an earlier release serves too, rather than ending the start.
-	delivery := connectSessionDelivery(cfg.NATSURLs, logger)
+	//
 	// The threshold the server removes an idle session consumer after is derived from this
-	// deployment's own windows and set before any consumer call is made, so every consumer this
+	// deployment's own windows first and given to that connection, so every consumer the
 	// listener creates carries one that stands above its own sweep's worst bound: the session's
 	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
 	// records for longer than the default windows would otherwise have the server remove a
 	// consumer the listener's own delete had not reached, and with it the only record of where
-	// that session's delivery stopped (sessionDelivery.setInactiveThreshold).
-	delivery.setInactiveThreshold(sessions, sessionReapInterval, sessionConsumerSweepInterval)
+	// that session's delivery stopped (inactiveThresholdFor, bus.WithInactiveThreshold).
+	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval, logger)
+	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
 	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
 	// this task holds its machine's durable binding (below). Without its reply inbox no frame could
 	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.

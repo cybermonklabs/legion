@@ -201,15 +201,51 @@ var streamSubjects = []string{
 // carried by the stream and kept out of every consumer's filter by that one list.
 var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
 
+// ListenerOwnLanes reports the lanes the stream carries for the listener itself
+// (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
+// (`notifications.envoy.kept.`) rather than the `>` pattern the stream carries it as. That is the
+// shape a caller names a lane in and builds a topic of one with: the publish route's refusal
+// names the lane it refused, and the row that tests that refusal is the lanes themselves
+// (cmd/listener), so a lane the stream gains is named and covered with nothing written out a
+// second time. A caller judging one topic asks ListenerOwnLane or ListenerOwnLaneOf instead,
+// which read the same list.
+func ListenerOwnLanes() []string {
+	lanes := make([]string, len(listenerOwnStreamLanes))
+	for i, lane := range listenerOwnStreamLanes {
+		lanes[i] = listenerOwnLanePrefix(lane)
+	}
+	return lanes
+}
+
+// ListenerOwnLaneOf is the lane of the listener's own that topic lies under, spelled as
+// ListenerOwnLanes spells it, and "" for a topic under none: the name a caller that refuses such
+// a topic puts in its refusal, so a bearer reads which lane it reached. Whether a topic is one of
+// the listener's own is this one judgement, which ListenerOwnLane only reports as a yes or a no,
+// so the two can never disagree.
+func ListenerOwnLaneOf(topic string) string {
+	for _, lane := range listenerOwnStreamLanes {
+		if SubjectContains(lane, topic) {
+			return listenerOwnLanePrefix(lane)
+		}
+	}
+	return ""
+}
+
+// listenerOwnLanePrefix is lane, a subject pattern of listenerOwnStreamLanes, as the prefix every
+// topic of that lane begins with: the pattern without its trailing `>`.
+func listenerOwnLanePrefix(lane string) string {
+	return strings.TrimSuffix(lane, ">")
+}
+
 // ListenerOwnLane reports whether topic lies under one of the listener's own lanes
 // (listenerOwnStreamLanes): every subject topic matches is inside the kept lane or the resume
 // lane, under NATS wildcard rules (SubjectContains). It is the one test a caller makes of such a
 // topic - the publish route refuses one, since a session writing a drain cursor or a resume
 // floor would take over a role's lane or move another session's delivery (cmd/listener/api.go) -
 // so a lane added to that list is covered wherever it is asked, and no caller lists a lane of
-// its own.
+// its own. The lane itself, for a refusal that names it, is ListenerOwnLaneOf.
 func ListenerOwnLane(topic string) bool {
-	return slices.ContainsFunc(listenerOwnStreamLanes, func(lane string) bool { return SubjectContains(lane, topic) })
+	return ListenerOwnLaneOf(topic) != ""
 }
 
 // streamCarriedSubjects is every subject the stream itself carries: the notification subjects

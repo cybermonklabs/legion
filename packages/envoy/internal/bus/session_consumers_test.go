@@ -1394,26 +1394,48 @@ func TestInactiveThresholdForIsNeverBelowItsFloor(t *testing.T) {
 	}
 }
 
-// A consumer created after SetInactiveThreshold carries the threshold set, which is how a
-// listener gives every consumer the one its own windows derive (InactiveThresholdFor). A value
-// that is zero or negative leaves the threshold as it is, so no configuration turns the server's
-// backstop off.
-func TestAConsumerCreatedAfterSetInactiveThresholdCarriesIt(t *testing.T) {
-	_, consumers := sessionConsumersOnStream(t)
-	ctx := context.Background()
-	const want = 2 * time.Hour
-	consumers.SetInactiveThreshold(want)
-	consumers.SetInactiveThreshold(0)
-	consumers.SetInactiveThreshold(-time.Minute)
-	const session = "ses_threshold_set"
-	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	info, err := consumers.Info(ctx, session)
+// A consumer carries the inactive threshold its connection was opened with
+// (WithInactiveThreshold), which is how a listener gives every consumer the one its own windows
+// derive (InactiveThresholdFor), and the constant where the connection named none or named one
+// that is zero or negative, so no configuration turns the server's backstop off. The threshold
+// is given at the connection and never set after it, so no consumer is created before the
+// deployment's threshold is in hand.
+func TestAConsumerCarriesTheInactiveThresholdItsConnectionWasOpenedWith(t *testing.T) {
+	uri := testnats.URL(t)
+	owner, err := ConnectOwningStream([]string{uri})
 	if err != nil {
-		t.Fatalf("info: %v", err)
+		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	if info.Config.InactiveThreshold != want {
-		t.Fatalf("the consumer's inactive threshold = %s, want the %s set before it was created", info.Config.InactiveThreshold, want)
+	t.Cleanup(owner.Close)
+	const given = 2 * time.Hour
+	for _, tc := range []struct {
+		name    string
+		session string
+		options []ConnectOption
+		want    time.Duration
+	}{
+		{"opened with a threshold", "ses_threshold_given", []ConnectOption{WithInactiveThreshold(given)}, given},
+		{"opened with none", "ses_threshold_none", nil, SessionConsumerInactiveThreshold},
+		{"opened with zero", "ses_threshold_zero", []ConnectOption{WithInactiveThreshold(0)}, SessionConsumerInactiveThreshold},
+		{"opened with a negative threshold", "ses_threshold_negative", []ConnectOption{WithInactiveThreshold(-time.Minute)}, SessionConsumerInactiveThreshold},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			consumers, err := ConnectSessionConsumers([]string{uri}, tc.options...)
+			if err != nil {
+				t.Fatalf("connect session consumers: %v", err)
+			}
+			t.Cleanup(consumers.Close)
+			ctx := context.Background()
+			if _, err := consumers.Ensure(ctx, tc.session, []string{contracts.AgentSubject(tc.session)}, 0); err != nil {
+				t.Fatalf("ensure: %v", err)
+			}
+			info, err := consumers.Info(ctx, tc.session)
+			if err != nil {
+				t.Fatalf("info: %v", err)
+			}
+			if info.Config.InactiveThreshold != tc.want {
+				t.Fatalf("the consumer's inactive threshold = %s, want the %s its connection was opened with", info.Config.InactiveThreshold, tc.want)
+			}
+		})
 	}
 }

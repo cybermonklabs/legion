@@ -809,15 +809,18 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // the sweep (sessionDelivery.awaitDeletes).
 //
 // Which consumer that delete removes is settled under the session's lock rather than by the
-// outcome above: it reads the session bucket again there and deletes only where the bucket
-// holds no record at all (sessionDelivery.deleteConsumer). So an outcome that keeps the entry
-// keeps the consumer, a live registration standing behind it — another client instance's, a
-// later one's, or the one a lost race read — and so does a registration that landed between
-// this route's own delete and that lock: the relaunch behind an if_not_registered_after stop,
-// whose entry this route read before the relaunch wrote its own. The request answers exactly as
-// it did before whether that delete ran, stood down or failed: the entry is gone, which is what
-// the caller asked for, and the listener's sweep and the server's inactivity threshold each
-// reach a consumer left behind.
+// outcome above: it reads the session bucket again there, from the leader of that bucket's
+// stream, and deletes only where the bucket holds no record at all
+// (sessionDelivery.deleteConsumer). So an outcome that keeps the entry keeps the consumer, a
+// live registration standing behind it — another client instance's, a later one's, or the one a
+// lost race read — and so does a registration that landed between this route's own delete and
+// that lock: the relaunch behind an if_not_registered_after stop, whose entry this route read
+// before the relaunch wrote its own. That registration's own write is what the read must see,
+// which is why it is the leader's: a direct get of a replicated bucket is answered by any copy
+// near enough to current, and one that has not applied the write yet would answer not found for
+// a session that is live. The request answers exactly as it did before whether that delete ran,
+// stood down or failed: the entry is gone, which is what the caller asked for, and the
+// listener's sweep and the server's inactivity threshold each reach a consumer left behind.
 //
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
@@ -906,31 +909,6 @@ type deleteSessionResponse struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// listenerOwnLanes are the lanes of the stream the listener owns, read from the stream's own
-// two lists rather than written out again here: every subject the stream carries
-// (bus.StreamCarriedSubjects) that is not one of the notification subjects a consumer filter
-// takes (bus.StreamSubjects). A lane the stream gains is refused by the publish route with no
-// change here, and the row that tests the refusal ranges this same list.
-func listenerOwnLanes() []string {
-	return slices.DeleteFunc(bus.StreamCarriedSubjects(), func(subject string) bool {
-		return slices.Contains(bus.StreamSubjects(), subject)
-	})
-}
-
-// listenerOwnLane is the lane of listenerOwnLanes that topic lies under, as the prefix every
-// topic of that lane begins with rather than the subject pattern the stream carries it as, for
-// a refusal that says which lane it means; "" for a topic under none. Whether a topic is
-// refused at all is bus.ListenerOwnLane's judgement, which this only names, so the two can
-// never disagree.
-func listenerOwnLane(topic string) string {
-	for _, lane := range listenerOwnLanes() {
-		if bus.SubjectContains(lane, topic) {
-			return strings.TrimSuffix(lane, ">")
-		}
-	}
-	return ""
-}
-
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
 // instead) and the listener's own lanes, the kept one and the session resume one, and sends the
 // envelope. A role
@@ -1012,16 +990,18 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		// A lane of the listener's own is refused by the one test that covers every one of them
-		// (bus.ListenerOwnLane), and what each holds says why: the kept lane holds the copies
-		// the listener keeps for a role's next holder and the cursors of its drains, so a
-		// bearer publishing there could rewind a role's drain or put a copy of its own on the
+		// (bus.ListenerOwnLane), and named in the refusal as the stream itself spells it
+		// (bus.ListenerOwnLaneOf), so a lane the stream gains is refused and named here with
+		// nothing written out a second time. What each holds says why: the kept lane holds the
+		// copies the listener keeps for a role's next holder and the cursors of its drains, so
+		// a bearer publishing there could rewind a role's drain or put a copy of its own on the
 		// lane; the resume lane holds its record of where a deleted session consumer stopped,
 		// which is where that session's consumer is created again, so one publishing there
 		// would choose where another session's delivery resumes and make it miss every message
 		// stored before that floor or read again what it has read.
 		if bus.ListenerOwnLane(request.Topic) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-				"cannot publish to "+listenerOwnLane(request.Topic)+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
+				"cannot publish to "+bus.ListenerOwnLaneOf(request.Topic)+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
 			return
 		}
 		message, field, bodyExpectsReply := validateMessageBody(request.messageBody)
@@ -2300,13 +2280,18 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// consumer's to deliver.
 		//
 		// A registration answered consumer holds the session's lock from that consumer call
-		// until its entry is written, and releases it here (sessionDelivery.register): a
-		// consumer delete of this listener's reads the session bucket under the same lock and
-		// deletes only where it holds no record, so this registration's entry is either not
-		// written yet and the delete not started, or written and read there. Without the hold
-		// a clean stop that read the entry this registration replaces would delete the consumer
-		// of a session that is live again, and its relay would pause until the session
-		// registered anew. A registration left on the core path releases nothing (noUnlock).
+		// (bus.SessionConsumers.Ensure) until its entry is written (PutWithin), and releases it
+		// here (sessionDelivery.register): a consumer delete of this listener's takes the same
+		// lock and deletes only where the session bucket holds no record, so this
+		// registration's entry is either not written yet and the delete not started, or
+		// written by the time that read is made. Both halves are needed, the lock and the read
+		// the delete makes under it, which is the bucket's leader's answer rather than a
+		// direct get: a copy that has not applied this write yet would answer the delete not
+		// found for the session this registration has just made live
+		// (sessionDelivery.deleteConsumer). Without them a clean stop that read the entry this
+		// registration replaces would delete the consumer of a session that is live again, and
+		// its relay would pause until the session registered anew. A registration left on the
+		// core path releases nothing (noUnlock).
 		delivery, unlock := d.consumers.register(r.Context(), body, d.registry)
 		// Released where it is meant to be, right after the entry is written, and deferred
 		// here as the backstop: the release is idempotent, so a path that leaves this handler
@@ -2331,8 +2316,6 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				// no restart for its epoch (sessionRelays.apply).
 				d.consumers.relay.registered(body.SessionID, epochChanged, delivery.heard)
 			}
-		} else {
-			unlock()
 		}
 		// The registration is this process's heartbeat, so it is where the claims it holds
 		// say they are still held: every claim naming this session and this client instance

@@ -933,20 +933,28 @@ func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
 	}
 }
 
-// ListenerOwnLane answers for every lane the stream carries for the listener itself, over that
-// one list rather than over the lanes a caller happens to remember: a lane added to
-// listenerOwnStreamLanes is covered here, and so wherever a caller asks (the publish route's
-// refusal, cmd/listener/api.go). A notification topic, and a wildcard wider than any lane, are
-// no lane of the listener's.
+// ListenerOwnLane answers for every lane the stream carries for the listener itself, over the
+// exported list of them rather than over the lanes a caller happens to remember: a lane added to
+// listenerOwnStreamLanes is on ListenerOwnLanes, and so covered here and wherever a caller asks
+// (the publish route's refusal, cmd/listener/api.go). The lane a topic lies under is named as
+// every topic of that lane begins (ListenerOwnLaneOf), which is what a refusal puts in front of
+// its reader, and the two agree: a topic under no lane is named "". A notification topic, and a
+// wildcard wider than any lane, are no lane of the listener's.
 func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
-	for _, lane := range listenerOwnStreamLanes {
-		prefix, ok := strings.CutSuffix(lane, ">")
-		if !ok {
-			t.Fatalf("the listener's lane %q does not end in >, so a topic under it cannot be named here", lane)
+	lanes := ListenerOwnLanes()
+	if len(lanes) != len(listenerOwnStreamLanes) {
+		t.Fatalf("ListenerOwnLanes() = %q, want one entry for each of %q", lanes, listenerOwnStreamLanes)
+	}
+	for _, lane := range lanes {
+		if strings.HasSuffix(lane, ">") || !strings.HasSuffix(lane, ".") {
+			t.Fatalf("the listener's lane %q is not the prefix every topic of it begins with", lane)
 		}
-		for _, topic := range []string{lane, prefix + "a-topic", prefix + "a.deeper.topic", prefix + "*"} {
+		for _, topic := range []string{lane + ">", lane + "a-topic", lane + "a.deeper.topic", lane + "*"} {
 			if !ListenerOwnLane(topic) {
 				t.Errorf("ListenerOwnLane(%q) = false, want true: it lies under the listener's own lane %q", topic, lane)
+			}
+			if got := ListenerOwnLaneOf(topic); got != lane {
+				t.Errorf("ListenerOwnLaneOf(%q) = %q, want the lane %q it lies under", topic, got, lane)
 			}
 		}
 	}
@@ -960,6 +968,9 @@ func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
 	} {
 		if ListenerOwnLane(topic) {
 			t.Errorf("ListenerOwnLane(%q) = true, want false: no lane of the listener's holds every subject it matches", topic)
+		}
+		if got := ListenerOwnLaneOf(topic); got != "" {
+			t.Errorf("ListenerOwnLaneOf(%q) = %q, want no lane: no lane of the listener's holds every subject it matches", topic, got)
 		}
 	}
 }
