@@ -58,9 +58,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await expect(page.locator("[data-issue-row]").first()).toContainText("Backend unrelated");
     await titleHeader.getByRole("button", { name: /^Title/ }).click();
     await expect(titleHeader).toHaveAttribute("aria-sort", "descending");
-    await expect(page.locator("[data-issue-row]").first()).toContainText(
-      "Searchable table work 29"
-    );
+    // The epic is an ordinary row of the table, so it sorts with the rest.
+    await expect(page.locator("[data-issue-row]").first()).toContainText("Table epic");
 
     await filterPicker(page, "Labels").click();
     await page.getByRole("combobox", { name: "Search Labels" }).fill("front");
@@ -69,11 +68,11 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.getByRole("option", { name: /^frontend,/ }).click();
     await page.keyboard.press("Escape");
     await expect(page.getByText("Backend unrelated", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("30 of 31 issues", { exact: true })).toBeVisible();
+    await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
 
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("searchble work");
-    await expect(page.getByText("30 of 31 issues", { exact: true })).toBeVisible();
+    await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
     await search.fill("searchble impossible");
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await search.fill("searchble work");
@@ -293,7 +292,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     const page = await context.newPage();
     await page.setViewportSize({ width: 1000, height: 800 });
     await page.goto("/projects/CORE/issues?sort=title&size=250");
-    await expect(page.getByText("80 of 80 issues", { exact: true })).toBeVisible();
+    // 80 seeded rows and the epic, which is a row of the table like any other.
+    await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
     const original = await scroller.elementHandle();
     const ancestorRequested = Promise.withResolvers<void>();
@@ -324,7 +324,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     expect(await original?.evaluate((element) => element.isConnected)).toBe(true);
     expect(await scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     ancestorReady.resolve();
-    await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
+    await expect(page.getByText("82 of 82 issues", { exact: true })).toBeVisible();
     await expect
       .poll(() =>
         page
@@ -364,6 +364,9 @@ test("a refused bulk write retries after reload while the other operations have 
     await page.goto("/projects/CORE/issues");
     for (const row of rows) {
       await page.getByRole("checkbox", { name: `Select ${row.key}`, exact: true }).check();
+      // The bar is fixed to the window, so the geometry that matters is the page at its top,
+      // where the bar sits under the header and the table begins below it.
+      await page.evaluate(() => window.scrollTo(0, 0));
       const bar = await page.getByRole("toolbar").boundingBox();
       const box = await page.getByTestId("issues-table-scroll").boundingBox();
       if (!bar || !box) throw new Error("The selection toolbar or table is missing");

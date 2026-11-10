@@ -537,9 +537,8 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
     const first = issues[0];
-    const last = issues[issues.length - 1];
-    if (first === undefined || last === undefined) throw new Error("no issues seeded");
-    await expect(table.getByRole("row", { name: `${last.key} ${last.title}` })).toBeVisible();
+    if (first === undefined) throw new Error("no issues seeded");
+    await expect(page.getByText(`${issues.length} of ${issues.length} issues`)).toBeVisible();
     // Every row knows its epic, so the closed parents have been read by now.
     await expect(page.getByText("No epic").first()).toBeVisible();
     // The table's barrier: a row shows a title only an event can have brought.
@@ -565,14 +564,16 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     await settled(traffic);
     projectReads = 0;
 
+    // Rows are virtualized, so the window's own first row is the one a title change is read
+    // from; the writes run from the last row back to it, so its new title is the last to land.
     const startedAt = Date.now();
-    for (const [index, issue] of issues.entries()) {
+    for (const [index, issue] of [...issues].reverse().entries()) {
       await until(startedAt + index * 250);
       await patchIssue(issue.key, { title: `${issue.title} renamed` }, bob);
     }
-    await expect(table.getByRole("row", { name: `${last.key} ${last.title} renamed` })).toBeVisible(
-      { timeout: 2_000 }
-    );
+    await expect(
+      table.getByRole("row", { name: `${first.key} ${first.title} renamed` })
+    ).toBeVisible({ timeout: 2_000 });
     await drainRefreshWindow(page, traffic);
     console.log(`REFETCH-TABLE [${testInfo.project.name}] project reads: ${projectReads}`);
     expect(projectReads).toBeLessThanOrEqual(7);
