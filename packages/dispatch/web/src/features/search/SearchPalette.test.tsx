@@ -92,6 +92,17 @@ function RouteChanger(): ReactNode {
   );
 }
 
+/** A route settling itself the way `ProjectPage` does: a `replace` to the address the page
+ *  belongs at, which the reader did not ask for. */
+function RouteSettler(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate("/projects/LEGION/issues", { replace: true })} type="button">
+      Settle the route
+    </button>
+  );
+}
+
 function renderPalette(
   onClose = () => {},
   page = "/"
@@ -1039,6 +1050,41 @@ test("closes the palette when navigation changes", async () => {
   try {
     await user.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
     await waitFor(() => expect(closed).toBe(1));
+  } finally {
+    view.unmount();
+    queryClient.clear();
+  }
+});
+
+// A bare project path redirects to its board once its architecture sources have loaded, and a
+// `replace` mints a fresh `location.key` like any other navigation. The reader opened the bar
+// over that page and is still on it, so the bar stays open (dispatch://INFRA-2452).
+test("leaves the palette open when the route settles itself with a replace", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/LEGION"]}>
+      <QueryClientProvider client={queryClient}>
+        <CurrentRoute />
+        <RouteSettler />
+        <SearchPalette
+          onClose={() => {
+            closed += 1;
+          }}
+          open
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Settle the route" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/projects/LEGION/issues")
+    );
+    expect(closed).toBe(0);
+    expect(screen.getByRole("combobox", { name: "Search" })).not.toBeNull();
   } finally {
     view.unmount();
     queryClient.clear();
