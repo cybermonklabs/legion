@@ -292,21 +292,7 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "issues" ? (
           issueView === "list" ? (
-            <>
-              {/* The project's Legion numbers are its Legion tab's (dispatch://INFRA-979). */}
-              {hasLegion ? (
-                <p className="mb-2 text-sm">
-                  <Link
-                    className="underline"
-                    data-legion-dashboard-link
-                    to={buildProjectPath({ kind: "legion", project: route.project })}
-                  >
-                    Legion efficiency: slots, waiting line, where the time goes →
-                  </Link>
-                </p>
-              ) : null}
-              <IssuesTable key={route.project} project={route.project} />
-            </>
+            <IssuesTable key={route.project} project={route.project} />
           ) : (
             <>
               <IssueFilters key={route.project} project={route.project} />

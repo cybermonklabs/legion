@@ -200,125 +200,192 @@ registerText("danger text on canvas", DANGER_TEXT, CANVAS);
 registerText("success text on surface", SUCCESS_TEXT, SURFACE);
 registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
 
-/**
- * A single light-to-dark lifecycle scale, independent of the page's background: one row per
- * issue status, holding the rendered class string and, beside it, the OKLCH background and
- * foreground swatches the contrast check registers. The class string stays a static literal
- * (Tailwind's scanner reads this file as text), so the row is what ties `bg-sky-700` to
- * `P.SKY_700`: changing a shade means editing one row, and a status with no row of its own is
- * a type error rather than an unstyled chip.
- */
-const ISSUE_STATUS_SCALE: Record<IssueStatus, readonly [string, Swatch, Swatch]> = {
-  triage: ["bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950", P.SKY_100, P.SKY_950],
-  icebox: ["bg-sky-200 text-sky-950 dark:bg-sky-200 dark:text-sky-950", P.SKY_200, P.SKY_950],
-  backlog: ["bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
-  todo: ["bg-sky-400 text-sky-950 dark:bg-sky-400 dark:text-sky-950", P.SKY_400, P.SKY_950],
-  in_progress: ["bg-sky-500 text-sky-950 dark:bg-sky-500 dark:text-sky-950", P.SKY_500, P.SKY_950],
-  testing: ["bg-sky-700 text-white dark:bg-sky-700 dark:text-white", P.SKY_700, P.WHITE],
-  needs_review: ["bg-sky-800 text-white dark:bg-sky-800 dark:text-white", P.SKY_800, P.WHITE],
-  retro: ["bg-sky-900 text-white dark:bg-sky-900 dark:text-white", P.SKY_900, P.WHITE],
-  done: ["bg-sky-950 text-white dark:bg-sky-950 dark:text-white", P.SKY_950, P.WHITE],
-};
-/** The class string of each row, which is all a chip needs. Written out rather than derived,
- *  because `Object.fromEntries` answers a string-keyed map and recovering the nine keys from
- *  it takes an assertion — the thing this scale is typed to avoid. */
-export const issueStatusScale: Record<IssueStatus, string> = {
-  triage: ISSUE_STATUS_SCALE.triage[0],
-  icebox: ISSUE_STATUS_SCALE.icebox[0],
-  backlog: ISSUE_STATUS_SCALE.backlog[0],
-  todo: ISSUE_STATUS_SCALE.todo[0],
-  in_progress: ISSUE_STATUS_SCALE.in_progress[0],
-  testing: ISSUE_STATUS_SCALE.testing[0],
-  needs_review: ISSUE_STATUS_SCALE.needs_review[0],
-  retro: ISSUE_STATUS_SCALE.retro[0],
-  done: ISSUE_STATUS_SCALE.done[0],
-};
-for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_SCALE))
-  registerText(
-    `issue status scale: ${status}`,
-    pair(foreground, foreground),
-    pair(background, background)
-  );
-/** One clearly different colour per Legion phase (dispatch://INFRA-979), each a contrast-checked
- *  pair: the issues table, the status bar, the board and the Legion tab all draw a phase with it. */
-const LEGION_PHASES = [
+/** The issue status scale in lifecycle order, in the same IBM Carbon set as the Legion phase scale (dispatch://INFRA-979): the waiting states gray, the working ones in the working phases' hues, done green. */
+const ISSUE_STATUS_ROWS = [
   [
-    "queue",
-    "bg-slate-300 text-slate-950 dark:bg-slate-300 dark:text-slate-950",
-    P.SLATE_300,
-    P.SLATE_950,
-  ],
-  [
-    "design",
-    "bg-violet-300 text-violet-950 dark:bg-violet-300 dark:text-violet-950",
-    P.VIOLET_300,
-    P.VIOLET_950,
-  ],
-  ["planning", "bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
-  [
-    "implementing",
-    "bg-indigo-700 text-white dark:bg-indigo-700 dark:text-white",
-    P.INDIGO_700,
+    "triage",
+    "bg-[#f4f4f4] text-[#161616] dark:bg-[#393939] dark:text-white",
+    P.CARBON_GRAY_10,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_80,
     P.WHITE,
+  ],
+  [
+    "icebox",
+    "bg-[#e0e0e0] text-[#161616] dark:bg-[#525252] dark:text-white",
+    P.CARBON_GRAY_20,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_70,
+    P.WHITE,
+  ],
+  [
+    "backlog",
+    "bg-[#c6c6c6] text-[#161616] dark:bg-[#6f6f6f] dark:text-white",
+    P.CARBON_GRAY_30,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_60,
+    P.WHITE,
+  ],
+  [
+    "todo",
+    "bg-[#a8a8a8] text-[#161616] dark:bg-[#8d8d8d] dark:text-[#161616]",
+    P.CARBON_GRAY_40,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_50,
+    P.CARBON_GRAY_100,
+  ],
+  [
+    "in_progress",
+    "bg-[#002d9c] text-white dark:bg-[#4589ff] dark:text-[#161616]",
+    P.CARBON_BLUE_80,
+    P.WHITE,
+    P.CARBON_BLUE_50,
+    P.CARBON_GRAY_100,
   ],
   [
     "testing",
-    "bg-teal-300 text-teal-950 dark:bg-teal-300 dark:text-teal-950",
-    P.TEAL_300,
-    P.TEAL_950,
+    "bg-[#1192e8] text-[#161616] dark:bg-[#33b1ff] dark:text-[#161616]",
+    P.CARBON_CYAN_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_CYAN_40,
+    P.CARBON_GRAY_100,
   ],
   [
-    "reviewing",
-    "bg-amber-300 text-amber-950 dark:bg-amber-300 dark:text-amber-950",
-    P.AMBER_300,
-    P.AMBER_950,
+    "needs_review",
+    "bg-[#009d9a] text-[#161616] dark:bg-[#08bdba] dark:text-[#161616]",
+    P.CARBON_TEAL_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_TEAL_40,
+    P.CARBON_GRAY_100,
   ],
   [
-    "accepting",
-    "bg-lime-300 text-lime-950 dark:bg-lime-300 dark:text-lime-950",
-    P.LIME_300,
-    P.LIME_950,
+    "retro",
+    "bg-[#9f1853] text-white dark:bg-[#ff7eb6] dark:text-[#161616]",
+    P.CARBON_MAGENTA_70,
+    P.WHITE,
+    P.CARBON_MAGENTA_40,
+    P.CARBON_GRAY_100,
   ],
   [
-    "merging",
-    "bg-fuchsia-700 text-white dark:bg-fuchsia-700 dark:text-white",
-    P.FUCHSIA_700,
+    "done",
+    "bg-[#198038] text-white dark:bg-[#6fdc8c] dark:text-[#161616]",
+    P.CARBON_GREEN_60,
+    P.WHITE,
+    P.CARBON_GREEN_30,
+    P.CARBON_GRAY_100,
+  ],
+] as const;
+export const issueStatusScale: Record<string, string> = Object.fromEntries(
+  ISSUE_STATUS_ROWS.map(([status, classes]) => [status, classes])
+);
+for (const [status, , light, lightText, dark, darkText] of ISSUE_STATUS_ROWS) {
+  registerText(`issue status scale: ${status}`, pair(lightText, darkText), pair(light, dark));
+}
+
+/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases one cool family (purple, blue, cyan, teal), merging magenta. Each phase differs from its neighbours in hue or in lightness. The issues table, its status bar, the board and the Legion tab use it. */
+const LEGION_PHASE_ROWS = [
+  [
+    "queue",
+    "bg-[#c6c6c6] text-[#161616] dark:bg-[#6f6f6f] dark:text-white",
+    P.CARBON_GRAY_30,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_60,
     P.WHITE,
   ],
   [
+    "design",
+    "bg-[#a56eff] text-[#161616] dark:bg-[#d4bbff] dark:text-[#161616]",
+    P.CARBON_PURPLE_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_PURPLE_30,
+    P.CARBON_GRAY_100,
+  ],
+  [
+    "planning",
+    "bg-[#6929c4] text-white dark:bg-[#8a3ffc] dark:text-white",
+    P.CARBON_PURPLE_70,
+    P.WHITE,
+    P.CARBON_PURPLE_60,
+    P.WHITE,
+  ],
+  [
+    "implementing",
+    "bg-[#002d9c] text-white dark:bg-[#4589ff] dark:text-[#161616]",
+    P.CARBON_BLUE_80,
+    P.WHITE,
+    P.CARBON_BLUE_50,
+    P.CARBON_GRAY_100,
+  ],
+  [
+    "testing",
+    "bg-[#1192e8] text-[#161616] dark:bg-[#33b1ff] dark:text-[#161616]",
+    P.CARBON_CYAN_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_CYAN_40,
+    P.CARBON_GRAY_100,
+  ],
+  [
+    "reviewing",
+    "bg-[#009d9a] text-[#161616] dark:bg-[#08bdba] dark:text-[#161616]",
+    P.CARBON_TEAL_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_TEAL_40,
+    P.CARBON_GRAY_100,
+  ],
+  [
+    "accepting",
+    "bg-[#005d5d] text-white dark:bg-[#007d79] dark:text-white",
+    P.CARBON_TEAL_70,
+    P.WHITE,
+    P.CARBON_TEAL_60,
+    P.WHITE,
+  ],
+  [
+    "merging",
+    "bg-[#9f1853] text-white dark:bg-[#ff7eb6] dark:text-[#161616]",
+    P.CARBON_MAGENTA_70,
+    P.WHITE,
+    P.CARBON_MAGENTA_40,
+    P.CARBON_GRAY_100,
+  ],
+  [
     "awaiting_person",
-    "bg-rose-300 text-rose-950 dark:bg-rose-300 dark:text-rose-950",
-    P.ROSE_300,
-    P.ROSE_950,
+    "bg-[#b28600] text-[#161616] dark:bg-[#d2a106] dark:text-[#161616]",
+    P.CARBON_YELLOW_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_YELLOW_40,
+    P.CARBON_GRAY_100,
   ],
   [
     "held",
-    "bg-stone-400 text-stone-950 dark:bg-stone-400 dark:text-stone-950",
-    P.STONE_400,
-    P.STONE_950,
+    "bg-[#8d8d8d] text-[#161616] dark:bg-[#8d8d8d] dark:text-[#161616]",
+    P.CARBON_GRAY_50,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_50,
+    P.CARBON_GRAY_100,
   ],
   [
     "waiting_on_children",
-    "bg-orange-200 text-orange-950 dark:bg-orange-200 dark:text-orange-950",
-    P.ORANGE_200,
-    P.ORANGE_950,
+    "bg-[#e0e0e0] text-[#161616] dark:bg-[#525252] dark:text-white",
+    P.CARBON_GRAY_20,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_70,
+    P.WHITE,
   ],
   [
     "other",
-    "bg-slate-200 text-slate-900 dark:bg-slate-200 dark:text-slate-900",
-    P.SLATE_200,
-    P.SLATE_900,
+    "bg-[#f4f4f4] text-[#161616] dark:bg-[#393939] dark:text-white",
+    P.CARBON_GRAY_10,
+    P.CARBON_GRAY_100,
+    P.CARBON_GRAY_80,
+    P.WHITE,
   ],
 ] as const;
 export const legionPhaseScale: Record<string, string> = Object.fromEntries(
-  LEGION_PHASES.map(([phase, classes]) => [phase, classes])
+  LEGION_PHASE_ROWS.map(([phase, classes]) => [phase, classes])
 );
-for (const [phase, , background, foreground] of LEGION_PHASES) {
-  registerText(
-    `legion phase: ${phase}`,
-    pair(foreground, foreground),
-    pair(background, background)
-  );
+for (const [phase, , light, lightText, dark, darkText] of LEGION_PHASE_ROWS) {
+  registerText(`legion phase: ${phase}`, pair(lightText, darkText), pair(light, dark));
 }
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));

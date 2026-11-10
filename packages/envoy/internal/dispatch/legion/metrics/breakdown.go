@@ -73,29 +73,69 @@ func precedenceIndex(segment Segment) int {
 	return slices.IndexFunc(precedence, func(rule segmentRule) bool { return rule.Segment == segment })
 }
 
+// issueParts shares the issue's bar hours out over the breakdown's parts, each hour once: an
+// ask's hours to waiting on a person, then each phase's own. The hours it waited while a child
+// worked are the second answer, outside the parts.
+func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.Duration) {
+	view := c.viewOf(issue)
+	rest := normalize(c.barSpansOf(issue))
+	spent := map[string]time.Duration{}
+	take := func(id string, claim []Span) {
+		taken := intersect(rest, claim)
+		spent[id] += totalOf(taken)
+		rest = subtract(rest, taken)
+	}
+	take(breakdownPerson, view.claims(precedenceIndex(SegmentWaitingOnPerson)))
+	take(breakdownChildren, view.claims(precedenceIndex(SegmentWaitingOnChildren)))
+	children := spent[breakdownChildren]
+	delete(spent, breakdownChildren)
+	for _, part := range breakdownParts {
+		if len(part.phases) > 0 {
+			take(part.id, phaseSpansOf(view.timeline, part.phases...))
+		}
+	}
+	spent[breakdownOther] += totalOf(rest)
+	return spent, children
+}
+
+// PhaseHours is every issue of the population with Legion phase work, open or closed, and its
+// hours by breakdown part (the board's column ids), counted as the phase breakdown counts them:
+// an open issue's hours run to the population's end. A part with no hours is left out.
+func PhaseHours(population *Population) map[string]map[string]float64 {
+	c := &computation{
+		population: population,
+		scope:      ScopeAll,
+		phases:     map[string]phaseTimeline{},
+		views:      map[string]*issueView{},
+		roots:      map[string]string{},
+		workTimes:  map[string]workTimeRow{},
+	}
+	out := map[string]map[string]float64{}
+	for _, key := range population.Keys {
+		issue := population.Issues[key]
+		if issue == nil || !population.hasPhaseWork(issue) {
+			continue
+		}
+		spent, _ := c.issueParts(issue)
+		parts := map[string]float64{}
+		for id, here := range spent {
+			if hours(here) > 0 {
+				parts[id] = hours(here)
+			}
+		}
+		if len(parts) > 0 {
+			out[key] = parts
+		}
+	}
+	return out
+}
+
 func (c *computation) phaseBreakdown(finished []*Issue) PhaseBreakdown {
 	out := PhaseBreakdown{Phases: []BreakdownPhase{}, Issues: make([]BreakdownIssue, 0, len(finished))}
 	totals := map[string]time.Duration{}
 	var whole, waited time.Duration
 	for _, issue := range finished {
-		view := c.viewOf(issue)
-		rest := normalize(c.barSpansOf(issue))
-		spent := map[string]time.Duration{}
-		take := func(id string, claim []Span) {
-			taken := intersect(rest, claim)
-			spent[id] += totalOf(taken)
-			rest = subtract(rest, taken)
-		}
-		take(breakdownPerson, view.claims(precedenceIndex(SegmentWaitingOnPerson)))
-		take(breakdownChildren, view.claims(precedenceIndex(SegmentWaitingOnChildren)))
-		children := spent[breakdownChildren]
-		delete(spent, breakdownChildren)
-		for _, part := range breakdownParts {
-			if len(part.phases) > 0 {
-				take(part.id, phaseSpansOf(view.timeline, part.phases...))
-			}
-		}
-		spent[breakdownOther] += totalOf(rest)
+		spent, children := c.issueParts(issue)
 		row := BreakdownIssue{
 			Key: issue.Key, Title: issue.Title, Phases: map[string]float64{},
 			WaitingOnChildrenHours: hours(children),

@@ -113,7 +113,11 @@ type legionBoardResponse struct {
 	// never answered still renders. The settings control on the Legion view reads them.
 	Settings       map[string]json.RawMessage `json:"settings"`
 	SettingSources map[string]json.RawMessage `json:"setting_sources"`
-	ComputedAt     time.Time                  `json:"computed_at"`
+	// PhaseHours is every issue of the project with Legion phase work, open or closed, and its
+	// hours by phase (the board's column ids, with waiting on a person and other), counted as the
+	// metrics' phase breakdown counts them (dispatch://INFRA-979). It is at most a minute old.
+	PhaseHours map[string]map[string]float64 `json:"phase_hours"`
+	ComputedAt time.Time                     `json:"computed_at"`
 }
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
@@ -197,7 +201,13 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, legionBoardCompute(population, time.Now().UTC()))
+	now := time.Now().UTC()
+	board := legionBoardCompute(population, now)
+	if board.PhaseHours, err = s.legionPhaseHours(r.Context(), project, now); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, board)
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
