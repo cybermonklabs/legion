@@ -10,54 +10,109 @@ import (
 )
 
 // embeddingProjectKeyFillLease names the lease the one pass of the embeddings project_key fill
-// runs under. Two server processes in a roll must never both fill: the pass is about an hour of
-// 6 KB row rewrites on a deployment of a million vectors (store.EmbeddingProjectKeyBatch holds
-// the measurements), and the second process would walk the same keyset behind the first's
-// commits, reading every row the first had already labelled for no row of its own.
+// runs under. Two server processes in a roll must never both fill: the pass is one to two hours
+// of labelling on a deployment of a million vectors, each label about 253 bytes of heap and
+// 4.9 KiB of growth in the vector index (store.EmbeddingProjectKeyBatch holds the measurements),
+// and the second process would walk the same keyset behind the first's commits, reading every
+// row the first had already labelled for no row of its own.
 //
 // Lower case and hyphenated, saying what the pass does rather than which release wanted it, as
 // every other lease name is (they are listed in store.LeasePoolSize's comment).
 const embeddingProjectKeyFillLease = "embeddings-project-key-fill"
 
-// RunEmbeddingProjectKeyFill makes one pass of store.FillEmbeddingProjectKeys under
-// embeddingProjectKeyFillLease. The boot starts it in the background (cmd/dispatch/main.go),
+// embeddingProjectKeyFillRetry is how long a process waits before trying for the lease again
+// after a try that neither finished the labelling nor ran at all. Five minutes: the pass itself
+// is one to two hours, so five minutes is lost in the noise of it, and it is the whole of what a
+// holder that dies mid-pass costs - the other process picks the pass up within five minutes of
+// that session ending, rather than when something next boots. A process that keeps skipping pays
+// one try for the lease and one read of a one-row table every five minutes for as long as the
+// labelling lasts, which is a dozen round trips an hour.
+//
+// It is a variable only so a test can drive the retry without waiting five minutes, as
+// store.embeddingProjectKeyProgressEvery is a variable only so a test can see a progress line.
+var embeddingProjectKeyFillRetry = 5 * time.Minute
+
+// RunEmbeddingProjectKeyFill makes store.FillEmbeddingProjectKeys' pass under
+// embeddingProjectKeyFillLease, and keeps trying for that lease until the labelling is over,
+// whichever process finishes it. The boot starts it in the background (cmd/dispatch/main.go),
 // which is where what it does and why it does not block the boot is written; this is the lease
 // around it. It lives here beside the other leased passes over the store rather than in store
 // itself, because duty's own tests read the store package, so a store that imported duty would
 // be an import cycle in test.
 //
-// duty.Exclusive itself, with no period, rather than one of duty's loops: this pass is
-// once-only. Once every stored row is labelled there is nothing left for a later pass to do,
-// and the cursor row of migration 20261109120100 records exactly that, so a pass that finds it
-// finished reads one row and returns. duty.RunLeased and duty.RunLeasedAfterEachPass are the
-// shapes of a loop that has work again every interval - the maintenance sweep beside this one,
-// the block index - and either of them here would take the lease and read that one row for the
-// life of the process, for ever, to learn again what the boot already learned. The period is
-// zero for the same reason: a period is how duty_passes decides which process serves a
-// repeating loop's interval (duty/exclusive.go, readPeriod), and a pass made once in the life
-// of a release serves no interval. That pairing - a lease and no period - is what the delivery
-// consumers' bind takes for its own non-periodic work (delivery/intake.go:660).
+// Why it tries again rather than making one attempt. duty.Exclusive makes exactly one: a
+// process that finds the lease held logs duty's own "leased pass skipped" line and is done with
+// the fill for the life of that process. This code made that one attempt until INFRA-988's
+// second round measured what it costs. Two processes were raced at a database of unlabelled
+// rows: the loser skipped and never looked again, the winner was killed mid-pass, and three rows
+// stayed unlabelled with a live process beside them that would have labelled them - until
+// something booted. A project-scoped meaning search keeps the owner-joined predicate for exactly
+// as long as that lasts (api/search.go, meaningProjectScope), so "until something boots" is the
+// recall the slower read serves. Trying again every embeddingProjectKeyFillRetry bounds it: the
+// lease is the session's, so a dead holder's goes back as its backend exits, and the next try
+// takes it and resumes from the cursor the dead holder's committed batches left.
 //
-// A duty.Hold is the other primitive and is the wrong one here: a hold is for a duty one
+// Why the loop is written here and not taken from duty. duty.RunLeased and
+// duty.RunLeasedAfterEachPass are loops that never end: they tick for the life of the process,
+// which is right for a maintenance loop that has work again every interval - the sweep beside
+// this one, the block index - and wrong for a pass that is over for good once the rows are
+// labelled, since both would go on taking the lease and reading the cursor row for ever to learn
+// what this process already knows. Neither takes a stop condition. Both also gate on a period
+// through duty_passes (duty/exclusive.go, readPeriod), and a pass made once in the life of a
+// release serves no interval, which is why the period here is zero: a lease and no period, the
+// pairing the delivery consumers' bind takes for its own non-periodic work
+// (delivery/intake.go:660). So what duty gives this file is the gate (Exclusive) and the jitter
+// (Jittered), and the stop is the one thing written here.
+//
+// A duty.Hold is the other primitive and is still the wrong one: a hold is for a duty one
 // process must be seen to be holding and another must take over within seconds of it stopping,
 // as the events outbox does, and it costs a row, a renewal every two seconds and a take-over
-// path. Nothing here needs a take-over. The lease is a session-level lock, so a process killed
-// mid-pass gives it back as its backend exits, and the batches it committed stand: the cursor
-// keeps the place, and the next process to boot - which is what a roll or an out-of-memory kill
-// produces - starts this again and resumes from there.
+// path. Nothing here needs a take-over within seconds; a five-minute retry is the whole of the
+// take-over this pass wants.
 //
-// A pass skipped because the other process holds the lease writes duty's own "leased pass
-// skipped" line and nothing of ours: one skip, one line. A failure is logged and the process
-// serves on, for the reason cmd/dispatch/main.go gives; a shutdown is not a failure, since ctx
-// ending is how every background pass stops.
+// What it logs is the fill's own lines (store.FillEmbeddingProjectKeys) and duty's "leased pass
+// skipped" for each try that found the lease held. A failure is logged and the process serves
+// on, for the reason cmd/dispatch/main.go gives, and is tried again at the next interval; a
+// shutdown is not a failure, since ctx ending is how every background pass stops.
 func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leases duty.Leases) {
-	duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
-		// The rows it had labelled are on the failure line: every batch before the one that
-		// failed is committed and the cursor records them, so the count says how much of the
-		// pass the next boot has left rather than how much it lost.
-		labelled, err := database.FillEmbeddingProjectKeys(ctx)
-		if err != nil && ctx.Err() == nil {
-			slog.Error("dispatch: the embeddings project_key fill failed", "error", err, "rows", labelled)
+	for {
+		finished := false
+		duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
+			// The rows it had labelled are on the failure line: every batch before the one that
+			// failed is committed and the cursor records them, so the count says how much of the
+			// pass the next try has left rather than how much it lost.
+			labelled, err := database.FillEmbeddingProjectKeys(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Error("dispatch: the embeddings project_key fill failed", "error", err, "rows", labelled)
+				}
+				return
+			}
+			finished = true
+		})
+		if finished || ctx.Err() != nil {
+			return
 		}
-	})
+		// The try was skipped or it failed. Jittered, so two processes that booted together do
+		// not try in step for the length of the labelling.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(duty.Jittered(embeddingProjectKeyFillRetry)):
+		}
+		// Another process may have finished it while this one waited, and that is this loop's
+		// other way out: one row read, no lease taken, and no "nothing to do" line of a pass that
+		// never had anything to do.
+		done, err := database.EmbeddingProjectKeyFillDone(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("dispatch: reading whether the embeddings project_key fill is finished failed", "error", err)
+			continue
+		}
+		if done {
+			return
+		}
+	}
 }

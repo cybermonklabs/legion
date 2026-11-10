@@ -141,6 +141,20 @@ func openFillTestStore(t *testing.T, issues int) (*Store, int64) {
 	return database, seedUnlabelledEmbeddings(t, database, issues)
 }
 
+// seedOwnerlessWindow stores one window row whose owner is gone, which is a row the pass
+// rewrites and must not count: embeddings_owner_project_key answers null for it, so the update
+// writes null over null and the row gains no project. A comment window whose comment was never
+// stored is the cheapest of the nine shapes that resolve to nothing (INFRA-988).
+func seedOwnerlessWindow(t *testing.T, database *Store) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into embeddings (kind, id, text_snapshot, content_hash)
+		values ('comment_block', 'comment/' || gen_random_uuid()::text || '#b1', 'a window of a comment that is gone', 'ownerless')
+	`); err != nil {
+		t.Fatalf("seed the window whose owner is gone: %v", err)
+	}
+}
+
 // An hour-long pass that logs once at its end tells a reader of a rolling deploy nothing while
 // it runs: a log with no line of the fill in it reads the same whether the fill is working, has
 // finished or never started. So the pass says it began and the cursor it begins from, says where
@@ -157,6 +171,11 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 	fillProgressEvery(t, 0)
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
+
+	// The row the pass walks past and gains nothing from. The finish line's count is what a
+	// reader takes for how much of the deployment is now searchable by project, so a row that
+	// came out of the pass as unlabelled as it went in may not be in it.
+	seedOwnerlessWindow(t, database)
 
 	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
 		t.Fatalf("label the stored rows: %v", err)
@@ -194,7 +213,16 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 
 	finished := oneLine(t, records, fillFinishedLine)
 	if rows := loggedAttr(t, finished, "rows").Int64(); rows != stored {
-		t.Errorf("the fill finished reporting %d rows, want the %d it was given", rows, stored)
+		t.Errorf("the fill finished reporting %d rows, want the %d that gained a project; the row whose owner is gone is rewritten and gains nothing",
+			rows, stored)
+	}
+	// Walked past, not skipped: the pass has to leave that row behind it like any other, or its
+	// cursor would stop there, and it is still unlabelled because nothing can label it.
+	if left := unlabelledEmbeddings(t, database); left != 1 {
+		t.Errorf("%d rows carry no project after the fill, want the one whose owner is gone", left)
+	}
+	if _, _, done := fillProgress(t, database); !done {
+		t.Error("the fill did not record itself finished, so it did not walk past the row whose owner is gone")
 	}
 	if batches := loggedAttr(t, finished, "batches").Int64(); batches < 2 {
 		t.Errorf("the fill finished reporting %d batches for %d rows in batches of %d, want the batches it committed",

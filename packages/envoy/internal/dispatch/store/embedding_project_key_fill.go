@@ -8,21 +8,39 @@ import (
 )
 
 // EmbeddingProjectKeyBatch is how many embeddings rows one transaction of
-// FillEmbeddingProjectKeys labels. Each row carries a 1,536-float vector, so writing its
-// project_key rewrites about 6 KB: the load-test deployment labelled 120,000 rows in 12 m 50 s
-// and 19,650 in 86 s, which is 156 to 228 rows a second (INFRA-988,
-// 20261109120100_embeddings_project_key_backfill.up.sql). 200 rows is about a second of that,
-// which is the longest a live write of a row this batch has already taken - the enqueue of a
-// window whose text just changed - waits for the batch's commit. Smaller batches would buy
-// that writer little and cost one more commit, one more `for update` of the cursor and one
-// more descent of embeddings_pkey each.
+// FillEmbeddingProjectKeys labels, and this is the one passage that says what a label costs and
+// how fast the pass goes; everything else about the fill points here.
+//
+// What it costs is not the row. embeddings.embedding is stored external (pg_attribute.attstorage
+// = 'e'), so the vector stays in TOAST and no TOAST row is rewritten: a label writes one new heap
+// tuple of about 253 bytes. What it costs is the vector index the row is in. Relabelling 20,000
+// rows of the load-test deployment grew embeddings_cosine from 133,328 KiB to 231,136 KiB -
+// 4.9 KiB a labelled row with embeddings_kind_project also present, 6.6 KiB without it - and an
+// HNSW index only grows, so vacuum gives none of it back. Extrapolated to that deployment's
+// 1,109,536 embedded rows (an extrapolation, not a measurement: the 20,000-row figure is what was
+// measured) a whole pass asks for about 5.2 GiB of free disk and keeps it until someone rebuilds
+// the index, which is what a deployment has to have free before it takes this release.
+//
+// How fast it goes, in the two shapes the round measured. Labelled in place, as this pass does,
+// each row pays its own HNSW maintenance: 120,000 rows in 12 m 50 s and 19,650 in 86 s, which is
+// 156 to 228 rows a second, so a deployment of 1,109,536 rows is one to two hours. Relabelled
+// whole, with the index work taken once at the end rather than row by row, the same 1,109,536
+// rows took 31 m 41 s - 584 rows a second, of which about 31 m is the HNSW work alone. The two
+// figures are the same work paid in two shapes, and the pass plans by the first: nothing here
+// goes faster than 228 rows a second (INFRA-988,
+// 20261109120100_embeddings_project_key_backfill.up.sql).
+//
+// 200 rows is about a second at those rates, which is the longest a live write of a row this
+// batch has already taken - the enqueue of a window whose text just changed - waits for the
+// batch's commit. Smaller batches would buy that writer little and cost one more commit, one
+// more `for update` of the cursor and one more descent of embeddings_pkey each.
 const EmbeddingProjectKeyBatch = 200
 
 // embeddingProjectKeyProgressEvery is how often a running fill says where it has got to. The pass
-// is about an hour on a deployment of a million vectors and labels 156 to 228 rows a second
-// (EmbeddingProjectKeyBatch's measurements), so a line every half minute is about 120 lines for
+// is one to two hours on a deployment of a million vectors, at 156 to 228 rows a second
+// (EmbeddingProjectKeyBatch's measurements), so a line every half minute is 120 to 240 lines for
 // the whole of it: enough for a reader of a rolling deploy to see the row count climbing within
-// one scroll of the log, and far short of the one line per batch - 5,000 of them - that logging
+// one scroll of the log, and far short of the one line per batch - 5,500 of them - that logging
 // each second of work would be.
 //
 // It is a variable only so a test can see a progress line without labelling a deployment's worth
@@ -96,6 +114,12 @@ const fillEmbeddingProjectKeysCursorQuery = `select kind, id from embeddings_pro
 // here for ever: nothing can label it, no join would have returned it to a scoped search
 // either, and the block index deletes such a window when it next sees its owner.
 //
+// So the count is of the rows that gained a project, `count(project_key)` over what the write
+// returned, and not of the rows the write touched: the nine owner shapes that resolve to no
+// project - an item whose row is gone, an id in no shape a uuid cast takes, a retired whole-text
+// row, each kind of orphan - are written and walked past like any other row, and counting them
+// told a reader of the finish line that 16 rows had been labelled where 5 had (INFRA-988).
+//
 // The cursor comes from `batch` and never from `labelled`'s `returning`: a row already labelled
 // returns nothing, so a cursor taken from the write would stall on the first such row. `done`
 // is set when the batch took no further row, which is the pass finished; the cursor then stays
@@ -119,7 +143,7 @@ const fillEmbeddingProjectKeysBatchQuery = `
 		   set project_key = embeddings_owner_project_key(e.kind, e.id)
 		  from batch b
 		 where e.kind = b.kind and e.id = b.id and e.project_key is null
-		returning 1
+		returning e.project_key
 	), moved as (
 		update embeddings_project_key_backfill
 		   set kind = coalesce((select kind from last), embeddings_project_key_backfill.kind),
@@ -127,14 +151,34 @@ const fillEmbeddingProjectKeysBatchQuery = `
 		       done = not exists (select 1 from last)
 		returning done
 	)
-	select (select count(*) from labelled), (select done from moved)`
+	select (select count(project_key) from labelled), (select done from moved)`
+
+// EmbeddingProjectKeyFillDone answers whether the pass has recorded itself finished, which is
+// the one column of the cursor row a reader outside the pass needs: the process that keeps
+// trying for the lease until the labelling is over reads it between tries
+// (api.RunEmbeddingProjectKeyFill), and reads it rather than calling the fill again, which would
+// write the fill's own "nothing to do" line every interval for the life of the process.
+//
+// It costs one row of a one-row table by its only key and takes no lock: a pass running in
+// another process holds that row `for update` only for the length of a batch, and a reader that
+// sees the value a batch is about to change tries again at its own interval.
+func (s *Store) EmbeddingProjectKeyFillDone(ctx context.Context) (bool, error) {
+	var done bool
+	if err := s.Pool.QueryRow(ctx, "select done from embeddings_project_key_backfill").Scan(&done); err != nil {
+		return false, fmt.Errorf("read whether the embeddings project_key fill is finished: %w", err)
+	}
+	return done, nil
+}
 
 // FillEmbeddingProjectKeys labels the embeddings rows stored before 20261109120000 added
-// project_key, and answers how many it labelled. The boot starts it in the background under a
-// lease (api.RunEmbeddingProjectKeyFill): the pass is about an hour on a deployment of a
-// million vectors, and an unlabelled row costs a project-scoped meaning search exactly what it
-// cost that search before this release, so the server serves while it runs and every batch can
-// only add rows such a search finds.
+// project_key, and answers how many of them gained a project. The boot starts it in the
+// background under a lease (api.RunEmbeddingProjectKeyFill): the pass is one to two hours on a
+// deployment of a million vectors (EmbeddingProjectKeyBatch), and until it has recorded itself
+// done an unlabelled row is invisible to the column's own predicate - which is worse than the
+// release before this one, since that release found the row through the owner each meaning arm
+// joins. So a project-scoped meaning search is answered by that older, joined predicate until
+// this pass records itself done (api/search.go, meaningProjectScope), the server serves while
+// the pass runs, and every batch moves rows onto the predicate the column exists for.
 //
 // A pass already finished costs one row: the progress row 20261109120100 creates says so, and
 // this reads nothing else. Otherwise it loops, each iteration one short transaction that takes

@@ -389,11 +389,12 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // process registry's prune (processes.RunPrune) and the embeddings project_key fill
 // (api.RunEmbeddingProjectKeyFill) - taken by sixteen callers, since each delivery intake takes
 // its own durable's name from a bind poll of its own, so sixteen callers can be inside Exclusive
-// at once. The fill is the one that is not a loop: it makes a single pass of about an hour and
-// holds a connection for the whole of it, and gives that connection back for good once the rows
-// stored before migration 20261109120000 are labelled - which is why it is counted here like any
-// other caller, since the hour it holds one is exactly the window in which every other caller
-// must still find a connection of its own. The suggestion outcome sweep is not among them: it
+// at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one to
+// two hours and holds a connection for the whole of it, tries for its lease again every five
+// minutes while another process is making that pass, and gives its connection back for good once
+// the rows stored before migration 20261109120000 are labelled - which is why it is counted here
+// like any other caller, since the hours it holds one are exactly the window in which every other
+// caller must still find a connection of its own. The suggestion outcome sweep is not among them: it
 // takes no lease, since the cursor row each of its pages holds for update serialises two
 // processes by itself (api/suggestion_outcomes.go). Sixteen connections are exactly those
 // sixteen: the headroom is zero, not one, and the next leased loop added here makes a

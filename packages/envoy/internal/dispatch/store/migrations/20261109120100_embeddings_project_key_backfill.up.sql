@@ -12,16 +12,25 @@
 -- migration is the one row it records its place in, as 20261101182501 is for document_search's
 -- fill.
 --
--- It is batched, and so it is not one migration statement, because the work is an hour of row
--- rewrites. Each embeddings row carries a 1,536-float vector, so an update rewrites about 6 KB
--- of it: labelling 120,000 rows of the load-test deployment took 12 m 50 s and 19,650 took
--- 86 s, which is 156 to 228 rows a second, and a single-statement backfill of its 723,015
--- comment windows had not finished after 30 minutes (INFRA-988). A migration is one
--- transaction (store/store.go, applyMigrationOnce): run here, that hour would be an hour in
--- which every row the statement had already touched is locked - a comment edit whose window
--- the pass has passed waits for all of it - and an hour of a deploy's migration step. In
--- committed batches of store.EmbeddingProjectKeyBatch (200 rows, about a second at the rates
--- above) such a writer waits for one batch.
+-- It is batched, and so it is not one migration statement, because the work is hours of row
+-- rewrites. What a label costs is not the vector: embeddings.embedding is stored external
+-- (attstorage = 'e'), so it stays in TOAST and the update writes one new heap tuple of about
+-- 253 bytes. What it costs is the vector index - relabelling 20,000 rows grew embeddings_cosine
+-- from 133,328 KiB to 231,136 KiB, 4.9 KiB a row with embeddings_kind_project also present and
+-- 6.6 KiB without it, which vacuum does not give back, so over the load-test deployment's
+-- 1,109,536 embedded rows a whole pass asks for about 5.2 GiB of disk that stays taken until
+-- someone rebuilds the index (an extrapolation from the 20,000-row measurement, not a
+-- measurement of its own) - and the time that index work takes. Labelled in place, as this pass
+-- does, the deployment labelled 120,000 rows in 12 m 50 s and 19,650 in 86 s, 156 to 228 rows a
+-- second, which is one to two hours for 1,109,536 of them; relabelled whole, with the index work
+-- taken once at the end instead of row by row, those 1,109,536 rows took 31 m 41 s, of which
+-- about 31 m was the index alone. A single-statement backfill of the deployment's 723,015
+-- comment windows had not finished after 30 minutes (INFRA-988). A migration is one transaction
+-- (store/store.go, applyMigrationOnce): run here, those hours would be hours in which every row
+-- the statement had already touched is locked - a comment edit whose window the pass has passed
+-- waits for all of it - and hours of a deploy's migration step. In committed batches of
+-- store.EmbeddingProjectKeyBatch (200 rows, about a second at the rates above) such a writer
+-- waits for one batch.
 --
 -- The cursor is the table's own primary key, (kind, id), so each batch starts where the last
 -- one stopped instead of counting past it as an `offset` would, and the empty pair sorts below
@@ -39,6 +48,22 @@
 -- meaning search is answered by that older, joined predicate, and by the column's own only
 -- once the done below reads true (api/search.go, meaningProjectScope): done is the one column
 -- of this row a search reads, and the pass is what retires the older shape.
+--
+-- Two things that switch has to survive, both found when this change was measured (INFRA-988):
+--
+--   - a holder that dies mid-pass. The lease is one attempt (duty.Exclusive), so a process that
+--     found it held used to do nothing about the fill for the rest of its life, and the
+--     labelling stopped where the dead holder left it until something next booted.
+--     api.RunEmbeddingProjectKeyFill now tries again every five minutes until this row reads
+--     done, so that costs the labelling one wait; a scoped meaning search keeps the
+--     owner-joined predicate for exactly as long as the labelling lasts, and no longer.
+--   - a null project_key written after done reads true, which nothing would ever label: the
+--     fill is over and no later write touches a row whose text does not change. The release
+--     before this one serves through a roll's drain and through a rollback, and its coverage
+--     insert is its own Go naming no project_key (embedqueue/coverage.go, insertMissingIssues at
+--     0bf41f394392caa9451ab8d6973e14d4d98c8e1d), so it can write one at any moment of its life.
+--     20261110064913 closes that in the database: a BEFORE INSERT trigger labels a null
+--     project_key from the row's owner, whichever release's statement inserted it.
 --
 -- This migration creates one table and inserts its one row. It reads no large table, takes no
 -- lock that grows with any table, and commits in milliseconds; its census answers 0.

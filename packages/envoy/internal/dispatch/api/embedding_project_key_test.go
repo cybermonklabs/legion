@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
@@ -155,17 +157,31 @@ func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
 	}
 }
 
-// The fill is about an hour of 6 KB row rewrites on a deployment of a million vectors, so the
-// two processes of a rolling update must never both make it: the second would walk the same
-// keyset behind the first's commits and label nothing the first had not already labelled, for
-// the same hour of work. With embeddings-project-key-fill held by another session - the other
-// process, inside a pass of its own - this process's fill labels nothing, moves no cursor and
-// records no pass finished.
+// fillRetryEvery sets how long a process waits before trying for the fill's lease again, for the
+// length of the test: the deployment's five minutes would be five minutes of a test's life.
+func fillRetryEvery(t *testing.T, every time.Duration) {
+	t.Helper()
+	previous := embeddingProjectKeyFillRetry
+	t.Cleanup(func() { embeddingProjectKeyFillRetry = previous })
+	embeddingProjectKeyFillRetry = every
+}
+
+// The fill is one to two hours of labelling on a deployment of a million vectors, so the two
+// processes of a rolling update must never both make it: the second would walk the same keyset
+// behind the first's commits and label nothing the first had not already labelled. The lease is
+// what keeps them apart, and duty.Exclusive makes one attempt, so the process that skipped used
+// to do nothing about the fill for the rest of its life: measured on this change's own head,
+// two processes racing left the loser silent and three rows unlabelled after the winner died
+// (INFRA-988). A project-scoped meaning search keeps the owner-joined predicate for as long as
+// that lasts, so "until something next boots" is the recall the older read serves.
 //
-// Then the lease is given back and the same call labels every row. The lease belongs to the
-// pass and not to the process, so the skip costs the work nothing; and a test whose second call
-// labelled nothing either would be proving the rows unlabellable rather than the lease held.
-func TestTheEmbeddingProjectKeyFillUnderALeaseHeldElsewhereLabelsNothing(t *testing.T) {
+// So this is the other process's whole life in one test. Another process - a pool of its own on
+// the same database, as the deployment's second process is - takes the lease and stands inside a
+// pass of its own. While it stands there this process labels nothing and moves no cursor,
+// however many times it tries. Then that process dies without finishing, and this one takes the
+// lease at its next try, labels every row and returns for good: a fill nothing has to boot to
+// finish.
+func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolderDies(t *testing.T) {
 	const project = "LEAS"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -182,15 +198,24 @@ func TestTheEmbeddingProjectKeyFillUnderALeaseHeldElsewhereLabelsNothing(t *test
 	if _, err := database.Pool.Exec(ctx, "update embeddings set project_key = null"); err != nil {
 		t.Fatalf("unlabel the stored rows: %v", err)
 	}
+	const retry = 50 * time.Millisecond
+	fillRetryEvery(t, retry)
 
-	// The other process, standing inside its own pass of the fill for as long as this test needs
-	// it there. It is duty.Exclusive and not this package's own runner because the pass this
-	// stands for must be held open, which the fill's own pass cannot be.
-	leases := sweepLeases(t, database)
+	// The process that is about to die, with a pool of its own on the same database: it takes
+	// the lease through the machinery the server takes it through and stands inside its pass.
+	dying := storetest.SecondProcess(t, database)
+	dyingLeases, err := dying.Pool.Leases()
+	if err != nil {
+		t.Fatalf("open the dying process's lease pool: %v", err)
+	}
 	taken, release := make(chan struct{}), make(chan struct{})
+	// The holder stands in its pass until this is called, and a failure above it calls it too:
+	// a test that left that goroutine standing would hold the package's whole binary open.
+	releaseHolder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
@@ -201,7 +226,19 @@ func TestTheEmbeddingProjectKeyFillUnderALeaseHeldElsewhereLabelsNothing(t *test
 		t.Fatal("the other process never took the embeddings-project-key-fill lease")
 	}
 
-	RunEmbeddingProjectKeyFill(ctx, database, leases)
+	// This process, as the boot starts it.
+	leases := sweepLeases(t, database)
+	fillCtx, stopFill := context.WithCancel(ctx)
+	defer stopFill()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
+	}()
+
+	// Twenty of its retries pass while the lease is held elsewhere, and it labels nothing in
+	// any of them.
+	time.Sleep(20 * retry)
 	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
 		t.Errorf("the fill labelled %d rows under a lease held elsewhere; want none", labelled)
 	}
@@ -215,13 +252,25 @@ func TestTheEmbeddingProjectKeyFillUnderALeaseHeldElsewhereLabelsNothing(t *test
 		t.Errorf("the skipped fill left the cursor at (%q, %q) done=%v; want the cursor where it was and the pass unfinished",
 			kind, id, done)
 	}
-
-	close(release)
-	if !<-held {
-		t.Fatal("the other process never held the lease, so the fill above was free to label and this test proves nothing")
+	select {
+	case <-returned:
+		t.Fatal("the fill gave up while another process held the lease, which is the whole of what it must not do")
+	default:
 	}
 
-	RunEmbeddingProjectKeyFill(ctx, database, leases)
+	// The holder dies: its pass ends without labelling anything and its pool closes, which is
+	// the session the lease belongs to going with the process (duty.Exclusive).
+	releaseHolder()
+	if !<-held {
+		t.Fatal("the other process never held the lease, so the tries above were free to label and this test proves nothing")
+	}
+	dying.Pool.Close()
+
+	select {
+	case <-returned:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the process that skipped never took the lease the dead holder left, so the rows it did not label wait for the next boot")
+	}
 	if left := countRows(t, database,
 		"select count(*) from embeddings where kind = any($1) and project_key is null", embeddingProjectKinds); left != 0 {
 		t.Errorf("%d rows are still unlabelled after the fill that took the lease; want none", left)

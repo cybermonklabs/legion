@@ -12,7 +12,9 @@ body: |-
   arms, so a project holding 800 comment windows is answered with its own 800 rather than the few
   that survived a candidate set of every project's nearest; the rows stored before the column are
   labelled by a once-only background pass under a lease, one bounded index scan a batch, with its
-  start, its progress and its end in the server's log.
+  start, its progress and its end in the server's log, and until that pass records itself
+  finished a scoped search is answered by the owner each arm joins, as the release before this
+  one answered it, so no window goes missing while the labelling runs.
   Meaning search's comment arm takes its candidate windows from the vector index before it joins,
   instead of reading every comment window and sorting them through temporary files per call.
   A document's scope reads its comments through the four indexes they have, one arm per predicate
