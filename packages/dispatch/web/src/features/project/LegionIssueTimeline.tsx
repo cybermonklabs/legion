@@ -20,6 +20,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { legionPhaseLabel } from "./issues-table-model";
 import { formatHours } from "./LegionMetrics";
 
 const SEGMENT_LABEL: Record<string, string> = {
@@ -167,7 +168,12 @@ function TimelineBody({
       const column = timeline.columns[span.name];
       return {
         span,
-        label: column?.label ?? span.name,
+        // The status history's `retro` status stands for the merger's whole stretch (retro,
+        // merging and awaiting merge), so only an observed `retro` reads "Merging (retro)".
+        label:
+          span.source === "observed"
+            ? legionPhaseLabel(column?.label ?? span.name, span.name)
+            : (column?.label ?? span.name),
         fill: legionPhaseScale[column?.id ?? ""] ?? surfaceMutedBg,
       };
     };
@@ -213,14 +219,32 @@ function TimelineBody({
   const empty = lanes.filter((lane) => lane.spans.length === 0).map((lane) => lane.name);
   const shown = lanes.filter((lane) => lane.spans.length > 0);
   const all = shown.flatMap((lane) => lane.spans.map((one) => one.span));
-  // The colour key of the Phase lane and the child lanes, each phase once in the order drawn.
+  // The colour key: each phase once in the order drawn (the Phase lane and the child lanes), then
+  // each segment of "Where the hours went", then the turns, CI waits, asks and parked stretches.
+  const segmentNames = new Set(
+    shown
+      .filter((lane) => lane.name === "Where the hours went")
+      .flatMap((lane) => lane.spans.map((one) => one.span.name))
+  );
+  const has = (name: string) => shown.some((lane) => lane.name === name);
   const phaseKey = [
-    ...new Map(
-      shown
+    ...new Map([
+      ...shown
         .filter((lane) => lane.name === "Phase" || lane.name.startsWith("Child "))
         .flatMap((lane) => lane.spans.filter((one) => !one.hatched))
-        .map((one) => [one.label, one.fill] as const)
-    ),
+        .map((one) => [one.label, one.fill] as const),
+      ...Object.entries(SEGMENT_LABEL)
+        .filter(([name]) => segmentNames.has(name))
+        .map(([name, label]) => [label, SEGMENT_FILL[name] ?? surfaceMutedBg] as const),
+      ...(shown.some((lane) => lane.name.startsWith("Turn: "))
+        ? [["A role in a turn", chartParts[2]] as const]
+        : []),
+      ...(has("CI wait") ? [["CI wait", chartParts[1]] as const] : []),
+      ...(has("Asks to a person")
+        ? [["An ask to a person", legionPhaseScale.awaiting_person ?? ""] as const]
+        : []),
+      ...(has("Parked") ? [["Parked", chartParts[6]] as const] : []),
+    ]),
   ];
   const hatchedAny = shown.some((lane) => lane.spans.some((one) => one.hatched));
   const start = Math.min(

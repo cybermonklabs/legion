@@ -242,7 +242,8 @@ test("the waiting line names each root ready or held by its dependency", async (
 test("an issue key opens that issue's timeline address", async () => {
   await renderTab();
 
-  fireEvent.click(screen.getByRole("button", { name: "ACME-3" }));
+  // The slots table and the narrow-page slot cards each draw the key.
+  fireEvent.click(screen.getAllByRole("button", { name: "ACME-3" })[0] as HTMLElement);
   await waitFor(() => expect(document.body.dataset.path).toBe("/projects/ACME/legion/ACME-3"));
 });
 
@@ -324,4 +325,17 @@ test("the waiting line shows how long each issue has waited, and the slots show 
 
   expect(document.querySelectorAll("[data-legion-waited]").length).toBeGreaterThan(0);
   expect(screen.getByRole("region", { name: "Slots" }).textContent).toContain("✓ green");
+});
+
+test("a narrow page stacks each slot into a card with every field the table has", async () => {
+  await renderTab();
+
+  const card = document.querySelector('[data-legion-slot-card="1"]') as HTMLElement;
+  for (const field of ["Phase", "Roles in a turn", "Children not started", "CI", "Slot use"]) {
+    expect(card.textContent).toContain(field);
+  }
+  expect(card.textContent).toContain("held for children only");
+  expect(screen.getByRole("region", { name: "Waiting line" }).textContent).toContain(
+    "In the order the daemon starts them"
+  );
 });

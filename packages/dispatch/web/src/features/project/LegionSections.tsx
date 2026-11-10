@@ -5,7 +5,7 @@
 // value axis, a time axis and a legend, and the one compare range. Every issue key opens that
 // issue's timeline (`onOpenIssue`).
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 
 import { ApiError } from "../../api/client";
 import {
@@ -436,9 +436,38 @@ function PhaseBreakdownSection({
   );
 }
 
+/** About how wide one character of the bar's 12px label is, and the label's side padding. */
+const LABEL_CHAR_PX = 6.8;
+const LABEL_PAD_PX = 10;
+
+/** The bar's width in pixels, measured; before a measure (or where nothing measures, as in a
+ *  test) a desktop width, so the labels are those a wide page draws. */
+function useWidth(): [(node: HTMLElement | null) => void, number] {
+  const [width, setWidth] = useState(1000);
+  const observer = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((node: HTMLElement | null) => {
+    observer.current?.disconnect();
+    if (node === null || typeof ResizeObserver === "undefined") return;
+    observer.current = new ResizeObserver(([entry]) => {
+      if (entry !== undefined && entry.contentRect.width > 0) setWidth(entry.contentRect.width);
+    });
+    observer.current.observe(node);
+  }, []);
+  return [ref, width];
+}
+
+/** A segment's label for its width in pixels: its name and share where both fit, the share
+ *  alone where only that does, else nothing (the legend names it). */
+function segmentLabel(label: string, share: number, px: number): string {
+  const full = `${label} ${pct(share, 0)}`;
+  if (px >= full.length * LABEL_CHAR_PX + LABEL_PAD_PX) return full;
+  const short = pct(share, 0);
+  return px >= short.length * LABEL_CHAR_PX + LABEL_PAD_PX ? short : "";
+}
+
 /** The full-width bar of the breakdown and its legend: each part in the issues table's colour,
- *  labelled where it has room, its hours and share in the legend. A part picked ranks the issues
- *  by it. */
+ *  as wide as its share at every page width, labelled where it has room, its hours and share in
+ *  the legend. A part picked ranks the issues by it. */
 function PhaseBar({
   breakdown,
   onPick,
@@ -448,24 +477,24 @@ function PhaseBar({
   onPick: (id: string | null) => void;
   picked: string | null;
 }): ReactNode {
+  const [barRef, width] = useWidth();
   return (
     <>
-      <div className="flex h-9 w-full overflow-hidden rounded" data-legion-phase-bar>
+      <div className="flex h-9 w-full overflow-hidden rounded" data-legion-phase-bar ref={barRef}>
         {breakdown.phases.map((part) => (
           <button
             aria-pressed={picked === part.id}
-            className={`h-9 min-w-0 truncate px-1 text-left text-xs font-medium ${legionPhaseScale[part.id] ?? ""} ${picked !== null && picked !== part.id ? "opacity-50" : ""}`}
+            className={`h-9 overflow-hidden px-1 text-left text-xs font-medium whitespace-nowrap ${legionPhaseScale[part.id] ?? ""} ${picked !== null && picked !== part.id ? "opacity-50" : ""}`}
             data-legion-phase-part={part.id}
             key={part.id}
             onClick={() => onPick(picked === part.id ? null : part.id)}
-            style={{ width: `${part.share * 100}%` }}
+            // The page's 44px touch minimum is off here: a segment is as wide as its share,
+            // and the legend under the bar is the touch target for each phase.
+            style={{ flex: `0 0 ${part.share * 100}%`, minWidth: 0, minHeight: 0 }}
             title={`${part.label}: ${formatHours(part.hours)}, ${pct(part.share, 0)}`}
             type="button"
           >
-            {/* A label shows only where its block has room: on a phone none do. */}
-            <span className="hidden md:inline">
-              {part.share >= 0.07 ? `${part.label} ${pct(part.share, 0)}` : ""}
-            </span>
+            {segmentLabel(part.label, part.share, part.share * width)}
           </button>
         ))}
       </div>
@@ -477,7 +506,8 @@ function PhaseBar({
           <li key={part.id}>
             <button
               aria-pressed={picked === part.id}
-              className={`flex w-full cursor-pointer items-center gap-1.5 rounded border px-1.5 py-1 text-left text-[11px] sm:gap-2 sm:px-2 sm:text-xs hover:underline ${picked === part.id ? borderStrong : borderDefault}`}
+              className={`flex w-full cursor-pointer items-center gap-1.5 rounded border px-1.5 py-1 text-left text-[11px] shadow-sm hover:underline sm:gap-2 sm:px-2 sm:text-xs ${picked === part.id ? `border-2 ${borderStrong} ${surfaceBg} font-semibold` : `${borderDefault} ${surfaceBg}`}`}
+              data-legion-phase-pick={part.id}
               onClick={() => onPick(picked === part.id ? null : part.id)}
               title={`Rank the issues by hours ${part.label.toLowerCase()}`}
               type="button"
@@ -487,6 +517,7 @@ function PhaseBar({
                 className={`inline-block h-3 w-3 shrink-0 rounded-sm ${legionPhaseScale[part.id] ?? ""}`}
               />
               <span className={`min-w-0 flex-1 leading-tight sm:truncate ${textSecondaryOnCanvas}`}>
+                {picked === part.id ? "✓ " : ""}
                 {part.label}
               </span>
               <span className={`shrink-0 tabular-nums ${textPrimaryOnCanvas}`}>

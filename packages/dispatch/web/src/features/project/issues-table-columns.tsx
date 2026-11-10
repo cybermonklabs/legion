@@ -27,6 +27,7 @@ import {
   ageOf,
   formatPhaseTime,
   type Item,
+  legionPhaseLabel,
   matchesFilters,
   priorityName,
 } from "./issues-table-model";
@@ -438,7 +439,7 @@ export function useIssueTableColumns(
 export function LegionPhaseCell({ phase }: { phase: NonNullable<Item["legion"]> }): ReactNode {
   return (
     <span className="flex flex-col gap-1" data-legion-phase={phase.id}>
-      <span>{phase.label}</span>
+      <span>{legionPhaseLabel(phase.label, phase.card.phase)}</span>
       <span
         className={`text-xs ${textMutedOnCanvas}`}
         data-legion-fact="phase-time"

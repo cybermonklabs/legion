@@ -142,6 +142,7 @@ function Slots({
     );
     return busy ? "held for children only" : "idle";
   };
+  const shown = all ? holders : holders.slice(0, FIRST_ROWS);
   const held = holders.filter((card) => state(card) !== "working");
   const idle = holders.filter((card) => state(card) === "idle");
   const { header } = board;
@@ -159,7 +160,7 @@ function Slots({
         reviewing. Roles in a turn tells a working role from one between turns. CI: ✓ green, ✗
         failing, … pending, — no verdict.
       </p>
-      <div className="overflow-x-auto">
+      <div className="hidden md:block">
         <table className="w-full text-left text-xs">
           <thead className={textMutedOnSurface}>
             <tr>
@@ -173,7 +174,7 @@ function Slots({
             </tr>
           </thead>
           <tbody>
-            {(all ? holders : holders.slice(0, FIRST_ROWS)).map((card) => {
+            {shown.map((card) => {
               const phase = phases.get(card.key);
               return (
                 <tr
@@ -218,6 +219,48 @@ function Slots({
           </tbody>
         </table>
       </div>
+      {/* A narrow page stacks each slot into a card with every field the table has. */}
+      <ol className="flex flex-col md:hidden" data-legion-slot-cards>
+        {shown.map((card) => {
+          const phase = phases.get(card.key);
+          const facts: [string, ReactNode][] = [
+            ["Phase", phase === undefined ? "—" : <LegionPhaseCell key="phase" phase={phase} />],
+            ["Roles in a turn", legionRolesText(card)],
+            ["Children not started", card.children],
+            [
+              "CI",
+              <span key="ci" title={card.checks_verdict ?? "No CI verdict"}>
+                {CI_SHORT[card.checks_verdict ?? ""] ?? card.checks_verdict ?? "—"}{" "}
+                {card.checks_verdict ?? "no verdict"}
+              </span>,
+            ],
+            ["Slot use", state(card)],
+          ];
+          return (
+            <li
+              className={`flex flex-col gap-1 border-t py-2 text-xs ${borderDefault}`}
+              data-legion-slot-card={card.slot ?? ""}
+              key={card.key}
+            >
+              <div className="flex items-baseline gap-2">
+                <span className={textMutedOnSurface}>Slot {card.slot}</span>
+                <button className={KEY_BUTTON} onClick={() => onOpenIssue(card.key)} type="button">
+                  {card.key}
+                </button>
+              </div>
+              <div className={textSecondaryOnCanvas}>{card.title}</div>
+              <dl className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-x-2 gap-y-1">
+                {facts.map(([label, value]) => (
+                  <div className="contents" key={label}>
+                    <dt className={textMutedOnSurface}>{label}</dt>
+                    <dd>{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </li>
+          );
+        })}
+      </ol>
       <ShowAll all={all} count={holders.length} noun="slots" onToggle={() => setAll(!all)} />
     </section>
   );
@@ -252,8 +295,8 @@ function WaitingLine({
         {awaiting.length} awaiting a person
       </p>
       <p className={`text-xs ${textMutedOnSurface}`}>
-        In the daemon's own order: the issues awaiting a person first, then the roots by their place
-        in line. Waited is the time since the issue entered its phase.
+        In the order the daemon starts them: the issues awaiting a person first, then the roots by
+        their place in line. Waited is the time since the issue entered its phase.
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">

@@ -316,7 +316,7 @@ test("the phase bar draws each part in the issues table's colour with its share"
   }
   expect(part.textContent).toBe("Planning 56%");
   expect(part.title).toBe("Planning: 10.0h, 56%");
-  expect(Number.parseFloat(part.style.width)).toBeCloseTo(55.56);
+  expect(Number.parseFloat(part.style.flexBasis)).toBeCloseTo(55.56);
   expect(document.querySelector('[data-legion-phase-part="waiting_on_children"]')).toBeNull();
   expect(document.querySelector("[data-legion-phase-legend]")?.textContent).toContain(
     "Planning10.0h56%"
