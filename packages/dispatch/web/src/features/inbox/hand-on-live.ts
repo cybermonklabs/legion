@@ -1,7 +1,8 @@
 import { createContext } from "react";
 
-/** Holds an ask in the list drawing it while a hand-on from its card is in flight or failed, and
- *  lets it go once the server decides it or the card goes. */
+/** Offers a card's hand-on to the list around it: `true` while that write is in flight or
+ *  failed, `false` once the server decides it or the card goes. The list holds the row of an
+ *  ask it is listing until the write ends, and ignores an ask it lists no row for. */
 export type AskHandOnLive = (askId: string, live: boolean) => void;
 
 /** A card drawn outside such a list registers with nobody: nothing there takes the ask out from
@@ -29,7 +30,7 @@ const NO_LIST: AskHandOnLive = () => {};
  * `onSnoozeLive` - the head's own `AssignToMe` reports no further than the head, which draws it
  * while that write is live.
  *
- * Reaching every card is also why the Inbox holds only what it listed. Most cards under it
+ * Reaching every card is also why the Inbox holds only what it listed. Many cards under it
  * speak for an ask it draws no row for: the card of a Reply row's thread, whose ask can be one
  * the reader's filters hide, and every ask block of a document open in the column beside the
  * selected one. The Inbox takes a `live === true` registration only for an ask among the rows

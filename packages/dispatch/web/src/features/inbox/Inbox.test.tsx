@@ -4221,6 +4221,87 @@ test("a refused hand-on from the column's decision block keeps the row, with the
   }
 });
 
+// The other side of that hold: a card under the Inbox that speaks for an ask this list draws
+// no row for. The card of a Reply row's thread is one - the reader replied in a question that
+// waits on somebody else, so her own list holds the thread and hides the ask - and so is every
+// ask block of a document open in the column beside the selected one. A hand-on from one of
+// those must leave the list as it stands: the hold is for a card the list can drop, and
+// nothing here can drop this one. Held anyway, the optimistic `waiting_on_person` would draw
+// the hidden question into her list, and a refusal would leave it there for good - the write
+// stays failed until it is tried again, and no card unmounts to let it go.
+test("a refused hand-on from a Reply-thread card leaves the reader's own list as it was", async () => {
+  const user = userEvent.setup();
+  // Handed to bob on carol's issue, so alice's own list hides the ask itself; she is in its
+  // thread, which is the row she has.
+  const theirs = issueAsk({
+    asked_of: "bob",
+    id: "ask-theirs",
+    issue: { assignee: "carol", key: "CORE-2", title: "Carol's issue" },
+    issue_key: "CORE-2",
+    question: "Which approach?",
+  });
+  const rows = [theirs];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [
+      replyRow("ask-theirs", {
+        issue: { key: "CORE-2", title: "Carol's issue" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-theirs",
+        subject: "Which approach?",
+      }),
+    ],
+    total: 1,
+  });
+  const handOn = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const { unmount } = renderInbox("/");
+  try {
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-inbox-row="reply:ask-theirs"]');
+      if (found === null) throw new Error("the Reply row has not rendered");
+      return found;
+    });
+    const control = await within(row).findByLabelText("Hand this question to");
+    expect(rowIds()).toEqual(["reply:ask-theirs"]);
+
+    // Handed back to the assignee of its own issue, from the thread card.
+    await user.selectOptions(control, "carol");
+    await waitFor(() =>
+      expect(handAskTo).toHaveBeenCalledWith("ask-theirs", "carol", keyedAttempt)
+    );
+    await waitFor(() => expect(within(row).getByText("Handing on…")).toBeTruthy());
+    expect(rowIds()).toEqual(["reply:ask-theirs"]);
+
+    await act(async () => {
+      handOn.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await handOn.promise.catch(() => undefined);
+    });
+    // The refusal is on the card that wrote it, and the question alice never listed is still
+    // not in her list.
+    const alert = await within(row).findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(rowIds()).toEqual(["reply:ask-theirs"]);
+  } finally {
+    unmount();
+    handAskTo.mockRestore();
+    listMyReplies.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("at the column's width with no column on the page, Enter is the focused control's", async () => {
   // The Inbox is wide enough for the reading column and has nothing to select, so no column is
   // mounted: `inbox-pane` is absent, exactly as it is in the commit a snooze of the last

@@ -19,6 +19,7 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import { ThreadBody } from "./ThreadBody";
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -692,26 +693,47 @@ test("the hand-on control is on an open question and on no closed one", async ()
 // A hand-on moves whom the ask waits on, and the Inbox's Reply-thread card reads that person
 // from the ask's own thread (`ThreadBody`, `askThreadQuery`), which is kept for the session and
 // never goes stale of itself: without this read its picker would show the person from before
-// the hand-on until the `ask.asked_of` event landed.
+// the hand-on until the `ask.asked_of` event landed. Drawn through `ThreadBody`, because that
+// is what hands the thread's own ask to the card: a card draws the `ask` it is given while the
+// question is open (`useAskAnswerForm`), so one given a fixed ask could not show the write at
+// all and the read alone would prove nothing.
 test("a hand-on reads the ask's thread again, so a card reading that thread follows the write", async () => {
   const user = userEvent.setup();
   const open = answeredAsk({ answer: null, state: "open" });
-  let threadReads = 0;
-  const getAskThread = async () => {
-    threadReads += 1;
-    return thread({ ...open, asked_of: "bob" }, []);
+  const handedOn: Ask = {
+    ...open,
+    asked_of: "bob",
+    asked_of_at: "2026-10-08T04:00:00Z",
+    asked_of_by: "alice",
+    waiting_on_person: "bob",
   };
-  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({ ...open, asked_of: "bob" });
+  let threadReads = 0;
+  let handed = false;
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async () => {
+    threadReads += 1;
+    return thread(handed ? handedOn : open, []);
+  });
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+    handed = true;
+    return handedOn;
+  });
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
     { login: "bob" },
   ]);
-  const { view } = renderCard(
-    <AskCard ask={open} getAskThread={getAskThread} initialThread={thread(open, [])} />
-  );
+  // The card marks the thread read off its owner's unread set, which holds nothing here.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-08T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [],
+    total: 0,
+  });
+  const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText("Hand this question to");
+    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
+    expect(control.value).toBe("");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
     await user.click(control);
     await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
@@ -719,9 +741,13 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     await user.selectOptions(control, "bob");
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
+    // What that read is for: the person the write moved the ask to is on the screen.
+    await waitFor(() => expect(control.value).toBe("bob"));
   } finally {
     view.unmount();
+    getAsk.mockRestore();
     handAskTo.mockRestore();
+    listMyReplies.mockRestore();
     listUsers.mockRestore();
   }
 });

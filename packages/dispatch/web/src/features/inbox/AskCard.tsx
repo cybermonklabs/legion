@@ -207,17 +207,20 @@ function useFormRef(): [
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
- * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it holds
- * the ask in the list drawing it while that write is live (pending or failed), because the
- * optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
+ * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it asks
+ * the list drawing it to hold the ask while that write is live (pending or failed), because
+ * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
  * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
  * before the server answered, and a refusal would put the row back with a fresh card that
  * never failed, so the reader would see it return and no reason. The hold comes from the list
  * itself, through the context it provides (`hand-on-live.ts`), rather than from a prop every
  * host passes down: the card the reader pressed can be one the Inbox never rendered itself -
  * the decision block its reading column draws through the document page - and a prop that
- * path does not carry is a hold that path does not get. A card drawn where no list can drop
- * it registers with nobody.
+ * path does not carry is a hold that path does not get. What the list does with the request
+ * is the list's own: it holds an ask it already listed a row for and ignores one it did not,
+ * since a card can be drawn inside a list that lists no row for its ask - a Reply-thread
+ * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
+ * card drawn where no list can drop it registers with nobody.
  */
 function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
