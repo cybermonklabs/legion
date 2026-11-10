@@ -209,18 +209,25 @@ echo "case: the seconds a stopped sampler did not run in stay missing from the s
 # be absent from the series rather than written one after another when it comes back, each
 # stamped with a second that had already gone by - a series with no hole in it and every stamp
 # further behind its own reading is a starved machine reading as a healthy one. The tick the
-# sampler was already waiting for when it was stopped keeps its own stamp, so the second it was
-# stopped in may still carry a line; the seconds after that one may not.
+# sampler was already waiting for when it was stopped is stamped from the clock once its
+# readings are in, so it names the second the sampler came back in and not the second it was
+# due in.
 stall_state="$work/stall.json"
 run_watch start --path "$watched" --state "$stall_state"
 check "start left a sampler to stop" "$(is "$status" 0)"
 pid=$(field "$stall_state" sampler_pid)
 sleep 3
-stopped_at=$(date -u +%s)
 kill -STOP "$pid"
+# The two clocks are read inside the stall: stopped_at after the signal landed and resumed_at
+# before it is let go, so the sampler was off the CPU for the whole of every second from
+# stopped_at + 1 to resumed_at - 1. The second it was stopped in may carry a line it wrote
+# before the signal, and the second it is let go in may carry the line it writes on waking, so
+# those two are left out of the window. Reading them inside the stall also keeps the case off
+# the second that can turn over between `kill -CONT` and a `date` run after it.
+stopped_at=$(date -u +%s)
 sleep 4
-kill -CONT "$pid"
 resumed_at=$(date -u +%s)
+kill -CONT "$pid"
 sleep 3
 run_watch report --state "$stall_state"
 check "report stopped it and exited 0" "$(is "$status" 0)"
@@ -228,13 +235,19 @@ pid=""
 seconds=$(stamps "$stall_state.series")
 ticks=$(grep -c '^[0-9]' <<<"$seconds")
 after=$(awk -v resumed="$resumed_at" '$1 >= resumed' <<<"$seconds" | grep -c '^[0-9]' || true)
-# The greatest step between one tick's second and the next, and the number of ticks whose
-# second did not move on. A sampler that counts its seconds rather than reading the clock
-# steps by exactly one every pass, so it leaves no hole where it was stopped; one that reads
-# the clock at the wrong moment could stamp two ticks with one second. The series must show
-# the first and not the second.
+# Two measures of the stamps: the greatest step from one tick's second to the next, and the
+# number of ticks whose second did not move on. A sampler that counts its seconds rather than
+# reading the clock steps by exactly one every pass, so it leaves no hole where it was
+# stopped; one that reads the clock at the wrong moment could stamp two ticks with one second.
+# So the checks below ask for a greatest step of two seconds or more - the stop, left as a
+# hole - and for no second written twice or out of order.
 biggest_step=$(awk 'NR > 1 && $1 - last > big { big = $1 - last } { last = $1 } END { print big + 0 }' <<<"$seconds")
 out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n + 0 }' <<<"$seconds")
+# The one line a sampler that stamps before it reads writes late: the tick it was waiting for
+# when the signal landed, written on waking and stamped with a second that ended during the
+# stall.
+inside_stall=$(awk -v from="$((stopped_at + 1))" -v to="$((resumed_at - 1))" \
+  '$1 >= from && $1 <= to { n += 1 } END { print n + 0 }' <<<"$seconds")
 # What this proves is that the sampler was running before the stop and came back after it, so
 # the hole below is the stop rather than a sampler that died in it. It cannot ask for a tick in
 # every second it was given: on a loaded runner the sampler loses seconds of its own, and that
@@ -245,8 +258,8 @@ check "the stamps follow the real clock: no second is written twice or out of or
   "$(is "$out_of_order" 0)"
 check "the seconds it was stopped for are a hole in the series, not lines written afterwards" \
   "$([ "$biggest_step" -ge 2 ] && echo true || echo false)"
-check "the second before it was let go carries no tick of its own" \
-  "$(grep -qx -- "$((resumed_at - 1))" <<<"$seconds" && echo false || echo true)"
+check "no line names a second the sampler was off the CPU for the whole of" \
+  "$(is "$inside_stall" 0)"
 
 echo "case: report prints the four numbers and exits 0 for a margin that is ok"
 ok_state="$work/ok.json"

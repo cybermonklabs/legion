@@ -32,11 +32,13 @@ the worst of each reading with the time it was read, then the line the script be
 where `ok` means the step ended with at least as much free disk as it used, that is: it started
 with at least twice the disk it went on to need.
 
-Each line of the series carries the second it was read in, and the job record times every step
-boundary, so a reader lines the two up: what the machine had when a step began, and what it had
-while that step ran. A second with no line of its own is a second the sampler was not run in:
-no line is ever written for a second that has gone by, so a hole in the stamps is the record of
-a machine too busy to schedule a process waking from a sleep, not a hole in what was measured.
+Each line of the series carries the second its readings were taken in: the stamp is read from
+the clock after those readings and never before them, so every line is written inside the
+second it names and no line is ever written for a second that has gone by. The job record
+times every step boundary, so a reader lines the two up: what the machine had when a step
+began, and what it had while that step ran. A second with no line of its own is a second the
+sampler was not scheduled in, so a hole in the stamps is the record of a machine too busy to
+schedule a process waking from a sleep, not a hole in what was measured.
 It does not show a runner being lost: the series reaches a reader only through the report
 step's output, and a run whose runner stopped answering stores no log at all. It is the
 headroom of every run that does store one, and the reading for a command that hangs while the
@@ -328,9 +330,10 @@ def sample(path: str, state_path: str) -> int:
     and keep the worst each reading has reached in the state, until the report stops this
     process or the deadline above passes."""
     deadline = time.monotonic() + SAMPLE_SECONDS + SAMPLER_MAX_SECONDS
-    # The second this tick belongs to, kept rather than read again at the end of the loop: the
-    # stamp and the wait are then two readings of one number, so neither can drift from the
-    # other.
+    # The second the first tick is stamped from, and no more than a floor after that: every
+    # pass reads the clock again once its readings are in, and the step at the end of the loop
+    # moves this on against the clock as well, so a pass that ran long names the second it ran
+    # in rather than the second it was due in.
     tick = int(time.time())
     # The worst of each reading this sampler has seen, held here as well as in the state file.
     # The write below is allowed to fail - the disk filling up is the thing being measured - and
@@ -343,13 +346,20 @@ def sample(path: str, state_path: str) -> int:
     # replaces a reading with a worse one: a number another writer put there outlives the merge.
     worst: dict = {}
     while time.monotonic() < deadline:
-        when = now_utc(tick)
         try:
             free = free_kb(path)
         except OSError:
             free = None
         memory = available_memory_kb()
         load = one_minute_load()
+        # The stamp is taken here, after the readings, and not at the top of the pass: a stamp
+        # fixed before them names a second the readings may not be from, and the line it
+        # misdates is the line just before a stall - the one a reader of a stall reads.
+        # Measured in this pod: a sampler stopped from :14.86 to :17.86 wrote the line stamped
+        # :15 at :17.88, carrying the readings of :17.88. `tick` is the floor, so a stamp still
+        # only ever moves forwards.
+        tick = max(tick, int(time.time()))
+        when = now_utc(tick)
         # The tick is written whatever the kernel gave, and before the state is read: a reading
         # the kernel would not give is `unknown` rather than a line left out, because a reader
         # counts the seconds out of this file and a second missing from it says the sampler
@@ -397,9 +407,9 @@ def sample(path: str, state_path: str) -> int:
         # reading, and a starved machine prints as a healthy one. The hole is the honest record:
         # a second with no line is a second this process was not scheduled in, which is what
         # starvation looks like from inside it and is one of the things the series is read for.
-        # The stamp and the wait stay two readings of one number, so neither can drift from the
-        # other, and the margin keeps a sleep that wakes a few milliseconds early on the right
-        # side of the second it waited for.
+        # The stamp cannot fall behind this wait, because a pass takes it from the clock again
+        # with the second waited for as its floor, and the margin keeps a sleep that wakes a
+        # few milliseconds early on the right side of the second it waited for.
         tick = max(tick + SAMPLE_SECONDS, int(time.time()))
         time.sleep(max(0.0, tick + 0.05 - time.time()))
     return 0

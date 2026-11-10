@@ -241,7 +241,7 @@ RESERVED_SUFFIX=".invalid"
 # all, which is the reading the probe refuses the job for.
 PROBE_BOUND=15
 
-# The seconds no install of a case may reach, read by `report` over the mark `corrupt` wrote.
+# The seconds no install of this job may reach, read by `report` over the mark `corrupt` wrote.
 # Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
 # step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
 # `report` holds a case to, so a hung install would otherwise pass as a refusal.
@@ -249,10 +249,11 @@ PROBE_BOUND=15
 # over 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z is 326 s (`install-jj`
 # on slow runs), so this leaves 274 s over the slowest healthy install and at least 60 s under
 # the fastest a held step can be, and it reads no ladder's length.
-# It is the one bound of the whole job, and this line is the one place it is written: the
-# `tool-fallback` job holds its eight installs with nowhere to go to the same seconds, and its
-# control step reads them from here through the `install-bound` verb rather than writing a
-# second number that nothing keeps equal to this one.
+# It is the one install bound, and this line is the one place it is written; `PROBE_BOUND` above
+# bounds the probe's two requests and is another thing. The `tool-fallback` job holds its eight
+# installs with nowhere to go to the same seconds, and its control step reads them from here
+# through the `install-bound` verb rather than writing a second number that nothing keeps equal
+# to this one.
 INSTALL_BOUND=600
 
 # shellcheck source=.github/scripts/ci-tools.sh

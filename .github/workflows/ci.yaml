@@ -2455,8 +2455,8 @@ jobs:
     # minutes is twice that maximum, rounded up to the minute the key takes, so no step that
     # would have finished is ended by it. A step the runner ends at its bound costs about 672 s
     # less that step's own greatest time, so between six minutes for the slowest install and
-    # eleven for the fastest; the fifteen minutes the declared limit carries over the budget
-    # covers one of them.
+    # eleven for the fastest; the sixteen minutes the declared limit carries over the budget
+    # above covers one of them, and a change to that budget moves this figure with it.
     # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
     # the runner enforces needs a runner that is alive. It is here for the other failure: a
     # command that hangs while the runner answers, where today the job's own ceiling is the
@@ -2859,9 +2859,12 @@ jobs:
           # the arithmetic below, an empty mark reads as a large negative number, which is under
           # the bound, and then stops the loop on the empty operand with the step exiting 0 and
           # seven of the eight windows never read.
-          # A bound this step cannot read is refused in the same breath and for the same reason:
-          # an empty or unset bound is no bound at all, and `[ "$seconds" -lt "" ]` would stop
-          # the loop on that operand with the windows unread.
+          # A bound this step cannot read is refused too, for a different reason, since the step
+          # would fail either way: driven with the guard taken out, an empty bound leaves
+          # `[ "$seconds" -lt "" ]` failing on every window, so all eight land in `slow` and the
+          # step exits 1 saying they `took  seconds or more`. That reading sends a reader to the
+          # eight installs, which did nothing wrong, instead of to the rig that answered
+          # nothing. The guard buys the right name, not the failure.
           bound=$(.github/scripts/ci-tools-proof.sh install-bound)
           case "$bound" in
             '' | *[!0-9]*)
