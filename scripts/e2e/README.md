@@ -216,6 +216,14 @@ Each item below names a script, then what it proves.
   under the base build alone a comment citing an issue by its bare key leaves that issue referenced by nothing for a bounded wait, which is the negative control, since the base build's grammar reads no bare key;
   this build then starts beside it and migrates the schema forward, the base build writes a second such comment and edits the first, and once the base build has stopped this build's own reconciliation drains the queue those writes enqueued, so both comments show in the target's "Referenced by"
 
+- `dispatch-search-two-builds.sh`
+
+  a search carrying one of the five narrowing members reaches an older build of Dispatch as 404 no route rather than as unnarrowed rows, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, which for this proof is `legion-envoy-v29.47.1`, the release before those members, and the build of this checkout, both serving at once with the dev embedder so meaning search runs:
+  for `number_project`, `status`, `author`, `updated_since` and `keywords_only` in turn, `GET /api/v1/search` carrying the member answers the base build's own unnarrowed answer, which is the hazard this proof records;
+  `GET /api/v1/search/results` carrying it answers 404 `NOT_FOUND` there;
+  this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
+  Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
+
 - `verification-results.sh`
 
   a recorded check result says whether it still speaks for the work as it stands, and the head it is measured against moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
