@@ -455,5 +455,6 @@ Compare `created_at` with `completed_at` and with the job's own `timeout-minutes
 a job its ceiling ended stops at the ceiling, and one that stopped before it was ended by something else.
 
 Those three causes are what GitHub can say, and none of them is a reading of your job.
-A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the free memory and the one-minute load of every second it ran, which is what tells the second cause from the other two on the next run that does store a log (`tool-fallback` and `envoy-smoke` carry it).
+A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
+`tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
 It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).

@@ -2408,21 +2408,30 @@ jobs:
     # arithmetic it was once derived from. Every figure is the greatest that step reached over
     # the 56 green runs of this job between 2026-11-09T19:38Z and 2026-11-10T10:51Z, read with
     # `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs?filter=all` over the 250 most recent
-    # ci.yaml runs (dispatch://INFRA-2605). The seconds are the items and the minutes are their
-    # sum, so a reader reproduces the total by adding the left column:
-    #     45 s  the two checkouts, the two steps that read the package and the manifest, and
-    #           `stage`, which moves about 341 MB of payloads over the network
-    #    867 s  the merge base's seven installs, each with nowhere to go: a ladder of
-    #           `--retry-max-time 60` against each of its two sources, which is this issue's
-    #           126 s at the manifest's `max_time` of 60, with its Bun at 104 s
-    #    255 s  the head's docker plugin, the eighth install with nowhere to go
-    #   1141 s  the head's own eight installs, each reading the origin after one ladder; the
-    #           Pulumi CLI is one of them, at 131 s
-    #   1142 s  the sixteen corrupted cases' installs
-    #     49 s  the fault and its probe, whose two requests are bounded at 15 s each, the
-    #           sixteen readings, the corrupt steps, the stop-fault step and the ci-ok report
-    #     60 s  the machine watch's start and its report
-    # That is 3559 s, so 60 minutes, and a job its own limit cuts off reports `cancelled`,
+    # ci.yaml runs (dispatch://INFRA-2605).
+    # EVERY STEP OF THIS JOB IS IN EXACTLY ONE ITEM, so a reader checks two sums rather than
+    # one: the seconds add to the stated total, and the step counts add to the steps this job
+    # declares.
+    #   steps  seconds
+    #       6     45 s  the two checkouts, the two steps that read the package and the
+    #                   manifest, `stage`, which moves about 341 MB of payloads over the
+    #                   network, and the origin's own start
+    #       7    866 s  the merge base's seven installs, each with nowhere to go: a ladder of
+    #                   `--retry-max-time 60` against each of its two sources, which is this
+    #                   issue's 126 s at the manifest's `max_time` of 60, with its Bun at 104 s
+    #                   (127+127+127+104+127+127+127)
+    #       1    255 s  the head's docker plugin, the eighth install with nowhere to go
+    #       8   1141 s  the head's own eight installs, each reading the origin after one
+    #                   ladder; the Pulumi CLI is one of them, at 131 s
+    #      16   1142 s  the sixteen corrupted cases' installs
+    #       8      8 s  the eight marks the control below reads, one before each install with
+    #                   nowhere to go; each is one `echo`
+    #       2     60 s  the machine watch's start and its report
+    #      48     49 s  everything else: the fault and its probe, whose two requests are
+    #                   bounded at 15 s each, the sixteen readings, the corrupt steps, the
+    #                   removals and the jj seed, the version check, the print step, the
+    #                   control of the eight, the stop-fault step and the ci-ok report
+    # 96 steps and 3566 s, so 60 minutes, and a job its own limit cuts off reports `cancelled`,
     # which ci-ok fails, so the limit carries fifteen minutes over it.
     # THREE STEPS, NOT TWO, run a ladder against a dead port rather than against the faulted
     # host: the `pulumi-cli` row is the one row whose primary is get.pulumi.com, and the rig
@@ -2436,8 +2445,10 @@ jobs:
     # 2422 install steps ran on the green runs of those two jobs in that window: median 64 s,
     # 99th percentile 128 s, maximum 326 s, which is `install-jj` on five slow runs. Eleven
     # minutes is twice that maximum, rounded up to the minute the key takes, so no step that
-    # would have finished is ended by it. One step held to its bound costs this job about six
-    # minutes over the budget above, which the declared limit carries.
+    # would have finished is ended by it. A step the runner ends at its bound costs about 672 s
+    # less that step's own greatest time, so between six minutes for the slowest install and
+    # eleven for the fastest; the fifteen minutes the declared limit carries over the budget
+    # covers one of them.
     # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
     # the runner enforces needs a runner that is alive. It is here for the other failure: a
     # command that hangs while the runner answers, where today the job's own ceiling is the
@@ -2538,9 +2549,10 @@ jobs:
         name: Start the origin that stands in for all four sources
         run: .github/scripts/ci-tools-proof.sh origin-start
 
-      # What the machine had, every second from here to the report below: free disk, free
-      # memory and the one-minute load, one line per second, then the worst each of them
-      # reached (.github/scripts/disk_watch.py, which envoy-smoke drives for the disk alone).
+      # What the machine had, every second from here to the report below: free disk, the memory
+      # the kernel reports available, and the one-minute load, one line per second, then the
+      # worst each of them reached (.github/scripts/disk_watch.py, which envoy-smoke drives
+      # around its live-tests step and which prints the series there too).
       # The job record times every step boundary, so a reader lines any step of this job up
       # against the second it ran in. That is what this job could not answer on 2026-11-10,
       # when one of its runs lost its hosted runner and GitHub's annotation named starvation of
@@ -3367,8 +3379,14 @@ jobs:
     # tool-fallback job's comment names, the greatest each of its steps reached adds up to
     # 68 s. The budget stays a worst case all the same, because a slow day on the 107 MB
     # tarball is what it is there for.
-    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason and
-    # with the caveat the tool-fallback job's comment gives.
+    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
+    # tool-fallback job's comment gives. THAT JOB'S CAVEAT DOES NOT CARRY HERE: there a held
+    # step still leaves a job that finishes and uploads its log, while here one held install is
+    # 11 minutes against its own 4-minute item, so 22 against a limit of 16, and THIS JOB'S OWN
+    # LIMIT FIRES FIRST. The bound still ends the step sooner than the limit would, and what
+    # the reader sees is a cancelled job, which keeps its log.
+    # Neither of this job's two installs is read by anything that accepts a failure, so no
+    # clock is needed beside them, unlike the twenty-four of tool-fallback.
     timeout-minutes: 16
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other
