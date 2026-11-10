@@ -1792,12 +1792,12 @@ against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 
 Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`, which
 `.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
-A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`
-and `iphone`, split over four
-shard machines, each leg running `--shard=N/4` with four workers.
+A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`,
+`iphone` and the two stubbed ones, held to the rows tagged `@pr`, split over five
+shard machines, each leg running `--shard=N/5` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
-run the `full` lane: all eight parallel projects over those same four shards, the four `-alone`
+run the `full` lane: all eight parallel projects over those same five shards, the four `-alone`
 projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
 So the four rows of `e2e/large-documents-measured.e2e.ts` whose numbers are read from the wall
 clock - the three the spec's targets are read from, which `iphone-alone` holds
@@ -1837,7 +1837,7 @@ the host has no vendor file of its own, and without it WebKit aborts with
 
 One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
 samplers, run from `packages/dispatch` with a Postgres provider the lanes above name:
-`DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4`.
+`DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/5`.
 The `full` lane's leg names all eight parallel projects in place of those two.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the four `-alone`

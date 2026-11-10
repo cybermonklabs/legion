@@ -3,7 +3,7 @@ name: Dispatch browser suite
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-# over four shard machines, the four `-alone` projects get a machine each, the two-process job,
+# over five shard machines, the four `-alone` projects get a machine each, the two-process job,
 # the fake-embedder job and the containerised visual review take one each, and one merge job
 # joins what the shard and alone legs wrote into a single report and publishes the run's flake
 # rate.
@@ -162,7 +162,7 @@ jobs:
   shard:
     needs: binaries
     runs-on: ubuntu-24.04
-    # One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4`, one
+    # One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5`, one
     # Playwright worker per lane of e2e/run.ts, each lane with a Postgres, a harness and a
     # file-store bucket of its own (packages/dispatch/e2e/run.ts), so this job has no `postgres:`
     # service and no job-level DATABASE_URL: a run of more than one lane refuses a caller-set
@@ -217,8 +217,8 @@ jobs:
     # this file's own `env:` and defaults, so neither may grow a name outside that set.
     #
     # The browser step's budget below is measured, on the two runs of the head that sharded this
-    # suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
-    # in shard order, in seconds:
+    # suite over four legs: 42334424798, the pull-request lane, and 42316487530, the full lane.
+    # Four legs each, in shard order, in seconds:
     #
     #   step                                     pull-request lane        full lane
     #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
@@ -228,6 +228,38 @@ jobs:
     # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
     # shard's browser step, and which the container does not move: it is the same rows in the
     # same browsers.
+    #
+    # Why the leg list below is five and not those four: at four, `shard (4)` was killed at
+    # this step's whole 540 s twice in a row, at 5e5416aa (run 42794865122) and at cb6c44f3
+    # (run 42807545996), dispatch://INFRA-341. That is structural and not a flake.
+    # `fullyParallel: true`
+    # (packages/dispatch/e2e/playwright.config.ts) with no file in `mode: "serial"` makes
+    # Playwright shard by row, cutting the listed rows into contiguous slices of equal ROW
+    # COUNT, and the listing is project-major with the dear projects in its tail - webkit
+    # 8.03 s a row, iphone 6.86 s, chromium 4.24 s. So the last slice of four is the dearest
+    # leg by construction: 2,058 row-seconds, iphone 828 + stub 521 + webkit 321 and the tail.
+    # A cut by row count cannot see that, which is why the fifth leg is the answer here and
+    # PWTEST_SHARD_WEIGHTS is not.
+    #
+    # What each leg is expected to cost, so the margin below is read and not a bare number: a
+    # cost table of all 1,373 rows of this job, and a fit of leg wall time on a leg's
+    # row-seconds over the seven four-leg legs that ran to the end -
+    # wall = 0.2562 x row-seconds + 15.9 s, residuals at most 6.9 s, which reproduces the
+    # killed leg at 543 s - give, in shard order, in seconds:
+    #
+    #   cut into 4   476, 268, 410, 543            longest 543, over this step's 540
+    #   cut into 5   404, 230, 335, 390, 355       longest 404, 25 per cent inside that 540
+    #
+    # The fifth machine is bought with runner time and spends lane wall time: the lane pays
+    # 39.0 runner-minutes against 36.6 and its critical path is 8.8 min against 11.1, so 2.3
+    # min of wall time for 2.4 runner-minutes. A sixth leg takes the longest to 362 s and a
+    # seventh to 361 - both 0.7 min off the critical path, for 2.3 and 4.7 more runner-minutes
+    # - so five is where this stops.
+    #
+    # Those are estimates and the budget below is not re-derived from them: the rule in this
+    # file's head reads measurements, and the rule's arithmetic on 404 s would give 8 minutes.
+    # The 9 minutes stays until the first green run at five legs measures the legs themselves,
+    # which is the reading that may lower it.
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of commit
     # 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -286,13 +318,15 @@ jobs:
     # The three uploads are three steps of this job and not one, so the sum below counts each
     # of them: 3 + 2 + 4, not 4.
     #
-    # The browser step's own 9 minutes above still holds at the merged head, where #2958's
-    # accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
+    # The browser step's own 9 minutes above held at the merged head, where #2958's
+    # accessibility rows joined the shards: its maxima there are 381 s (run 42521581875, job
     # 128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
-    # 419 s that budget was derived from, so the pooled maximum the rule reads is still that
-    # 419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
-    # step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
-    # runner with the Playwright install this change removes still in the job.
+    # 419 s that budget was derived from. It stopped holding as rows kept arriving: the last leg
+    # of four was killed at the full 540 s at 5e5416aa (run 42794865122) and again at cb6c44f3
+    # (run 42807545996), which is what the
+    # five legs below answer and what the paragraphs above measure. The 474 s main measured for
+    # this step, which raised it to 10 minutes there, is in neither sample: it was taken on the
+    # bare runner with the Playwright install this change removes still in the job.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
     # that budget plus the maxima above of every step without one, which sum to 219 s:
@@ -301,7 +335,7 @@ jobs:
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed again
     # at this branch's head (`bunx playwright test --config e2e/playwright.config.ts --list`),
-    # the shard and alone jobs hold 1,430 rows: 1,373 in the ten projects the full lane's four
+    # the shard and alone jobs hold 1,430 rows: 1,373 in the ten projects the full lane's five
     # shards run - the eight parallel ones and the two stubbed - of which 290 are what the
     # pull-request lane's four projects run under `@pr`, 147 of them on the real stack. The
     # remaining 57 are the four `-alone` projects', which the alone job runs - 20, 17 and 17 of
@@ -309,14 +343,21 @@ jobs:
     # specs plus the one desktop clock row of large-documents-measured.e2e.ts; the 3 are
     # `iphone-alone`'s phone clock rows. The visual job's 20 rows are in neither figure: it
     # writes no blob report at all.
+    #
+    # Those 1,373 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 275, 275, 275, 274 and 274 rows,
+    # which sum to the 1,373. Equal row counts are all Playwright's cut promises, and the
+    # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:
       fail-fast: false
-      # Four legs. The count is written here and in the `--shard` denominator of the browser step
+      # Five legs. The count is written here and in the `--shard` denominator of the browser step
       # below, and nowhere else, so the two move together: a denominator larger than the leg list
-      # would leave the rows of the missing legs unrun with nothing red.
+      # would leave the rows of the missing legs unrun with nothing red. It was four until the
+      # last leg of four was killed at its step budget twice over; this job's head says what the
+      # fifth leg buys, what it costs and why no sixth.
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -424,7 +465,7 @@ jobs:
           done
           [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           curl -sf -X DELETE -o /dev/null "$store/readiness"
-      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
+      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 5)
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling the wrapper directly reuses the "Build dispatch dashboard" step's dist above and
         # drops this job to one Vite build. Safe because that build and this one are now the same
@@ -449,11 +490,13 @@ jobs:
         # checkout would leave it dirty afterwards. The blob report goes beside the list
         # reporter's output, so a green run reports what it ran too.
         #
-        # The budget below is the 9 minutes the job's head derives from the sharded head's own
-        # runs, and neither the container nor #2958's added rows move it: at the merged head this
-        # step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
-        # all under the sharded head's 419 s, so the pooled maximum the rule reads is still
-        # 419 s.
+        # The budget below is the 9 minutes the job's head derives from the four-leg head's own
+        # runs, whose measured maximum was 419 s. It stays at nine now that the leg list is
+        # five, and is not re-derived: the five legs are expected to cost 404, 230, 335, 390 and
+        # 355 s, from the fit and the row-seconds the job's head gives, so the longest of them
+        # sits 136 s inside this 540 and the rule's own arithmetic on that estimate would give
+        # eight minutes. A prediction is not a measurement: the first green run at five legs is
+        # what may lower this.
         timeout-minutes: 9
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
@@ -534,7 +577,7 @@ jobs:
           # Why the projects are named at all: Playwright shards top-level projects only, and the
           # four `-alone` projects name every other project in their `dependencies`
           # (e2e/playwright.config.ts), so a shard over the whole list would shard `webkit-alone`
-          # alone and run every other project whole in all four shards. Naming the eight parallel
+          # alone and run every other project whole in all five shards. Naming the eight parallel
           # projects with `--project` leaves the `-alone` ones out of the run, so every project
           # left is top-level and every one of them shards. The alone job runs those four.
           #
@@ -550,7 +593,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --reporter=list,blob 2>&1 ||
+          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/5 --reporter=list,blob 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")

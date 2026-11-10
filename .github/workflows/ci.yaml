@@ -1176,7 +1176,7 @@ jobs:
             # steps. The retired `dispatch` job's filter also held three fixture sets whose only
             # readers are the dashboard's and the proof editor's unit tests, and they are not here:
             # dispatch-ui's filter names all three, and with this output ungated on a pull request
-            # they would start four shard machines and the merge job for a fixture-only change.
+            # they would start five shard machines and the merge job for a fixture-only change.
             # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
             # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
             # that misses a read, never one that is too wide, so a path is in this list because a

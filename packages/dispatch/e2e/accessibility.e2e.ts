@@ -33,8 +33,8 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *  both: an entry whose route this process scanned, and which nothing matched, is stale, and a
  *  stale entry would hide the regression it once accepted.
  *
- *  The check is a hook and not a final row because no row can see the run. `--shard=N/4` splits
- *  this file's rows over four machines (.github/workflows/dispatch-browser.yaml's shard job) and
+ *  The check is a hook and not a final row because no row can see the run. `--shard=N/5` splits
+ *  this file's rows over five machines (.github/workflows/dispatch-browser.yaml's shard job) and
  *  the lane's four workers split each shard again, so a final row would sit in one process and
  *  judge entries whose routes another process ran. `afterAll` runs once in each worker, after
  *  the rows that worker ran, which is exactly the set it can judge - and judging only the routes

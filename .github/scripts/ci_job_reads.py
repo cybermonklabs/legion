@@ -766,7 +766,7 @@ BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
-BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 5)"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"

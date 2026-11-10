@@ -26,7 +26,7 @@ name: Dispatch browser nightly
 on:
   schedule:
     # Nightly, hours from e2e.yaml's 04:41, the repository's other schedule: a full lane takes
-    # four shard machines, four alone machines, a visual machine and a two-process machine at
+    # five shard machines, four alone machines, a visual machine and a two-process machine at
     # once, and two nightlies starting together would queue behind each other for the account's
     # runners.
     - cron: "17 2 * * *"
@@ -35,7 +35,8 @@ on:
     # full lane that can take half an hour, and the recordings would be read against a server
     # the night had already moved on from. 13:41 is the far side of the day from both schedules
     # of this repository (02:17 here and e2e.yaml's 04:41), and it needs one runner rather than
-    # eight, so it never competes with a nightly for the account's capacity.
+    # the eleven the full lane holds at once above, so it never competes with a nightly for the
+    # account's capacity.
     - cron: "41 13 * * *"
   workflow_dispatch:
 
