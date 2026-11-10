@@ -56,6 +56,8 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "www.github.com in upper case", body: "See HTTPS://WWW.GITHUB.COM/acme/widgets/issues/7 here.", credit: false},
 		{name: "github.com as the head of another host's name", body: "See https://github.com.evil.test/acme/widgets/issues/7 here.", credit: false},
 		{name: "a host name of its own ending in github.com", body: "See my-github.com/acme/widgets/issues/7 here.", credit: false},
+		{name: "github.com as the userinfo of another host", body: "See https://github.com@evil.test/acme/widgets/issues/7 here.", credit: false},
+		{name: "that confusion in upper case", body: "See HTTPS://GITHUB.COM@EVIL.TEST/acme/widgets/issues/7 here.", credit: false},
 
 		// The same bytes inside another host's URL.
 		{name: "another host's path", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", credit: false},
