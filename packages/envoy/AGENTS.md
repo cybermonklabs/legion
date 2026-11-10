@@ -115,8 +115,8 @@ Each item below names a task and where its code is, then notes on it.
 
   The `ENVOY_NOTIFICATIONS` stream's consumer cap is compiled in rather than read from a setting:
   `streamMaxConsumers`, 24000, the most session consumers the stream holds at once.
-  What keeps the count under it is not the cap but the two deletes ("Session consumers" below): the population is the live sessions, those that ended without deregistering within about the last gone horizon and sweep interval, and the consumers a hub holds from before that sweep.
-  The inactive threshold (`bus.SessionConsumerInactiveThreshold`, 1 hour) only backs those deletes up, and bounds nothing on a replicated hub.
+  What keeps the count under it is the two deletes ("Session consumers" below): the population is the live sessions, those that ended without deregistering within about the gone horizon plus one reap interval plus one sweep interval, and the consumers a hub holds from before that sweep.
+  The server's inactive threshold only backs those deletes up, and each listener derives it to stand above that bound (`bus.InactiveThresholdFor`).
   A start and the keeper raise a smaller deployed cap to it and never lower one, as for the copies and the byte limit.
   A deployed `-1` or `0`, a stream that sets no cap, is raised only where the connected server is nats-server 2.15.0 or later (`serverDefaultsAnUnsetCap`, read from `ConnectedServerVersion`):
   only from 2.15 does the server cap such a stream itself, at its own default of 1000 (`JSDefaultMaxConsumersPerStream`), and every server before that leaves it unlimited, so there the raise would write a cap no deployment asked for.
@@ -4498,9 +4498,9 @@ Only the listener's NATS user manages the consumer: it creates, reads, pulls, ac
 The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`, gets no JetStream API.
 
 - **Settings** (`bus.SessionConsumers`):
-  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, `InactiveThreshold` 1 hour, and the stream's replica count.
-  That one hour is `session.GoneHorizon`, the longest this deployment treats a silent session as merely unresponsive rather than gone, and the threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below):
-  nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
+  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, the stream's replica count, and an `InactiveThreshold` the listener derives at start.
+  That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
+  It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
   A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
   That start is recorded on the session's entry and carried in the registration's answer, both as `consumer_start`: the entry's is what the durable path skips by, the answer's is the floor the plugin keeps for its resume point.
   When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the consumer starts at `resume.seq + 1`, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
