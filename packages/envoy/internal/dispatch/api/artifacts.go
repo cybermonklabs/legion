@@ -71,8 +71,11 @@ type artifactUploadInput struct {
 	contentType string
 	summary     string
 	supplied    *model.Actor
-	inline      bool
-	blank       bool
+	// blank reports a JSON body that carries no content, or whose content is blank: such a
+	// body makes a new document holding nothing, and storeArtifact refuses it where the name
+	// already names a document or gives the slug of one Dispatch makes itself. A multipart
+	// upload always carries its bytes, so it never sets this.
+	blank bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -98,11 +101,14 @@ func (target artifactTarget) refPrefix() string {
 
 type jsonArtifactUpload struct {
 	Name string `json:"name" required:"true"`
-	// Content is required of a JSON upload, which is always a markdown document: a body with
-	// no content, or whose content is blank, is refused (400 ARTIFACT_INPUT, uploadArtifactFor).
+	// Content is what a JSON upload stores, which is always a markdown document. A body with
+	// no content, or whose content is blank, makes a new document holding nothing, which a
+	// person then writes in Dispatch. It is refused only where the name, or the slug that name
+	// gives, is a document the owner already holds (400 ARTIFACT_INPUT, storeArtifact), or
+	// where that slug is one of the documents Dispatch makes itself (400 ARTIFACT_ROLE_NAME).
 	// A multipart upload sends its bytes as the `file` part instead and carries no content at
 	// all, which is a body of its own (openAPIMultipartSchema).
-	Content *string         `json:"content" required:"true"`
+	Content *string         `json:"content"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
 	Actor   *model.Actor    `json:"actor"`
@@ -212,10 +218,6 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "artifact name is required")
 		return
 	}
-	if input.inline && input.blank {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "inline artifact content is required")
-		return
-	}
 	if len(input.content) > maxArtifactBlobSize {
 		s.writeHandlerError(w, errUploadTooLarge)
 		return
@@ -289,7 +291,6 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		contentType: "text/markdown; charset=utf-8",
 		summary:     strings.TrimSpace(body.Summary),
 		supplied:    body.Actor,
-		inline:      true,
 		blank:       blank,
 	}, true
 }
@@ -487,6 +488,15 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, refusal)
 			return
 		}
+		// A create with no content takes none of the documents Dispatch makes itself: the
+		// minted slug decides, as it decides the role the insert below writes, so every
+		// spelling of the name that gives that slug is refused.
+		if input.blank {
+			if role := documentRole(target, kind, slug); role != nil {
+				s.writeHandlerError(w, documentRoleNameRefusal(input.name, slug, *role))
+				return
+			}
+		}
 		actorJSON, err := encodeJSON(actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -506,6 +516,9 @@ func (s *server) storeArtifact(
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
+		return
+	} else if input.blank {
+		s.writeHandlerError(w, blankWriteToADocumentThatExists(input.name, artifact))
 		return
 	}
 	// A document the release before this one created during the rolling deploy carries no role:
@@ -1924,6 +1937,27 @@ func artifactKindMismatch(name string, artifact model.Artifact, kind string) err
 	return errorf(http.StatusBadRequest, "ARTIFACT_KIND_MISMATCH",
 		"%q names artifact %s (%s), whose kind is %s; this upload's kind is %s, so it cannot be its next version: give it another name",
 		name, artifact.Slug, artifact.Name, artifact.Kind, kind)
+}
+
+// blankWriteToADocumentThatExists is the 400 refusing a write with no content under name, which
+// names artifact, the document the name or the slug finds. A write with no content makes a new
+// document; under a name a document already holds it would store a version holding nothing over
+// the text that document has, which no caller means by typing a title.
+func blankWriteToADocumentThatExists(name string, artifact model.Artifact) error {
+	return errorf(http.StatusBadRequest, "ARTIFACT_INPUT",
+		"%q names artifact %s (%s), which exists; a write with no content makes no document and writes no version: edit it with dispatch doc-edit, or give the new document another name",
+		name, artifact.Slug, artifact.Name)
+}
+
+// documentRoleNameRefusal is the 400 refusing a create with no content whose minted slug is the
+// slug of one of the documents Dispatch makes itself (roleSlugs): a person who types `Plan.md`
+// as a title means that document, which Dispatch writes with its own content. The slug is read,
+// not the title, so every spelling that gives it reads the same refusal, and a title whose slug
+// the owner already holds - which mints `plan-md-2` - is a document of its own.
+func documentRoleNameRefusal(name, slug, role string) error {
+	return errorf(http.StatusBadRequest, "ARTIFACT_ROLE_NAME",
+		"%q gives the slug %s, the slug of the issue's %s document, which Dispatch makes itself; give this document another name",
+		name, slug, role)
 }
 
 // newArtifactNameRefusal is the 400 refusing a new artifact's name past maxNewArtifactKeyBytes,

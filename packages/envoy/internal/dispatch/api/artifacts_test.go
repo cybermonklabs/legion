@@ -161,15 +161,31 @@ func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
 	}
 }
 
+// A body whose content is blank makes a new document holding nothing, so under the name of a
+// document that already exists it is refused: it would store a version holding nothing over the
+// text that document has. Blank is blank whatever its spaces.
 func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
+	owner := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "architect-spec.md", "content": "# Spec\n",
+	}, "alice")
+	if owner.Code != http.StatusCreated {
+		t.Fatalf("create architect-spec.md: status=%d body=%s", owner.Code, owner.Body.String())
+	}
+	want := `"architect-spec.md" names artifact architect-spec-md (architect-spec.md), which exists; ` +
+		`a write with no content makes no document and writes no version: edit it with dispatch doc-edit, ` +
+		`or give the new document another name`
 	for _, content := range []string{"", " \n\t "} {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 			"name": "architect-spec.md", "content": content,
 		}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"ARTIFACT_INPUT"`) {
-			t.Fatalf("blank JSON content %q: status=%d body=%s", content, response.Code, response.Body.String())
+		body := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusBadRequest || body.Code != "ARTIFACT_INPUT" || body.Error != want {
+			t.Fatalf("blank JSON content %q: status=%d body=%s, want 400 ARTIFACT_INPUT %q", content, response.Code, response.Body.String(), want)
 		}
 	}
 }
