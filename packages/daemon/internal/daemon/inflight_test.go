@@ -502,11 +502,17 @@ func quietStop(t *testing.T, stopLog string) {
 // decisions it is cancelling (`deciding`, daemon.go). A decision caught mid-write fails with
 // context.Canceled, which writeOwed owes because it is no *pgconn.PgError, so the stop logs
 // owedWriteFailedLine with `"owed":true` and the claim's next decision writes the row again. That
-// the repair happens is proven where it can be: internal/supervise/owedwrite_test.go and
-// repairagain_test.go over the machine, and owedwrite_test.go in this package as an operator reads
-// the two lines. This permission asserts none of it — the next daemon of the test it exists for is
-// a bare net.Listen on the same socket, with no store to repair anything — it only declines to read
-// the design's own line as a defect.
+// the repair happens is proven elsewhere, and the citation says what it relies on rather than only
+// where, because these are files this branch does not own and another tree can change what they
+// prove without knowing anything leans on it: this package's own
+// TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering (owedwrite_test.go)
+// drives the database into answering again and requires owedWriteMadeLine in the log, which is the
+// claim's next decision making the write it owed, and
+// TestTheOwedReportsReachTheDaemonOnceTheRepairLands is the same fact from the reports' side;
+// internal/supervise/owedwrite_test.go and repairagain_test.go assert it over the machine. This
+// permission asserts none of it — the next daemon of the test it exists for is a bare net.Listen
+// on the same socket, with no store to repair anything — it only declines to read the design's own
+// line as a defect.
 //
 // Its sibling with `"owed":false` — a repair that failed again — is the one an operator must come
 // and look at, and this refuses it, as it refuses every other WARN and ERROR.

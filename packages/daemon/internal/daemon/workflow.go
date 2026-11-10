@@ -610,11 +610,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 				// earlier send released it to the tree its issue moved to, or that tree's start or
 				// catch-up claimed or told it once its issue left (this delivery's hold is void
 				// there). Either way something else answers the person, and this task names it no
-				// longer. Dropping the mark here, before any send, is also what keeps the claim
-				// store's put-back (holdKeptDecisions) to its one case: every unconfirmed write of
-				// the delivery puts back a named decision whose row is missing in this tree, and
-				// the only such row is one this delivery's own confirmation told before the
-				// machine took that confirmation back.
+				// longer. What keeps the claim store's put-back (putBackARetakenConfirmation) to
+				// its one case is that write's own reading — it puts a row back only where this
+				// claim's confirmation told it and the machine is taking that confirmation back —
+				// and not this narrowing, which runs at a send and so never at all for a task the
+				// root cannot hear yet.
 				continue
 			}
 			issue, err := w.records.Issue(scoped, tx, mark.Issue)

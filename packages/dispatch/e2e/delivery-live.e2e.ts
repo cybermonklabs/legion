@@ -219,7 +219,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("a merge appears without a reload, and the page issues no delivery GET", async ({
+// @pr: Live delivery: a merge reaches the open page over the socket, with no delivery GET behind it.
+test("a merge appears without a reload, and the page issues no delivery GET @pr", async ({
   browser,
 }, testInfo) => {
   await seedDeliveryFixture();
@@ -347,7 +348,8 @@ test("each delta carries only what changed", async ({ browser }) => {
   }
 });
 
-test("after every socket is dropped, the page resumes and equals the GET answer", async ({
+// @pr: Live delivery: a reconnect after every socket is dropped, which must leave the page equal to the GET answer.
+test("after every socket is dropped, the page resumes and equals the GET answer @pr", async ({
   browser,
 }) => {
   await seedDeliveryFixture();
@@ -455,7 +457,8 @@ test("the Pipeline page updates live", async ({ browser }) => {
   }
 });
 
-test("the freshness row says Live with the last change, and Reconnecting while dropped", async ({
+// @pr: Live delivery: the freshness row is how a reader knows the page is live, and it must say Reconnecting while it is not.
+test("the freshness row says Live with the last change, and Reconnecting while dropped @pr", async ({
   browser,
 }) => {
   await seedDeliveryFixture();

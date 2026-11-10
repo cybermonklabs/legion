@@ -23,7 +23,8 @@ test.beforeEach(async ({ context }) => {
   await createProject({ key: "CORE", name: "Core" });
 });
 
-test("a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change", async ({
+// @pr: The Decisions tab's only row: a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change.
+test("a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change @pr", async ({
   page,
 }) => {
   const issue = await createIssue({

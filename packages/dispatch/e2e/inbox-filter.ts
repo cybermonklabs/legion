@@ -19,13 +19,14 @@ export function assigneeOptions(page: Page): Locator {
   return page.getByRole("listbox", { name: "Assignee options" });
 }
 
-/** Opens the bar's five filter fields unless they are open already. */
-export async function openFilterFields(page: Page): Promise<void> {
+/** Opens the bar's five filter fields unless they are open already, and hands back the panel. */
+export async function openFilterFields(page: Page): Promise<Locator> {
   const fields = page.locator("[data-inbox-filter-fields]");
   if ((await fields.count()) === 0) {
     await page.locator("[data-inbox-filter]").click();
   }
   await expect(fields).toHaveCount(1);
+  return fields;
 }
 
 /** How many rows the **Type** filter counts for one of its values, read off that option's own

@@ -43,7 +43,8 @@ const pendingLogin: RecordResponse = {
 // admit (NOT_APPROVER), so an approval that goes through is one Dispatch named alice on. The
 // reload at the end drops everything the page knew: the decision it shows afterwards can only
 // have come from the broker's own record.
-test("the machine-login page finds a pending login by its typed code and Approve decides it on the broker", async ({
+// @pr: Sign-in and tokens: a pending machine login found by its typed code, and Approve decided on the broker.
+test("the machine-login page finds a pending login by its typed code and Approve decides it on the broker @pr", async ({
   browser,
 }) => {
   await withAlice(browser, async (page) => {
@@ -91,7 +92,8 @@ test("the machine-login page finds a pending login by its typed code and Approve
 // packages/envoy/internal/dispatch/agentsecrets/client.go): a change at the broker reaches a
 // reloaded page within it, which is what `expect.poll` waits for here rather than a fixed sleep.
 // The row serves the grant again at the end, so it leaves the broker as it found it.
-test("the machine-code page is served only while the broker serves the device grant", async ({
+// @pr: Sign-in and tokens: the machine-code page is served only while the broker serves the device grant.
+test("the machine-code page is served only while the broker serves the device grant @pr", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
