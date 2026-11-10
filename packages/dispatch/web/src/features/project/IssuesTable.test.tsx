@@ -43,6 +43,15 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     ...overrides,
   };
 }
+/** An issue as a Dispatch process of the release before the one that added `created_by` and
+ *  `created_at` answers it: neither member is there. While a release rolls out, a page of this
+ *  build reads such a row ("Two builds at once", `packages/envoy/cmd/dispatch/README.md`). */
+function issueFromOlderServer(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
+  const row: Partial<IssueSummary> = issue(key, overrides);
+  delete row.created_at;
+  delete row.created_by;
+  return row as IssueSummary;
+}
 function savedIssue(key: string): Issue {
   return {
     ...issue(key),
@@ -645,6 +654,39 @@ test("created-by sessions use their live name and state, and a null creator is U
   expect(
     within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByText("Unknown")
   ).toBeDefined();
+});
+
+test("a row a server sends without created_by or created_at renders, with no author and no time", async () => {
+  table([issue("CORE-1"), issueFromOlderServer("CORE-2")], "?sort=created");
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(within(row).getByRole("link", { name: "CORE-2" }).getAttribute("href")).toContain(
+    "CORE-2"
+  );
+  expect(within(row).getByText("Unknown")).toBeDefined();
+  expect(row.querySelector("time")).toBeNull();
+  expect(
+    screen.getByRole("row", { name: "CORE-1 Work CORE-1" }).querySelector("time")
+  ).not.toBeNull();
+  // Created sorts without throwing on the absent time, and keeps that row after the one that
+  // carries a time.
+  expect(
+    screen
+      .getAllByRole("row")
+      .filter((candidate) => candidate.hasAttribute("data-issue-row"))
+      .map((candidate) => candidate.getAttribute("data-issue-row"))
+  ).toEqual(["CORE-1", "CORE-2"]);
+});
+
+test("the Legion queue puts an issue with no created_at after one of the same rank that has one", async () => {
+  table([
+    issueFromOlderServer("CORE-2", { labels: ["legion"], rank: "m" }),
+    issue("CORE-1", { labels: ["legion"], rank: "m" }),
+  ]);
+  const older = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(
+    within(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).getByText("#1")
+  ).toBeDefined();
+  expect(within(older).getByText("#2")).toBeDefined();
 });
 
 test("a refused merge move leaves the source open and does not post the close reason", async () => {

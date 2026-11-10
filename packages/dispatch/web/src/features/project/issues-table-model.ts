@@ -116,6 +116,39 @@ export function ageOf(iso: string): string {
   return days < 1 ? "Today" : days < 7 ? "This week" : days < 30 ? "This month" : "Older";
 }
 
+/** `created_at` and `created_by` as this build's pages read them while a release rolls out: a
+ *  Dispatch process of the release before the one that added the two members answers with
+ *  neither, and the table still has to draw the row ("Two builds at once",
+ *  `packages/envoy/cmd/dispatch/README.md`). A parameter of this type takes an `IssueSummary`
+ *  as it is, so no reader of the two members needs a cast. */
+export interface CreatedMembers {
+  readonly created_at?: string;
+  readonly created_by?: Actor | null;
+}
+/** When the issue was created, or undefined from a server of the release before the one that
+ *  added `created_at`. Every caller branches on it: `compareTimestamps` and `<Timestamp>` both
+ *  need a time that parses. Without that branch, `IssuesTable.test.tsx`'s "a row a server sends
+ *  without created_by or created_at renders, with no author and no time" fails. */
+export const createdAt = (issue: CreatedMembers): string | undefined => issue.created_at;
+/** Who created the issue, or null: both a server that says nobody did and one of the release
+ *  before the one that added `created_by`, which says nothing at all. Either reads as Unknown,
+ *  and without this, `IssuesTable.test.tsx`'s "a row a server sends without created_by or
+ *  created_at renders, with no author and no time" fails in `AgentName`. */
+export const createdBy = (issue: CreatedMembers): Actor | null => issue.created_by ?? null;
+/** Orders two issues by when they were created, keeping one a server of the release before
+ *  `created_at` sent without a time after every issue that carries one, rather than handing an
+ *  absent value to `compareTimestamps`, which throws on anything it cannot parse. Without it,
+ *  `IssuesTable.test.tsx`'s "the Legion queue puts an issue with no created_at after one of the
+ *  same rank that has one" fails. */
+export function compareCreated(left: CreatedMembers, right: CreatedMembers): number {
+  const a = createdAt(left);
+  const b = createdAt(right);
+  if (a === undefined || b === undefined) {
+    return a === b ? 0 : a === undefined ? 1 : -1;
+  }
+  return compareTimestamps(a, b);
+}
+
 export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
@@ -212,7 +245,18 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "created",
     size: 120,
     min: 148,
-    filter: one((item) => ageOf(item.issue.created_at), { order: AGES }),
+    // A server of the release before the one that added `created_at` sends none, so the filter
+    // asks `createdAt` and files a row without a time under Older, the bucket an issue old
+    // enough to come from that release would reach anyway. `AGES` keeps its four values. No row
+    // of the suite fails without this one, since `ageOf` buckets an unreadable time as Older
+    // through `NaN`; it says the case rather than resting on that.
+    filter: one(
+      (item) => {
+        const at = createdAt(item.issue);
+        return at === undefined ? "Older" : ageOf(at);
+      },
+      { order: AGES }
+    ),
   },
   {
     id: "updated",
@@ -287,7 +331,11 @@ export function buildItems(
   const byKey = new Map<string, EpicAncestor>(
     [...ancestors, ...issues].map((issue) => [issue.key, issue])
   );
-  // Rank's alphabet is byte-ordered, not locale-ordered.
+  // Rank's alphabet is byte-ordered, not locale-ordered. Two issues of one rank break the tie
+  // by `compareCreated`, not `compareTimestamps`: a server of the release before the one that
+  // added `created_at` sends none, and that absent time would throw there, which is what
+  // `IssuesTable.test.tsx`'s "the Legion queue puts an issue with no created_at after one of
+  // the same rank that has one" shows.
   const queue = issues
     .filter((issue) => !isEpic(issue) && isQueued(issue))
     .sort((a, b) =>
@@ -295,7 +343,7 @@ export function buildItems(
         ? -1
         : a.rank > b.rank
           ? 1
-          : compareTimestamps(a.created_at, b.created_at) || a.key.localeCompare(b.key)
+          : compareCreated(a, b) || a.key.localeCompare(b.key)
     );
   const positions = new Map(queue.map((issue, index) => [issue.key, index + 1]));
   return issues.map((issue) => {

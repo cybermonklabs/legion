@@ -28,6 +28,9 @@ import {
   COLUMNS,
   COMPACT_COLUMN_MIN,
   type ColumnId,
+  compareCreated,
+  createdAt,
+  createdBy,
   type Item,
   matchesFilters,
 } from "./issues-table-model";
@@ -189,12 +192,19 @@ const renderings = (
   author: {
     header: "Created by",
     accessorFn: (item) => item.author,
-    cell: ({ row }) =>
-      row.original.issue.created_by === null ? (
+    cell: ({ row }) => {
+      // A server of the release before the one that added `created_by` sends none, so the cell
+      // asks `createdBy`: an absent creator reads as the unknown one rather than reaching
+      // `AgentName` as undefined, which would throw and take the whole table with it. Without
+      // it, `IssuesTable.test.tsx`'s "a row a server sends without created_by or created_at
+      // renders, with no author and no time" fails in `AgentName`.
+      const actor = createdBy(row.original.issue);
+      return actor === null ? (
         <span className={textSecondaryOnCanvas}>Unknown</span>
       ) : (
-        <AgentName actor={row.original.issue.created_by} />
-      ),
+        <AgentName actor={actor} />
+      );
+    },
   },
   labels: {
     header: "Labels",
@@ -222,14 +232,17 @@ const renderings = (
   created: {
     header: "Created",
     accessorFn: (item) => item.issue.created_at,
-    sortingFn: (a, b) =>
-      compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
-    cell: ({ getValue }) => (
-      <Timestamp
-        at={getValue<string>()}
-        className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
-      />
-    ),
+    // `compareTimestamps` throws on a value it cannot parse, and a server of the release before
+    // the one that added `created_at` sends none: `compareCreated` puts those rows last.
+    sortingFn: (a, b) => compareCreated(a.original.issue, b.original.issue),
+    cell: ({ row }) => {
+      // The cell is empty for a row that server sent, which carries no time to show, which the
+      // same row of `IssuesTable.test.tsx` reads.
+      const at = createdAt(row.original.issue);
+      return at === undefined ? null : (
+        <Timestamp at={at} className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`} />
+      );
+    },
   },
   updated: {
     header: "Updated",
