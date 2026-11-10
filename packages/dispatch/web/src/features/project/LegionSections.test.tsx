@@ -462,16 +462,21 @@ test("when one tree holds a large share of the finished issues, a note under wor
     if (found === null) throw new Error("no note");
     return found;
   });
-  expect(note.textContent).toContain(
-    "Leave out ACME-6's tree (2 of 2 issues): A standing reviewer"
+  // The button names the tree and nothing more; its counts and its title are in its (i).
+  expect(note.querySelector("button")?.textContent).toBe("Leave out ACME-6's tree");
+  fireEvent.click(screen.getByRole("button", { name: "About ACME-6" }));
+  await waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "ACME-6: A standing reviewer. Its tree has 2 of the 2 issues"
+    )
   );
-  fireEvent.click(screen.getByRole("button", { name: /^Leave out ACME-6's tree/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Leave out ACME-6's tree" }));
   await waitFor(() =>
     expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }))
   );
   // The choice is in the address, so a shared link keeps it.
   expect(document.body.dataset.search).toBe("?exclude_tree=ACME-6");
-  await screen.findByRole("button", { name: "Count ACME-6 again" });
+  await screen.findByRole("button", { name: "Count ACME-6's tree again" });
 });
 
 test("a shared link with exclude_tree leaves that tree out from the first read", async () => {
@@ -481,7 +486,7 @@ test("a shared link with exclude_tree leaves that tree out from the first read",
   );
 
   expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }));
-  await screen.findByRole("button", { name: "Count ACME-6 again" });
+  await screen.findByRole("button", { name: "Count ACME-6's tree again" });
 });
 
 test("the finished issues are the Issues tab's table, with a phase bar on one scale or as shares", async () => {

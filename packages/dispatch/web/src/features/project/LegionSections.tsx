@@ -374,7 +374,7 @@ function LargestTree({
     return (
       <div className="flex items-center gap-1.5" data-legion-tree-note>
         <button className={button} onClick={() => onExclude([])} type="button">
-          Count {excluded.join(", ")} again
+          Count {excluded.map((root) => `${root}'s tree`).join(", ")} again
         </button>
         <InfoHint label={`About ${excluded.join(", ")}`}>
           The numbers on this page do not include the issues of {excluded.join(", ")}'s tree.
@@ -386,20 +386,15 @@ function LargestTree({
     return null;
   }
   return (
-    <div className="flex min-w-0 items-center gap-1.5" data-legion-tree-note>
-      <button
-        className={`${button} min-w-0 text-left sm:max-w-xl sm:truncate`}
-        onClick={() => onExclude([tree.root])}
-        title={tree.title}
-        type="button"
-      >
-        Leave out {tree.root}'s tree ({count(tree.finished)} of {issues(report.finished)}):{" "}
-        {tree.title}
+    <div className="flex items-center gap-1.5" data-legion-tree-note>
+      <button className={button} onClick={() => onExclude([tree.root])} type="button">
+        Leave out {tree.root}'s tree
       </button>
       <InfoHint label={`About ${tree.root}`}>
-        {tree.root}'s tree has {count(tree.finished)} of the {count(report.finished)} finished
-        issues. Their median work time is {formatHours(tree.median_hours)}, and{" "}
-        {formatHours(tree.rest_median_hours)} for the other issues.
+        {tree.root}: {tree.title}. Its tree has {count(tree.finished)} of the{" "}
+        {issues(report.finished)} finished. Their median work time is{" "}
+        {formatHours(tree.median_hours)}, and {formatHours(tree.rest_median_hours)} for the other
+        issues.
       </InfoHint>
     </div>
   );
