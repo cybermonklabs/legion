@@ -490,16 +490,27 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
   /** This launch's transcript entries of `customType`. The file is appended to as the session
-   * runs, so a case reads it while the pane is still running — and after it has ended itself. */
+   * runs, so a case reads it while the pane is still running — and after it has ended itself.
+   * A read that lands mid-append sees the last line half written, so that one line is dropped
+   * rather than parsed; every earlier line is whole, because each entry the session writes ends
+   * in a newline, and one of those that does not parse is a real fault and is thrown as before. */
   const entries = async (customType: string): Promise<Record<string, unknown>[]> => {
     const files = (await readdir(sessions, { recursive: true })).filter((file) =>
       file.endsWith(".jsonl")
     );
     if (files.length !== 1) return [];
-    return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
+    const lines = (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
       .split("\n")
-      .filter(Boolean)
-      .map((line): unknown => JSON.parse(line))
+      .filter(Boolean);
+    return lines
+      .flatMap((line, index): unknown[] => {
+        try {
+          return [JSON.parse(line)];
+        } catch (error) {
+          if (index === lines.length - 1) return [];
+          throw error;
+        }
+      })
       .flatMap((entry) =>
         typeof entry === "object" &&
         entry !== null &&

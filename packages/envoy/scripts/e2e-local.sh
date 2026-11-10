@@ -18,17 +18,22 @@
 # (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
 # addr). E2E_NATS_PORT and E2E_PORT set a port explicitly; it is used as given, and one already in
 # use fails with "address already in use". The session opens no port of its own: it takes its
-# messages from its session consumer over NATS, as every shipped plugin does. It keeps the ledger
-# a real session keeps, writing a frame only when its stream sequence is above the highest it has
-# written of that stream.
+# messages from its session consumer over NATS, as every shipped plugin does. It keeps the
+# sequence half of what a real session keeps, writing a frame only when its stream sequence is
+# above the highest it has written of that stream. A real client drops more than that - it keys
+# its ledger by the message's own identity as well (`alreadyWritten` over `ledger.delivered`,
+# packages/envoy-client/src/consumer-delivery.ts) - so the stand-in is the stricter witness: it
+# still counts a second, distinct store of one event, which a real session would drop, and the
+# tallies below are read against that strictness.
 #
 # E2E_SESSION_ACK_DELAY_MS (0 by default) holds each session's `done` answer back by that many
 # milliseconds, which moves the consumer ack floor behind what the session has already written.
 # The clean stop below records that floor, and the registration that follows with no resume point
 # starts there, so the frames the session took and had not acked are offered again - at-least-once
 # above the floor, which is what keeps a session that comes back from losing anything. It is the
-# control over the ledger above: `E2E_SESSION_ACK_DELAY_MS=1500 bash scripts/e2e-local.sh` passes
-# with it and fails without it, the role lane tallying 5 frames and the agent lane 6 where 2 and 3
+# control over the stand-in's position rule above: `E2E_SESSION_ACK_DELAY_MS=1500 bash
+# scripts/e2e-local.sh` passes with that rule and fails without it, the role lane tallying 5
+# frames and the agent lane 6 where 2 and 3
 # are wanted (dispatch://INFRA-771, the red at b76508ae).
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
@@ -416,15 +421,18 @@ start_session_standin() {
       // Every relay frame carries these; Envoy-Gap is left out because it marks only the first
       // frame after a retention gap, which a run that creates its own stream never has.
       const headers = ["Envoy-Subject", "Envoy-Stream-Seq", "Envoy-Stream-Id", "Envoy-Delivered", "Envoy-Stored-At"];
-      // The ledger a real session keeps (packages/envoy-client/src/consumer-delivery.ts): the
-      // highest stream sequence this session has written, per stream. A frame at or below it has
-      // been written once already and is answered without being written again, which is what
-      // makes "each exactly once" a statement about the session rather than about the transport:
-      // above the floor a delete recorded, the stream offers a frame the session took but had
-      // not acked a second time, deliberately, so that a session that comes back loses nothing
-      // (bus.SessionConsumers.Delete, create). A stand-in with no ledger counts those repeats and
-      // reads a correct delivery as a duplicate. Two distinct stores of one event still count
-      // twice, which is the duplicate these tallies exist to catch.
+      // The sequence half of the ledger a real session keeps: the highest stream sequence this
+      // session has written, per stream. A frame at or below it has been written once already
+      // and is answered without being written again, which is what makes "each exactly once" a
+      // statement about the session rather than about the transport: above the floor a delete
+      // recorded, the stream offers a frame the session took but had not acked a second time,
+      // deliberately, so that a session that comes back loses nothing (bus.SessionConsumers
+      // .Delete, create). A stand-in that kept no position at all counts those repeats and reads
+      // a correct delivery as a duplicate. A real client drops more: it keys its ledger by the
+      // message identity too (alreadyWritten over ledger.delivered, event id and dedupe key,
+      // packages/envoy-client/src/consumer-delivery.ts), so this stand-in is the stricter
+      // witness - two distinct stores of one event carry two sequences and still count twice,
+      // which is the duplicate these tallies exist to catch.
       const written = new Map();
       const ackDelayMs = Number(process.env.E2E_SESSION_ACK_DELAY_MS ?? "0");
       await connection.flush();
