@@ -18,7 +18,9 @@
  * collision check otherwise. The issuer serves on a port the OS chooses, as the sign-in issuer
  * does, and `e2e/run-broker.sh` refuses `DEV_OIDC_ISSUER_PORT` set for it. The broker half reads
  * that variable instead, which `e2e/harness-start.ts` exports from the issuer's report, since the
- * broker takes the issuer's URL as its token issuer and its sign-in provider.
+ * broker takes the issuer's URL as its token issuer and its sign-in provider. `FAKE_EMBEDDER_PORT`
+ * is the fake embedder's (`e2e/fake-embedder.ts`), started only by a run whose server embeds
+ * there (`e2e/harness-embedder.ts`), so it takes part in the collision check only then.
  *
  * A set value that is not a port in canonical decimal is refused naming its variable, because
  * every later consumer turns it into something that names nothing: `net.connect` raises
@@ -43,6 +45,7 @@
  * `e2e/run.ts` starts before Playwright, which is handed its lane's values under the plain names.
  */
 
+import { usesFakeEmbedder } from "./harness-embedder";
 import { harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
 import { harnessSignIn } from "./harness-signin";
@@ -113,6 +116,7 @@ export const harnessVariables = {
   dispatchA: "DISPATCH_E2E_PORT_A",
   dispatchB: "DISPATCH_E2E_PORT_B",
   fakeBroker: "FAKE_BROKER_PORT",
+  fakeEmbedder: "FAKE_EMBEDDER_PORT",
   fakeEnvoy: "FAKE_ENVOY_PORT",
   fakeGithub: "FAKE_GITHUB_PORT",
   plainHttp: "PLAIN_HTTP_PORT",
@@ -178,6 +182,7 @@ export function harnessPorts(
     dispatchA: harnessPort(env, harnessVariables.dispatchA),
     dispatchB: harnessPort(env, harnessVariables.dispatchB),
     fakeBroker: harnessPort(env, harnessVariables.fakeBroker),
+    fakeEmbedder: harnessPort(env, harnessVariables.fakeEmbedder),
     fakeEnvoy: harnessPort(env, harnessVariables.fakeEnvoy),
     fakeGithub: harnessPort(env, harnessVariables.fakeGithub),
     plainHttp: harnessPort(env, harnessVariables.plainHttp),
@@ -189,7 +194,8 @@ export function harnessPorts(
       entry.port !== 0 &&
       (harnessProcessCount === 2 || (entry !== ports.dispatchA && entry !== ports.dispatchB)) &&
       (harnessSignIn === "oidc" || entry !== ports.signinIssuer) &&
-      (usesRealBroker || (entry !== ports.devIssuer && entry !== ports.realBroker))
+      (usesRealBroker || (entry !== ports.devIssuer && entry !== ports.realBroker)) &&
+      (usesFakeEmbedder || entry !== ports.fakeEmbedder)
   );
   const collisions = [...new Set(given.map((entry) => entry.port))]
     .map((port) => ({

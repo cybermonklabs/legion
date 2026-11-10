@@ -242,6 +242,7 @@ def at_docs(step):
 BROWSER_JOB = "dispatch-browser"
 BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
+BROWSER_EMBEDDER = "embedder"
 BROWSER_VISUAL = "visual"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
@@ -1139,7 +1140,9 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
+BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
+BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
@@ -1150,12 +1153,13 @@ BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
 # pinned build step in the gate below names already, so this job adds no command of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
-# The five steps that run the browser suite, named together wherever a Run or a read cites the
+# The six steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the five names, rather than beside the first of them.
+# here, below the six names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
-    f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} and "
+    f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
+    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)} and "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
@@ -1471,7 +1475,9 @@ GATES = [
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:136,150 runs it to hold a port for the daemon"),
         ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:145 runs it over the checkout"),
         (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-uv/action.yml:16-17 ARG UV_VERSION/UV_SHA256"),
+        (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
+                                        "reads the uv row's two sources"),
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
@@ -1545,6 +1551,10 @@ GATES = [
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:179-187"),
         ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
+        (f"{DAEMON}/docker/worker.Dockerfile",
+         f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh's \"this repository's own tree\" case "
+         "runs the gate over it, where the gate holds the mise, jj and uv rows of .github/ci-tools.yaml to this "
+         "file's ARG MISE_VERSION, ARG JJ_TOOL and ARG UV_VERSION"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
         (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:19-20 installs the changie row's tarball"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-changie/action.yml:18 sources it, and ci_tools_fetch "
@@ -1754,6 +1764,9 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
         (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:162-163, the new URL at :163"),
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:37-40, the new URL at :38: the generated API "
+         "document every committed recording's body is held to, which this job's test step runs"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:3-6 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
@@ -1809,6 +1822,11 @@ GATES = [
         # script and names the one package it compiles - which is the closure run-server.sh
         # compiles in that same job.
         pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+        # The embedder job builds it once for the same reason, and names its step for its own
+        # lane because this check looks a step up by name across the workflow.
+        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
@@ -2055,6 +2073,9 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/install-elan/**", at(AIRLOCK_JOB, "./.github/actions/install-elan")),
+        (".github/ci-tools.yaml", ".github/actions/install-elan/action.yml:29-30 installs the elan row's tarball"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-elan/action.yml:22 sources it, and ci_tools_fetch "
+                                        "reads the elan row's two sources"),
         (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                                f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),
         (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
@@ -2083,8 +2104,14 @@ GATES = [
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const Image"),
         (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
-        (f"{INFRA}/internal/pulumitest/pulumitest.go",
-         f"{at('envoy-smoke', 'Download the docker provider plugin the live tests pin')}: sed reads const DockerPluginVersion"),
+        (".github/actions/install-docker-plugin/**",
+         at("envoy-smoke", "Download the docker provider plugin the live tests install")),
+        (".github/ci-tools.yaml", ".github/actions/install-pulumi/action.yml:20-21 installs the pulumi-cli row's "
+                                  "tarball, and .github/actions/install-docker-plugin/action.yml:33-35 downloads the "
+                                  "pulumi-docker row's"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-pulumi/action.yml:19 and "
+                                        ".github/actions/install-docker-plugin/action.yml:30 source it, and "
+                                        "ci_tools_fetch reads each row's two sources"),
         (".github/scripts/repo-paths.sh",
          f"{at('envoy-smoke', SCHEMA_STEP)}: it derives the download URL the build stamps in"),
         (".github/scripts/disk_watch.py",
@@ -2253,8 +2280,8 @@ GATES = [
     # The tool-fallback job: the live proof that every tool install reads the second source
     # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
     # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
-    # the gate beside it, the rig and the fault proxy it drives, the four actions it installs
-    # through, and the two files a row's version is pinned in.
+    # the gate beside it, the rig and the fault proxy it drives, the eight actions it installs
+    # through, and the two files a row's version is pinned in that a step of it reads.
     gate("tool_fallback", "tool-fallback", reads=reads(
         (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
                                   f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
@@ -2274,6 +2301,11 @@ GATES = [
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
         (".github/actions/setup-bun/**", at("tool-fallback", "./.github/actions/setup-bun")),
+        (".github/actions/install-elan/**", at("tool-fallback", "./.github/actions/install-elan")),
+        (".github/actions/install-uv/**", at("tool-fallback", "./.github/actions/install-uv")),
+        (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
+        (".github/actions/install-docker-plugin/**",
+         at("tool-fallback", "./.github/actions/install-docker-plugin")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
                                                ".github/actions/install-jj reads that same ARG, while the mise row "

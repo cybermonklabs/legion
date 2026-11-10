@@ -1,4 +1,4 @@
-# The tools a CI job of this repository installs from a GitHub release asset, one row per asset.
+# The tool assets a CI job of this repository installs, one row per asset.
 # Each row names the one pinned digest both of that tool's sources are checked against, where its
 # second source is, and how that source is filled.
 # An hour of 504s on GitHub's release assets holds every merge of this repository, because each of
@@ -8,10 +8,15 @@
 # the same literal, and a refusal names the source that served the bytes.
 #
 # Each row's `version` agrees with the pin that decides which version a job installs:
-# for crane and changie the row is the pin itself, since install-crane and install-changie hold
-# no version of their own and install the version this row names,
+# for crane, changie, elan and the Pulumi CLI the row is the pin itself, since install-crane,
+# install-changie, install-elan and install-pulumi hold no version of their own and install the
+# version this row names,
 # `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
 # `ARG JJ_TOOL` of that same file for jj,
+# `ARG UV_VERSION` of that same file for uv, whose `primary_digest` is that file's
+# `ARG UV_SHA256`, because the image's own toolchain stage builds uv from those two,
+# `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go for the
+# docker provider plugin the envoy-infra live tests install,
 # and .bun-version for the three bun rows.
 # .github/scripts/check-ci-tools.sh is the gate that holds a row to its pin and to this file's
 # shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
@@ -45,6 +50,26 @@
 # Bun publishes the same binary to npm, one package per platform, so a bun row's second source is
 # the npm registry: a different service, one every job already reaches for `bun install`, and one
 # that needs no copy, so it serves the bytes on the day a copy would still be cold.
+# uv takes PyPI, which is deliberately another provider and not another GitHub host: on
+# 2026-11-09 one 504 on uv's single-source install ejected this repository from the merge queue
+# twice, and a ghcr copy is served by a GitHub host, so a copy would answer that outage with the
+# service that caused it. PyPI's wheel and the GitHub tarball package the same binary in two
+# different archives, so the binary is the only literal both sources can be held to: that is
+# what this row's `digest` is of, and the archive the primary serves carries a digest of its own
+# beside it in `primary_digest`.
+# The docker provider plugin and the Pulumi CLI take get.pulumi.com and the GitHub release in
+# opposite orders. Pulumi serves each tarball byte for byte at both addresses, measured on
+# 2026-11-09: the plugin's 24184600 bytes and the CLI's 119816773 bytes each read one sha256
+# from both. Each row writes as its primary the address its install reads today — the live
+# tests' plugin step fetches the GitHub release, install-pulumi fetches the vendor — and the
+# other address, which serves those same bytes, is its second source. Neither tool needs a copy,
+# and both of these sources are warm the day the row lands, which a copy is not.
+# elan takes a copy, as crane and the rest do. The search for a second publisher of these bytes
+# was made on 2026-11-09 and found none: no npm package, no PyPI wheel, no Debian or Homebrew
+# package and no vendor host serving this archive. That is what that search found and not a fact
+# about the world, which is why the claim a copy makes is the narrower one: that the package
+# holds these exact bytes, which .github/scripts/mirror-ci-tools.sh's read-back after the push
+# and ci.yaml's `tool-fallback` blob check are what decide.
 #
 # WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
 # `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
@@ -58,10 +83,12 @@
 # WHY A DECLINE IS AN ENTRY UNDER `no_second_source:` AND NOT A ROW.
 # Some bytes CI installs are published in one place and nowhere else, and the manifest must be
 # able to state that rather than force a fiction (dispatch://INFRA-1974).
-# A `tools:` row cannot carry it: ci.yaml's `tool-fallback` job fails for a row no install reads,
-# .github/scripts/check-ci-tools.sh refuses a `second_source` that is neither ghcr-mirror nor npm
-# before the row is read at all, and a row's `primary` must hold the row's `version`, which no URL
-# a job builds from an ARG or a Go constant can.
+# A `tools:` row cannot carry it, and the reason is what a row says rather than any field of it:
+# a row is the statement that two sources serve these bytes, which is the one thing a decline
+# denies. The gate reads that statement as a shape — ci.yaml's `tool-fallback` job fails for a
+# row no install reads, and .github/scripts/check-ci-tools.sh refuses a `second_source` that is
+# none of the five words .github/scripts/ci-tools.sh reads a source with, before the row is read
+# at all — so a row of one source is refused whichever way it is written.
 # So a decline is an entry of its own key, invisible to .github/scripts/ci-tools.sh,
 # .github/scripts/mirror-ci-tools.sh, .github/scripts/ci-tools-proof.sh and `tool-fallback`, and
 # read by the gate alone.
@@ -70,8 +97,11 @@
 # test's fixture, no row already covers its repository, and its `why` is a sentence.
 # WHETHER THAT REASON IS TRUE IS THE REVIEWER'S JUDGEMENT, not the gate's; the rules before it
 # are the whole of what a program can check.
-# Each of these is the honest present state and not a permanent exemption: dispatch://INFRA-1986
-# gives all three a second source and deletes the entry as each row lands.
+# THE LIST IS EMPTY TODAY. It held elan, uv and the docker provider plugin, and
+# dispatch://INFRA-1986 gave each of the three a row with a second source, which is what made
+# each of those entries false and deleted it. The next entry is for the next install whose bytes
+# one publisher serves and no other: it is written when that install lands, and it is deleted the
+# day a second address for those bytes is found, as these three were.
 
 # The package every ghcr-mirror copy lives in: the one .github/ci-images.yaml publishes, which is
 # public and which a job pulls with no login (sjawhar/legion#2512).
@@ -89,10 +119,26 @@ tools:
     digest: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
     # The bytes that digest is of.
     digest_of: the release tarball go-containerregistry_Linux_x86_64.tar.gz, whole
+    # The word the row's primary is read with, which every log line and every refusal of it
+    # says: `github-release` for a release asset, `pypi` for a wheel, `pulumi-releases` for a
+    # tarball get.pulumi.com serves. A copy this repository fills is no origin of the bytes, so
+    # `ghcr-mirror` and `npm` are second sources and no row's primary.
+    primary_source: github-release
     # The URL the primary path fetches, empty where a third party fetches the bytes for us.
     primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
+    # The sha256 of the bytes the primary URL serves, for a row whose own `digest` is of
+    # something inside them, and "" where the primary serves exactly the bytes this row pins,
+    # which is every row but uv.
+    primary_digest: ""
+    # The prose saying what `primary_digest` is of, which a refusal of a mismatch on it names.
+    # "" where unused.
+    primary_digest_of: ""
+    # The member to take out of the primary's archive before the row's own `digest` is checked,
+    # and "" where the primary serves the pinned bytes themselves.
+    primary_member: ""
     # Where the bytes come from when the primary does not serve them: `ghcr-mirror` for a copy in
-    # the package `registry:` names, `npm` for the npm registry.
+    # the package `registry:` names, `npm` for the npm registry, and `github-release`, `pypi` or
+    # `pulumi-releases` for a service that serves this row's bytes at an address of its own.
     # It is the one word every log line and every refusal of that source says, so a row that
     # moves to another source moves every sentence about it with one edit.
     second_source: ghcr-mirror
@@ -111,7 +157,11 @@ tools:
     version: 1.26.0
     digest: eab168c8287a6e91912e1c02e5260911232d945bfd3c89d8a0e1ace6bb7b6161
     digest_of: the release tarball changie_1.26.0_linux_amd64.tar.gz, whole
+    primary_source: github-release
     primary: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
@@ -124,7 +174,11 @@ tools:
     version: 2026.8.12
     digest: 0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
     digest_of: the release tarball mise-v2026.8.12-linux-x64.tar.gz, whole
+    primary_source: github-release
     primary: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
@@ -142,7 +196,11 @@ tools:
     version: 0.45.1-sami.20260910-043938
     digest: fe32ffcd64432000027c87030af074eb48e55181ca389e09d3ab4b44200aba7a
     digest_of: the jj binary itself, the 24424232-byte `./jj` member of the release tarball
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
@@ -162,7 +220,11 @@ tools:
     version: 1.4.4
     digest: 10702245766b225e70bbf6235fd6b47214fd94b4760d00ffaed8ab0df57ac235
     digest_of: the installed bun binary, 107308936 bytes
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     # npm rows only. The package the binary is published in, one per platform variant.
@@ -176,7 +238,11 @@ tools:
     version: 1.4.4
     digest: 10702245766b225e70bbf6235fd6b47214fd94b4760d00ffaed8ab0df57ac235
     digest_of: the installed bun binary, 107308936 bytes
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-x64-baseline"
@@ -187,52 +253,95 @@ tools:
     version: 1.4.4
     digest: 354c2b049c716aca07b2e5cddb887928ac58950675d1258bb6312083917793b6
     digest_of: the installed bun binary, 107339768 bytes
+    primary_source: github-release
     primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
     second_source: npm
     max_time: 60
     npm_package: "@oven/bun-linux-aarch64"
     npm_member: package/bin/bun
 
+  # elan, the Lean toolchain installer .github/actions/install-elan installs. No second publisher
+  # of these bytes was found, so the second source is a copy in the package `registry:` names,
+  # as crane's and changie's are.
+  - name: elan
+    version: 4.2.4
+    digest: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+    digest_of: the release tarball elan-x86_64-unknown-linux-gnu.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+    mirror_member: ""
+
+  # uv, which .github/actions/install-uv installs: the uv the worker image ships, pinned by
+  # `ARG UV_VERSION` and `ARG UV_SHA256` of packages/daemon/docker/worker.Dockerfile, which the
+  # image's own toolchain stage builds uv from.
+  # This is the one row whose `digest` is of a member. PyPI's wheel and GitHub's tarball are two
+  # archives of one binary, so the binary is the only literal both sources can be held to:
+  # `digest` is of it, `primary_member` is where it sits in the tarball, and `primary_digest` is
+  # the tarball itself, which is the `ARG UV_SHA256` the image checks.
+  - name: uv
+    version: 0.13.5
+    digest: 8a70db72685b7138121bfcda71fa1a00cb709ed9f1fdc4ecf1dd871e8e167e52
+    digest_of: the uv binary itself, the 37597160-byte `uv-x86_64-unknown-linux-gnu/uv` member of the release tarball
+    primary_source: github-release
+    primary: https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz
+    primary_digest: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
+    primary_digest_of: the release tarball uv-x86_64-unknown-linux-gnu.tar.gz, whole
+    primary_member: uv-x86_64-unknown-linux-gnu/uv
+    second_source: pypi
+    max_time: 60
+    # github-release, pypi and pulumi-releases second sources only. The whole address that
+    # service serves this row's bytes at, written out, because such a service has no one prefix
+    # every row of it begins with the way a release asset has https://github.com.
+    second_url: https://files.pythonhosted.org/packages/py3/u/uv/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+    # The member to take out of what `second_url` served, and "" to keep the whole file. A `.whl`
+    # or a `.zip` is read with python3's zipfile and anything else with `tar -xzO`.
+    second_member: uv-0.13.5.data/scripts/uv
+
+  # The docker provider plugin ci.yaml's envoy-infra live tests install. Its version is the
+  # `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go the
+  # live programs pin. get.pulumi.com serves this tarball byte for byte, so the second source is
+  # that address and no copy.
+  - name: pulumi-docker
+    version: 4.11.0
+    digest: 4dbcd9defa0fb03999cdfeab50bd461451b7c65e8566927994f63ee956055ffe
+    digest_of: the release tarball pulumi-resource-docker-v4.11.0-linux-amd64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/pulumi/pulumi-docker/releases/download/v4.11.0/pulumi-resource-docker-v4.11.0-linux-amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: pulumi-releases
+    max_time: 60
+    second_url: https://get.pulumi.com/releases/plugins/pulumi-resource-docker-v4.11.0-linux-amd64.tar.gz
+    second_member: ""
+
+  # The Pulumi CLI .github/actions/install-pulumi installs. Its two sides are the plugin row's
+  # two sides reversed: the vendor serves the bytes first, because that is the address this
+  # install reads, and the GitHub release serves them second. One tarball at both addresses,
+  # measured on 2026-11-09.
+  - name: pulumi-cli
+    version: 3.268.0
+    digest: 903cafeaa9f6327e4bf53a8b7b99ae660f26198acfa804a2f982bf5de3f1de0b
+    digest_of: the release tarball pulumi-v3.268.0-linux-x64.tar.gz, whole
+    primary_source: pulumi-releases
+    primary: https://get.pulumi.com/releases/sdk/pulumi-v3.268.0-linux-x64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: github-release
+    max_time: 60
+    second_url: https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-x64.tar.gz
+    second_member: ""
+
 # The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
 # allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.
 no_second_source:
-  # elan, the Lean toolchain installer .github/actions/install-elan installs.
-  - # The URL exactly as the file that fetches it writes it.
-    url: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
-    # The 64-hex sha256 that file checks the bytes against, written bare.
-    digest: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
-    # The file that pins them. The gate refuses an entry whose digest that file does not hold.
-    pinned_in: .github/actions/install-elan/action.yml
-    # Which second source was looked for, why there is none today, and what building one takes.
-    why: >-
-      elan publishes its release assets on GitHub and nowhere else: it has no npm package, no
-      Debian or Homebrew package carrying these bytes, and no other registry serving them.
-      A second source means copying this archive into ghcr.io/cybermonklabs/legion/ci as the
-      ghcr-mirror rows are copied, which is a mirror row, a filler entry and a call site that
-      reads the helper. dispatch://INFRA-1986 owns that work.
-
-  # uv, which .github/actions/install-uv installs at the version the worker image pins. The URL
-  # is built from `ARG UV_VERSION`, so it is declared here as the action writes it.
-  - url: https://github.com/astral-sh/uv/releases/download/${version}/uv-x86_64-unknown-linux-gnu.tar.gz
-    digest: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
-    pinned_in: packages/daemon/docker/worker.Dockerfile
-    why: >-
-      uv's x86_64-unknown-linux-gnu tarball is published on GitHub releases alone; the PyPI
-      `uv` package ships a different archive, so its bytes cannot be held to this digest, and
-      astral-sh runs no second registry for it. A second source means copying this archive into
-      ghcr.io/cybermonklabs/legion/ci and giving the action a row to read, which also means
-      moving the version pin out of `ARG UV_VERSION`. dispatch://INFRA-1986 owns that work.
-
-  # The Pulumi docker provider plugin the envoy-smoke job installs. The URL is built from
-  # `const DockerPluginVersion`, so it is declared here as the workflow writes it. The digest is
-  # in that job's own called file: dispatch://INFRA-1413 moved every job's steps out of ci.yaml,
-  # and this entry names the file the pin is in rather than the router that calls it.
-  - url: https://github.com/pulumi/pulumi-docker/releases/download/v$version/pulumi-resource-docker-v$version-linux-amd64.tar.gz
-    digest: 4dbcd9defa0fb03999cdfeab50bd461451b7c65e8566927994f63ee956055ffe
-    pinned_in: .github/workflows/ci-job-envoy-smoke.yaml
-    why: >-
-      Pulumi publishes its provider plugins as GitHub release assets and serves them to the CLI
-      from that same release; its registry publishes the SDK packages and not this binary
-      tarball, so there is no second address for these bytes. A second source means copying the
-      tarball into ghcr.io/cybermonklabs/legion/ci and reading it through the helper, with the
-      version still read from `const DockerPluginVersion`. dispatch://INFRA-1986 owns that work.

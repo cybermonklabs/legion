@@ -140,24 +140,17 @@ jobs:
       # installed.
       - name: Install the Pulumi CLI
         uses: ./.github/actions/install-pulumi
-      # The version is the one the live programs pin, read from pulumitest.DockerPluginVersion, and
-      # the step hands the tarball's path to the live tests as its `tarball` output, set in their
-      # step's env as ENVOY_INFRA_DOCKER_PLUGIN (not written to $GITHUB_ENV, which every later step
-      # would inherit and check-ci-filters.sh treats as reaching the job's go commands). The
-      # release's own checksums file lists SHA-1 digests (this asset's is
-      # 9a7f6014d3ebc330030ec033ddc7222ec13ad116); the SHA-256 is the digest GitHub records for the
-      # release asset, which hashes to that same SHA-1. The live tests install the verified tarball
-      # into a PULUMI_HOME of their own, so the CLI downloads none.
-      - name: Download the docker provider plugin the live tests pin
+      # The `pulumi-docker` row of .github/ci-tools.yaml pins the version and the sha256 of that
+      # tarball, and .github/scripts/check-ci-tools.sh holds the row's version to
+      # `const DockerPluginVersion` of internal/pulumitest/pulumitest.go, the constant the live
+      # programs pin the plugin at. The step hands the tarball's path to the live tests as its
+      # `tarball` output, set in their step's env as ENVOY_INFRA_DOCKER_PLUGIN (not written to
+      # $GITHUB_ENV, which every later step would inherit and check-ci-filters.sh treats as
+      # reaching the job's go commands). The live tests install the verified tarball into a
+      # PULUMI_HOME of their own, so the CLI downloads none.
+      - name: Download the docker provider plugin the live tests install
         id: docker-plugin
-        run: |
-          version=$(sed -n 's/^const DockerPluginVersion = "\(.*\)"$/\1/p' internal/pulumitest/pulumitest.go)
-          [ -n "$version" ] || { echo "::error::no const DockerPluginVersion in internal/pulumitest/pulumitest.go"; exit 1; }
-          tarball="$RUNNER_TEMP/pulumi-resource-docker-v$version-linux-amd64.tar.gz"
-          curl -fsSL -o "$tarball" "https://github.com/pulumi/pulumi-docker/releases/download/v$version/pulumi-resource-docker-v$version-linux-amd64.tar.gz"
-          echo "4dbcd9defa0fb03999cdfeab50bd461451b7c65e8566927994f63ee956055ffe  $tarball" | sha256sum -c -
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-        working-directory: packages/envoy/infra
+        uses: ./.github/actions/install-docker-plugin
       # The live tests build container images on this runner's disk, and a job that runs out of
       # space says only that it did. The pair around the step measures it: `start` prints what
       # each file system the job writes to has free and leaves a sampler watching the one that

@@ -986,6 +986,7 @@ jobs:
               - '!packages/daemon/internal/shimwire/**/*_test.go'
               - '!packages/daemon/internal/store/capabilities_test.go'
               - '!packages/daemon/internal/store/claim_issue_test.go'
+              - '!packages/daemon/internal/store/claim_retired_at_write_mark_test.go'
               - '!packages/daemon/internal/store/claims_connect_error_test.go'
               - '!packages/daemon/internal/store/claims_test.go'
               - '!packages/daemon/internal/store/controller_test.go'
@@ -1546,6 +1547,10 @@ jobs:
               # Its one step sources .github/scripts/ci-tools.sh and fetches the `changie` row of
               # .github/ci-tools.yaml, both of which the tool harness lists above name.
               - '.github/actions/install-changie/**'
+              # The image's own pins, which the manifest check's case over this repository's tree
+              # holds the mise, jj and uv rows to (check-ci-tools.test.sh:1733 runs the gate over
+              # it), so a change to one of those ARGs must run that test here.
+              - 'packages/daemon/docker/worker.Dockerfile'
               # The fold-check step renders every fragment of every package
               # .github/changelog-packages lists, each with its own changie configuration;
               # release-push.test.sh's "Case: fold-notes renders a package with the shipped
@@ -1695,6 +1700,7 @@ jobs:
               - '!packages/daemon/internal/shimwire/**/*_test.go'
               - '!packages/daemon/internal/store/capabilities_test.go'
               - '!packages/daemon/internal/store/claim_issue_test.go'
+              - '!packages/daemon/internal/store/claim_retired_at_write_mark_test.go'
               - '!packages/daemon/internal/store/claims_connect_error_test.go'
               - '!packages/daemon/internal/store/claims_test.go'
               - '!packages/daemon/internal/store/controller_test.go'
@@ -1790,7 +1796,8 @@ jobs:
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-            # holds: the shards, the three `-alone` projects, the two-process job and the merge
+            # holds: the shards, the three `-alone` projects, the two-process job, the
+            # fake-embedder job, the visual review and the merge
             # job. Every entry is something a browser row reads: the dashboard and its contracts,
             # the Dispatch server its harness builds, and the two workflow files that hold the
             # steps. The retired `dispatch` job's filter also held three fixture sets whose only
@@ -2069,6 +2076,7 @@ jobs:
               - '!packages/daemon/internal/shimwire/**/*_test.go'
               - '!packages/daemon/internal/store/capabilities_test.go'
               - '!packages/daemon/internal/store/claim_issue_test.go'
+              - '!packages/daemon/internal/store/claim_retired_at_write_mark_test.go'
               - '!packages/daemon/internal/store/claims_connect_error_test.go'
               - '!packages/daemon/internal/store/claims_test.go'
               - '!packages/daemon/internal/store/controller_test.go'
@@ -2546,6 +2554,12 @@ jobs:
               # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
               # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
+              # The generated API document, read at e2e/__tests__/stub-recordings.test.ts:36-39
+              # (the new URL at :37), which holds every committed recording's body to the shape
+              # that document declares. The document is generated from the Go route table, so a
+              # change to it is a change to a shape the recordings carry, and this job's test
+              # step is where that test runs.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
               # reads and parses with the app's own remark pipeline: a filter change that moves
@@ -3165,7 +3179,8 @@ jobs:
             # airlock package and compare it against the model's program, so a change to either
             # side runs the job. Both sides live under internal/broker/airlock, which one glob
             # names; the axiom check is a script of its own, which check k15 runs too; the Lean
-            # toolchain comes from the elan the job's action installs.
+            # toolchain comes from the elan the job's action installs, and that action reads the
+            # `elan` row of the tool manifest through the fetch helper every install goes through.
             airlock_lean:
               - *ci_router
               - '.github/workflows/ci-job-airlock-lean.yaml'
@@ -3173,6 +3188,8 @@ jobs:
               - 'packages/envoy/internal/broker/airlock/**'
               - 'packages/envoy/scripts/airlock-lean-axioms.sh'
               - '.github/actions/install-elan/**'
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
@@ -3235,9 +3252,10 @@ jobs:
               - 'packages/daemon/go.sum'
               - 'packages/envoy/daemonpermissions/*'
               # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
-              # workspace; the docker provider step reads pulumitest.DockerPluginVersion, under
-              # infra/internal. The plugin build's step is pinned whole in check-ci-filters.sh's
-              # table (an exact entry), so what it compiles is here, not the infra module.
+              # workspace; the live tests compile internal/pulumitest, which holds the version
+              # they pin the docker provider at, under infra/internal. The plugin build's step is
+              # pinned whole in check-ci-filters.sh's table (an exact entry), so what it compiles
+              # is here, not the infra module.
               - 'packages/envoy/infra/go.mod'
               - 'packages/envoy/infra/go.sum'
               - 'packages/envoy/infra/go.work'
@@ -3250,8 +3268,13 @@ jobs:
               - 'packages/envoy/infra/internal/**'
               - 'packages/envoy/infra/nats/*'
               - 'packages/envoy/infra/provider/*'
-              # The Pulumi CLI the live tests run, and the image pull before the build and tests.
+              # The Pulumi CLI the live tests run, the docker provider plugin the step before them
+              # downloads, and the image pull before the build and tests. Both of those installs
+              # read their row of the tool manifest through the fetch helper.
               - '.github/actions/install-pulumi/**'
+              - '.github/actions/install-docker-plugin/**'
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
               - '.github/actions/pull-test-images/**'
               # The download URL the schema step stamps into the plugin and asserts on.
               - '.github/scripts/repo-paths.sh'
@@ -3519,9 +3542,13 @@ jobs:
             # source every tool install reads when the first source does not serve the bytes:
             # the manifest that names both sources of each row, the fetch helper every install
             # goes through, the filler and the gate beside it, the rig and the fault proxy it
-            # drives, the four actions it installs through, and the two files a row's version
-            # is pinned in (.bun-version for the bun rows, the worker image's Dockerfile for
-            # mise and jj).
+            # drives, the eight actions it installs through, and the two files a row's version is
+            # pinned in that the job itself reads (.bun-version for the bun rows and the
+            # worker image's Dockerfile for mise, jj and uv).
+            # packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
+            # `const DockerPluginVersion` the gate holds the pulumi-docker row's version to,
+            # is not here and no step of either job reads it: a raise of that constant must
+            # move the row, and .github/ci-tools.yaml is in this list.
             # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
             # job drives the same action over the same manifest through the same helper, so a
             # change that selects one of them must select both, and one list cannot drift from
@@ -3540,6 +3567,10 @@ jobs:
               - '.github/actions/install-changie/**'
               - '.github/actions/install-jj/**'
               - '.github/actions/setup-bun/**'
+              - '.github/actions/install-elan/**'
+              - '.github/actions/install-uv/**'
+              - '.github/actions/install-pulumi/**'
+              - '.github/actions/install-docker-plugin/**'
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
               - *ci_router
@@ -3664,9 +3695,9 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The live proof of the second source every tool install of this repository now has: it faults
-  # the host the first source is on, installs all four tools through the source
-  # .github/ci-tools.yaml names for each, and then serves eight corrupted payloads and reads the
-  # refusal of every one of them.
+  # the host the first source is on, installs all eight tools through the source
+  # .github/ci-tools.yaml names for each, and then serves sixteen corrupted payloads and reads
+  # the refusal of every one of them.
   # It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
   # nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
   # work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873). This
@@ -3675,15 +3706,17 @@ jobs:
   # anyway.
   #
   # Once the fault is up, no step of this job needs a GitHub release host to answer.
-  # Every install that must succeed reads the second source its row names, the ghcr copy or npm,
-  # and the fault holds neither; the bytes the corrupted cases serve were staged before the
-  # fault; and the one case about a binary a third party installed seeds mise's install
-  # directory from that staged payload rather than downloading one inside the fault.
+  # Every install that must succeed reads a source the fault does not hold — the ghcr copy, npm,
+  # PyPI or get.pulumi.com — or, for the Pulumi CLI, whose primary is get.pulumi.com and whose
+  # second source is the release asset, the origin serving that release's own staged bytes; the
+  # bytes the corrupted cases serve were staged before the fault; and the one case about a
+  # binary a third party installed seeds mise's install directory from that staged payload
+  # rather than downloading one inside the fault.
   # That is what keeps ci-ok green during the very outage this job proves survivable: this job
   # is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
-  # Dockerfile and the four actions, so a step of it that waited on a release host would turn
-  # every pull request touching one of those files red on exactly the day the fallback is doing
-  # its work.
+  # Dockerfile, the manifest and the helper beside it, and the eight actions, so
+  # a step of it that waited on a release host would turn every pull request touching one of
+  # those files red on exactly the day the fallback is doing its work.
   # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
   # only callers.
   # It needs ci-images for order, since that job fills the copy this proof reads, and carries
@@ -3695,7 +3728,7 @@ jobs:
   #
   # WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
   # Everything a case is read on is driven here: the fault, the origin that stands in for all
-  # three sources, the corrupted payloads, and the removals each case makes before it.
+  # four sources, the corrupted payloads, and the removals each case makes before it.
   # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's second step pins,
   # restores a cached Bun into ~/.bun/bin/bun inside a step of its own, and the Actions cache it
   # restores from is on hosts this job's fault does not hold.
@@ -4040,9 +4073,10 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the
-  # three `-alone` projects a machine each, the two-process job and the merge job that joins
-  # their reports into one and posts this job's ci-ok report.
+  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
+  # `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
+  # lanes, the containerised visual review, and the merge job that joins the shard and alone
+  # reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run

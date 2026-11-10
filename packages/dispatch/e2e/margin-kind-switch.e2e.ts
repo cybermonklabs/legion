@@ -102,7 +102,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("switching an anchored composer from Comment to Ask retypes its mark and asks about the selected text", async ({
+// @pr: The live document: a composer switched from Comment to Ask has to retype its mark and ask about the text that was selected.
+test("switching an anchored composer from Comment to Ask retypes its mark and asks about the selected text @pr", async ({
   browser,
 }) => {
   await withReaders(

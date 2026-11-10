@@ -87,9 +87,9 @@ func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
 // again, counted as one re-send and published under the key of the row it copies, so a session that
 // did get the forward recognises the copy. Every report is queued, a late receipt from the claim's
 // own session too: a Go relaunch resumes the session id, so that report may come from the stopped
-// process. The first copy is due at once when the architect's agent has taken its role, whichever
-// session the forward went to, since that ready will not come again to release it; otherwise it
-// waits the first re-send delay.
+// process. The first copy is due at once when the architect's agent has said it is ready
+// (supervise.SaidReady), whichever session the forward went to, since that ready will not come
+// again to release it; otherwise it waits the first re-send delay.
 func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name, reason       string
@@ -104,8 +104,8 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 		{"a late receipt while the claim relaunches", "receipt_timeout", supervise.StateLaunching, "", "ses_stopped", noticeReholdDelays[0]},
 		{"a late receipt from the stopped session after the new one registered", "receipt_timeout", supervise.StateRegistered, "ses_new", "ses_stopped", noticeReholdDelays[0]},
 		{"a late receipt from the stopped session after the new one is ready", "receipt_timeout", supervise.StateReady, "ses_new", "ses_stopped", 0},
-		{"a late receipt from a resumed session before it takes its role", "receipt_timeout", supervise.StateRegistered, "ses_arch", "ses_arch", noticeReholdDelays[0]},
-		{"a late receipt from a resumed session that took its role inside the receipt window", "receipt_timeout", supervise.StateReady, "ses_arch", "ses_arch", 0},
+		{"a late receipt from a resumed session before it said ready", "receipt_timeout", supervise.StateRegistered, "ses_arch", "ses_arch", noticeReholdDelays[0]},
+		{"a late receipt from a resumed session that said ready inside the receipt window", "receipt_timeout", supervise.StateReady, "ses_arch", "ses_arch", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -412,7 +412,7 @@ func noticeRowID(t *testing.T, pool *pgxpool.Pool) int64 {
 // A listener that confirms a role message before it answers says when the architect's session
 // sent no receipt for a notice (504 receipt_timeout), as a session that stopped while its
 // registration lives does. The notice is queued again from the answer on the schedule a role-lane
-// exception gets — while the claim has not taken its role, each copy after the next of
+// exception gets — while the claim has not said it is ready, each copy after the next of
 // noticeReholdDelays, under the key of the row it copies — and the row that drew the answer
 // finishes. The answer to the third copy is logged once and queues nothing.
 func TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedule(t *testing.T) {
@@ -977,10 +977,10 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 
 // A claim can read live while its session hears nothing: a pane's NATS connection is reconnecting,
 // or the process died and the supervisor has not seen it yet. Every forward then comes back a late
-// receipt. Only the first copy goes at once, for a relaunch that took its role inside the receipt
-// window; the rest keep the re-send spacing, so the notice stays queued for the whole schedule, not
-// a few seconds, before the cap drops it. The run ticks every 5 seconds, so a copy due at once goes
-// on the next tick.
+// receipt. Only the first copy goes at once, for a relaunch that said it was ready inside the
+// receipt window; the rest keep the re-send spacing, so the notice stays queued for the whole
+// schedule, not a few seconds, before the cap drops it. The run ticks every 5 seconds, so a copy
+// due at once goes on the next tick.
 func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1072,9 +1072,9 @@ func TestALaterCopyToAnArchitectBackOnAnotherSessionIsDueAtOnce(t *testing.T) {
 	}
 }
 
-// A copy is due at once only while the architect's agent holds its role, and then only the first
-// copy, or a later one whose report names a session other than the one the claim is ready on. A
-// later copy that failed on the claim's own session, or whose report names no session, waits.
+// A copy is due at once only while the architect's agent has said it is ready, and then only the
+// first copy, or a later one whose report names a session other than the one the claim is ready
+// on. A later copy that failed on the claim's own session, or whose report names no session, waits.
 func TestWhenACopyIsDueAtOnce(t *testing.T) {
 	claimOn := func(state supervise.ClaimState) supervise.Claim {
 		return supervise.Claim{State: state, Session: "ses_arch"}
@@ -1088,7 +1088,7 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 	}{
 		{"an unsupervised claim", supervise.Claim{}, 0, "ses_arch", false},
 		{"a relaunching claim", claimOn(supervise.StateLaunching), 0, "ses_old", false},
-		{"a registered claim, before it takes its role", claimOn(supervise.StateRegistered), 0, "ses_arch", false},
+		{"a registered claim, before it says it is ready", claimOn(supervise.StateRegistered), 0, "ses_arch", false},
 		{"a suspended claim", claimOn(supervise.StateSuspended), 0, "ses_old", false},
 		{"the first copy, its own session", claimOn(supervise.StateReady), 0, "ses_arch", true},
 		{"the first copy, another session", claimOn(supervise.StateWorking), 0, "ses_old", true},

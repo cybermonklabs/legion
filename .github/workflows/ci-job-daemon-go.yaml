@@ -147,8 +147,9 @@ jobs:
       - uses: ./.github/actions/install-omp
 
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
-      # ships (ARG UV_VERSION, checked against ARG UV_SHA256), and refuses on GitHub Actions
-      # without one (.github/actions/install-uv).
+      # ships, and refuses on GitHub Actions without one (.github/actions/install-uv). The action
+      # takes that uv from the `uv` row of .github/ci-tools.yaml, which check-ci-tools.sh holds to
+      # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
       - uses: ./.github/actions/install-uv
 
       # The daemon's NATS tests start testnats.Image and, for its grant test, Envoy's HubImage

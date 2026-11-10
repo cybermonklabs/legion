@@ -298,6 +298,7 @@ on:
       - '!packages/daemon/internal/shimwire/**/*_test.go'
       - '!packages/daemon/internal/store/capabilities_test.go'
       - '!packages/daemon/internal/store/claim_issue_test.go'
+      - '!packages/daemon/internal/store/claim_retired_at_write_mark_test.go'
       - '!packages/daemon/internal/store/claims_connect_error_test.go'
       - '!packages/daemon/internal/store/claims_test.go'
       - '!packages/daemon/internal/store/controller_test.go'
