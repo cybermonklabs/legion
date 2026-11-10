@@ -159,7 +159,7 @@ test("a sleeping view at the stream's worst case comes back inside 1.2 seconds",
   }
 });
 
-// R7, k12's one timed claim: across three fresh loads of the Agents page of six hundred
+// R7, k12's one timed claim: across five fresh loads of the Agents page of six hundred
 // sessions, the median first paint is inside 100 milliseconds and the median longest task
 // inside 150. The spec measured that on its prototype - drawing every row cost 177 to 374 ms
 // with a longest task of up to 290, and the windowed list 23 to 40 ms with no long task - so
@@ -168,12 +168,22 @@ test("a sleeping view at the stream's worst case comes back inside 1.2 seconds",
 // since no requirement here changed what a cold boot costs: this pod takes about 140 ms to
 // start the page whether it lists ten sessions or six hundred.
 //
-// Three loads and a median, because one reading judges the machine rather than the page: the
-// same bytes have painted in 40 ms and in 212 ms on this pod, so a single reading says as much
-// about what else the machine was doing as about the page. Each of the three loads is a page
-// of its own, fresh from its own load, with one timed redraw and then closed - never a second
-// timed draw on a page that has already been timed - so a page warmed by an earlier timing
-// cannot pull the median under a bound a fresh one misses.
+// A median rather than one reading, because one reading judges the machine rather than the
+// page: the same bytes have painted in 40 ms and in 212 ms on this pod, so a single reading
+// says as much about what else the machine was doing as about the page. Five loads rather
+// than three, because a median of three is one slow load away from failing on this pod's
+// scheduling tail. At 547d0d72, whose page is byte for byte the page that read medians of 57,
+// 56 and 52 ms at 2b4b2ddf, seven medians of three read 53, 54, 106, 79, 67, 135 and 54 ms:
+// the 106 is of loads 106, 49 and 110 and the 135 of loads 77, 135 and 162, so each crossing
+// is one slow load carrying the median, and an eighth reading of 54 ms, of loads 132, 52 and
+// 54, has the same shape without crossing. Three loads of those twenty-one are over 100 ms
+// and two over 130, with the machine idle throughout at a load average of 0.00; across four
+// earlier heads the worst single load was 169 ms once and 103 ms once. The median of five is
+// the third of five, so no one slow load can carry it: two loads have to cross before the row
+// fails. Each of the five loads is a page of its own, fresh from its own load, with one timed
+// redraw and then closed - never a second timed draw on a page that has already been timed -
+// so a page warmed by an earlier timing cannot pull the median under a bound a fresh one
+// misses.
 //
 // The 150 ms is this pod's own gap between a windowed draw and an un-windowed one, measured on
 // 2026-11-09 with the machine idle. Windowed, three runs of three loads: the median longest
@@ -195,7 +205,7 @@ test("a sleeping view at the stream's worst case comes back inside 1.2 seconds",
 // puts the whole draw inside the driver's one task, which is no task of the page's and is
 // never reported as a long one. Every load's two figures are kept on the result, with both
 // medians, whether or not the row passes.
-// SLOW(>=2s): six hundred sessions seeded, then three pages that each list them all before the
+// SLOW(>=2s): six hundred sessions seeded, then five pages that each list them all before the
 // one draw each of them is timed for.
 test("the Agents page paints six hundred sessions with a median paint inside 100 ms and a median longest task under 150", async ({
   browser,
@@ -279,37 +289,43 @@ test("the Agents page paints six hundred sessions with a median paint inside 100
         test.info().annotations.push(
           {
             description: `${Math.round(measured.paintMs)} ms, ${measured.drawn} rows drawn of 600`,
-            type: `600 sessions painted, load ${load} of 3`,
+            type: `600 sessions painted, load ${load} of 5`,
           },
           {
             description: `${Math.round(longest)} ms`,
-            type: `longest task while they painted, load ${load} of 3`,
+            type: `longest task while they painted, load ${load} of 5`,
           }
         );
         // The draw was of the whole list: every session is still counted, and the window drew
         // the rows the screen holds rather than a handful left over from the fold.
         await expect(page.getByTestId("agents-group-count-idle")).toHaveText("(600)");
-        expect(measured.drawn, `load ${load} of 3 drew ${measured.drawn} rows`).toBeGreaterThan(5);
+        expect(measured.drawn, `load ${load} of 5 drew ${measured.drawn} rows`).toBeGreaterThan(5);
         return { longest, paintMs: measured.paintMs };
       } finally {
         await page.close();
       }
     };
 
-    const loads = [await paintOnce(1), await paintOnce(2), await paintOnce(3)];
+    const loads = [
+      await paintOnce(1),
+      await paintOnce(2),
+      await paintOnce(3),
+      await paintOnce(4),
+      await paintOnce(5),
+    ];
     const readings = loads.map((load) => `${Math.round(load.paintMs)} ms`).join(", ");
-    const median = [...loads].sort((first, second) => first.paintMs - second.paintMs)[1];
+    const median = [...loads].sort((first, second) => first.paintMs - second.paintMs)[2];
     const held = loads.map((load) => `${Math.round(load.longest)} ms`).join(", ");
-    const heldMedian = [...loads].sort((first, second) => first.longest - second.longest)[1]
+    const heldMedian = [...loads].sort((first, second) => first.longest - second.longest)[2]
       .longest;
     test.info().annotations.push(
       {
         description: `${Math.round(median.paintMs)} ms of ${readings}`,
-        type: "median of three fresh loads",
+        type: "median of five fresh loads",
       },
       {
         description: `${Math.round(heldMedian)} ms of ${held}`,
-        type: "median longest task of three fresh loads",
+        type: "median longest task of five fresh loads",
       }
     );
 
@@ -318,13 +334,13 @@ test("the Agents page paints six hundred sessions with a median paint inside 100
     expect
       .soft(
         heldMedian,
-        `the longest task while they painted was ${held} over three fresh loads, a median of ` +
+        `the longest task while they painted was ${held} over five fresh loads, a median of ` +
           `${Math.round(heldMedian)} ms`
       )
       .toBeLessThan(150);
     expect(
       median.paintMs,
-      `six hundred sessions painted in ${readings} over three fresh loads, a median of ` +
+      `six hundred sessions painted in ${readings} over five fresh loads, a median of ` +
         `${Math.round(median.paintMs)} ms`
     ).toBeLessThan(100);
   } finally {

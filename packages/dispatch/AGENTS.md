@@ -323,7 +323,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   selection and broadcast composer) and `e2e/agents-window.e2e.ts` (six hundred sessions, the
   rows the screen holds and twelve either side, a scrollbar that measures the whole list, a
   draft that survives a scroll out of the window and back, and `j` reaching a session the
-  window has not drawn). The one timed claim of k12 - that across three fresh loads the median
+  window has not drawn). The one timed claim of k12 - that across five fresh loads the median
   paint of those six hundred is under 100 ms and the median longest task under 150 ms, a bound measured
   on this hardware to sit between the windowed page and the un-windowed one - is
   `e2e/agent-workspace-timing.e2e.ts`, in `chromium-alone` (D14).
@@ -2621,7 +2621,7 @@ wall-clock time, with the machine to themselves.
 draws without holding the main thread for a second, both through `e2e/main-thread-hold.ts`) and
 `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view at the stream's worst case comes back
 inside 1.2 seconds, and the Agents page paints six hundred sessions with a median first paint
-under 100 milliseconds over three fresh loads and a median longest task under 150, INFRA-812's D14,
+under 100 milliseconds over five fresh loads and a median longest task under 150, INFRA-812's D14,
 whose untimed halves stay in `chromium` and `iphone` in
 `e2e/agent-view-cost.e2e.ts` and `e2e/agents-window.e2e.ts`).
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines

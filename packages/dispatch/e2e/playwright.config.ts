@@ -256,7 +256,7 @@ const multiprocessProjects = [
 // for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
 // `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view at
 // the stream's worst case comes back inside 1.2 seconds, and the Agents page paints six hundred
-// sessions with a median first paint under 100 ms over three fresh loads and a median longest
+// sessions with a median first paint under 100 ms over five fresh loads and a median longest
 // task under 150
 // (`agent-workspace-timing.e2e.ts`, INFRA-812's D14). Four lanes on one machine leave such a
 // claim unmeasurable - the wall time of a draw holds what the other three lanes took as surely

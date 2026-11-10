@@ -471,7 +471,7 @@ themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-dire
 (a card draws without holding the main thread for a second)
 and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view at the stream's worst case comes
 back inside 1.2 seconds, and the Agents page paints six hundred sessions with a median first
-paint under 100 milliseconds over three fresh loads and a median longest task under 150), and
+paint under 100 milliseconds over five fresh loads and a median longest task under 150), and
 `firefox-alone` and
 `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
