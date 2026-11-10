@@ -263,3 +263,134 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
   }
   return named;
 }
+
+/** The projects whose rows are read from the wall clock: that a card's draw holds the main thread
+ *  for less than a second, measured through `e2e/main-thread-hold.ts`. They run one row at a time
+ *  so that a reading is the page's own work rather than what three other lanes took. They are
+ *  named here rather than in the config for the reason `stubProjectNames` above gives: the config
+ *  selects its own projects with this list, a bun test holds each of them to the fields that keep
+ *  them out of the default selection and at one row at a time, and the three modules that account
+ *  for the whole suite list these projects beside the default ones, since a listing that names no
+ *  project holds no row of theirs once they are out of the default selection. A fourth wall-clock
+ *  project added to the config and missed here is a project no accounting sees. The order is the
+ *  config's own. */
+export const clockProjectNames: readonly string[] = [
+  "chromium-alone",
+  "firefox-alone",
+  "webkit-alone",
+];
+
+/** The two specs those projects run, each by the part of its file name that is its own:
+ *  `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A wall-clock file is spelled once here
+ *  and read twice - by the pattern below, which is how the projects select their files, and by
+ *  `clockFileOnCommandLine`, which is how a command that names one of those files with no project
+ *  is refused - so a third such file is one edit of this list. */
+export const clockSpecNames: readonly string[] = ["heavy-bodies", "nested-directive"];
+
+/** The files the wall-clock projects select, which `e2e/playwright.config.ts`'s `clockSpecs` is:
+ *  built from `clockSpecNames` rather than written a second time, so the two cannot drift apart.
+ *  The `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
+ *  modules those specs import and no project may select them as test files. */
+export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
+
+/** The options of `playwright test` that take the token after them whatever that token is, which
+ *  is every option the pinned Playwright declares with a required value. The table is Playwright's
+ *  own: `node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/program.js`, the
+ *  `testOptions` array at line 188, where a required value is written `<file>` and an optional one
+ *  `[mode]`. `addTestCommand` at line 37 builds the test command's options from that array and
+ *  adds none of its own, so `-c, --config <file>` is the array's entry at line 192; the identical
+ *  declaration at line 74 is `clear-cache`'s. Both spellings of an option stand here, the long one
+ *  and, where the table gives one, the short, because `-g value` skips its value as `--grep value`
+ *  does. `e2e/__tests__/clock-selection.test.ts` reads that table again and fails when this set
+ *  has gone stale, so a raise of Playwright is read here rather than guessed at.
+ *
+ *  An option declared with an optional value takes nothing here, and that is a decision rather
+ *  than a reading of commander. The two halves measured: a dash token is never taken, which
+ *  INFRA-1410's implementer measured at this version - `--debug --ui`, `-u --ui` and
+ *  `--shuffle --ui` each entered UI mode, while `--grep --ui` and `-g --ui` listed rows and exited
+ *  0, so a required value took `--ui` and an optional one did not - and a token that is not a dash
+ *  is taken, measured in this workspace at Playwright 1.64.1: `playwright test --config
+ *  e2e/playwright.config.ts --list --shuffle e2e/claim.e2e.ts` lists the whole suite, 1,384 tests
+ *  in 179 files, the file name having become the seed, and the same command with `--debug` exits
+ *  with "option '--debug [mode]' argument 'e2e/claim.e2e.ts' is invalid. Allowed choices are
+ *  inspector, cli." Reading such a token as the file the person named is the better answer all the
+ *  same: every command the two readings differ on is one Playwright refuses by its choices, or
+ *  reads as a seed or as a git ref - `--only-changed e2e/claim.e2e.ts` lists 0 tests in 0 files
+ *  where that file alone lists 1 - and never one that runs the file the person named. So the
+ *  answer for those is the command that does run it.
+ *
+ *  The `--name=value` and `-j4` spellings carry their own value and stand nowhere here: they begin
+ *  with `-`, which the reader below passes over. */
+const optionsTakingTheNextToken: ReadonlySet<string> = new Set([
+  "--add-reporter",
+  "--browser",
+  "-c",
+  "--config",
+  "--global-timeout",
+  "-g",
+  "--grep",
+  "-G",
+  "--grep-invert",
+  "--last-failed-file",
+  "--max-failures",
+  "--output",
+  "--project",
+  "--repeat-each",
+  "--reporter",
+  "--retries",
+  "--run-agents",
+  "--shard",
+  "--test-list",
+  "--test-list-invert",
+  "--timeout",
+  "--trace",
+  "--tsconfig",
+  "--ui-host",
+  "--ui-port",
+  "--update-source-method",
+  "-j",
+  "--workers",
+]);
+
+/** The wall-clock spec file a Playwright command names as a positional filter while naming no
+ *  project, or `undefined` for every other command line. The configuration throws on an answer:
+ *  the three wall-clock projects are out of the default selection, so such a command selects no
+ *  row at all and Playwright answers "No tests found", which names no cure.
+ *
+ *  Reading begins after the `test` command word, and a command line with no such word answers
+ *  `undefined`. A worker re-evaluates this configuration with Playwright's own argv rather than
+ *  the command line (`e2e/stub/selection.ts:43-47`), and `bun test` and the tools that import this
+ *  module carry an argv of their own, so none of them can meet the refusal. Nothing after a `--`
+ *  is read. An option of `optionsTakingTheNextToken` takes the token after it; every other token
+ *  beginning with `-` is a flag, an optional-value option or a spelling that carries its own
+ *  value, and is passed over. What is left is a positional filter, which Playwright matches as a
+ *  regular expression against absolute file paths, so the name of a wall-clock file anywhere in
+ *  one selects that file.
+ *
+ *  The project question is `projectsOnCommandLine`'s, so `--project` is read once in this module;
+ *  the scan meets it as an option that takes a token, which is all it needs of a flag whose
+ *  values, when it has any, have already answered this function above. A reader that took every
+ *  token not beginning with `-` for a positional filter would refuse commands Playwright runs,
+ *  such as `--grep heavy-bodies` and `--reporter list e2e/claim.e2e.ts`, which is the one failure
+ *  mode that matters here. */
+export function clockFileOnCommandLine(argv: readonly string[]): string | undefined {
+  const command = argv.indexOf("test");
+  if (command === -1) return undefined;
+  if (projectsOnCommandLine(argv).length > 0) return undefined;
+  const separator = argv.indexOf("--", command + 1);
+  const scanned = argv.slice(command + 1, separator === -1 ? undefined : separator);
+  let expectingValue = false;
+  for (const word of scanned) {
+    if (expectingValue) {
+      expectingValue = false;
+      continue;
+    }
+    if (optionsTakingTheNextToken.has(word)) {
+      expectingValue = true;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    if (clockSpecNames.some((name) => word.includes(name))) return word;
+  }
+  return undefined;
+}
