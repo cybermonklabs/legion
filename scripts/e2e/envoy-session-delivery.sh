@@ -42,14 +42,16 @@
 #      events it committed before the kill are published after the restart (the stored times of
 #      the window's comments are printed beside the restart time)
 #   f  none (the control)
-#   g  the Claude Code session replaced by one whose id has never registered, with one envelope
-#      published on that id's own agent subject, and stored by the stream, before it starts: the
-#      window of a session whose first registration follows a message already stored for it
-#   h  the Oh My Pi session stopped as a clean shutdown stops it — its stdin closed, no signal —
+#   g  the Oh My Pi session stopped as a clean shutdown stops it — its stdin closed, no signal —
 #      so its plugin deregisters and the listener deletes its session consumer, and then resumed
 #      under the same id (omp --resume <session file>); the Claude Code session stays up
+#   h  the Claude Code session replaced by one whose id has never registered, with one envelope
+#      published on that id's own agent subject, and stored by the stream, before it starts: the
+#      window of a session whose first registration follows a message already stored for it. It
+#      is last, because the replacement follows no issue or team topic: the setup prompt that
+#      made the first Claude Code session follow them ran before this one existed
 #
-# Events of windows a to f, each carrying a unique marker in its text:
+# Events of windows a to g, each carrying a unique marker in its text:
 #   agent  POST /v1/messages/send to each session; a Dispatch message to each session (an aside
 #          on a second issue the sessions do not follow, which Dispatch sends through its listener)
 #   issue  two Dispatch comments on the followed issue
@@ -1323,7 +1325,9 @@ stop_session_clean() {
 #   stop_landed SESSION    the listener has acted on the DELETE the session's plugin sent as it
 #                          ended — the registration is gone and so is the session's consumer
 #   consumer_held SESSION  the stream carries the session's consumer again
-#   no_session_consumer    the stream carries no session consumer at all
+#   no_session_consumer    the stream carries a consumer for neither session this run is running;
+#                          one of a session an earlier window SIGKILLed is left out, since nothing
+#                          deregistered it and the sweep takes it an hour on
 stop_landed() {
   local names
   if registered shared "$1"; then return 1; fi
@@ -1336,13 +1340,15 @@ consumer_held() {
   [[ " $names " == *" s-$1 "* ]]
 }
 no_session_consumer() {
-  local names
+  local names label
   stream_consumers "both sessions stopped" names
-  [[ " $names " != *" s-"* ]]
+  for label in pi cc; do
+    [[ " $names " != *" s-${sid[$label]} "* ]] || return 1
+  done
 }
 
 declare -A disruption_name=([a]=session-restart [b]=nats-cut [c]=listener-shared [d]=listener-dispatch
-  [e]=dispatch-kill [f]=none [g]=brand-new-session [h]=pi-clean-stop)
+  [e]=dispatch-kill [f]=none [g]=pi-clean-stop [h]=brand-new-session)
 run_window() {
   local d=$1 via=dispatch
   begin "window $d (${disruption_name[$d]})"
@@ -1423,6 +1429,40 @@ run_window() {
     publish_rest f "$via"
     ;;
   g)
+    # The clean stop dispatch://INFRA-2365 is about: Oh My Pi ends on its stdin's end of file,
+    # pi-envoy deregisters the session, and the listener removes the registration and deletes the
+    # session's consumer with it. The Claude Code session stays up throughout, so every event of
+    # this window has one session that is there to take it live and one that is not. The resumed
+    # session is given a consumer again, at the floor its delete recorded, so what the stream
+    # stored while it was down reaches it once.
+    local names="" was="${sid[pi]}"
+    stream_consumers "window g, before the clean stop" names
+    note "window g: the stream's consumers before the clean stop [${names}]"
+    [[ " $names " == *" s-${was} "* ]] ||
+      fail "the stream carries no consumer s-${was} for the Oh My Pi session before its clean stop: [${names}]"
+    stop_session_clean pi
+    wait_until 60 stop_landed "$was" || true
+    stream_consumers "window g, after the clean stop" names
+    if registered shared "$was"; then
+      note "window g: omp exited on its stdin's end of file, and ${was} is registered still; the stream's consumers [${names}]"
+      fail "the clean stop left the Oh My Pi session registered: $(session_view pi)"
+    fi
+    note "window g: omp exited on its stdin's end of file with no signal, and the listener acted on its plugin's DELETE — ${was} is registered no longer; the stream's consumers [${names}]"
+    [[ " $names " != *" s-${was} "* ]] ||
+      fail "the clean stop left the consumer s-${was} on the stream: [${names}]"
+    publish_dispatch g
+    publish_rest g "$via"
+    sleep 3
+    start_pi "${transcript[pi]}"
+    [[ "${sid[pi]}" == "$was" ]] ||
+      fail "the resumed Oh My Pi session is ${sid[pi]}, not the ${was} it was stopped as"
+    wait_until 120 consumer_held "$was" || true
+    stream_consumers "window g, after the resume" names
+    note "window g: ${was} resumed from its session file; the stream's consumers [${names}]"
+    [[ " $names " == *" s-${was} "* ]] ||
+      fail "the resumed Oh My Pi session has no consumer s-${was} on the stream: [${names}]"
+    ;;
+  h)
     # The brand-new session: one whose first registration follows a message already stored for it.
     # The Claude Code session is replaced by one whose id has never registered, and the window's
     # one envelope is published on that id's own agent subject before it starts; the stream
@@ -1435,18 +1475,22 @@ run_window() {
     # events) rather than a POST /v1/messages/send because the listener refuses a send to a
     # session it does not know, and that nothing knew the session yet is the whole point of the
     # case. Its subject is the session's own agent subject, which publish_rest never publishes on.
+    #
+    # It is the last window: the replacement session follows no issue or team topic, since the
+    # setup prompt that made the first one follow them ran before it existed, so a window after
+    # this one would publish to a session that cannot take what it sends.
     local text answer cc_file
     kill_label cc KILL
     close_fd cc
     sid[cc]=$(new_uuid)
     note "the Claude Code session was SIGKILLed; its replacement runs under ${sid[cc]}, an id that has never registered"
     next_marker
-    text=$(text_for g agent "a core publish on notifications.agent.${sid[cc]}")
+    text=$(text_for h agent "a core publish on notifications.agent.${sid[cc]}")
     answer=$(core_publish "notifications.agent.${sid[cc]}" "$text")
-    record g agent core-publish cc 1 "$answer"
+    record h agent core-publish cc 1 "$answer"
     note "one envelope stored on notifications.agent.${sid[cc]} before any session of that id ran: ${answer}"
     start_cc chosen
-    await cc "$(err_log cc)" 300 registered "${sid[cc]}"
+    await cc "$(err_log cc)" 300 registered shared "${sid[cc]}"
     note "cc registered for the first time under ${sid[cc]}: $(session_view cc)"
     # The transcript appears with the session's first entry, so a session that is given nothing
     # has none: the window is judged by the count in the table, never by a missing file here.
@@ -1457,40 +1501,6 @@ run_window() {
     else
       note "Claude Code has written no transcript for ${sid[cc]} after ${settle_s}s; the table counts what it holds at the end"
     fi
-    ;;
-  h)
-    # The clean stop dispatch://INFRA-2365 is about: Oh My Pi ends on its stdin's end of file,
-    # pi-envoy deregisters the session, and the listener removes the registration and deletes the
-    # session's consumer with it. The Claude Code session stays up throughout, so every event of
-    # this window has one session that is there to take it live and one that is not. The resumed
-    # session is given a consumer again, at the floor its delete recorded, so what the stream
-    # stored while it was down reaches it once.
-    local names="" was="${sid[pi]}"
-    stream_consumers "window h, before the clean stop" names
-    note "window h: the stream's consumers before the clean stop [${names}]"
-    [[ " $names " == *" s-${was} "* ]] ||
-      fail "the stream carries no consumer s-${was} for the Oh My Pi session before its clean stop: [${names}]"
-    stop_session_clean pi
-    wait_until 60 stop_landed "$was" || true
-    stream_consumers "window h, after the clean stop" names
-    if registered shared "$was"; then
-      note "window h: omp exited on its stdin's end of file, and ${was} is registered still; the stream's consumers [${names}]"
-      fail "the clean stop left the Oh My Pi session registered: $(session_view pi)"
-    fi
-    note "window h: omp exited on its stdin's end of file with no signal, and the listener acted on its plugin's DELETE — ${was} is registered no longer; the stream's consumers [${names}]"
-    [[ " $names " != *" s-${was} "* ]] ||
-      fail "the clean stop left the consumer s-${was} on the stream: [${names}]"
-    publish_dispatch h
-    publish_rest h "$via"
-    sleep 3
-    start_pi "${transcript[pi]}"
-    [[ "${sid[pi]}" == "$was" ]] ||
-      fail "the resumed Oh My Pi session is ${sid[pi]}, not the ${was} it was stopped as"
-    wait_until 120 consumer_held "$was" || true
-    stream_consumers "window h, after the resume" names
-    note "window h: ${was} resumed from its session file; the stream's consumers [${names}]"
-    [[ " $names " == *" s-${was} "* ]] ||
-      fail "the resumed Oh My Pi session has no consumer s-${was} on the stream: [${names}]"
     ;;
   esac
   settle "$d"
@@ -1662,20 +1672,26 @@ fi
 # ---- the sessions stop ------------------------------------------------------------------------
 # The table is printed and judged, so nothing more is published and nothing more is counted. Both
 # sessions are stopped as a clean shutdown stops them, each plugin deregisters, and the listener
-# deletes the consumer it answered each registration with (INFRA-2365): the stream must then carry
-# no session consumer at all, so a hub's consumer cap is spent on no session that ended. The
-# negative control above returns before this: a tree from before session consumers were deleted
-# leaves them behind by construction, and that is what --expect-lost went to measure.
+# deletes the consumer it answered each registration with (dispatch://INFRA-2365): the stream must
+# then carry a consumer for neither of them, so a hub's consumer cap is spent on no session that
+# ended. The judgement names those two session ids rather than every `s-` consumer on the stream:
+# a window that SIGKILLs a session (a, b, g) leaves one that deregistered nothing, and such a
+# consumer goes with the sweep's first pass after the session's record leaves the bucket, an hour
+# past this run. The negative control above returns before this: a tree from before session
+# consumers were deleted leaves them behind by construction, and that is what --expect-lost went
+# to measure.
 begin "the sessions stop"
 stop_session_clean pi
 stop_session_clean cc
-note "both sessions stopped on their stdin's end of file, with no signal; waiting for the stream to carry no session consumer"
+note "both sessions stopped on their stdin's end of file, with no signal; waiting for the stream to carry no consumer of either"
 wait_until 120 no_session_consumer || true
 consumers_at_end=""
 stream_consumers "both sessions have stopped" consumers_at_end
 note "the stream's consumers once both sessions had stopped cleanly: [${consumers_at_end}]"
-[[ " $consumers_at_end " != *" s-"* ]] ||
-  fail "a session consumer is on the stream after both sessions stopped cleanly: [${consumers_at_end}]"
+for label in pi cc; do
+  [[ " $consumers_at_end " != *" s-${sid[$label]} "* ]] ||
+    fail "the consumer of $label (s-${sid[$label]}) is on the stream after it stopped cleanly: [${consumers_at_end}]"
+done
 if ((bad == 0 && order_ok == 1)); then
   printf 'ENVOY SESSION DELIVERY: PASS (every event once, the issue in order)\n'
   exit 0
