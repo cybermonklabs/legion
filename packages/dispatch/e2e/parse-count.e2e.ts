@@ -18,6 +18,7 @@ import {
   createBroadcast,
   createComment,
   createIssue,
+  createIssueArtifact,
   createMessage,
   createProject,
   createProjectDocument,
@@ -140,6 +141,14 @@ async function seedStoredTexts(): Promise<Seeded> {
     { as: "agent" }
   );
 
+  // The issue's decisions.md, which the Decisions tab draws block by block: its one decision
+  // holds a paragraph of its own so the tab has a stored text to draw, and it links no spec
+  // block, so the issue page above draws no margin card for it.
+  await createIssueArtifact(issue.key, {
+    content: "## Store the notices\n\nA **decided** thing.\n",
+    name: "decisions.md",
+  });
+
   return {
     documentSlug: document.artifact.slug,
     issueKey: issue.key,
@@ -171,6 +180,16 @@ function surfaces(seeded: Seeded): Surface[] {
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}`);
         await expect(bold(page, "spec")).toBeVisible();
+      },
+    },
+    {
+      name: "the decisions panel",
+      show: async (page) => {
+        await page.goto(`/issues/${seeded.issueKey}/decisions`);
+        // The panel lays a decision out block by block, so what it draws is the decision's own
+        // tree cut into its top-level blocks: a page that split the markdown instead would
+        // parse once per block, and the counter would see every one of them.
+        await expect(bold(page, "decided")).toBeVisible();
       },
     },
     {
@@ -317,9 +336,9 @@ test("no page that draws stored text parses markdown in either browser engine", 
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one engine proves what the pages parse");
-  // Thirteen pages, each loaded in a page of its own, on a two-core box: the default deadline
+  // Fourteen pages, each loaded in a page of its own, on a two-core box: the default deadline
   // is one page's.
-  test.setTimeout(290_000);
+  test.setTimeout(310_000);
   const seeded = await seedStoredTexts();
   const alice = await asUser(browser, "alice");
   await countParses(alice);
@@ -327,7 +346,7 @@ test("no page that draws stored text parses markdown in either browser engine", 
     const pages = surfaces(seeded);
     const counted = [];
     for (const surface of pages) counted.push(await parsesOf(alice, surface));
-    // One comparison over all thirteen, so a page that parses is named beside the twelve that
+    // One comparison over all fourteen, so a page that parses is named beside the thirteen that
     // do not rather than stopping the walk at the first.
     expect(counted).toEqual(
       pages.map((surface) => ({ display: 0, editor: 0, surface: surface.name, workerRequests: 0 }))

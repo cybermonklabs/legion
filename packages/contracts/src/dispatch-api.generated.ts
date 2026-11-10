@@ -3855,6 +3855,12 @@ export interface components {
       replaced: boolean;
       text: string;
       text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       unsure: boolean;
       waiting_review: boolean;
     };
@@ -4842,6 +4848,9 @@ export interface components {
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       components: components["schemas"]["IssueComponents"];
+      /** Format: date-time */
+      created_at: string;
+      created_by: components["schemas"]["Actor"] | null;
       key: string;
       labels: string[] | null;
       last_seq: number;

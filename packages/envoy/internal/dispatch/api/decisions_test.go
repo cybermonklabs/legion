@@ -207,6 +207,11 @@ func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
 	if got := specVersionCount(t, fixture.database, fixture.issue.PrimaryArtifactID); got != specVersions {
 		t.Fatalf("the spec has %d versions, want %d: writing decisions.md writes the spec none", got, specVersions)
 	}
+	// The view answers each decision's text with the reading Go made of it, so the panel that
+	// lays a decision out block by block takes those blocks from this tree rather than splitting
+	// the markdown in the browser.
+	requireDisplayTree(t, fixture.handler, "/api/v1/issues/"+fixture.issue.Key+"/decisions",
+		"decisions.0.text", "decisions.0.text_tree")
 }
 
 // A link added to an existing decision is not out of date; a version that changes the decision's

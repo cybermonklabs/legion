@@ -120,7 +120,7 @@ export function useInboxSelection({
   const candidateIds = candidates.map((row) => rowId(row)).join(" ");
   // The rows the reader has marked, by `rowId` - asks and threads alike: `x` and the row's own
   // checkbox are the two ways in, and the pruning above is the shared hook's own
-  // (`hooks/useMarkedKeys.ts`, which a project's issue list marks its rows with too). A mark
+  // (`hooks/useMarkedKeys.ts`; a project's issue table marks its rows through TanStack's own `rowSelection` instead). A mark
   // whose row this view does not list, or whose band is folded shut, drops out of `selected`
   // below, so the bar never counts - and `h` never writes - a row that is not on the page. The
   // mark itself outlives both: open the band, or switch back, and it is still made.

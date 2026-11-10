@@ -1,9 +1,10 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type {
@@ -14,6 +15,7 @@ import type {
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionsPanel } from "./DecisionsPanel";
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -46,68 +48,78 @@ function decision(fields: Partial<Decision> & Pick<Decision, "block_id" | "headi
     text_sha256: `sum-${fields.block_id}`,
     unsure: false,
     waiting_review: false,
+    // The panel draws the reading Go made of the decision's text and splits nothing itself, so
+    // a decision a test invents carries the reading the page's own engine makes of that text
+    // (`__tests__/display-trees`). `warmMarkdownRenderer` must have resolved first, which is
+    // why every view below is built inside its test rather than beside it.
+    text_tree: displayTree(fields.text),
     ...fields,
   } as Decision;
 }
 
-const table = decision({
-  block_id: "store",
-  heading: "Store notices in a table",
-  links: [
-    {
-      created_at: "2026-11-01T00:00:00Z",
-      created_version: 1,
-      from_block: "store-why",
-      stale: false,
-      to: graphNode({
-        block_id: "p1",
-        id: "CORE-1/spec#p1",
-        kind: "block",
-        text: "Notices are stored.",
-      }),
-    },
-    {
-      created_at: "2026-11-01T00:00:00Z",
-      created_version: 1,
-      from_block: "store-why",
-      stale: true,
-      to: graphNode({
-        block_id: "p 2",
-        id: "CORE-1/spec#p 2",
-        kind: "block",
-        text: "Old rows expire.",
-      }),
-    },
-  ],
-  text: "## Store notices in a table\n\nA table keeps them queryable.\n\nUnsure: the index may be slow.",
-  unsure: true,
-  waiting_review: true,
-});
-const named = decision({
-  asks: [askId],
-  block_id: "name",
-  heading: "Name them notices",
-  kind: "person",
-  text: "## Name them notices\n\nThe person chose the name.",
-});
-const file = decision({
-  block_id: "file",
-  heading: "Keep them in a file",
-  replaced: true,
-  text: "### Keep them in a file\n\nA file was simpler.",
-});
+function issueView(): IssueDecisions {
+  const table = decision({
+    block_id: "store",
+    heading: "Store notices in a table",
+    links: [
+      {
+        created_at: "2026-11-01T00:00:00Z",
+        created_version: 1,
+        from_block: "store-why",
+        stale: false,
+        to: graphNode({
+          block_id: "p1",
+          id: "CORE-1/spec#p1",
+          kind: "block",
+          text: "Notices are stored.",
+        }),
+      },
+      {
+        created_at: "2026-11-01T00:00:00Z",
+        created_version: 1,
+        from_block: "store-why",
+        stale: true,
+        to: graphNode({
+          block_id: "p 2",
+          id: "CORE-1/spec#p 2",
+          kind: "block",
+          text: "Old rows expire.",
+        }),
+      },
+    ],
+    text: "## Store notices in a table\n\nA table keeps them queryable.\n\nUnsure: the index may be slow.",
+    unsure: true,
+    waiting_review: true,
+  });
+  const named = decision({
+    asks: [askId],
+    block_id: "name",
+    heading: "Name them notices",
+    kind: "person",
+    text: "## Name them notices\n\nThe person chose the name.",
+  });
+  const file = decision({
+    block_id: "file",
+    heading: "Keep them in a file",
+    replaced: true,
+    text: "### Keep them in a file\n\nA file was simpler.",
+  });
+  return {
+    decisions: [table, named, file],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [
+      {
+        block_id: "q1",
+        id: questionId,
+        question: "Which index should the table carry?",
+      } as unknown as IssueAskRow,
+    ],
+  };
+}
 
-const view: IssueDecisions = {
-  decisions: [table, named, file],
-  document: "dispatch://CORE-1/artifact/decisions-md",
-  open_questions: [
-    {
-      block_id: "q1",
-      id: questionId,
-      question: "Which index should the table carry?",
-    } as unknown as IssueAskRow,
-  ],
-};
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 afterEach(cleanup);
 
@@ -128,7 +140,7 @@ function list(name: string): HTMLElement {
 }
 
 test("the panel sorts the view into its four lists, in order", async () => {
-  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   try {
     renderPanel();
     await screen.findByRole("region", { name: "Open questions" });
@@ -149,14 +161,12 @@ test("the panel sorts the view into its four lists, in order", async () => {
     expect(within(waiting).getByText("Store notices in a table")).toBeDefined();
     expect(within(waiting).getByRole("button", { name: "Keep" })).toBeDefined();
     expect(within(waiting).getByRole("button", { name: "Change" })).toBeDefined();
-    // The paragraph's markdown renders after the commit that mounts it, and the first body of
-    // the run waits for the block schema and the headless engine to load.
-    await waitFor(
-      () =>
-        expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
-          "the index may be slow."
-        ),
-      { timeout: 10_000 }
+    // The accent is on the block the server read the doubt in - one of the decision tree's own
+    // top-level blocks - which is drawn in the commit that mounts it.
+    await waitFor(() =>
+      expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
+        "the index may be slow."
+      )
     );
     // Each link opens the spec at the block it shaped, its id written as `encodeBlockId` writes it.
     const shaped = within(waiting)
@@ -180,7 +190,7 @@ test("the panel sorts the view into its four lists, in order", async () => {
 
 test("Keep records the decision and moves it from Waiting for your review to Your decisions", async () => {
   const user = userEvent.setup();
-  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
     artifact_id: documentId,
     block_id: "store",
@@ -209,7 +219,7 @@ test("Keep records the decision and moves it from Waiting for your review to You
 
 test("Change opens the comment composer on decisions.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
   const user = userEvent.setup();
-  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
   try {
     renderPanel();

@@ -15842,6 +15842,19 @@
           "text_sha256": {
             "type": "string"
           },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "unsure": {
             "type": "boolean"
           },
@@ -20368,6 +20381,20 @@
           "components": {
             "$ref": "#/components/schemas/IssueComponents"
           },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "key": {
             "type": "string"
           },
@@ -20472,6 +20499,8 @@
           "route_status",
           "route_holder",
           "route_status_reason",
+          "created_by",
+          "created_at",
           "updated_at",
           "last_seq",
           "primary_artifact_id",

@@ -7,6 +7,7 @@ import type {
   Artifact,
   Decision,
   DecisionLink,
+  DisplayTree,
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
@@ -31,14 +32,41 @@ import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../re
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
-/** The paragraphs of a decision's markdown below its heading, each marked unsure or not. A
- *  paragraph that starts `Unsure:` is the one the server reads as the decision's doubt. */
-function decisionParagraphs(text: string): { markdown: string; unsure: boolean }[] {
-  return text
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph !== "" && !paragraph.startsWith("#"))
-    .map((markdown) => ({ markdown, unsure: markdown.startsWith("Unsure:") }));
+/** One block of a decision's text, as the server's reading of it holds one: the whole tree with
+ *  that block alone in it, which is what a body draws, and the block's own words, which say
+ *  whether it is the decision's doubt and which the Change composer quotes. */
+interface DecisionBlock {
+  readonly tree: DisplayTree;
+  readonly unsure: boolean;
+  readonly words: string;
+}
+
+/** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
+ *  against, since a quote names the document's text and never its markdown. */
+function wordsOf(node: DisplayTree): string {
+  if (typeof node.text === "string") {
+    return node.text;
+  }
+  const content = node.content;
+  return Array.isArray(content) ? (content as DisplayTree[]).map(wordsOf).join("") : "";
+}
+
+/** The blocks of a decision below its heading, each marked unsure or not, taken from the tree Go
+ *  read its text into: the top-level blocks of that tree are the paragraphs the markdown would
+ *  have been split into, already divided, so the browser splits nothing and parses nothing. A
+ *  heading is the decision's own, drawn by the card above its text, or one written inside it,
+ *  which the markdown split dropped too. */
+function decisionBlocks(tree: DisplayTree | undefined): DecisionBlock[] {
+  const content = tree?.content;
+  if (tree === undefined || !Array.isArray(content)) {
+    return [];
+  }
+  return (content as DisplayTree[])
+    .filter((node) => node.type !== "heading")
+    .map((node) => {
+      const words = wordsOf(node);
+      return { tree: { ...tree, content: [node] }, unsure: words.startsWith("Unsure:"), words };
+    });
 }
 
 /** The path that opens the issue's spec at `blockId`: through the spec's own document route when
@@ -210,19 +238,19 @@ function DecisionCard({
   return (
     <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
       <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>{decision.heading}</h3>
-      {decisionParagraphs(decision.text).map((paragraph, index) =>
-        paragraph.unsure ? (
+      {decisionBlocks(decision.text_tree).map((block, index) =>
+        block.unsure ? (
           <div
             className={`border-l-2 pl-2 ${decisionUnsureAccent}`}
             data-testid="decision-unsure"
-            // biome-ignore lint/suspicious/noArrayIndexKey: paragraphs have no id of their own
+            // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
             key={index}
           >
-            <MarkdownBody markdown={paragraph.markdown} source={source} />
+            <MarkdownBody markdown={block.words} source={source} tree={block.tree} />
           </div>
         ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: paragraphs have no id of their own
-          <MarkdownBody key={index} markdown={paragraph.markdown} source={source} />
+          // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
+          <MarkdownBody key={index} markdown={block.words} source={source} tree={block.tree} />
         )
       )}
       {(decision.asks ?? []).map((ask) => (
@@ -255,8 +283,10 @@ function WaitingDecision({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
-  // A change anchors on the decision's first paragraph below its heading.
-  const quote = decisionParagraphs(decision.text)[0]?.markdown;
+  // A change anchors on the decision's first block below its heading, by the words that block
+  // holds: an anchor quote names the document's own text, which is what the server matches it
+  // against (`pmdoc.FindQuote`).
+  const quote = decisionBlocks(decision.text_tree)[0]?.words;
   const keep = useKeyedWrite({
     inline: true,
     label: () => `Keep ${decision.heading}`,
