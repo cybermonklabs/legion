@@ -129,6 +129,7 @@ var writeClasses = map[string]writeScope{
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    scopeProject,
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": scopeProject,
 	"PATCH /api/v1/asks/{id}":                         scopeProject,
+	"PUT /api/v1/asks/{id}/asked-of":                  scopeProject,
 	"POST /api/v1/asks/{id}/answer":                   scopeProject,
 	"POST /api/v1/asks/{id}/resolve":                  scopeProject,
 
@@ -285,6 +286,7 @@ var idRoutes = map[string]idRoute{
 	// answers its own NOT_FOUND, and the un-snooze answers 204 for any ask at all.
 	"GET /api/v1/asks/{id}":                           {Kind: "ask", NotFound: "NOT_FOUND"},
 	"PATCH /api/v1/asks/{id}":                         {Kind: "ask", NotFound: "NOT_FOUND"},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Kind: "ask", NotFound: "NOT_FOUND"},
 	"POST /api/v1/asks/{id}/answer":                   {Kind: "ask", NotFound: "NOT_FOUND"},
 	"POST /api/v1/asks/{id}/resolve":                  {Kind: "ask", NotFound: "NOT_FOUND"},
 	"GET /api/v1/asks/{id}/followers":                 {Kind: "ask", NotFound: "NOT_FOUND"},
@@ -443,6 +445,7 @@ var routeScopes = map[string]routeScopeSet{
 	"GET /api/v1/artifacts/{id}/subscribers":                 {model.ScopePerson},
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}": {model.ScopePerson},
 	"POST /api/v1/artifacts/{id}/rebuild":                    {model.ScopePerson},
+	"PUT /api/v1/asks/{id}/asked-of":                         {model.ScopePerson},
 	"POST /api/v1/asks/{id}/answer":                          {model.ScopePerson},
 	"POST /api/v1/comments/{id}/reopen":                      {model.ScopePerson},
 	"POST /api/v1/comments/{id}/accept":                      {model.ScopePerson},
@@ -637,6 +640,7 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPut, "/api/v1/asks/{id}/followers/{session_id}", authAny, "Follow an ask (a credential holding the person scope for any session; every other for its own session alone).", s.followAsk},
 		{http.MethodDelete, "/api/v1/asks/{id}/followers/{session_id}", authAny, "Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone).", s.unfollowAsk},
 		{http.MethodPatch, "/api/v1/asks/{id}", authAny, "Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it.", s.editAsk},
+		{http.MethodPut, "/api/v1/asks/{id}/asked-of", authAny, "Hand an open ask to another person {asked_of}, the email of somebody who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise): the ask waits on them from now on, wherever its issue goes, and the Inbox lists it under them. It needs the person scope, since handing a question on is one person asking another. An ask that is not open is 409 ASK_NOT_OPEN and one whose issue is closed 409 ISSUE_CLOSED. Naming the assignee of the ask's own issue empties the field instead, so the ask follows its issue again; either way the row records who handed it on and when (asked_of_by, asked_of_at), and one ask.asked_of event names the person it waited on before and the one it waits on now. Answers the ask.", s.putAskAskedOf},
 		{http.MethodPost, "/api/v1/asks/{id}/answer", authAny, "Answer an ask with selected options and/or text.", s.answerAsk},
 		{http.MethodPost, "/api/v1/asks/{id}/resolve", authAny, "Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too.", s.resolveAsk},
 		{http.MethodGet, "/api/v1/issues/{key}/comments", authAny, "List an issue's comments; ?artifact= scopes to a document.", s.listComments},
