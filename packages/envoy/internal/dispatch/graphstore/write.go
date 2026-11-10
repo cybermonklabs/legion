@@ -65,6 +65,16 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	if err != nil {
 		return nil, err
 	}
+	// QueryExecModeDescribeExec rather than the pool's default, because this statement must
+	// be planned with its parameters in hand. Its rows come from one unnest, which the
+	// planner estimates at ten rows when it has no values; on the sixth execution of a
+	// connection PostgreSQL swaps the custom plan for the generic one, and that ten-row
+	// estimate turns the join of stored against incoming into a nested loop that rescans
+	// incoming once per node written. Measured on this pod's PostgreSQL 18.6 over a
+	// 1,999-block document version, which writes 3,998 node rows: 3,009 ms on the generic
+	// plan against 193 ms on the custom one, and quadratic in the block count rather than
+	// linear. An unnamed statement is planned with its values every time, so the plan cache
+	// never holds one.
 	rows, err := tx.Query(ctx, `
 		with incoming as (
 			select `+nodeColumns+`, ordinality
@@ -92,7 +102,7 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		join incoming on incoming.kind = written.kind and incoming.id = written.id
 		left join stored on stored.kind = written.kind and stored.id = written.id
 		order by incoming.ordinality
-	`, args...)
+	`, append([]any{pgx.QueryExecModeDescribeExec}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("write graph nodes: %w", err)
 	}
