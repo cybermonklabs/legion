@@ -2382,8 +2382,8 @@ jobs:
     # the head's own `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds
     # at a minute in which a new attempt may start plus one last attempt of the row's `max_time`
     # of 60 s (2), the other steps whose primary the fault or a dead port holds, each now about
-    # a second because the stand-in shortens them: job 129826623707 made 66 fetches through the
-    # stand-in, and 30 of them were shortened — 20 of github.com, 9 of the dead address and 1 of
+    # a second because the stand-in shortens them: job 129874475871 made 65 fetches through the
+    # stand-in, and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 of
     # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
     # ladder: the kept case's own fetch at 63 s, the probe's reserved control name, and the
     # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
