@@ -2,18 +2,54 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
-import type { CredentialGrant } from "../../api/types";
+import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
-/** How a grant came to be, for its Live grants row: the policy's, or the person who approved it. */
-function grantedBy(grant: CredentialGrant): string {
-  return grant.granted === "automatic" ? "Automatically" : `Approved by ${grant.approver}`;
+/**
+ * How a grant came to be, for its Live grants row: the policy's, or who decided it. The broker
+ * writes which of the two on every grant (`granted`, "automatic" or "approval"), so that field
+ * is what this reads, and a grant the policy gave was nobody's decision.
+ *
+ * Who decided it is `decided_by` and not `approver`. The two are the same person for a grant a
+ * person approved, and they differ for one the broker's model judge approved: the judge decides
+ * in the record's approver's stead, so the grant records that approver — the secret's owner, or
+ * `anyone` for a shared secret — while `decided_by` names the judge, `judge:<model id>`. Reading
+ * `approver` here named a person who never saw the request. A broker older than `decided_by`
+ * sends none, and such a broker runs no judge, so its grants read as they did: by their
+ * approver.
+ */
+function grantedBy(grant: ApproverGrantResp): string {
+  if (grant.granted === "automatic") {
+    return "Automatically";
+  }
+  return `Approved by ${grant.decided_by ?? grant.approver}`;
 }
 
-const columns: readonly RevocableColumn<CredentialGrant>[] = [
+/**
+ * Why nobody may revoke this grant, or null where somebody may. This is the broker's `mayRevoke`
+ * condition, which is why it reads the two fields that decide it rather than `granted`: the
+ * broker allows the grant's approver or its session's operator, and refuses a grant that names
+ * neither — one the policy gave without asking, on a session nobody operates — to every
+ * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone so that what a pod took
+ * is on somebody's page, and it ends when the service's machine login that enrolled that session
+ * is revoked, which ends every session under it, or when it expires.
+ *
+ * The wire says "nobody" two ways and both arrive here: an absent approver is `null`
+ * (`approverGrantResp.Approver` is a `*string`), and an enrollment with no operator is `""`
+ * (`recordEnrollmentResp.Operator` is a Go `string`, so it is never null), which Dispatch relays
+ * unchanged. `mayRevoke` reads both as nobody, since a login that canonicalizes to the empty
+ * string matches no person, so this reads both as nobody too.
+ */
+function unrevocable(grant: ApproverGrantResp): string | null {
+  const approver = (grant.approver ?? "").trim();
+  const operator = (grant.enrollment.operator ?? "").trim();
+  return approver === "" && operator === "" ? "Ends with its machine login" : null;
+}
+
+const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
   {
     cell: (grant) => (
       <>
@@ -27,7 +63,7 @@ const columns: readonly RevocableColumn<CredentialGrant>[] = [
     ),
     header: "Enrollment",
   },
-  { cell: (grant) => grant.names.join(", "), header: "Names" },
+  { cell: (grant) => (grant.names ?? []).join(", "), header: "Names" },
   { cell: grantedBy, header: "Granted" },
   { cell: (grant) => <Timestamp at={grant.created_at} />, header: "Created" },
   {
@@ -45,17 +81,23 @@ const columns: readonly RevocableColumn<CredentialGrant>[] = [
  * is the grant's approver or its enrollment's operator. Only the operator sees an automatic grant,
  * and revoking one also ends that session's other automatic grants of those secrets and makes it
  * ask before it gets them again. A pod enrollment's slot shows under its enrollment, so the grants
- * of two roles in one pod read apart. Rendered on the Settings page.
+ * of two roles in one pod read apart.
+ *
+ * It also lists, to every signed-in person, every live grant that belongs to no person: one the
+ * policy gave a session a service's machine login enrolled, which has neither an approver nor an
+ * operator. Nobody may revoke one of those (`unrevocable`), so each is read-only and says what
+ * ends it: revoking that machine login, which ends every session under it. Rendered on the
+ * Settings page.
  */
 export function GrantsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants });
+  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
 
   return (
     <RevocableList
       className="mt-10"
       columns={columns}
-      description="Every live grant of your sessions, given automatically or on approval, and the grants you approved. Revoking one ends its access immediately; after you revoke an automatic grant, that session asks before it gets those secrets again."
+      description="Every live grant of your sessions, given automatically or on approval, and the grants you approved. Revoking one ends its access immediately; after you revoke an automatic grant, that session asks before it gets those secrets again. Grants that belong to no person — the ones a service's machine login took without asking — are listed here to everyone and cannot be revoked one at a time: revoke that machine login to end every session under it."
       empty="No live grants."
       heading="Live grants"
       headingId="credential-grants-heading"
@@ -67,6 +109,7 @@ export function GrantsSection(): ReactNode {
       revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
       revokeError="Could not revoke this grant."
       rowKey={(grant) => grant.grant_id}
+      unrevocable={unrevocable}
     />
   );
 }

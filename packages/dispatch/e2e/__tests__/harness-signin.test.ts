@@ -1,11 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import type { HarnessListener } from "../harness-listeners";
-
-// The test preload (web/src/__tests__/setup.ts) puts happy-dom's Response on globalThis, so a
-// child's output is read with Bun's own (e2e/__tests__/round-robin-proxy.test.ts says why).
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
 
 const module = (name: string) => fileURLToPath(new URL(`../${name}`, import.meta.url));
 const runServer = module("run-server.sh");
@@ -13,14 +10,16 @@ const runSignInIssuer = module("run-signin-issuer.sh");
 
 async function run(argv: string[], env: Record<string, string>) {
   const child = Bun.spawn(argv, {
-    env: { PATH: process.env.PATH ?? "", ...env },
+    // TMPDIR: the child writes under its temporary directory, which on a machine whose TMPDIR
+    // names the only writable volume is not /tmp.
+    env: { PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), ...env },
     stderr: "pipe",
     stdout: "pipe",
   });
   const [code, stdout, stderr] = await Promise.all([
     child.exited,
-    new NativeResponse(child.stdout).text(),
-    new NativeResponse(child.stderr).text(),
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
   ]);
   return { code, stderr, stdout };
 }

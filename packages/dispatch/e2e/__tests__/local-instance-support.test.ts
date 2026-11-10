@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Server, ServerWebSocket } from "bun";
+import { join } from "node:path";
+import {
+  type FakeDispatchServer,
+  startFakeDispatch,
+} from "@legion/envoy-client/test/fake-dispatch";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import type { ServerWebSocket } from "bun";
 
 import { databaseUrlRefusal, Interrupted, Supervisor, shellQuote } from "../local-instance-support";
+
+const makeDirectory = temporaryDirectories("local-instance-support");
 
 /** True while any process of group `pgid` is alive: signal 0 to the group reaches every member. */
 function groupAlive(pgid: number): boolean {
@@ -62,7 +70,7 @@ afterEach(async () => {
 
 describe("Supervisor.stop", () => {
   test("ends every process group it started, a grandchild included", async () => {
-    const pidFile = `${process.env.TMPDIR ?? "/tmp"}/local-instance-support-${process.pid}.pid`;
+    const pidFile = join(makeDirectory(), "leader.pid");
     const made = supervisor();
     const leader = made.start(
       "leader",
@@ -175,9 +183,9 @@ const supportModule = new URL("../local-instance-support.ts", import.meta.url).p
 
 describe("agentViewRefusal", () => {
   const SESSION = "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01";
-  const servers: Server<undefined>[] = [];
+  const servers: FakeDispatchServer<unknown>[] = [];
   afterEach(() => {
-    for (const server of servers.splice(0)) server.stop(true);
+    for (const server of servers.splice(0)) server.stop();
   });
 
   /** The answer `agentViewRefusal` gives for `sessionId` against `baseUrl`, read from a process
@@ -204,37 +212,18 @@ describe("agentViewRefusal", () => {
 
   /** A Dispatch whose live socket answers the agent view's subscribe with `answer`, recording the
    *  headers of the upgrade and every frame it was sent. */
-  function fakeDispatch(answer: (socket: ServerWebSocket<undefined>, sub: string) => void): {
-    readonly url: string;
-    readonly cookies: (string | null)[];
-    readonly received: unknown[];
-  } {
-    const cookies: (string | null)[] = [];
-    const received: unknown[] = [];
-    const server = Bun.serve({
-      fetch(request, srv) {
-        if (new URL(request.url).pathname !== "/ws/live") {
-          return new Response("not found", { status: 404 });
-        }
-        cookies.push(request.headers.get("cookie"));
-        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-      },
-      hostname: "127.0.0.1",
-      port: 0,
-      websocket: {
-        message(socket, raw) {
-          const frame = JSON.parse(String(raw)) as { readonly sub: string };
-          received.push(frame);
-          answer(socket, frame.sub);
-        },
-      },
+  function dispatchAnswering(
+    answer: (socket: ServerWebSocket<undefined>, sub: string) => void
+  ): FakeDispatchServer<unknown> {
+    const dispatch = startFakeDispatch<{ readonly sub: string }>({
+      live: (socket, frame) => answer(socket, frame.sub),
     });
-    servers.push(server);
-    return { cookies, received, url: `http://127.0.0.1:${server.port}` };
+    servers.push(dispatch);
+    return dispatch;
   }
 
   test("an agent view Dispatch carries is no refusal, and it subscribes as the page does", async () => {
-    const dispatch = fakeDispatch((socket, sub) =>
+    const dispatch = dispatchAnswering((socket, sub) =>
       socket.send(
         JSON.stringify({
           data: { responding: false, v: 1 },
@@ -256,7 +245,7 @@ describe("agentViewRefusal", () => {
   });
 
   test("a session id Dispatch refuses is the refusal, named", async () => {
-    const dispatch = fakeDispatch((socket, sub) =>
+    const dispatch = dispatchAnswering((socket, sub) =>
       socket.send(
         JSON.stringify({
           code: "SESSION_ID_INPUT",
@@ -272,16 +261,16 @@ describe("agentViewRefusal", () => {
   });
 
   test("a socket that closes before any answer says so", async () => {
-    const dispatch = fakeDispatch((socket) => socket.close(1011, "internal error"));
+    const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
     expect(await refusalFrom(dispatch.url, {}, SESSION)).toBe(
       "the live socket closed first (1011 internal error)"
     );
   });
 
   test("a live socket that cannot be opened at all says so", async () => {
-    const dispatch = fakeDispatch(() => undefined);
+    const dispatch = dispatchAnswering(() => undefined);
     const port = new URL(dispatch.url).port;
-    for (const server of servers.splice(0)) server.stop(true);
+    for (const server of servers.splice(0)) server.stop();
     expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
       "the live socket could not be opened"
     );

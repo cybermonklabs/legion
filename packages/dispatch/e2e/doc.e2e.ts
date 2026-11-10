@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { type BrowserContext, expect, test } from "@playwright/test";
 
 import {
@@ -43,7 +44,7 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("the spec opens as a formatted, editable document with no source pane @phone", async ({
+test("the spec opens as a formatted, editable document with no source pane", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "READ", name: "Readable" });
@@ -92,30 +93,54 @@ test("the spec opens as a formatted, editable document with no source pane @phon
     expect(paddingLeft).toBeGreaterThan(0);
     // A cell holding an unbreakable token wraps instead of pushing the table into a horizontal
     // scroll, and on a wide desktop the editor is the column's width (the library's `prose` class
-    // would cap it at 65ch, about 600px).
+    // would cap it at 65ch, about 600px). The narrow-screen half is the row below this one.
     expect(
       await table.evaluate((element) => element.scrollWidth - element.clientWidth)
     ).toBeLessThanOrEqual(1);
-    if (testInfo.project.name !== "iphone") {
-      await page.setViewportSize({ width: 1800, height: 1000 });
-      const [editorWidth, articleWidth] = await Promise.all([
-        editor.evaluate((element) => element.getBoundingClientRect().width),
-        documentArticle.evaluate((element) => element.getBoundingClientRect().width),
-      ]);
-      expect(articleWidth).toBeGreaterThan(700);
-      expect(editorWidth).toBeGreaterThanOrEqual(articleWidth - 1);
-    }
+    await page.setViewportSize({ width: 1800, height: 1000 });
+    const [editorWidth, articleWidth] = await Promise.all([
+      editor.evaluate((element) => element.getBoundingClientRect().width),
+      documentArticle.evaluate((element) => element.getBoundingClientRect().width),
+    ]);
+    expect(articleWidth).toBeGreaterThan(700);
+    expect(editorWidth).toBeGreaterThanOrEqual(articleWidth - 1);
     await expect(editor.locator('input[type="checkbox"]')).toBeVisible();
     await expect(editor.locator("pre code")).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Edit|Preview)$/ })).toHaveCount(0);
     await expect(page.getByRole("tabpanel", { name: "Spec" }).locator("textarea")).toHaveCount(0);
 
-    if (testInfo.project.name === "iphone") {
-      expect(
-        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-      ).toBe(true);
-    }
     await page.screenshot({ path: testInfo.outputPath("rendered-document.png"), fullPage: true });
+  } finally {
+    await alice.close();
+  }
+});
+
+// The narrow-screen half of the row above. The spec's table holds a token nothing can break, the
+// widest thing a document can carry; on a 390 px screen it has to wrap inside its cell rather
+// than push the table, and the page with it, sideways.
+test("a spec whose table holds an unbreakable token keeps the page within the screen @phone", async ({
+  browser,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "iphone", "only a phone screen is narrower than the token");
+  await createProject({ key: "READ", name: "Readable" });
+  const issue = await createIssue({
+    project: "READ",
+    spec: initialMarkdown,
+    title: "Rendering width",
+  });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/spec`);
+    const table = documentEditor(page).locator("table");
+    await expect(table).toBeVisible();
+    expect(
+      await table.evaluate((element) => element.scrollWidth - element.clientWidth)
+    ).toBeLessThanOrEqual(1);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true);
   } finally {
     await alice.close();
   }
@@ -146,7 +171,7 @@ test("reading a document gives its headings ids without versioning it or crediti
   // nobody.
   const nameVersion = async (summary: string) => {
     const named = await createNamedVersion(artifactId, summary, { login: "bob" });
-    expect(named.authors.map(({ id }) => id)).toEqual(["bob"]);
+    expect((named.authors ?? []).map(({ id }) => id)).toEqual(["bob"]);
     return named.number;
   };
 
@@ -162,7 +187,9 @@ test("reading a document gives its headings ids without versioning it or crediti
       session
     );
     await expect
-      .poll(async () => (await getArtifact(artifactId)).versions.map(({ number }) => number))
+      .poll(async () =>
+        ((await getArtifact(artifactId)).versions ?? []).map(({ number }) => number)
+      )
       .toEqual([1, 2, 3]);
     await readAs(alice, "One region first.");
     expect(await nameVersion("after the agent's heading")).toBe(4);
@@ -171,9 +198,9 @@ test("reading a document gives its headings ids without versioning it or crediti
   }
 });
 
-test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both @phone", async ({
+test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -185,14 +212,15 @@ test("two users edit the same spec, see each other's text and cursor, and settle
   const bob = await asUser(browser, "bob");
 
   try {
-    const alicePage = await alice.newPage();
-    await alicePage.goto(`/issues/${issue.key}/spec`);
+    const [alicePage, bobPage] = await Promise.all([alice.newPage(), bob.newPage()]);
+    // The two readers' loads overlap: neither waits on the other to mount its editor.
+    await Promise.all([
+      alicePage.goto(`/issues/${issue.key}/spec`),
+      bobPage.goto(`/issues/${issue.key}/spec`),
+    ]);
     const aliceEditor = documentEditor(alicePage);
-    await expect(aliceEditor).toContainText("Use SQLite");
-
-    const bobPage = await bob.newPage();
-    await bobPage.goto(`/issues/${issue.key}/spec`);
     const bobEditor = documentEditor(bobPage);
+    await expect(aliceEditor).toContainText("Use SQLite");
     await expect(bobEditor).toContainText("Use SQLite");
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");
@@ -203,20 +231,18 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await typeAtEnd(bobPage, "hello from bob");
     await expect(aliceEditor).toContainText("hello from bob");
 
-    if (testInfo.project.name === "chromium") {
-      // Somewhere other than Alice's caret: a peer's caret on the focused local caret is not
-      // drawn, and a bare click can land at the end of her line.
-      await placeCaret(bobPage, "after", "Use SQLite");
-      await expect(cursorLabel(alicePage, "bob")).toBeVisible();
-      await expect(cursorLabel(bobPage, "alice")).toBeVisible();
-    }
+    // Somewhere other than Alice's caret: a peer's caret on the focused local caret is not
+    // drawn, and a bare click can land at the end of her line.
+    await placeCaret(bobPage, "after", "Use SQLite");
+    await expect(cursorLabel(alicePage, "bob")).toBeVisible();
+    await expect(cursorLabel(bobPage, "alice")).toBeVisible();
 
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions
+          (artifact.versions ?? [])
             .find(({ number }) => number === 2)
-            ?.authors.map(({ id }) => id)
+            ?.authors?.map(({ id }) => id)
             .sort()
         )
       )
@@ -224,7 +250,7 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 2)
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -266,7 +292,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 2)
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -279,7 +305,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect
       .poll(() =>
         getArtifact(artifactId).then((artifact) =>
-          artifact.versions.find(({ number }) => number === 3)
+          (artifact.versions ?? []).find(({ number }) => number === 3)
         )
       )
       .toMatchObject({ named: true, number: 3, summary: "Decided Postgres" });
@@ -354,6 +380,7 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
 
   try {
     const alicePage = await alice.newPage();
+    const aliceSockets = countDocumentSockets(alicePage);
     const bobPage = await bob.newPage();
     await Promise.all([
       alicePage.goto(`/issues/${issue.key}/spec`),
@@ -366,6 +393,11 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
     await typeAtEnd(alicePage, "before reload");
     await expect(bobEditor).toContainText("before reload");
     await alicePage.reload();
+    // The twin of documentCollaborationLive's gate (document.e2e.ts): the editor's textbox role
+    // is written at the end of the reload's admission chain, so wait for the reload's own socket
+    // and for the editor that sync builds before reading the text back.
+    await expect.poll(aliceSockets).toBe(2);
+    await expect(documentEditor(alicePage)).toBeAttached();
     await expect(documentEditor(alicePage)).toContainText("Use SQLite");
     await expect(documentEditor(alicePage)).toContainText("before reload");
     await expect(alicePage.getByRole("combobox", { name: "Version" })).toContainText("Version 1");
@@ -424,6 +456,8 @@ test("tab round-trips keep one document connection, the typed text, and the Conv
   }
 });
 
+// SLOW(>=2s): three visits to two documents, each mounting an editor, which is what one
+// connection has to survive.
 test("moving between issue documents leaves one open document connection, not one per visit", async ({
   browser,
 }) => {
@@ -473,6 +507,8 @@ test("moving between issue documents leaves one open document connection, not on
 // The invariant `preserveConnection: false` must preserve: now that destroying a document really
 // closes its socket, a dropped transport must still bring the mounted editor back rather than
 // end its session.
+// SLOW(>=2s): two browser contexts and the provider's own reconnect after the drop, which no
+// page clock can bring forward: the socket it reopens is a real one.
 test("a dropped document transport reconnects the mounted editor and leaves one connection", async ({
   browser,
 }) => {
@@ -517,10 +553,28 @@ test("a dropped document transport reconnects the mounted editor and leaves one 
   }
 });
 
+/** How long a document socket that has delivered nothing is given before its provider closes it:
+ *  `messageReconnectTimeout`, the HocuspocusProviderWebsocket default the editor's connection
+ *  keeps (`web/src/features/doc/connection.ts`). */
+const DOCUMENT_RECEIVE_TIMEOUT_MS = 30_000;
+/** How far past that timeout the rows below take an idle document, so the provider has had every
+ *  chance to close its socket. */
+const PAST_THE_RECEIVE_TIMEOUT_MS = DOCUMENT_RECEIVE_TIMEOUT_MS + 12_000;
+/** How much of the page's clock one step of that wait spends. The provider's connection check and
+ *  the awareness renewal whose echo is the message it measures its silence against both run on a
+ *  tenth of the timeout, so a step that size fires each of them in turn rather than firing a
+ *  half-minute of them at once with no socket traffic in between. */
+const PROVIDER_TIMER_STEP_MS = DOCUMENT_RECEIVE_TIMEOUT_MS / 10;
+/** How long each step then leaves for what those timers sent to come back: the clock is the
+ *  page's, the round trip over the socket is not. */
+const PROVIDER_ECHO_MS = 100;
+
 for (const row of [
   { key: "IDLE", reader: "an editor", readOnly: false },
   { key: "VIEW", reader: "a read-only viewer", readOnly: true },
 ]) {
+  // SLOW(>=2s): fourteen clock steps through the provider's half-minute receive timeout, each
+  // leaving PROVIDER_ECHO_MS of real time for what those timers sent to come back.
   test(`an idle document provider stays on one connection past its receive timeout, as ${row.reader}`, async ({
     browser,
   }, testInfo) => {
@@ -528,7 +582,6 @@ for (const row of [
       testInfo.project.name !== "chromium",
       "one Hocuspocus provider proves the document socket stays connected"
     );
-    test.setTimeout(90_000);
     await createProject({ key: row.key, name: "Idle document" });
     const issue = await createIssue({
       project: row.key,
@@ -543,6 +596,9 @@ for (const row of [
     const alice = await asUser(browser, "alice");
     try {
       const page = await alice.newPage();
+      // The half-minute below is the provider's own, measured on the page's timers, so the page's
+      // clock spends it rather than the run (`artifacts.e2e.ts:478` drives the same connection).
+      await page.clock.install();
       const sockets = countDocumentSockets(page, issue.primary_artifact_id);
       await page.goto(`/issues/${issue.key}/spec`);
       await expect(documentEditor(page)).toContainText("It stays connected.");
@@ -554,8 +610,18 @@ for (const row of [
       await expect(connectedDot(page)).toHaveText("connected");
       await expect.poll(sockets).toBe(1);
 
-      // The provider closes a socket that has delivered nothing for 30 s.
-      await page.waitForTimeout(42_000);
+      // The provider closes a socket that has delivered nothing for DOCUMENT_RECEIVE_TIMEOUT_MS,
+      // and what keeps it open is what its own timers ask for, so the wait goes a step at a time
+      // with real time after each for the answer to land.
+      const started = await page.evaluate(() => Date.now());
+      for (let spent = 0; spent < PAST_THE_RECEIVE_TIMEOUT_MS; spent += PROVIDER_TIMER_STEP_MS) {
+        await page.clock.runFor(PROVIDER_TIMER_STEP_MS);
+        await sleep(PROVIDER_ECHO_MS);
+      }
+      // However little of the run that cost, the page itself has spent the whole timeout: a
+      // socket kept by a clock that never moved would prove nothing.
+      const spentOnThePage = (await page.evaluate(() => Date.now())) - started;
+      expect(spentOnThePage).toBeGreaterThanOrEqual(PAST_THE_RECEIVE_TIMEOUT_MS);
 
       await expect(connectedDot(page)).toHaveText("connected");
       expect(sockets()).toBe(1);
@@ -711,9 +777,9 @@ test("a version deep link renders the comment's original quote highlighted in a 
   }
 });
 
-test("clicking a Markdown dispatch:// link in the live editor navigates in-app without a reload @phone", async ({
+test("clicking a Markdown dispatch:// link in the live editor navigates in-app without a reload", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "NAV", name: "Navigation" });
   const target = await createIssue({
     project: "NAV",
@@ -736,12 +802,10 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
     // resolved target in the hover card instead.
     const link = editor.getByRole("link", { name: "the other issue" });
     await expect(link).toBeVisible();
-    if (testInfo.project.name !== "iphone") {
-      await link.hover();
-      await expect(page.getByRole("tooltip")).toContainText("Navigation target");
-      await page.keyboard.press("Escape");
-      await expect(page.getByRole("tooltip")).toHaveCount(0);
-    }
+    await link.hover();
+    await expect(page.getByRole("tooltip")).toContainText("Navigation target");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
 
     // A full page reload would reset this marker; an in-app route change preserves it.
     await page.evaluate(() => {

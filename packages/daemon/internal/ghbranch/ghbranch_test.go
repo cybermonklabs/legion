@@ -3,7 +3,6 @@ package ghbranch
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
@@ -36,10 +36,11 @@ type github struct {
 
 func (g *github) serve(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Record: func(r *http.Request) {
 		g.mu.Lock()
 		g.authorized = append(g.authorized, r.Header.Get("Authorization"))
 		g.mu.Unlock()
+	}, Handle: func(w http.ResponseWriter, r *http.Request) {
 		branch, isRef := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
@@ -73,9 +74,7 @@ func (g *github) serve(t *testing.T) string {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 func (g *github) reading(path string) {
@@ -249,75 +248,6 @@ func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
 
 	if want := `read refs/heads/release/v7.1 of acme/widgets: GitHub answered GET /git/ref/heads/release/v7.1 with 404: {"message":"Not Found","status":"404"}`; errorText(err) != want {
 		t.Fatalf("Create error = %q, want %q", errorText(err), want)
-	}
-}
-
-// Head is the commit a branch names, its name read as the one ref it names, and GitHub's 404, which
-// githubrest.NotFound reads, for a branch GitHub does not have.
-func TestHeadReadsTheBranchOrSaysGitHubHasNone(t *testing.T) {
-	g := &github{refs: map[string]string{"legion/WIDGETS-12": baseCommit, "release#stable": decoyCommit, "release": baseCommit}}
-	api := widgets(g.serve(t))
-	for _, tc := range []struct{ branch, want string }{{"legion/WIDGETS-12", baseCommit}, {"release#stable", decoyCommit}} {
-		sha, err := Head(context.Background(), api, ghrepo.MustParse("acme/widgets"), tc.branch)
-		if err != nil || sha != tc.want {
-			t.Fatalf("Head(%q) = %q, %v; want %s", tc.branch, sha, err, tc.want)
-		}
-	}
-	if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/legion/WIDGETS-12", "/repos/acme/widgets/git/ref/heads/release#stable"}) {
-		t.Fatalf("read %q, want each branch's own ref", got)
-	}
-
-	sha, err := Head(context.Background(), api, ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-13")
-	if sha != "" || !githubrest.NotFound(err) ||
-		errorText(err) != `read refs/heads/legion/WIDGETS-13 of acme/widgets: GitHub answered GET /git/ref/heads/legion/WIDGETS-13 with 404: {"message":"Not Found","status":"404"}` {
-		t.Fatalf("Head of a branch GitHub does not have = %q, %v; want NotFound with GitHub's 404", sha, err)
-	}
-}
-
-// Any other failure of the read is an error githubrest.NotFound is false for, so no caller reads it
-// as no branch.
-func TestHeadReportsAnyOtherFailureAsAnError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, `{"message":"Resource not accessible by integration"}`)
-	}))
-	t.Cleanup(server.Close)
-	sha, err := Head(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "main")
-	if sha != "" || githubrest.NotFound(err) || err == nil || !strings.Contains(err.Error(), "with 403") {
-		t.Fatalf("Head = %q, %v; want an error carrying GitHub's 403 that NotFound is false for", sha, err)
-	}
-}
-
-// Move updates the branch's ref without force, its name escaped as Head's read escapes it, and a
-// refusal names the branch and GitHub's answer.
-func TestMoveUpdatesTheRefWithoutForce(t *testing.T) {
-	var paths []string
-	var bodies []map[string]any
-	status := http.StatusOK
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if r.Method != http.MethodPatch || json.NewDecoder(r.Body).Decode(&body) != nil {
-			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
-		}
-		paths, bodies = append(paths, r.URL.EscapedPath()), append(bodies, body)
-		w.WriteHeader(status)
-		_, _ = io.WriteString(w, `{"message":"Repository rule violations found"}`)
-	}))
-	t.Cleanup(server.Close)
-
-	if err := Move(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "hotfix/#12", baseCommit); err != nil {
-		t.Fatalf("Move: %v", err)
-	}
-	if len(paths) != 1 || paths[0] != "/repos/acme/widgets/git/refs/heads/hotfix/%2312" || bodies[0]["sha"] != baseCommit || bodies[0]["force"] != false {
-		t.Fatalf("Move sent %q %v, want one non-forced update of refs/heads/hotfix/#12 to %s", paths, bodies, baseCommit)
-	}
-
-	status = http.StatusUnprocessableEntity
-	err := Move(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "main", baseCommit)
-	var answer *githubrest.Answer
-	if !errors.As(err, &answer) || answer.Status != http.StatusUnprocessableEntity || answer.Body != `{"message":"Repository rule violations found"}` ||
-		!strings.HasPrefix(err.Error(), "move refs/heads/main of acme/widgets to "+baseCommit+": ") {
-		t.Fatalf("Move refused = %v, want an error naming the branch and GitHub's 422", err)
 	}
 }
 

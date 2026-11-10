@@ -3,7 +3,6 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -12,9 +11,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import * as os from "node:os";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { type DispatchConfigResolution, dispatchSettings } from "../dispatch-config";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import {
+  type ActiveDispatchConfig,
+  type DispatchConfigResolution,
+  dispatchSettings as resolveDispatch,
+} from "../dispatch-config";
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
@@ -23,12 +27,42 @@ import {
   envoyConfigPath,
   missingConfigNotice,
   readEnvoyConfig,
+  type SectionOff,
 } from "../envoy-config";
-import { envoySettings } from "../envoy-settings";
+import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
 
-function tempDir(): string {
-  return mkdtempSync(path.join(os.tmpdir(), "envoy-config-"));
+// Both sections resolve one `credential` object (`ActiveDispatchConfig`, `EnabledEnvoySettings`).
+// What this file is about is which file and which variable a section reads, so each resolution is
+// compared with that credential flattened to the bearer it presents, under the name the section
+// used to carry it: `token`.
+
+/** Dispatch as this file compares it: off as the resolver answers it, or on with its bearer. */
+type DispatchWithToken =
+  | SectionOff
+  | (Omit<ActiveDispatchConfig, "credential"> & { readonly token: string });
+
+/** Envoy the same way; a listener that asks for no credential has no token. */
+type EnvoyWithToken =
+  | SectionOff
+  | (Omit<EnabledEnvoySettings, "credential"> & { readonly token: string | undefined });
+
+/** `dispatchSettings`, with an enabled resolution's credential flattened to its bearer. */
+function dispatchSettings(...args: Parameters<typeof resolveDispatch>): DispatchWithToken {
+  const resolution = resolveDispatch(...args);
+  if (!resolution.enabled) return resolution;
+  const { credential, ...rest } = resolution;
+  return { ...rest, token: credential.secret() };
 }
+
+/** `envoySettings`, the same way. */
+function envoySettings(...args: Parameters<typeof resolveEnvoy>): EnvoyWithToken {
+  const settings = resolveEnvoy(...args);
+  if (!settings.enabled) return settings;
+  const { credential, ...rest } = settings;
+  return { ...rest, token: credential?.secret() };
+}
+
+const tempDir = temporaryDirectories("envoy-config");
 
 function writeFile(file: string, contents: unknown): string {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -426,24 +460,21 @@ describe("readEnvoyConfig", () => {
   // The same rule on real filesystems: a tmpfs directory linked in as ~/.config/opencode is another
   // device than the temporary directory's.
   const shm = "/dev/shm";
-  test.skipIf(!existsSync(shm) || statSync(shm).dev === statSync(os.tmpdir()).dev)(
+  const shmDirectory = temporaryDirectories("envoy-config", { root: shm });
+  test.skipIf(!existsSync(shm) || statSync(shm).dev === statSync(tmpdir()).dev)(
     "a move across real filesystems names the file to create, and no mv command",
     () => {
       const home = tempDir();
-      const elsewhere = mkdtempSync(path.join(shm, "envoy-config-"));
-      try {
-        mkdirSync(path.join(home, ".config"));
-        symlinkSync(elsewhere, path.join(home, ".config", "opencode"));
-        const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {});
-        const neutral = path.join(home, ".config", "legion", "envoy.json");
-        expect(readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toMatchObject({
-          missing: {
-            oldUserFileNotice: `${old} is not read, and is on another filesystem than ${neutral} (a mount): create ${neutral}, and move ${old} on the machine that owns it`,
-          },
-        });
-      } finally {
-        rmSync(elsewhere, { recursive: true, force: true });
-      }
+      const elsewhere = shmDirectory("elsewhere");
+      mkdirSync(path.join(home, ".config"));
+      symlinkSync(elsewhere, path.join(home, ".config", "opencode"));
+      const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {});
+      const neutral = path.join(home, ".config", "legion", "envoy.json");
+      expect(readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toMatchObject({
+        missing: {
+          oldUserFileNotice: `${old} is not read, and is on another filesystem than ${neutral} (a mount): create ${neutral}, and move ${old} on the machine that owns it`,
+        },
+      });
     }
   );
 
@@ -1205,7 +1236,7 @@ describe("a ! command in envoy.json", () => {
       dispatch: { ...dispatchOn, token: `!sleep 30 & echo $! > ${pidFile}; echo lingering-secret` },
     });
     const cwd = tempDir();
-    let dispatch: DispatchConfigResolution | undefined;
+    let dispatch: DispatchWithToken | undefined;
     let elapsed = 0;
     const left = inScratchTmp(() => {
       const started = Date.now();
@@ -1235,7 +1266,7 @@ describe("a ! command in envoy.json", () => {
       },
     });
     const cwd = tempDir();
-    let dispatch: DispatchConfigResolution | undefined;
+    let dispatch: DispatchWithToken | undefined;
     let elapsed = 0;
     const left = inScratchTmp(() => {
       const started = Date.now();

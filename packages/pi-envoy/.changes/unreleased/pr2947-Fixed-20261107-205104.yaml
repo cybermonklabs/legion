@@ -1,0 +1,5 @@
+kind: Fixed
+body: AskGate reviews a session whose model is on a provider that bills the gate model's own account, instead of skipping every session whose provider id differs from the gate model's. Two differing provider ids are one account only where the machine names both in the new `askgate.sharedAccountProviders` setting, read with the host's grant authority so a repository's own settings file cannot declare one; the gate role's fallback chain is filtered the same way. Unset, the list is empty and every comparison is the provider-id comparison it was.
+time: 2026-11-07T20:51:04.845260618Z
+custom:
+    Issue: pr2947

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -42,8 +43,7 @@ type limitGitHub struct {
 func startLimitGitHub(t *testing.T) *limitGitHub {
 	t.Helper()
 	fake := &limitGitHub{installationID: 7}
-	fake.server = httptest.NewServer(http.HandlerFunc(fake.serve))
-	t.Cleanup(fake.server.Close)
+	fake.server = githubtest.Serve(t, githubtest.Spec{Handle: fake.serve})
 	return fake
 }
 
@@ -72,7 +72,6 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
 	if limited {
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("Retry-After", "60")
@@ -313,12 +312,12 @@ func TestAnExpiredTokensInstallationIsForgottenAtTheNextMint(t *testing.T) {
 		t.Fatalf("token past the first ones' expiry: %v", err)
 	}
 	for _, token := range expired {
-		if scope := client.tokenScope(token); scope != "" {
+		if scope := client.TokenScope(token); scope != "" {
 			t.Fatalf("expired token %s still answers scope %q", token, scope)
 		}
 	}
-	if scope := client.tokenScope(current); scope != installationScope(7) {
-		t.Fatalf("current token's scope = %q, want %q", scope, installationScope(7))
+	if scope := client.TokenScope(current); scope != InstallationScope(7) {
+		t.Fatalf("current token's scope = %q, want %q", scope, InstallationScope(7))
 	}
 }
 

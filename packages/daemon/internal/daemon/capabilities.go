@@ -76,7 +76,7 @@ func (s *supervision) deployment() capabilities.Deployment {
 		if !ok || c.Locator == nil || report.Locator.Incarnation != c.Locator.Incarnation {
 			continue
 		}
-		if claimTookRole(c.State) {
+		if supervise.TookRole(c.State) {
 			d.Sessions = append(d.Sessions, capabilities.Session{Role: c.Role, Issue: c.Issue, Report: report})
 		}
 	}

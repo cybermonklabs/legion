@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -32,13 +32,19 @@ const (
 	OutboxKindIssueBranch       OutboxKind = "issue_branch"
 	OutboxKindAutoMergeDisable  OutboxKind = "auto_merge_disable"
 	OutboxKindReadyMerge        OutboxKind = "ready_merge"
-	OutboxKindCheckCompare      OutboxKind = "check_compare"
+	OutboxKindCheckWake         OutboxKind = "check_wake"
 	OutboxKindCheckLook         OutboxKind = "check_look"
 	OutboxKindCheckBound        OutboxKind = "check_bound"
 	OutboxKindPhaseEnded        OutboxKind = "phase_ended"
+	OutboxKindIssueBundle       OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease      OutboxKind = "issue_release"
+	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
+	// holds the bare project key (GatedStepsPublish).
+	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
+	OutboxKindClaimRelease      OutboxKind = "claim_release"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on three lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -46,28 +52,37 @@ const (
 // (auto_merge_disable) and the READY merge's submission (ready_merge), which must never run beside
 // each other: a disarm and a submit of one pull request at once would race on GitHub, and the lane
 // (with outboxLaneFree across daemons) is what keeps them apart; and the production check's rows
-// (check_compare, check_look, check_bound), which start and end the implementer's looks in order
+// (check_wake, check_look, check_bound), which start and end the checking role's looks in order
 // with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
-// an image, and a slow publish never holds a stop back. The role-message lane runs the one kind the
-// daemon addresses to a role of the issue that is not its architect (phase_ended), on a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them waits
+// an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
+// publish too, the one row addressed to the bare project key rather than to an issue, so that
+// write runs on a board lane of the project's own, behind none of any issue's rows and holding
+// none of them back. The role-message lane runs the one kind the daemon addresses to a role of
+// the issue that is not its architect (phase_ended), on a lane of its own because the board
+// lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended must hear it while that is news, not after whatever its tree's architect is owed.
+// The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
+// own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
+// waiting on one issue's claim must delay no status write and no notice of that same issue, which
+// is what a place on the board lane would cost it.
 type OutboxLane string
 
 const (
 	LaneLifecycle   OutboxLane = "lifecycle"
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
+	LaneClaim       OutboxLane = "claim"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckCompare, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded},
+	LaneClaim:       {OutboxKindClaimRelease},
 }
 
 // LaneOf is the lane that runs kind.
@@ -98,6 +113,26 @@ type HeldRow struct {
 	WaitsOn int64
 }
 
+// OwedStart is one pending worker start that waits for its issue's admission slot
+// (SuperviseRequest.NeedsSlot) and that no live lease holds, as the waiting line orders it: the
+// row's own creation time and its id. That pair is the line's ordering key because it is durable
+// — the transition wrote the row in its own transaction, and a restart finds it exactly where it
+// was — and because it is already the order the issue's work came back in, which is the order the
+// line gives those issues their slots back (Waiting). The role, phase and generation the row
+// serves travel with it so that the one read also answers admission's repair of a row that has
+// outlived the fences the outbox would have run it under, and LeaseToken with them: a row whose
+// lease has lapsed is still owed, and that repair must name the token the dead lane left to
+// finish it (Store.FinishOutbox).
+type OwedStart struct {
+	Issue      string
+	CreatedAt  time.Time
+	ID         int64
+	Role       claim.Role
+	Phase      phase.Phase
+	Generation uint64
+	LeaseToken string
+}
+
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
@@ -108,7 +143,7 @@ type StatusWrite struct {
 	Status         string `json:"status"`
 	ObservedStatus string `json:"observedStatus"`
 	// Reason is a done write's reason: the runner posts it as a message on the issue before it
-	// writes the status, since Dispatch refuses a message on a closed issue. Empty for a write
+	// writes the status, so the reason is on the issue before the close. Empty for a write
 	// with no reason to record.
 	Reason string `json:"reason,omitempty"`
 	// HandOver also puts dispatch.LegionLabel on the issue, in the same Dispatch write: the write
@@ -131,6 +166,14 @@ type StatusWrite struct {
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
 
+// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
+// it carries. The holder and the issue's record are read when the row runs, not when it is
+// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
+// the row on their own, with no generation or holder to fence it.
+type ClaimRelease struct{}
+
+func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
+
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
 // marker.
 type MessagePost struct {
@@ -146,12 +189,6 @@ const (
 	messageMarkerOpen  = "<!-- legion-outbox:"
 	messageMarkerClose = " -->"
 )
-
-// MessagePostLimit is the longest body the runner can post, in UTF-16 code units: Dispatch's cap
-// less the separator and the marker at its longest, whose row id (a bigserial) has at most the 19
-// digits of math.MaxInt64. The marker is ASCII, so its length in bytes is its length in units.
-const MessagePostLimit = dispatch.MessageBodyLimit -
-	len(messageSeparator+messageMarkerOpen+messageMarkerClose) - len("9223372036854775807")
 
 // MessageMarker is the marker of outbox row id.
 func MessageMarker(id int64) string {
@@ -179,6 +216,19 @@ func (m MessagePost) Posted(id int64) string {
 	return m.Body + messageSeparator + MessageMarker(id)
 }
 
+// LongestPost is the longest text the runner could ever post for body: the post Posted composes,
+// for the largest row id a row can carry (outbox ids are a bigserial, so math.MaxInt64 is the
+// longest marker there is). A caller that must know, before anything is recorded, whether
+// Dispatch would take the post holds this text to Dispatch's bounds rather than the body alone
+// (api's closeRoot and the merger's READY completion): the marker is a block of its own after a
+// body that ends in a paragraph, and it is code inside a body that ends in an open fence, so a
+// body that passes a bound can be a post that does not. It is built by Posted, the function the
+// runner itself posts with, so the text checked and the text posted cannot be composed by two
+// different rules.
+func LongestPost(body string) string {
+	return MessagePost{Body: body}.Posted(math.MaxInt64)
+}
+
 // NoticeKind identifies one persisted notice delivery.
 type NoticeKind string
 
@@ -198,6 +248,36 @@ type Notice struct {
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
+	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
+	// and the zero value on every other notice: the catch-up the outbox writes in place of a
+	// launch when a start row finds the tree's root architect already running (the outbox's start,
+	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
+	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
+	// a launch does.
+	//
+	// The moment is kept here rather than read back from the row's next_at because the two part
+	// company: a failed attempt rewrites next_at to its backoff (RetryOutbox), while the turn the
+	// pacing gave this wake never moves. The outbox writes that wake's one line from it, on
+	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the
+	// architect's waiting notices leaves the row where it stands only while the moment is still
+	// ahead (the daemon's releaseWaiting), so a catch-up whose turn has come is released like any
+	// other notice rather than waiting out a backoff the pacing never asked for. It is the
+	// daemon's own bookkeeping, so the publish drops it (Published) as it drops ResendOf; a
+	// re-held copy keeps it for that one line alone, its next_at being the re-send delay rather
+	// than a reservation (the daemon's noticeAnswered).
+	PacedAt time.Time `json:"paced_at,omitzero"`
+	// PacedFrom is the moment the reservation above was made, on the clock that made it, and the
+	// two travel together: PacedAt less PacedFrom is how long the pacing held this wake, which is
+	// what the line it writes reports (the daemon's wakeRan).
+	//
+	// The wait is read from this pair rather than from PacedAt less the row's created_at, which
+	// is two clocks subtracted from each other: created_at is the database's now() at the start
+	// of the fact's transaction (store/migrations/0004_record.up.sql), while the reservation is
+	// made from the engine's clock later in that same transaction (workflow's claimReady). A
+	// catch-up the burst let straight through — PacedAt equal to PacedFrom, the first wake of a
+	// wave — would otherwise report the transaction's own duration as a wait, and under clock
+	// skew a wait the other way about.
+	PacedFrom time.Time `json:"paced_from,omitzero"`
 	// ResendOf is the outbox row a re-held copy copies. The copy is published under that row's
 	// dedupe key (OutboxKey), so the listener's report of a failed forward names the original row,
 	// whichever copy failed (exceptionNotice), and the listener's role lane drops a copy that
@@ -227,7 +307,8 @@ type Notice struct {
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
 	// gates.design off opened the gate.
 	Actor string `json:"actor,omitempty"`
-	// Ref is that decision's Dispatch reference: `dispatch://<KEY>/spec` for a spec decision,
+	// Ref is that decision's Dispatch reference: the document of the design-gate step a design
+	// decision is of (workflow's stepRef), `dispatch://<KEY>/spec` for the spec step,
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
 	// for a reply.
 	Ref string `json:"ref,omitempty"`
@@ -305,7 +386,7 @@ type BlockedIssue struct {
 }
 
 // MarshalJSON keeps `blockedBy` an array on the wire, empty rather than `null`: the plugin's
-// strict reader refuses a null.
+// reader refuses a null.
 func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 	type wire BlockedIssue
 	out := wire(b)
@@ -320,8 +401,8 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 // task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
 // root's generation, the launch of the architect's claim it was written for, whether a hand-over
 // created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate policy and the root's
-// gate, and every issue of the tree. A handed-over root's workers already run their phases, so its
+// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
+// and every issue of the tree. A handed-over root's workers already run their phases, so its
 // architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
 // what a person decided on the tree while nobody in it could hear it and the start did not name (a
 // decision made while the architect's claim had ended, before this relaunch), in the words of
@@ -334,20 +415,31 @@ type CatchUp struct {
 	Launch     uint64         `json:"launch"`
 	HandedOver bool           `json:"handed_over,omitempty"`
 	Carried    bool           `json:"carried,omitempty"`
-	Gate       CatchUpGate    `json:"gate"`
+	Gates      []CatchUpGate  `json:"gates"`
 	Issues     []CatchUpIssue `json:"issues"`
 	Decided    string         `json:"decided,omitempty"`
 	Kept       *KeptDecisions `json:"kept,omitempty"`
 }
 
-// CatchUpGate is the design gate as a catch-up states it: the project's policy (gates.design,
-// root-issues or off) and, once the architect has registered one, the root's registered document,
-// its latest version, and whether that version is approved.
+// CatchUpGate is one design-gate step as a catch-up states it: the step, whether a person must
+// approve its document (Gated) and, once the architect has registered it, the document, its
+// latest version, the version a person approved, if any, and whether the step is open.
+// Unregistered says the root holds no record of the step at all, which is the step its architect
+// has still to register.
+//
+// A catch-up carries one entry for each step the root must hold open before its tree works
+// (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
+// Gated false: that registration opens the step at once and asks no person, which is what the
+// policy word `off` said. The list replaced that word, because one word cannot name a list and
+// each entry now says its own step's part of it.
 type CatchUpGate struct {
-	Policy   string `json:"policy"`
-	Artifact string `json:"artifact,omitempty"`
-	Version  int    `json:"version,omitempty"`
-	Open     bool   `json:"open"`
+	Step         DesignStep `json:"step"`
+	Gated        bool       `json:"gated"`
+	Unregistered bool       `json:"unregistered,omitempty"`
+	Artifact     string     `json:"artifact,omitempty"`
+	Version      int        `json:"version,omitempty"`
+	Approved     int        `json:"approved,omitempty"`
+	Open         bool       `json:"open"`
 }
 
 // CatchUpIssue is one issue of the tree as a catch-up lists it.
@@ -362,8 +454,19 @@ type CatchUpIssue struct {
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 
 // Published is the notice the runner publishes for outbox row id, and the dedupe key it goes under:
-// a re-held copy goes under the key of the row it copies, and without ResendOf.
+// a re-held copy goes under the key of the row it copies, and without ResendOf. The reserved
+// moment and the moment it was reserved from go out with neither: all three are the daemon's own
+// bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
+// notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
+// the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
+// and puts nothing back, and only the receipt-timeout path restores the two paced moments by
+// hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
+// (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
+// as it requires CatchUp of a catch-up notice, is stripped here only together with a restore of
+// its own there, or every re-hold of that kind is refused for want of it
+// (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
+	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
 	if n.ResendOf == 0 {
 		return n, OutboxKey(id)
 	}
@@ -380,18 +483,24 @@ type ControllerNotice Notice
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
 
 // The controller notices no architect is told of. A triage notice's root is unrecorded, so no
-// architect owns it; a slot-free notice names the root whose slot admission released while no
-// waiting root took it. A todo notice names an issue not handed to Legion that changed in `todo`
-// while a slot stood free. An awaiting-person notice names a root that released its slot while its
-// architect waits on a person (workflow's enterAwaiting). The controller takes no issue for any of
+// architect owns it; a slot-free notice names the issue whose slot admission released while no
+// waiting issue took it. A todo notice names an issue not handed to Legion that changed in `todo`
+// while a slot stood free. An awaiting-person notice names a root that waits on a person and
+// keeps the slot it holds while it waits (workflow's enterAwaiting). The controller takes no issue for any of
 // the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
 // issue is the project key. An unslotted notice names a root admission found in the workflow with
 // neither a slot nor a place in the waiting line, which it took out of the workflow; its reason
 // names the status the root stood at. An update-stalled notice names an issue whose pod the
 // daemon opened an update round over and cannot replace: a worker has not answered within
 // `pod_update_notice_hours`, a turn that will not end holds the replacement, or the replacement
-// itself keeps failing (the daemon's reconcilePodUpdates). When admission sends each is its
-// rule (admit.Admission.wakeController and its callers, admit's releaseUnslotted).
+// itself keeps failing (the daemon's reconcilePodUpdates). A provider-errors notice names an
+// issue whose role has ended six turns in a row in a provider error: its Role is that role, and
+// its Reason the model and the HTTP status the provider answered, where it answered one, in
+// words built from structured fields alone (supervise's tellControllerOfProviderErrors). It is
+// told once, and not again until a turn with no error puts that run back to zero; nothing is
+// held and nothing is bounded, because a chain's bottom refusing deterministically costs one
+// request every ten minutes. When admission sends each is its rule (admit.Admission.wakeController and its
+// callers, admit's releaseUnslotted, admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -410,14 +519,35 @@ const (
 	AwaitingPersonNotice NoticeKind = "awaiting-person"
 	ParkedDecisionNotice NoticeKind = "parked-decision"
 	UpdateStalledNotice  NoticeKind = "update-stalled"
+	ProviderErrorsNotice NoticeKind = "provider-errors"
 )
 
+// NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
+// issue and the role that names it — rather than one per project
+// (admit.Admission.wakeController reads it before it queues a wake).
+//
+// A provider-errors notice is the one such kind: it names the claim whose turns keep ending in a
+// provider error, and in an outage every claim of the project has a notice of its own to send.
+// It is told at exactly the sixth turn in a row and never again until a turn with no error puts
+// that run back to zero, so a second claim's notice dropped behind the first claim's would never
+// be sent at all. Two claims of one issue are two such claims — an issue's architect and its
+// worker fail their turns in the same outage — so the issue alone is not the key; the role is
+// the rest of it. Every other kind says something about the project — a free slot, a todo issue,
+// the day's tick — which one wake carries however many facts find it pending.
+func NoticePerClaim(kind NoticeKind) bool {
+	return kind == ProviderErrorsNotice
+}
+
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's
-// claim; "suspend" stops its process and keeps its session; "tree_close" is the tree's close —
-// the request that ends the claim, the tree's root claim included; "issue_close" is a child issue's
-// close as done, which ends the claim as a tree close does and drops its session, since the issue
-// is finished and its next run, should a person set it todo again, starts fresh. There
-// is no plain stop: only a close ends a claim from the workflow, so the op states which.
+// claim; "suspend" stops its process and keeps its session; "release" stops its process and keeps
+// its session too, as one role stop of an idle pod's release, and is its own op rather than a
+// second "suspend" because the open-issue invariant reads the op to say which act it is reading —
+// a suspend stops a role of an issue the workflow is taking out, a release stops a role of an
+// issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
+// close — the request that ends the claim, the tree's root claim included; "issue_close" is a
+// child issue's close as done, which ends the claim as a tree close does and drops its session,
+// since the issue is finished and its next run, should a person set it todo again, starts fresh.
+// There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
 // SuperviseRequest describes the session operation the outbox runner performs.
@@ -455,6 +585,29 @@ type SuperviseRequest struct {
 	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
 	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
+	// NeedsSlot marks a phase worker's start as the one part of a transition that waits for its
+	// issue's admission slot. The cap counts the issues the daemon has started, so what it must bound is the task
+	// that puts a worker to work; everything else the transition writes — the phase, the Dispatch
+	// status, the assignment on the role's phases row, the notices — is written in the
+	// transition's own transaction and waits for nothing. The hold is on this row's claimability
+	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
+	// of its issue's later rows is held behind it, and the relaunch half of the start travels in
+	// a row of its own that carries no task at all (workflow.StartOrOwe), so the worker's session
+	// is relaunched and answering questions while its next task waits in the line.
+	NeedsSlot bool `json:"needsSlot,omitempty"`
+	// Relaunch marks that other half: the row workflow.StartOrOwe writes to bring a phase
+	// worker's session back at once, with no task and none of a task's marks, while the row
+	// above waits for the slot. It is what tells the outbox that a task of this start is still
+	// to come, so a claim that failed holding that phase's task is left failed here rather than
+	// retried: a retry sends the kept task back to the worker (supervise's RequestRetry) before
+	// the issue holds a slot, and the task row behind it would then find a claim no longer
+	// failed and deliver a second prompt for the same phase. Every other start carries its own
+	// task or none at all and is answered where it stands, the tree architect's among them.
+	//
+	// A row the previous release wrote and a deploy finds still in the outbox decodes with the
+	// mark false, which is that release's own behaviour: it retries a failed claim. Such a row
+	// lives seconds, and the pair this mark separates is written only by a daemon that reads it.
+	Relaunch bool `json:"relaunch,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.
@@ -476,10 +629,14 @@ type SuperviseRequest struct {
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
 
-// GateSeed records the design document version that starts a gate.
+// GateSeed records the design document version that starts a gate, and the step whose row it
+// starts: the seed reads that document from Dispatch and applies what it finds there.
 type GateSeed struct {
 	ArtifactID string `json:"artifactId"`
-	Version    int    `json:"version"`
+	// Step is the design-gate step the registered document is that of. A row written before a
+	// deployment could name a list carries none, and the facts its seed builds name no step.
+	Step    DesignStep `json:"step,omitempty"`
+	Version int        `json:"version"`
 	// Generation is the issue generation that registered the gate; the seed's fact is that
 	// generation's.
 	Generation uint64 `json:"generation"`
@@ -507,6 +664,43 @@ type IssueSuspend struct {
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
+// IssueBundle is the first act of an idle pod's release: it asks the shim of Role — a role whose
+// process is still running in the pod, because this row runs before the `release` rows that stop
+// them — for the git bundle of the unpushed work of the workspace every role of the issue shares,
+// and saves it in the daemon's own database (runtime.WorkspaceBundler). Only a shim can build it:
+// it runs the `jj` of the workspace it already works in, and it dies with its role's process, so
+// the save has to happen while that process is there.
+//
+// It stops nothing, so a release cancelled here costs only the save, and it sits before the
+// release's boundary (the first `release` row), so a delivery queued while it runs still cancels
+// the whole release and takes the stored bundle with it (outbox.cancelRelease).
+type IssueBundle struct {
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	Role           claim.Role `json:"role"`
+}
+
+func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
+
+// IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
+// the per-role `release` supervise rows that stopped the pod's role processes: it suspends the
+// issue's Sandbox, waits its pod out and deletes the Sandbox with the role Secrets it owns
+// (runtime.IssueSuspender), and records the release with the size of the bundle the save stored.
+// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
+// an IssueSuspend's do.
+//
+// Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
+// task, and the next wake for one of the roles brings a new pod that restores the bundle before
+// any role starts.
+type IssueRelease struct {
+	Tree           string `json:"tree"`
+	Generation     uint64 `json:"generation"`
+	TreeGeneration uint64 `json:"treeGeneration"`
+}
+
+func (IssueRelease) OutboxKind() OutboxKind { return OutboxKindIssueRelease }
+
 // WorkspaceRemove removes the workspace named by the row's issue.
 type WorkspaceRemove struct {
 	// Linger is the root generation whose linger the removal expires. Like a tree close, it acts
@@ -530,6 +724,22 @@ type MergeQueuePublish struct {
 }
 
 func (MergeQueuePublish) OutboxKind() OutboxKind { return OutboxKindMergeQueuePublish }
+
+// GatedStepsPublish is the design-gate steps the deployment gates, written onto the Dispatch
+// project row so a person reading Dispatch sees what holds a tree's work without reading the
+// deployment's configuration. Project is the Dispatch project key, and Steps the configured list
+// in the order the deployment gates it, empty for a deployment that gates nothing.
+//
+// The row belongs to no issue: its issue column holds Project itself, the bare key, which the
+// same split_part every reader scopes a row by answers. The daemon publishes at every boot and
+// keeps no record of what it last published, so the route is what decides whether anything
+// changed; a boot whose list matches the stored one writes no row there and appends no event.
+type GatedStepsPublish struct {
+	Project string       `json:"project"`
+	Steps   []DesignStep `json:"steps"`
+}
+
+func (GatedStepsPublish) OutboxKind() OutboxKind { return OutboxKindGatedStepsPublish }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -566,56 +776,66 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // (ghautomerge.Submit). Warned is the row having told the issue's architect once that GitHub has
 // not completed the merge it submitted (merge-waiting, the daemon's mergeWaitWarn), which keeps it
 // from telling again however much longer it waits, and Queued is the moment the workflow queued
-// this submission, which that wait is measured from. A queue of the same issue and head starts the
-// row over unarmed, unwarned and at a fresh Queued (readyMergeConflict): the upsert replaces the
-// payload, so a reopen resets the clock and the once-flag together and the two can never disagree,
-// as they would were the wait measured from the row's created_at, which the upsert leaves at the
-// original queueing. A row a daemon before Queued enqueued carries the zero time, and its executor
-// measures that one from created_at, which is what it was measured from then.
+// this submission, which that wait is measured from. Unmergeable is the moment of the first read
+// that found the merge queue's entry for Head UNMERGEABLE while the queue had built it on
+// UnmergeableBase, the commit named there, which that read found to be the tip of the pull
+// request's own base branch: an entry built on its base branch's tip has nothing ahead of it in
+// the queue to blame, so its own head is what the queue cannot merge, and a mark that still
+// stands at the same base commit once the daemon's queueConflictBound has passed sends the issue
+// back to implementing. The two are written and read together, so an entry GitHub rebuilds onto
+// another base replaces the pair and starts the clock again. Resubmitted is the row having spent
+// its one further submission at Head after GitHub's merge queue took the entry out for a conflict
+// (merge_conflict) while GitHub reported the head mergeable, which is the queue having conflicted
+// the head with an entry ahead of it rather than with the base: nothing else would ever submit
+// that merge again, so the row submits it once more and marks the mark spent, and a second such
+// removal of the same head ends the row with the architect told. Only a queue of a new READY at a
+// new head clears it, by replacing the whole payload; the daemon's own re-submission never does,
+// which is what keeps the re-submission from becoming the loop a merge submitted again whenever
+// its arm vanishes falls into (LEGION-800). ConflictUnknown is the moment of the first read after
+// such a removal in which GitHub answered the merge state UNKNOWN, having computed none: nothing
+// is decided on an answer GitHub did not give, so the row asks again on its own backoff until the
+// daemon's conflictUnknownBound has passed from that moment and then ends with the architect
+// told. A queue of the same issue and head starts the row over unarmed, unwarned, with no mark at
+// all and at a fresh Queued (readyMergeConflict): the upsert replaces the whole payload, so a
+// reopen resets the clock, the once-flag and the marks together and they can never disagree, as
+// they would were the wait measured from the row's created_at, which the upsert leaves at the
+// original queueing. A row a daemon before Queued enqueued carries the zero time, and its
+// executor measures that one from created_at, which is what it was measured from then.
 type ReadyMerge struct {
-	Number int       `json:"number"`
-	Head   string    `json:"head"`
-	Armed  bool      `json:"armed,omitempty"`
-	Warned bool      `json:"warned,omitempty"`
-	Queued time.Time `json:"queued,omitzero"`
+	Number          int       `json:"number"`
+	Head            string    `json:"head"`
+	Armed           bool      `json:"armed,omitempty"`
+	Warned          bool      `json:"warned,omitempty"`
+	Queued          time.Time `json:"queued,omitzero"`
+	Unmergeable     time.Time `json:"unmergeable,omitzero"`
+	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool      `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time `json:"conflictUnknown,omitzero"`
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }
 
-// CheckCompare wakes a production check from a build or from a deploy run, whichever of Build and
-// Deploy it carries (exactly one). Build is the commit a daemon boot reported itself built from,
-// or Dispatch announced every server process serves (server.started): the executor runs a GitHub
-// compare of the check's merge commit with it, as the implement App, and starts the look Look when
-// the build contains the merge. Deploy is a completed
-// run attempt of a deploy workflow the project names (`projects.<KEY>.deploys`): the executor reads
-// the run and its jobs from GitHub, and wakes the check once for each job whose named step succeeded
-// after the pull request merged. Cause names what asked for it (`daemon boot`, `dispatch start`,
-// `dispatch build` or `deploy run`), for the look's wake. OpenedAt is the check instance the
-// compare was queued for (ProductionCheck.OpenedAt): the executor compares nothing once a later
-// merge replaced it; zero names no instance and is not fenced. A row queued before Deploy existed
-// carries a build and no deploy, and decodes as it did.
-type CheckCompare struct {
-	Look     int        `json:"look"`
-	Cause    string     `json:"cause"`
-	Build    string     `json:"build,omitempty"`
-	Deploy   *DeployRun `json:"deploy,omitempty"`
-	OpenedAt time.Time  `json:"openedAt,omitzero"`
+// CheckWakeDue is the one row that can start a production check's next look beside the check's
+// own bound (CheckBound): the wake the checking agent named for itself on a pending report
+// (ProductionCheck.WakeAt), or the retry of a look nobody reported. There is at most one such row
+// per check: it is enqueued once, at the end of a look, and consumed when it fires, and the one
+// deferral that queues another — workflow's checkWakeDue, for an issue back in the workflow —
+// queues it in the transaction that finishes the row it came from. Nothing else wakes a check: no
+// boot, no build and no deploy event reads production any more.
+//
+// Look is the look the check stood at when the wake was named, so a row left over from an earlier
+// look starts nothing; OpenedAt is the check instance it was named for
+// (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
+// its looks from one again — zero names no instance and is not fenced. Reason is what the wake
+// is, for the look's wake and the log: the agent's own wake, or the retry of a look nobody
+// reported.
+type CheckWakeDue struct {
+	Look     int       `json:"look"`
+	OpenedAt time.Time `json:"openedAt,omitzero"`
+	Reason   string    `json:"reason"`
 }
 
-// DeployRun is the deploy workflow run a CheckCompare reads: attempt Attempt of GitHub Actions run
-// Run, of the configured Workflow (its `.github/workflows/` path) and Step (the step whose success
-// is a deploy), on Branch, the issue's recorded default branch. The executor holds the run GitHub
-// returns to each of them, since anyone holding an Envoy bearer can publish the envelope the row
-// was queued from.
-type DeployRun struct {
-	Run      int64  `json:"run"`
-	Attempt  int    `json:"attempt"`
-	Workflow string `json:"workflow"`
-	Step     string `json:"step"`
-	Branch   string `json:"branch"`
-}
-
-func (CheckCompare) OutboxKind() OutboxKind { return OutboxKindCheckCompare }
+func (CheckWakeDue) OutboxKind() OutboxKind { return OutboxKindCheckWake }
 
 // CheckLook is a look's bound: due at the look's wake plus the look bound, it ends look Look of
 // the issue's production check as a pending report would, when the look is still open then.
@@ -753,6 +973,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindIssueBundle:
+		value := IssueBundle{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindIssueRelease:
+		value := IssueRelease{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindWorkspaceRemove:
 		value := WorkspaceRemove{}
 		if err := decoder.Decode(&value); err != nil {
@@ -761,6 +993,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindMergeQueuePublish:
 		value := MergeQueuePublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindGatedStepsPublish:
+		value := GatedStepsPublish{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -783,8 +1021,8 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindCheckCompare:
-		value := CheckCompare{}
+	case OutboxKindCheckWake:
+		value := CheckWakeDue{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -803,6 +1041,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindPhaseEnded:
 		value := PhaseEnded{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindClaimRelease:
+		value := ClaimRelease{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -837,13 +1081,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-		if length := dispatch.MessageBodyLength(value.Reason); length > MessagePostLimit {
-			return fmt.Errorf("a status write's reason is %d characters, over the %d a message holds", length, MessagePostLimit)
-		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound:
+	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
+		}
+	case IssueBundle:
+		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
+			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role whose shim is asked")
+		}
+	case IssueRelease:
+		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
+			return fmt.Errorf("an issue release requires its tree and both workflow generations")
 		}
 	case WorkspaceRemove:
 		if value.Linger == 0 {
@@ -903,8 +1152,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.ResumeTask && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise resume task requires a start with a task and a phase")
 		}
-		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || value.Role != claim.RoleImplementer || value.Phase != "") {
-			return fmt.Errorf("a supervise check look names a start of the implementer with no phase, and only a start carries one")
+		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
+			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")
+		}
+		if value.Relaunch && (value.Op != "start" || value.Task != "" || value.Phase == "" || value.NeedsSlot) {
+			return fmt.Errorf("the relaunch half of a start carries a phase and no task, and waits for no slot")
+		}
+		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
+			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {
@@ -921,6 +1176,15 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Packet == "" {
 			return fmt.Errorf("merge queue publish requires packet")
 		}
+	case GatedStepsPublish:
+		if value.Project == "" {
+			return fmt.Errorf("a gated-steps publish requires the project whose row it writes")
+		}
+		for _, step := range value.Steps {
+			if !step.Valid() {
+				return fmt.Errorf("a gated-steps publish names %q, which is no design-gate step", step)
+			}
+		}
 	case AutoMergeDisable:
 		if value.Number <= 0 {
 			return fmt.Errorf("auto-merge disable requires its pull request number")
@@ -929,18 +1193,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Number <= 0 || value.Head == "" {
 			return fmt.Errorf("READY merge requires its pull request number and head")
 		}
-	case CheckCompare:
+	case CheckWakeDue:
 		if value.Look <= 0 {
-			return fmt.Errorf("check compare requires the look it starts")
+			return fmt.Errorf("check wake requires the look it was named at")
 		}
-		if (value.Build == "" && value.Deploy == nil) || value.Cause == "" {
-			return fmt.Errorf("check compare requires the build commit and what asked for it, or a deploy run in place of the build commit")
-		}
-		if value.Build != "" && value.Deploy != nil {
-			return fmt.Errorf("check compare carries both a build commit and a deploy run; it compares exactly one")
-		}
-		if deploy := value.Deploy; deploy != nil && (deploy.Run <= 0 || deploy.Attempt <= 0 || deploy.Workflow == "" || deploy.Step == "" || deploy.Branch == "") {
-			return fmt.Errorf("check compare's deploy run requires a positive run and attempt and its workflow, step and branch")
+		if value.Reason == "" {
+			return fmt.Errorf("check wake requires the reason it wakes the check")
 		}
 	case CheckLook:
 		if value.Look <= 0 {
@@ -965,20 +1223,39 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	return nil
 }
 
+// validNoticeKinds is the set of notice kinds the validation accepts: a kind reaches the outbox
+// only by being on this list, since validNoticeKind decides from it alone and NewOutboxRow
+// refuses a notice of any other kind. It is a list rather than a switch so a test can range over
+// it, and a kind added here turns up as a row that test is missing rather than as a kind nobody
+// checked.
+var validNoticeKinds = []NoticeKind{
+	"phase-finished", "worker-died", "worker-stalled", "held",
+	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
+	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
+	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
+	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted",
+}
+
+// validNoticeKind says whether kind is a notice an architect is told. `worker-stalled` is what
+// the daemon's stall backstop did to a worker whose agent stopped stepping, with the task it
+// was serving still owed (internal/daemon's backstopStalledTurns), which is a fact of that
+// worker's issue and so the issue's architect's to read, as `worker-died` is. What it did is
+// usually the turn ended and the session brought back; where the wake pacing parked the
+// relaunch, it is the task taken back with that launch queued and the stalled process still
+// running until the launch's turn, which the notice names. The notice says what became of that
+// stalled process as well, where the end let it go: that it was stopped, or that the runtime
+// did not confirm the stop and it may be running still (internal/daemon's stallBackstopEnds,
+// stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
-	switch kind {
-	case "phase-finished", "worker-died", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused", "child-closed", "child-status", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(validNoticeKinds, kind)
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice:
 		return true
 	default:
 		return false
@@ -987,9 +1264,16 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "tree_close", "issue_close":
+	case "start", "suspend", "release", "tree_close", "issue_close":
 		return true
 	default:
 		return false
 	}
+}
+
+// worksCheck says whether role may work a production check's look: the two values a check's
+// record can hold, the migration's default (implementer) and the one value the project's
+// `production_check` setting takes (tester). An architect's look is refused.
+func worksCheck(role claim.Role) bool {
+	return role == claim.RoleImplementer || role == claim.RoleTester
 }

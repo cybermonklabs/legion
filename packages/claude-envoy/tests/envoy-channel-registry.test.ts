@@ -1,25 +1,26 @@
 import { expect, test } from "bun:test"
-import { rm } from "node:fs/promises"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
-import { SessionIdentity } from "../src/session-identity"
+import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   directSubject,
   FakeNats,
   noInterest,
   recordingClient,
-  scratchState,
   sessionOptions,
   settled,
+  useScratchState,
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
 
+const scratchState = useScratchState()
+
 test("drops local topics named by a human Dispatch subscription removal", async () => {
   const nats = new FakeNats()
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
       connection: nats,
@@ -54,12 +55,11 @@ test("drops local topics named by a human Dispatch subscription removal", async 
     ])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a resumed server rebuilds the interests its session id already registered and follow reports them as not fresh", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const subscribes: Array<readonly string[]> = []
   const issueTopic = "notifications.dispatch.issue.DSP-3.>"
@@ -97,12 +97,11 @@ test("a resumed server rebuilds the interests its session id already registered 
     expect(await session.follow([issueTopic])).toEqual([])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registration in flight when a topic is unsubscribed cannot write it back into the entry", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   // The listener merges registered topics into the entry and only an unsubscribe removes one.
   const entry = new Set<string>()
   let held: PromiseWithResolvers<void> | undefined
@@ -144,12 +143,11 @@ test("a registration in flight when a topic is unsubscribed cannot write it back
     expect([...entry].sort()).toEqual([directSubject, kept])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registration in flight when Dispatch removes a subscription cannot write the topic back", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const entry = new Set<string>()
   let held: PromiseWithResolvers<void> | undefined
@@ -210,12 +208,11 @@ test("a registration in flight when Dispatch removes a subscription cannot write
     expect([...entry].sort()).toEqual([directSubject, kept])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registry removal that fails is reconciled by the next heartbeat, without stripping a topic re-followed since", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const entry = new Set<string>([directSubject])
   let failNextUnsubscribe = false
@@ -279,12 +276,11 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
     expect([...entry].sort()).toEqual([directSubject, reFollowed])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
-test("a persistent reconciliation failure retries once immediately, then waits for the next heartbeat, rather than hot-looping", async () => {
-  const stateDirectory = await scratchState()
+test("a persistent reconciliation failure retries once after a delay of its own, then waits for the next heartbeat, rather than hot-looping", async () => {
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   let getInterestAttempts = 0
   const client = recordingClient([], {
@@ -293,6 +289,9 @@ test("a persistent reconciliation failure retries once immediately, then waits f
       throw new Error("listener degraded")
     },
   })
+  // The one extra call the failed tick buys, read rather than waited out: a session waits
+  // 20–40 s for it, and this fires it by hand.
+  const scheduled: { readonly delayMs: number; readonly run: () => void }[] = []
   // A handoff pid makes startup request one heartbeat without waiting out the 10 s
   // interval below, which otherwise contributes no tick in this test's window. No
   // handoff file exists, so that tick's adoptHandoff no-ops, and the watcher's
@@ -303,31 +302,125 @@ test("a persistent reconciliation failure retries once immediately, then waits f
       client,
       heartbeatMs: 10_000,
       handoffPid: 991,
+      scheduleRetry: (run, delayMs) => {
+        scheduled.push({ delayMs, run })
+        return () => undefined
+      },
     }),
   )
 
   try {
-    // One at startup (`syncRegisteredInterests`, swallowed there), one from the
-    // heartbeat the handoff pid requests, one bounded immediate retry (N2) — then
-    // the outage guard must hold with no interval tick due for 10 s.
+    // One at startup (`syncRegisteredInterests`, swallowed there) and one from the heartbeat the
+    // handoff pid requests. The call that failure buys waits out a delay rather than going at
+    // once, so a listener that is already slow is not asked again in the same breath.
     await waitFor(
-      async () => getInterestAttempts >= 3,
-      "the startup read, the first reconciliation attempt, and its one bounded retry",
+      async () => getInterestAttempts >= 2 && scheduled.length === 1,
+      "the startup read, the first reconciliation attempt, and the one extra call it schedules",
     )
+    expect(scheduled[0]?.delayMs).toBeGreaterThanOrEqual(20_000)
+    expect(scheduled[0]?.delayMs).toBeLessThanOrEqual(40_000)
+    scheduled[0]?.run()
+    await waitFor(async () => getInterestAttempts >= 3, "the extra call itself")
     // A real wait, not a guessed one: proving the guard holds needs to observe a
     // window in which nothing further happens, and nothing else here produces an
     // event to wait for instead — a hot loop would have run thousands of times
     // over 150 ms (measured: ~9,000 in 300 ms without this fix).
     await Bun.sleep(150)
     expect(getInterestAttempts).toBe(3)
+    // The extra call failed too: the session waits for the next heartbeat rather than asking
+    // for a second one.
+    expect(scheduled).toHaveLength(1)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
+  }
+})
+
+test("a registration that times out is retried once inside forty seconds, and a success returns the cadence to the heartbeat", async () => {
+  const stateDirectory = scratchState()
+  const nats = new FakeNats()
+  const claudePid = 993
+  let registryDown = false
+  let attempted = 0
+  let registered = 0
+  const client = recordingClient([], {
+    subscribe: async () => {
+      attempted += 1
+      // The symptom from production: the registration call itself times out under listener load.
+      if (registryDown) throw new Error("The operation timed out.")
+      registered += 1
+      return noInterest()
+    },
+  })
+  // The extra call a failed tick buys, read rather than waited out: its delay is the assertion,
+  // and the call itself is fired here, so the test spends none of the seconds a session does.
+  const scheduled: { readonly delayMs: number; readonly run: () => void }[] = []
+  // The handoff file is this test's tick: the server polls it, and one naming the id the session
+  // already has adopts nothing, leaving a plain heartbeat behind it. The interval is the
+  // production 90 s, so every call here is one a failure or this test asked for.
+  const handoff = sessionHandoffFile(stateDirectory, claudePid)
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      client,
+      heartbeatMs: 90_000,
+      handoffPid: claudePid,
+      scheduleRetry: (run, delayMs) => {
+        scheduled.push({ delayMs, run })
+        return () => undefined
+      },
+    }),
+  )
+
+  try {
+    // Startup registers, and so does the tick its handoff pid asks for: the ticks this test
+    // drives come after both.
+    await waitFor(
+      async () => registered >= 2,
+      "the registrations startup and the tick it asks for make",
+    )
+
+    // A tick whose registration times out buys one extra call, well short of the 90 s the
+    // interval would otherwise leave the session unregistered for.
+    registryDown = true
+    await writeSessionHandoff(handoff, "ses_claude")
+    await waitFor(
+      async () => scheduled.length === 1,
+      "the failed registration to schedule one extra call",
+    )
+    const delayMs = scheduled[0]?.delayMs ?? 0
+    expect(delayMs).toBeGreaterThanOrEqual(20_000)
+    expect(delayMs).toBeLessThanOrEqual(40_000)
+
+    // It is a registration of its own, and the only one: a retry that fails waits for the next
+    // heartbeat rather than asking again.
+    const beforeRetry = attempted
+    scheduled[0]?.run()
+    await waitFor(async () => attempted > beforeRetry, "the extra call to reach the listener")
+    await settled()
+    expect(scheduled).toHaveLength(1)
+
+    // The next heartbeat lands...
+    registryDown = false
+    const beforeHealthy = registered
+    await writeSessionHandoff(handoff, "ses_claude")
+    await waitFor(
+      async () => registered > beforeHealthy,
+      "the next heartbeat to register the session",
+    )
+
+    // ...and the success restored the budget: the failure after it buys an extra call of its own.
+    registryDown = true
+    await writeSessionHandoff(handoff, "ses_claude")
+    await waitFor(async () => scheduled.length === 2, "a fresh extra call after the success")
+    expect(scheduled[1]?.delayMs).toBeGreaterThanOrEqual(20_000)
+    expect(scheduled[1]?.delayMs).toBeLessThanOrEqual(40_000)
+  } finally {
+    await session.shutdown()
   }
 })
 
 test("a registry read that fails at startup does not let the heartbeat delete the registered interests", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-5"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -366,12 +459,11 @@ test("a registry read that fails at startup does not let the heartbeat delete th
     expect(session.topics()).toContain(alreadyRegistered)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a listener error that is not a 404 is not an absence, so the heartbeat still adopts", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-7"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -424,12 +516,11 @@ test("a listener error that is not a 404 is not an absence, so the heartbeat sti
     expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a shutdown landing before the heartbeat's registry read leaves the registry entry alone", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-1"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -479,12 +570,11 @@ test("a shutdown landing before the heartbeat's registry read leaves the registr
   } finally {
     release.resolve()
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a shutdown landing inside the heartbeat's registry read leaves the registry entry alone", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-2"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -545,12 +635,11 @@ test("a shutdown landing inside the heartbeat's registry read leaves the registr
   } finally {
     release.resolve()
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a Dispatch subscription removal that names no topics removes nothing", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const session = await startChannelSession(
@@ -582,6 +671,82 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
     expect(session.topics()).toEqual([directSubject, topic])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
+  }
+})
+
+// The record outlives this process by the live window and the gone horizon after it, so the
+// deregistration is what ends the session for its peers: a registry write this listener has
+// stalled on must delay it, never swallow it (dispatch://INFRA-392).
+test("the shutdown deregistration waits for a stalled registration, then goes out anyway", async () => {
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const wedged = Promise.withResolvers<void>()
+  let registrations = 0
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: new FakeNats(),
+      registrationSettleMs: 50,
+      heartbeatMs: 25,
+      client: recordingClient(calls, {
+        subscribe: async (input) => {
+          calls.push(`subscribe ${input.sessionID}`)
+          registrations += 1
+          // The first registration answers; every later one never does.
+          if (registrations > 1) await wedged.promise
+          return noInterest()
+        },
+      }),
+    }),
+  )
+
+  try {
+    await waitFor(async () => registrations > 1, "a registration the listener never answers")
+
+    await session.shutdown()
+
+    expect(calls).toContain("unregister ses_claude")
+  } finally {
+    wedged.resolve()
+  }
+})
+
+// The wait above is the shutdown path's whole budget, not one each: the two five-second waits in
+// a row left ten seconds before the DELETE was sent, and the process group is killed five
+// seconds after SIGTERM, so the record survived for the gone horizon (dispatch://INFRA-392).
+test("the shutdown deregistration spends a quarter second settling, not the whole of both waits", async () => {
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const wedged = Promise.withResolvers<void>()
+  let registrations = 0
+  const session = await startChannelSession(
+    // No `registrationSettleMs`: this is the shipped bound, over both the write chain the wedged
+    // registration holds and that registration itself.
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: new FakeNats(),
+      heartbeatMs: 25,
+      client: recordingClient(calls, {
+        subscribe: async (input) => {
+          calls.push(`subscribe ${input.sessionID}`)
+          registrations += 1
+          if (registrations > 1) await wedged.promise
+          return noInterest()
+        },
+      }),
+    }),
+  )
+
+  try {
+    await waitFor(async () => registrations > 1, "a registration the listener never answers")
+
+    // Real time: the bound is a real timer, and the failure is that the DELETE waits out two
+    // five-second settles the process is never given.
+    const startedAt = Date.now()
+    await session.shutdown()
+    const elapsed = Date.now() - startedAt
+
+    expect(calls).toContain("unregister ses_claude")
+    expect(elapsed).toBeLessThan(2_000)
+  } finally {
+    wedged.resolve()
   }
 })

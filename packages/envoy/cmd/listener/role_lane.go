@@ -22,7 +22,10 @@ const roleForwardWaitLimit = 4096
 const roleLaneSlowConsumerInterval = 5 * time.Second
 
 // roleForward is one role message the role lane resolved to its holder, every guard passed: item is
-// the message as it arrived and sessionID its holder.
+// the message as it arrived and sessionID its holder. Every forward it makes waits for the
+// holder's receipt: a role message is forwarded only to a holder that reads live (publishRole,
+// roleTopicDelivery), so no role forward is the stored-only kind an unresponsive recipient of an
+// ad-hoc topic takes (confirmTopicRecipient).
 type roleForward struct {
 	item      contracts.Envelope
 	sessionID string
@@ -52,11 +55,24 @@ func newRoleForwarder(cfg listenerDeliveryHandlerConfig) *roleForwarder {
 	return &roleForwarder{cfg: cfg, slots: make(chan struct{}, roleForwardWaitLimit), queues: map[string][]roleForward{}}
 }
 
-// forwarded is the envelope published on the holder's agent subject: the message under the
-// role-forward dedupe key, which the durable path recognises and acknowledges.
+// forwarded is the envelope published on the holder's agent subject: the message under the key
+// contracts.RoleForwardDedupeKey names for this holder, which the durable path recognises and
+// acknowledges. That is the role-forward dedupe key for every key but the holder's own agent
+// send key, which the forward carries as it is: Dispatch's outbox keys the copy of a comment by
+// the failed mention of the session that mention names, and the host of that session, which
+// claimed the key when the mention's send landed, drops the copy rather than showing the comment
+// twice. A copy kept for a role nobody held carries each mentioned session's own settled
+// mention's key instead (contracts.Envelope.MentionDedupeKeys) - a mention delivered as much as
+// one that failed, since a delivered mention's key is claimed at that session's host too - the
+// holder it would reach being unknown when it was kept, and the forward to a holder that map
+// names goes under that session's key alone, so whichever of the comment's mentioned sessions
+// claims the role is the one whose host drops the copy. Dispatch's outbox keys its own forwards
+// by the same rule
+// (internal/dispatch/outbox/role.go, roleForward.forward), so the two writers of a role's kept
+// lane forward one copy under one key, and so under one msgID.
 func (f roleForward) forwarded() contracts.Envelope {
 	forwarded := f.item
-	forwarded.DedupeKey = roleForwardDedupePrefix + f.item.DedupeKey
+	forwarded.DedupeKey = contracts.RoleForwardDedupeKey(f.item, f.sessionID)
 	return forwarded
 }
 
@@ -108,7 +124,7 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.queues[sessionID] = queue[1:]
 		f.mu.Unlock()
 
-		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleReceiptTimeout)
+		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleReceiptTimeout, false)
 		if err != nil {
 			f.finish(forward, err)
 			continue
@@ -137,11 +153,16 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 	return waitWithin(ctx, &f.pending)
 }
 
-// startRoleForward is forwardRole over client: a forward waits for the stream's acknowledgement
-// and the holder's receipt (bus.Client.StartRequestCoreTo).
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-		forward, err := client.StartRequestCoreTo(subject, item, msgID, timeout)
+// startRoleForward is forwardRole over client: a forward to a holder that answers receipts waits
+// for the stream's acknowledgement and the receipt (bus.Client.StartRequestCoreTo), and one to a
+// holder that answers none for the acknowledgement alone (bus.Client.StartRequestStoredTo).
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration, storedOnly bool) (func() error, error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration, storedOnly bool) (func() error, error) {
+		start := client.StartRequestCoreTo
+		if storedOnly {
+			start = client.StartRequestStoredTo
+		}
+		forward, err := start(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}

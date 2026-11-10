@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -113,7 +114,7 @@ func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: mainPathProject, Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: mainPathProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, mainPathProject, quietLogger())
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	// The hold of what a root architect's task names is the claim store's own write
@@ -325,7 +326,7 @@ func (r *mainPathRig) bringUp() {
 		}
 	}
 	r.waitMachine()
-	if got := machine.Claim().State; !claimTookRole(got) {
+	if got := machine.Claim().State; !supervise.TookRole(got) {
 		r.t.Fatalf("the architect after its ready = %s, want a claim that took its role", got)
 	}
 }

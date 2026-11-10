@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -25,8 +24,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	legionstore "github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -44,12 +43,12 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "Workflow table", Phase: phase.Admitted,
 		Generation: 1, Status: "in_progress", Rank: "U",
 	})
+	seedTreeLifecycle(t, pool, "LEGION-208")
 
 	engine := New(store, Config{
 		Project:        "LEGION",
-		DesignGate:     config.DesignGateOff,
+		Steps:          config.DesignGateOff.Steps(),
 		ReviewRoundCap: 3,
-		MaxFixAttempts: 3,
 		Linger:         time.Hour,
 		Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, nil)
@@ -58,6 +57,9 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact: %v", err)
 	}
+	// The registration opens the gate and releases the root; the waiting line starts its first
+	// phase, at the slot that phase needs.
+	startUnblockedChildren(t, pool, engine)
 
 	var gotPhase string
 	if err := pool.QueryRow(ctx, "select phase from issues where key = $1", "LEGION-208").Scan(&gotPhase); err != nil {
@@ -76,7 +78,12 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		t.Fatalf("gate = latest %d approved %v, want version 4 open", latest, approved)
 	}
 
-	rows, err := pool.Query(ctx, "select kind, payload from outbox order by id")
+	// The relaunch half of the planner's start is left out, as every other assertion of the
+	// outbox's shape leaves it out (assertOutboxKinds): a start is two rows now, and this is
+	// about the one that carries the task.
+	rows, err := pool.Query(ctx, `select kind, payload from outbox
+		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
+		order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -98,9 +105,11 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	}
 }
 
-// A child entering an open gate is recorded and its planning started in one fact, its planner's
-// start queued behind the row creating the child's branch, which the start waits for.
-func TestRegisteredOpenGateRecordsChildAndStartsPlanningInTheSameFact(t *testing.T) {
+// A child entering an open gate is recorded by its own fact and starts planning when the waiting
+// line reaches it, its planner's start queued behind the row creating the child's branch, which
+// the start waits for, and the in_progress of the phase it enters written over the todo Dispatch
+// shows.
+func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 4, Status: "in_progress", Rank: "U"})
@@ -113,6 +122,7 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningInTheSameFact(t *testing
 	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact: %v", err)
 	}
+	startUnblockedChildren(t, pool, engine)
 
 	var tree, gotPhase string
 	if err := pool.QueryRow(ctx, "select tree, phase from issues where key = $1", "LEGION-209").Scan(&tree, &gotPhase); err != nil {
@@ -121,7 +131,9 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningInTheSameFact(t *testing
 	if tree != "LEGION-208" || gotPhase != string(phase.Planning) {
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "notice"})
+	// The second notice is the architect's: every child the line starts tells it so
+	// (ChildStartedNotice).
+	assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "supervise", "notice", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -144,15 +156,16 @@ func TestRefusedReadyIsCommittedAndApprovalAdvancesWithoutSecondReady(t *testing
 	if err != nil {
 		t.Fatalf("ApplyFact READY: %v", err)
 	}
-	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Message != "READY refused: approve design version 4 before requesting READY." {
-		t.Fatalf("READY refusal = %#v, want committed version-4 refusal", result.Refusal)
+	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "DESIGN_GATE_CLOSED" ||
+		result.Refusal.Message != "READY refused: approve design version 4 of the tree's spec document before requesting READY." {
+		t.Fatalf("READY refusal = %#v, want a DESIGN_GATE_CLOSED refusal naming the spec step's version 4", result.Refusal)
 	}
 	var pending int
 	if err := pool.QueryRow(ctx, "select ready_pending_version from issues where key = $1", "LEGION-208").Scan(&pending); err != nil {
 		t.Fatalf("read committed ready pending version: %v", err)
 	}
 	if pending != 4 {
-		t.Fatalf("ReadyPendingVersion = %d, want 4", pending)
+		t.Fatalf("ready_pending_version = %d, want 4", pending)
 	}
 
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "approval", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 4}, engine, admissionStub{}); err != nil {
@@ -191,23 +204,20 @@ func TestReadyRefusedWithNoDesignGateCommitsAndRecordsNoPendingVersion(t *testin
 		t.Fatalf("read committed ready pending version: %v", err)
 	}
 	if pending != nil {
-		t.Fatalf("ReadyPendingVersion = %d, want none: there is no version to approve", *pending)
+		t.Fatalf("ready_pending_version = %d, want none: there is no version to approve", *pending)
 	}
 }
 
-// A pull request GitHub reopens is the same pull request. Its fix attempts and blocked attempts
-// are what bound the review rounds, and rebuilding the record from the reopen zeroed them: closing
-// and reopening a pull request bought a fresh set of attempts, which is the cap the workflow has.
-// The head the count last counted is carried with them, since the fix-attempt cap holds a red at
-// the attempt it marks (classify.FixAttemptCapHolds) and a reopen judges no head green.
-func TestAReopenedPullRequestKeepsItsAttemptCounters(t *testing.T) {
+// A pull request GitHub reopens is the same pull request: the record is not rebuilt from the
+// reopen, and the head the reopen names becomes the pull request's.
+func TestAReopenedPullRequestKeepsItsRecord(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{
 		Issue: "LEGION-208", Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: "old",
 		HeadUpdatedAt: time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC), Failing: []string{},
-		FixAttempts: 2, BlockedAttempts: 1, HeadCounted: "old", State: record.PullRequestOpen,
+		State: record.PullRequestOpen,
 	})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -218,13 +228,9 @@ func TestAReopenedPullRequestKeepsItsAttemptCounters(t *testing.T) {
 		t.Fatalf("ApplyFact reopened: %v", err)
 	}
 
-	var fix, blocked int
-	var head, counted string
-	if err := pool.QueryRow(ctx, "select fix_attempts, blocked_attempts, head_sha, head_counted from pull_requests where issue = $1", "LEGION-208").Scan(&fix, &blocked, &head, &counted); err != nil {
+	var head string
+	if err := pool.QueryRow(ctx, "select head_sha from pull_requests where issue = $1", "LEGION-208").Scan(&head); err != nil {
 		t.Fatalf("read the reopened pull request: %v", err)
-	}
-	if fix != 2 || blocked != 1 || counted != "old" {
-		t.Fatalf("reopened pull request counters = %d/%d, counted head %q, want the 2/1 and %q it carried", fix, blocked, counted, "old")
 	}
 	if head != "new" {
 		t.Fatalf("reopened pull request head = %q, want the head the reopen named", head)
@@ -337,7 +343,7 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "CAPTURE-4", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "CAPTURE-4", Project: "CAPTURE", Title: "captured gate", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-	engine := New(record.NewStore(), Config{Project: "CAPTURE", ReviewRoundCap: 3, MaxFixAttempts: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
+	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "register-captured-gate", intake.GateRegistered{Issue: "CAPTURE-4", ArtifactID: "0544d460-0931-4374-b20b-790408519edd", Version: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("register gate: %v", err)
 	}
@@ -398,6 +404,12 @@ func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
 	}
 }
 
+// The round that reaches review_round_cap is posted on the Dispatch issue once and told to the
+// architect once, as a pr-blocked notice. The message names both halves of what the cap read:
+// how many of the implementer's rounds were counted against it, and how many conflict rounds
+// were not, so an architect woken by it can tell a loop of rejected work from a base branch that
+// kept moving (dispatch://INFRA-1442). Here no round was a conflict round, so the second number
+// is none, and the third rejection reaches the cap on its own.
 func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -413,6 +425,18 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	assertOutboxKinds(t, pool, []string{"dispatch_message", "notice", "dispatch_status", "supervise", "notice"})
 	if rounds := implementerRounds(t, pool); rounds != 3 {
 		t.Fatalf("implementer rounds = %d, want 3", rounds)
+	}
+	want := "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted."
+	messages, blocked := capPosts(t, pool)
+	if len(messages) != 1 || messages[0] != want || blocked != 1 {
+		t.Fatalf("the cap posted %q and %d pr-blocked notices, want one message %q and one notice", messages, blocked, want)
+	}
+	var reason string
+	if err := pool.QueryRow(ctx, "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'pr-blocked'").Scan(&reason); err != nil {
+		t.Fatalf("read the architect's pr-blocked notice: %v", err)
+	}
+	if reason != want {
+		t.Fatalf("the pr-blocked notice reads %q, want %q: the architect reads the same two numbers", reason, want)
 	}
 }
 
@@ -555,7 +579,7 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T)
 // handoff included, neither of which has a phase row. A redelivered merge changes nothing. Every
 // expiry row names the root generation whose linger it expires, a child's too, which keeps the
 // earlier generation of the run that admitted it. The close opens the root's production check,
-// whose first look the implementer reports here before the linger ends, since the tree's close
+// whose first look the tester reports here before the linger ends, since the tree's close
 // waits for an open check (check_test.go). No child of such a tree is left mid-run, so the expiry
 // hands none over; the hand-over of a root a person closed is admit's cover (finished_root_test.go).
 func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testing.T) {
@@ -569,7 +593,7 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
 
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
 	if _, err := intake.ApplyFact(ctx, pool, "github", "merged", merged, engine, admissionStub{}); err != nil {
@@ -636,10 +660,14 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 	}
 }
 
-// superviseRequests counts the enqueued supervise requests of one operation by issue/role.
+// superviseRequests counts the enqueued supervise requests of one operation by issue/role, with
+// the relaunch half of a phase-worker start left out: a start is two rows (StartOrOwe), and the
+// one these counts are about is the row that carries the task.
 func superviseRequests(t *testing.T, pool *pgxpool.Pool, op string) map[string]int {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select issue, payload->>'role' from outbox where kind = 'supervise' and payload->>'op' = $1", op)
+	rows, err := pool.Query(t.Context(), `select issue, payload->>'role' from outbox
+		where kind = 'supervise' and payload->>'op' = $1
+			and not (payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`, op)
 	if err != nil {
 		t.Fatalf("read %s requests: %v", op, err)
 	}
@@ -672,10 +700,14 @@ func sameCounts(got, want map[string]int) bool {
 	return true
 }
 
+// assertOutboxCount counts the rows of one kind, with the relaunch half of a phase-worker start
+// left out: a start is two rows (StartOrOwe) and the one these counts are about is the row that
+// carries the task.
 func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) {
 	t.Helper()
 	var got int
-	if err := pool.QueryRow(t.Context(), "select count(*) from outbox where kind = $1", kind).Scan(&got); err != nil {
+	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1
+		and not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`, kind).Scan(&got); err != nil {
 		t.Fatalf("count %s rows: %v", kind, err)
 	}
 	if got != want {
@@ -791,7 +823,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 // resumed implementer which one it is in.
 func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phase) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start'")
+	rows, err := pool.Query(t.Context(), "select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> ''")
 	if err != nil {
 		t.Fatalf("read start requests: %v", err)
 	}
@@ -916,9 +948,14 @@ func seedGate(t *testing.T, pool *pgxpool.Pool, gate record.DesignGate) {
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutGate(t.Context(), tx, gate) })
 }
 
+// seedSlot grants the slot and opens the tree lifecycle of the issue holding it under the
+// workflow's authority, as promotion's own admission does in one transaction. The lifecycle, not
+// the slot row, is what says a tree runs (record.TreeLive), so a fixture that granted a slot and
+// nothing else would describe a tree the daemon reads as never opened.
 func seedSlot(t *testing.T, pool *pgxpool.Pool, slot record.Slot) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutSlot(t.Context(), tx, slot) })
+	seedTreeLifecycle(t, pool, slot.Issue)
 }
 
 func seedPhase(t *testing.T, pool *pgxpool.Pool, row record.PhaseRow) {
@@ -956,14 +993,21 @@ const testReviewApp = "legion-reviewer[bot]"
 // logging to log (the default logger when nil).
 func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", DesignGate: policy, ReviewRoundCap: 3, MaxFixAttempts: 3, Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
 
+// assertOutboxKinds is every row the transition left, by kind and in the order it wrote them,
+// with the relaunch half of each phase-worker start left out: a start is two rows now
+// (StartOrOwe), one that brings the role's session back carrying no task and one that carries
+// the task and waits for the issue's slot, and it is the second that every one of these
+// assertions is about. A test that is about the relaunch row itself reads it by name.
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select kind from outbox order by id")
+	rows, err := pool.Query(t.Context(), `select kind from outbox
+		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')
+		order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -988,8 +1032,8 @@ func gateState(t *testing.T, pool *pgxpool.Pool, issue string) record.DesignGate
 	t.Helper()
 	var gate *record.DesignGate
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		var err error
-		gate, err = record.NewStore().Gate(t.Context(), tx, issue)
+		gates, err := record.NewStore().GatesOf(t.Context(), tx, issue)
+		gate = record.SpecGate(gates)
 		return err
 	})
 	if gate == nil {
@@ -1050,50 +1094,11 @@ func sameStrings(got, want []string) bool {
 	return true
 }
 
+// migratedPool is a pool on a database carrying every migration, cloned from the package's
+// template (testpg.ClonePool).
 func migratedPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN is unset, so workflow tests need no database")
-	}
-	base, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", err)
-	}
-	adminURL := *base
-	adminURL.Path = "/postgres"
-	admin, err := pgxpool.New(t.Context(), adminURL.String())
-	if err != nil {
-		t.Fatalf("open admin connection: %v", err)
-	}
-	t.Cleanup(admin.Close)
-	name := "legion_workflow_test_" + randomSuffix(t)
-	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
-	if _, err := admin.Exec(t.Context(), "create database "+name+" strategy file_copy"); err != nil {
-		t.Fatalf("create test database: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			t.Errorf("drop test database: %v", err)
-		}
-	})
-	testURL := *base
-	testURL.Path = "/" + name
-	st, err := legionstore.Open(t.Context(), testURL.String())
-	if err != nil {
-		t.Fatalf("open test store: %v", err)
-	}
-	if _, err := st.Migrate(t.Context()); err != nil {
-		st.Close()
-		t.Fatalf("migrate test store: %v", err)
-	}
-	st.Close()
-	pool, err := pgxpool.New(t.Context(), testURL.String())
-	if err != nil {
-		t.Fatalf("open test pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return testpg.ClonePool(t, "legion_workflow_test")
 }
 
 func randomSuffix(t *testing.T) string {

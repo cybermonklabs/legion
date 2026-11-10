@@ -16,6 +16,39 @@ import (
 // (RefusalReason), since one of them — a turn already running — is no refusal of the work.
 var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 
+// ErrAdoptRefused is the agent's shim answering AdoptWorkingCopy with `ok: false`: the working
+// copy could not be given the role's App identity — a jj wedged on a stale lock, a metaedit that
+// failed, the shim's own command timeout. AdoptWorkingCopy wraps it for a refusal and for nothing
+// else, and the supervisor charges it to the same prompt budget ErrPromptRefused is charged to.
+// The two are the far side's own answer about this workspace, so asking again in a minute changes
+// nothing by itself, and an unbounded retry of either is a silent stop: the task is never
+// delivered, nothing fails, and the claim waits for hours with no one told (INFRA-1480, where two
+// planning tasks were held 31 and 33 hours by a stale lock). Charged, the claim runs out of budget
+// and fails, which the workflow reports.
+//
+// What is not this, and is charged nothing because it is no answer about the workspace: no answer
+// within the RPC timeout, a closed connection, a frame lost on the way — the prompt never reached
+// the far side — and a failure to mint the role's identity, which is ErrIdentityUnavailable
+// below.
+//
+// Every `ok: false` is this, the shim's own command timeout included, and the refusal's text is
+// never read to decide: a jj wedged on a stale lock reports as that timeout, and that is the very
+// fault the measured incident was.
+var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working copy")
+
+// ErrIdentityUnavailable is the daemon failing to mint the role's GitHub App identity for the
+// working copy it is about to adopt: supervise's Machine.adopt wraps it around the error its
+// Identity dep gave, and around nothing else. Like a lost frame it is charged nothing — the token
+// is minted daemon-side, before any frame leaves, so the failure is no answer about this
+// workspace or this agent — and the delivery waits for the next hello, sweep, turn end or ready.
+//
+// It is a sentinel of its own rather than one more unnamed uncharged failure because the
+// supervisor's log is where an operator diagnoses a send that never lands, and these two are
+// diagnosed in different places: a frame lost on the way is the cluster's wiring, while this is
+// an outage of the GitHub App, which no amount of looking at the network shows. Reported as a
+// transport loss, it sends that operator to the wrong side of the daemon.
+var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity could not be minted")
+
 // RefusalReason is the words the agent refused with — Oh My Pi's `error` beside its
 // `success: false` — read from the error in err's chain that carries them, or "" when none does.
 // The stream's refusal carries them (stream.RefusedError), and so does the fake connection's.
@@ -69,6 +102,22 @@ const (
 	RescueFailed  = "error"
 )
 
+// WorkspaceBundleTimeout is how long the agent's side is given to build its workspace's bundle:
+// a handful of jj reads and one `git bundle create` over the commits no remote branch holds,
+// which is a pack of a working copy's own change and a few unpushed commits, never the clone's
+// history. It is the runtimes' budget for the request, not a setting: a release that cannot get
+// a bundle in this long is one the daemon stops rather than one it waits longer for.
+const WorkspaceBundleTimeout = 5 * time.Minute
+
+// CompactTimeout is how long Oh My Pi is given to compact a session: the operation's own bound,
+// not worker_rpc_timeout_seconds, because a compaction is a model call over the whole transcript
+// where every other request on this interface is a frame the far side answers at once. It is a
+// constant rather than a setting for the reason WorkspaceBundleTimeout is one: a compaction that
+// cannot finish in this long is one the caller is told about rather than one the daemon waits
+// longer for. Ten minutes is the ladder's own widest step (supervise's promptRetryMax), so a
+// compaction never outlasts the wait the stuck claim is already in.
+const CompactTimeout = 10 * time.Minute
+
 // Conn is one agent's live connection, as everything above the transport sees it: a way to ask
 // the agent to do something, and nothing more. The facts that come back — the acknowledgement,
 // the turn starting, the turn ending, the connection closing — are events on the stream, never
@@ -93,6 +142,17 @@ type Conn interface {
 	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
 	// workspace the daemon cannot reach itself.
 	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
+	// Compact asks Oh My Pi to compact its session's context, writing the summary to
+	// customInstructions, and returns when it answers or bound runs out. Nil is a session
+	// compacted. A compaction Oh My Pi refused or skipped — a session too small, one already
+	// compacted, a summarizer that failed — is a refusal carrying its words (RefusalReason);
+	// every other error is transport.
+	Compact(ctx context.Context, customInstructions string, bound time.Duration) error
+	// BundleWorkspace has the agent's side bundle the unpushed work of the workspace every role
+	// of issue shares, for a release that is about to take the pod, its disk and that workspace
+	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, with the
+	// size it would have been in the refusal, so the release can stop and record why.
+	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
 	// RescueUnpushed asks the agent's shim to check every workspace on its pod's disk for work the
 	// remote lacks and to push that work to rescue branches, as the agent's role. A shim that does
 	// not know the request is ErrRescueUnsupported; every other error is transport or a refusal.

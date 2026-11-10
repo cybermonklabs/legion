@@ -53,6 +53,30 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			},
 		},
 		{"get_state", `{"type":"get_state","id":"r3"}`, GetState{ID: "r3"}},
+		{
+			// The compaction the daemon asks Oh My Pi for. Its instructions are what make the
+			// summary text rather than snapcompact's images (Compact).
+			"compact",
+			`{"type":"compact","id":"r9","customInstructions":"Write the summary as text."}`,
+			Compact{ID: "r9", CustomInstructions: "Write the summary as text."},
+		},
+		{
+			"compact response",
+			`{"type":"response","id":"r9","command":"compact","success":true,"data":{"summary":"what the turn did"}}`,
+			Response{
+				ID:      "r9",
+				Command: TypeCompact,
+				Success: true,
+				Data:    json.RawMessage(`{"summary":"what the turn did"}`),
+			},
+		},
+		{
+			// What Oh My Pi answers a compaction it skipped: its ManualCompactionNoOpError
+			// reaches the daemon as this refusal, in those words.
+			"skipped compact response",
+			`{"type":"response","id":"r9","command":"compact","success":false,"error":"Nothing to compact (session too small)"}`,
+			Response{ID: "r9", Command: TypeCompact, Success: false, Error: "Nothing to compact (session too small)"},
+		},
 		{"agent_start", `{"type":"agent_start"}`, AgentStart{}},
 		{"replayed agent_start", `{"type":"agent_start","deliveryId":"d1"}`, AgentStart{DeliveryID: "d1"}},
 		{"agent_end", `{"type":"agent_end"}`, AgentEnd{}},
@@ -220,6 +244,18 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
 		},
 		{
+			// A refusal of the provider's content filter: Oh My Pi sets retryable for its own
+			// transient class alone, so this failure is not retryable and names no status at
+			// all, where the same words from a 400 would carry one.
+			"a turn the provider's content filter refused",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error",` +
+				`"error":{"message":"Output blocked by content filtering policy","provider":"anthropic","model":"claude-opus-4-5","retryable":false},` +
+				`"sessionSettled":true}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "Output blocked by content filtering policy", Provider: "anthropic", Model: "claude-opus-4-5",
+			}},
+		},
+		{
 			// `id` is optional in the schema, and a result that names no request names no
 			// delivery either; it still decodes, and the daemon drops it downstream.
 			"a result of no request of the daemon's",
@@ -243,15 +279,79 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 			if result.Reason() != reason {
 				t.Fatalf("Reason() = %q, want %q", result.Reason(), reason)
 			}
+			// Each member of the error object by itself: the daemon decides what a failed turn
+			// means from the four beside the message, so one dropped here is a failure it reads
+			// as something else.
+			if want := tc.want.Error; want != nil {
+				got := result.Error
+				if got == nil {
+					t.Fatalf("Decode(%s) dropped the whole error object", tc.line)
+				}
+				for _, member := range []struct {
+					name      string
+					got, want any
+				}{
+					{"message", got.Message, want.Message},
+					{"provider", got.Provider, want.Provider},
+					{"model", got.Model, want.Model},
+					{"httpStatus", got.HTTPStatus, want.HTTPStatus},
+					{"retryable", got.Retryable, want.Retryable},
+				} {
+					if member.got != member.want {
+						t.Errorf("error %s = %v, want %v", member.name, member.got, member.want)
+					}
+				}
+			}
 		})
 	}
 }
 
-// The shim is a bridge: OMP emits frames this package models nothing of (tool_execution_start,
-// error, and whatever a later OMP adds), and they must cross it unchanged rather than fail a
-// decode (worker-shim.ts:141-142 leaves them unsummarized and :290 forwards them anyway).
+// The two frames of one tool call, as Oh My Pi writes them (measured on a worker's own stream).
+// The start carries the call's arguments and the agent's words for the step; the end repeats the
+// tool and the call id, carries neither, and adds a result object this package drops — the
+// daemon reads none of it, and a decode that kept it would hold a tool's whole output in memory
+// for every call every worker makes.
+func TestTheToolCallFramesDecodeTheCallTheyName(t *testing.T) {
+	start := `{"type":"tool_execution_start","toolCallId":"toolu_turn1_0","toolName":"bash","args":{"command":"echo hi"},"intent":"Running the case's step"}`
+	decoded, err := Decode([]byte(start))
+	if err != nil {
+		t.Fatalf("Decode(%s): %v", start, err)
+	}
+	wantStart := ToolExecutionStart{ToolCallID: "toolu_turn1_0", ToolName: "bash",
+		Args: json.RawMessage(`{"command":"echo hi"}`), Intent: "Running the case's step"}
+	if !reflect.DeepEqual(decoded, wantStart) {
+		t.Fatalf("Decode(%s) = %#v, want %#v", start, decoded, wantStart)
+	}
+	if got := decoded.FrameType(); got != TypeToolExecutionStart {
+		t.Fatalf("FrameType() = %q, want %q", got, TypeToolExecutionStart)
+	}
+
+	end := `{"type":"tool_execution_end","toolCallId":"toolu_turn1_0","toolName":"bash",` +
+		`"result":{"content":[{"type":"text","text":"hi"}],"details":{"wallTimeNoticeEmitted":false,"timeoutSeconds":300,"wallTimeMs":190.57}},"isError":false}`
+	decoded, err = Decode([]byte(end))
+	if err != nil {
+		t.Fatalf("Decode(%s): %v", end, err)
+	}
+	wantEnd := ToolExecutionEnd{ToolCallID: "toolu_turn1_0", ToolName: "bash"}
+	if !reflect.DeepEqual(decoded, wantEnd) {
+		t.Fatalf("Decode(%s) = %#v, want %#v", end, decoded, wantEnd)
+	}
+	// A tool that refused the call says so, and the frame still pairs by its call id alone.
+	failed := `{"type":"tool_execution_end","toolCallId":"toolu_turn1_1","toolName":"read","isError":true}`
+	decoded, err = Decode([]byte(failed))
+	if err != nil {
+		t.Fatalf("Decode(%s): %v", failed, err)
+	}
+	if want := (ToolExecutionEnd{ToolCallID: "toolu_turn1_1", ToolName: "read", IsError: true}); decoded != want {
+		t.Fatalf("Decode(%s) = %#v, want %#v", failed, decoded, want)
+	}
+}
+
+// The shim is a bridge: OMP emits frames this package models nothing of (error, message updates,
+// and whatever a later OMP adds), and they must cross it unchanged rather than fail a decode
+// (worker-shim.ts:141-142 leaves them unsummarized and :290 forwards them anyway).
 func TestAnUnknownFrameTypeDecodesToItsRawJSON(t *testing.T) {
-	line := `{"type":"tool_execution_start","toolName":"bash","args":{"command":"ls"}}`
+	line := `{"type":"error","message":"the provider closed the stream","retryable":true}`
 	decoded, err := Decode([]byte(line))
 	if err != nil {
 		t.Fatalf("Decode(%s): %v", line, err)
@@ -260,8 +360,8 @@ func TestAnUnknownFrameTypeDecodesToItsRawJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("Decode(%s) = %#v, want a Raw frame", line, decoded)
 	}
-	if raw.FrameType() != "tool_execution_start" {
-		t.Fatalf("FrameType() = %q, want %q", raw.FrameType(), "tool_execution_start")
+	if raw.FrameType() != "error" {
+		t.Fatalf("FrameType() = %q, want %q", raw.FrameType(), "error")
 	}
 	encoded, err := json.Marshal(raw)
 	if err != nil {
@@ -314,6 +414,22 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		{"no jjEmail", AdoptWorkingCopy{ID: "r4", JJUser: "legion", TimeoutMs: 1}},
 		{"no timeout", AdoptWorkingCopy{ID: "r4", JJUser: "legion", JJEmail: "l@example.com"}},
 		{"negative timeout", AdoptWorkingCopy{ID: "r4", JJUser: "legion", JJEmail: "l@example.com", TimeoutMs: -1}},
+	} {
+		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
+		}
+	}
+	// A compaction with no instructions is the one Oh My Pi would answer with snapcompact's
+	// images, which a resumed worker needs a vision model to read, so the daemon never sends it.
+	if err := (Compact{ID: "r9", CustomInstructions: "Write the summary as text."}).Validate(); err != nil {
+		t.Fatalf("Compact.Validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		frame Compact
+	}{
+		{"no id", Compact{CustomInstructions: "Write the summary as text."}},
+		{"no instructions", Compact{ID: "r9"}},
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,13 +20,16 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
-// keptHandover is one forward a drain of a kept lane made: the session it reached and the dedupe
-// key it carried.
+// keptHandover is one forward a drain of a kept lane made: the session it reached, the dedupe
+// key it carried and the Nats-Msg-Id it went under, which is what keeps one message to one
+// stored copy per holder however often it is forwarded (bus.ForwardMsgID, roleForward.msgID).
 type keptHandover struct {
 	holder string
 	key    string
+	msgID  string
 }
 
 // keptLaneUnderClaim is one listener's kept lane under test: the harness's stores, a delivery
@@ -47,17 +51,35 @@ type keptLaneUnderClaim struct {
 // newKeptLaneUnderClaim builds the lane over harness. forward stands in for the holder: it is
 // called with the number of the forward being attempted, counting from 1, the session it is
 // addressed to and the envelope, and a forward it fails is one the drain could not make.
+//
+// A forward it does not fail is published on the holder's agent subject, through the harness's
+// own client and under the Nats-Msg-Id this records, before it is recorded: that is what the
+// real forward does (startRoleForward), and a test about what the holder's host is handed - the
+// comment under one key, and under which - can read it nowhere else, the recorded handover
+// saying only what the drain meant to send. The holder's receipt is not waited for, the stand-in
+// being the holder here, so the publish costs the drain one round trip to the stream and no
+// receipt window; the stream collapses two forwards of one message to one holder, as it does in
+// production, since they carry one id.
 func newKeptLaneUnderClaim(t *testing.T, harness listenerDeliveryHarness, forward func(attempt int, holder string, item contracts.Envelope) error) *keptLaneUnderClaim {
 	t.Helper()
 	lane := &keptLaneUnderClaim{harness: harness, forwards: make(chan keptHandover, 64)}
 	var attempts atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = inlineForward(func(subject string, item contracts.Envelope, _ string, _ time.Duration) error {
+	cfg.forwardRole = inlineForward(func(subject string, item contracts.Envelope, msgID string, _ time.Duration) error {
 		holder := strings.TrimPrefix(subject, contracts.AgentTopicPrefix)
 		if err := forward(int(attempts.Add(1)), holder, item); err != nil {
 			return err
 		}
-		handed := keptHandover{holder: holder, key: item.DedupeKey}
+		body, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Errorf("marshal the forward to %s: %w", holder, err)
+		}
+		if err := harness.client.Conn.PublishMsg(&natsgo.Msg{
+			Subject: subject, Data: body, Header: natsgo.Header{natsgo.MsgIdHdr: []string{msgID}},
+		}); err != nil {
+			return fmt.Errorf("publish the forward to %s: %w", holder, err)
+		}
+		handed := keptHandover{holder: holder, key: item.DedupeKey, msgID: msgID}
 		lane.mu.Lock()
 		lane.handed = append(lane.handed, handed)
 		lane.mu.Unlock()
@@ -368,12 +390,14 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 		return errors.New("the forward this listener's first walk of the lane ended on")
 	})
 	// The holder releases the role inside that pause, which is where a handover that had resolved
-	// its holder before the pause could not see it.
+	// its holder before the pause could not see it. Its claim names no process, so the release
+	// is the forced one DELETE /v1/interests/<session_id> makes
+	// (store.RoleReleaseAuthority.Force).
 	go func() {
 		defer close(released)
 		<-failed
 		time.Sleep(roleKeepDrainRetryPause / 2)
-		if err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}); err != nil {
+		if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
 			t.Errorf("release %s's claim of %s: %v", holder, role, err)
 		}
 	}()
@@ -687,7 +711,7 @@ func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarnes
 }
 
 // A resolution of the role's holder that did not answer is a bus that missed a read, not a role
-// nobody holds: resolveRoleHolder answers a role no claim names with roleHolderUnclaimed and no
+// nobody holds: roles.ResolveHolder answers a role no claim names with roles.Unclaimed and no
 // error at all. A claim's handover, whose role was claimed a moment ago, used to end on the first
 // such failure all the same - at Debug, reporting nothing - and the copies it left behind waited
 // for the five-minute sweep, whose own handover could end the same way, until they aged past

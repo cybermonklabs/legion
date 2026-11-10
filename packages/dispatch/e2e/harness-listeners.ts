@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { usesFakeBroker } from "./harness-broker";
+import { usesFakeEmbedder } from "./harness-embedder";
 import type { HarnessListenerKey } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
@@ -58,11 +59,14 @@ const dispatchServer = {
 // Two-process mode (e2e/harness-processes.ts): the round-robin proxy on DISPATCH_E2E_PORT, which
 // every helper addresses, then Dispatch A and B, each a run-server.sh against the one
 // DATABASE_URL, with B on DISPATCH_E2E_WEB_DIST_B's build when it is set (run-server.sh reads that
-// path from packages/envoy, as the server reads DISPATCH_WEB_DIST). Both serve the proxy's origin,
-// so they start after it, on ports held for them before it started (`heldAhead`). Both sign
-// cookies with one key, so a person signed in through whichever answered stays signed in on the
-// other: under dev sign-in the key their one shared value derives, under DISPATCH_E2E_SIGNIN=oidc
-// (e2e/harness-signin.ts) one DISPATCH_SIGNING_KEY, beside the dev OIDC issuer's client secret.
+// path from packages/envoy, as the server reads DISPATCH_WEB_DIST) and on
+// DISPATCH_E2E_SERVER_BIN_B's server binary when that is set, which is how a run puts two builds
+// of the server itself against one database (scripts/e2e/dispatch-two-builds.sh). Both serve the
+// proxy's origin, so they start after it, on ports held for them before it started
+// (`heldAhead`). Both sign cookies with one key, so a person signed in through whichever
+// answered stays signed in on the other: under dev sign-in the key their one shared value
+// derives, under DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts) one DISPATCH_SIGNING_KEY,
+// beside the dev OIDC issuer's client secret.
 // Each is generated here, once per run, since each run-server.sh is a process of its own. Every
 // importer generates its own, and only the process that starts the servers hands its own to them.
 const clientSecret = randomBytes(32).toString("base64url");
@@ -73,6 +77,7 @@ function dispatchListeners(): HarnessListener[] {
   }
   const sharedKey = randomBytes(32).toString("base64url");
   const webDistB = process.env.DISPATCH_E2E_WEB_DIST_B;
+  const serverBinB = process.env.DISPATCH_E2E_SERVER_BIN_B;
   const heldAhead = {
     keeperEnv: "DISPATCH_E2E_LISTEN_FROM",
     portEnv: "DISPATCH_E2E_SERVER_PORT",
@@ -86,9 +91,14 @@ function dispatchListeners(): HarnessListener[] {
           DISPATCH_E2E_SIGNING_KEY: sharedKey,
         }
       : { DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY: sharedKey };
-  const inputs = (webDist: string | undefined) => ({
+  // What one server gets of its own: B's web dist and B's prebuilt binary, each left out where
+  // the caller named none, so B runs this checkout's build as A does. A DISPATCH_E2E_SERVER_BIN
+  // in the harness's own environment reaches both, since each row's environment is the
+  // harness's with these on top.
+  const inputs = (webDist: string | undefined, serverBin: string | undefined) => ({
     ...signInInputs,
     ...(webDist ? { DISPATCH_E2E_SERVER_WEB_DIST: webDist } : {}),
+    ...(serverBin ? { DISPATCH_E2E_SERVER_BIN: serverBin } : {}),
   });
   return [
     {
@@ -102,7 +112,7 @@ function dispatchListeners(): HarnessListener[] {
     },
     {
       ...dispatchServer,
-      env: inputs(undefined),
+      env: inputs(undefined, undefined),
       heldAhead,
       id: "dispatch-a",
       key: "dispatchA",
@@ -110,7 +120,7 @@ function dispatchListeners(): HarnessListener[] {
     },
     {
       ...dispatchServer,
-      env: inputs(webDistB),
+      env: inputs(webDistB, serverBinB),
       heldAhead,
       id: "dispatch-b",
       key: "dispatchB",
@@ -191,8 +201,9 @@ function realBrokerListeners(): HarnessListener[] {
 // the plain-HTTP proxy, which forwards to the server's origin. A deployed run starts only those
 // marked `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server
 // this run starts. The fake broker is listed exactly when the harness switch points this run's
-// server at it (e2e/harness-broker.ts), never for a deployed run, and the real broker and its
-// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts).
+// server at it (e2e/harness-broker.ts), never for a deployed run, the real broker and its
+// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), and the
+// fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts).
 // e2e/harness-start.ts is the only starter: e2e/run.ts (Playwright), `bun run dispatch:local`
 // (e2e/local-instance.ts) and the docs media harness all start this table through it.
 export const harnessListeners: readonly HarnessListener[] = [
@@ -224,6 +235,19 @@ export const harnessListeners: readonly HarnessListener[] = [
           key: "fakeBroker" as const,
           name: "the fake secrets broker",
           report: /^fake broker listener on 127\.0\.0\.1:(\d+)$/,
+        },
+      ]
+    : []),
+  ...(usesFakeEmbedder
+    ? [
+        {
+          argv: ["bun", script("fake-embedder.ts")],
+          bootMs: listenerBootMs,
+          deployed: false,
+          id: "fake-embedder",
+          key: "fakeEmbedder" as const,
+          name: "the fake embedder",
+          report: /^fake embedder listener on 127\.0\.0\.1:(\d+)$/,
         },
       ]
     : []),

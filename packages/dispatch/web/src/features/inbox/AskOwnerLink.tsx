@@ -1,12 +1,14 @@
+import { inboxThreadRow } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { InboxRow, OpenAskOwner } from "../../api/types";
+import type { InboxRow, MyReplyRow, OpenAskOwner } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { askIssueKey } from "./ask-name";
+import { threadOwner } from "./list-row";
 
 /** The issue or project document an ask belongs to, as one truncating link: the issue's key and
  *  title, or the document's project and name. Its hover card is always the owner's. With `askId`
@@ -26,8 +28,9 @@ export function AskOwnerLink({
   owner: OpenAskOwner;
 }): ReactNode {
   const marker = inboxOwner ? "" : undefined;
-  if ("issue" in owner) {
-    const { key, title } = owner.issue;
+  const issue = owner.issue;
+  if (issue !== undefined) {
+    const { key, title } = issue;
     return (
       <Link
         className={`flex min-w-0 items-baseline gap-2 text-sm ${linkText} ${linkHoverText} ${className}`}
@@ -42,7 +45,10 @@ export function AskOwnerLink({
       </Link>
     );
   }
-  const { name, project, slug } = owner.document;
+  const document = owner.document;
+  // An owner with neither arm names nothing to link to; the Inbox list draws no link for it.
+  if (document === undefined) return null;
+  const { name, project, slug } = document;
   return (
     <Link
       className={`min-w-0 truncate text-sm font-semibold ${linkText} ${linkHoverText} ${className}`}
@@ -76,4 +82,26 @@ export function InboxOwnerLink({ ask, rowOwner }: { ask: InboxRow; rowOwner: boo
     return <p className={`truncate text-sm ${textMutedOnCanvas}`}>Document ask</p>;
   }
   return <AskOwnerLink askId={ask.id} className="grow" inboxOwner={rowOwner} owner={owner} />;
+}
+
+/** A thread row's owner, wherever one is drawn: the short row beside the reading pane, the
+ *  card below its width, and the pane's own head. An Agent row belongs to no issue and no
+ *  document, so it names the session that answered instead - by the title the session stamped,
+ *  or by what every surface calls that kind of row. The three hosts weight and size that name
+ *  differently, so each passes its own classes; the owner link takes the line's width either
+ *  way. */
+export function ThreadOwnerLine({
+  className,
+  thread,
+}: {
+  /** The classes the host's line gives the session's name. */
+  className: string;
+  thread: MyReplyRow;
+}): ReactNode {
+  const row = inboxThreadRow(thread);
+  if (row.kind === "agent") {
+    return <span className={className}>{row.session.name}</span>;
+  }
+  const owner = threadOwner(thread);
+  return owner === null ? null : <AskOwnerLink className="grow" owner={owner} />;
 }

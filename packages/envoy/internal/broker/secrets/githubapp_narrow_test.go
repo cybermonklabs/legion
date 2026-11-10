@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -45,7 +46,7 @@ type narrowingGitHub struct {
 func newNarrowingGitHub(t *testing.T) *narrowingGitHub {
 	t.Helper()
 	g := &narrowingGitHub{answer: asGitHubAnswers, revokeStatus: http.StatusNoContent}
-	g.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.server = githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.requests++
 		answer, headers, revokeStatus := g.answer, g.headers, g.revokeStatus
@@ -80,8 +81,7 @@ func newNarrowingGitHub(t *testing.T) *narrowingGitHub {
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-	}))
-	t.Cleanup(g.server.Close)
+	}})
 	return g
 }
 
@@ -155,8 +155,9 @@ func (g *narrowingGitHub) take() (int, []tokenRequest) {
 
 // TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody: a narrowed release asks GitHub for one
 // token, for the installation of the narrowing's owner alone, with GitHub's access_tokens body
-// naming the repositories and, for read-only, contents: read, metadata: read and pull_requests: read; every other listed
-// owner gets no token request. A release with no narrowing is today's: every listed owner's token,
+// naming the repositories and, for read-only, contents: read, metadata: read, pull_requests: read
+// and actions: read; every other listed owner gets no token request. A release with no narrowing
+// is today's: every listed owner's token,
 // each asked for with no body.
 func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 	key, err := testAppKey()
@@ -181,7 +182,7 @@ func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 			minted:    []string{"1"},
 			body: map[string]any{
 				"repositories": []any{"proofs", "widgets"},
-				"permissions":  map[string]any{"contents": "read", "metadata": "read", "pull_requests": "read"},
+				"permissions":  map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"},
 			},
 		},
 		{
@@ -196,7 +197,7 @@ func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 			narrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true},
 			owners:    []string{"ada"},
 			minted:    []string{"2"},
-			body:      map[string]any{"permissions": map[string]any{"contents": "read", "metadata": "read", "pull_requests": "read"}},
+			body:      map[string]any{"permissions": map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}},
 		},
 		{
 			name:      "the owner alone",
@@ -217,7 +218,7 @@ func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 			}
 			_, tokens := github.take()
 			var got mintedGitHubApp
-			if err := json.Unmarshal([]byte(release), &got); err != nil {
+			if err := json.Unmarshal([]byte(release.Value), &got); err != nil {
 				t.Fatalf("Mint output: %v", err)
 			}
 			if len(got.Installations) != len(tc.owners) {
@@ -367,7 +368,8 @@ func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
 
 // TestGitHubAppMintRefusesATokenWiderThanTheNarrowing: Mint releases a narrowed token only when
 // GitHub's own answer describes no more than the narrowing asked: for read-only, no permission
-// past contents: read, metadata: read and pull_requests: read and not none named; for repositories, a selection of
+// past contents: read, metadata: read, pull_requests: read and actions: read and not none named;
+// for repositories, a selection of
 // those alone, named. Anything else (a body something between dropped or widened) is refused as
 // GitHub's fault (class upstream), and the token GitHub minted is revoked at GitHub with
 // DELETE /installation/token, as its own bearer, before Mint returns. The error names which rule
@@ -402,7 +404,7 @@ func TestGitHubAppMintRefusesATokenWiderThanTheNarrowing(t *testing.T) {
 		{"write contents", readOnly, func(a map[string]any) { a["permissions"] = map[string]string{"contents": "write", "metadata": "read"} }, "more than read access"},
 		{"another permission", readOnly, func(a map[string]any) {
 			a["permissions"] = map[string]string{"administration": "write", "contents": "read", "metadata": "read"}
-		}, "a permission past contents, metadata and pull requests"},
+		}, "a permission past contents, metadata, pull requests and actions"},
 		{"no permissions named", readOnly, func(a map[string]any) { delete(a, "permissions") }, "names no permissions"},
 		{"every repository", proofs, func(a map[string]any) { a["repository_selection"] = "all"; delete(a, "repositories") }, "repository selection"},
 		{"another repository", proofs, func(a map[string]any) {
@@ -413,8 +415,8 @@ func TestGitHubAppMintRefusesATokenWiderThanTheNarrowing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			github.setAnswer(answering(tc.change))
 			release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: tc.narrowing})
-			if release != "" || secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), tc.mentions) || strings.Contains(err.Error(), "token-") {
-				t.Fatalf("Mint = %q, %v (class %s), want nothing released, class upstream naming %q and no token", release, err, secrets.MintErrorClass(err), tc.mentions)
+			if release.Value != "" || secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), tc.mentions) || strings.Contains(err.Error(), "token-") {
+				t.Fatalf("Mint = %q, %v (class %s), want nothing released, class upstream naming %q and no token", release.Value, err, secrets.MintErrorClass(err), tc.mentions)
 			}
 			for _, quoted := range gitHubValues {
 				if strings.Contains(err.Error(), quoted) {
@@ -428,15 +430,77 @@ func TestGitHubAppMintRefusesATokenWiderThanTheNarrowing(t *testing.T) {
 	}
 
 	github.setAnswer(answering(func(a map[string]any) { a["repositories"] = []map[string]string{{"name": "Proofs"}} }))
-	if release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: proofs}); err != nil || !strings.Contains(release, "token-2") {
-		t.Fatalf("Mint with GitHub naming the repository in its own case = %q, %v; want ada's token", release, err)
+	if release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: proofs}); err != nil || !strings.Contains(release.Value, "token-2") {
+		t.Fatalf("Mint with GitHub naming the repository in its own case = %q, %v; want ada's token", release.Value, err)
 	}
 	github.setAnswer(asGitHubAnswers)
-	if release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}}); err != nil || !strings.Contains(release, "token-1") || !strings.Contains(release, "token-2") {
-		t.Fatalf("Mint with no narrowing and GitHub's whole answer = %q, %v; want every listed owner's token", release, err)
+	if release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}}); err != nil || !strings.Contains(release.Value, "token-1") || !strings.Contains(release.Value, "token-2") {
+		t.Fatalf("Mint with no narrowing and GitHub's whole answer = %q, %v; want every listed owner's token", release.Value, err)
 	}
 	if revoked := github.takeRevoked(); len(revoked) != 0 {
 		t.Fatalf("revokes of released tokens = %q, want none", revoked)
+	}
+}
+
+// TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem: an App is granted Actions
+// only once each installation's account approves it, and GitHub answers 422 to a token request
+// naming a permission the installation does not hold, minting nothing. A read-only narrowing it
+// refuses is asked for again without actions, so the release carries the other three reads
+// rather than failing, and the broker logs at WARN what that token cannot read, naming no token.
+// A 422 that survives the second request is still the caller's narrowing.
+func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing.T) {
+	var logged bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+	key, err := testAppKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := newNarrowingGitHub(t)
+	github.setAnswer(func(installation string, body []byte) (int, any) {
+		if strings.Contains(string(body), `"actions"`) {
+			return http.StatusUnprocessableEntity, map[string]string{"message": "The permissions requested are not granted to this installation."}
+		}
+		return asGitHubAnswers(installation, body)
+	})
+	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
+	value := githubAppValue(t, "123456", key)
+
+	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
+		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
+	if err != nil || !strings.Contains(release.Value, "token-2") {
+		t.Fatalf("Mint for an installation that holds no actions = %q, %v; want ada's token", release.Value, err)
+	}
+	_, tokens := github.take()
+	asked := []tokenRequest{
+		{installation: "2", body: `{"permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read"}}`, contentType: "application/json"},
+		{installation: "2", body: `{"permissions":{"contents":"read","metadata":"read","pull_requests":"read"}}`, contentType: "application/json"},
+	}
+	if !reflect.DeepEqual(tokens, asked) {
+		t.Fatalf("token requests = %+v, want %+v", tokens, asked)
+	}
+	if !strings.Contains(logged.String(), "does not hold actions") || !strings.Contains(logged.String(), "Actions: Read") ||
+		!strings.Contains(logged.String(), "app=123456") || !strings.Contains(logged.String(), "installation=2") {
+		t.Fatalf("log = %q, want one WARN naming the App and the installation", logged.String())
+	}
+	if strings.Contains(logged.String(), "token-") {
+		t.Fatalf("log = %q holds the token", logged.String())
+	}
+	if revoked := github.takeRevoked(); len(revoked) != 0 {
+		t.Fatalf("revokes of the released token = %q, want none", revoked)
+	}
+
+	// A 422 the second request gets too is the narrowing's, and the error names the three
+	// permissions that are left rather than the grant that was dropped.
+	github.setAnswer(func(string, []byte) (int, any) {
+		return http.StatusUnprocessableEntity, map[string]string{"message": "The permissions requested are not granted to this installation."}
+	})
+	release, err = app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
+		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
+	if release.Value != "" || secrets.MintErrorClass(err) != "narrowing" || !strings.Contains(err.Error(), "contents: read") {
+		t.Fatalf("Mint refused twice = %q, %v (class %s); want nothing released and class narrowing naming the read access", release.Value, err, secrets.MintErrorClass(err))
+	}
+	if _, tokens := github.take(); len(tokens) != 2 {
+		t.Fatalf("%d token requests for a refusal that stands, want the asked-for set and one more without actions", len(tokens))
 	}
 }
 
@@ -459,8 +523,8 @@ func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
 
 	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
-	if release != "" || secrets.MintErrorClass(err) != "upstream" {
-		t.Fatalf("Mint = %q, %v (class %s), want nothing released and class upstream", release, err, secrets.MintErrorClass(err))
+	if release.Value != "" || secrets.MintErrorClass(err) != "upstream" {
+		t.Fatalf("Mint = %q, %v (class %s), want nothing released and class upstream", release.Value, err, secrets.MintErrorClass(err))
 	}
 	if revoked := github.takeRevoked(); len(revoked) != 1 {
 		t.Fatalf("revokes at GitHub = %q, want one", revoked)
@@ -497,8 +561,8 @@ func TestGitHubAppMintReadsTheAnswerToANarrowingAtTheMaximum(t *testing.T) {
 	}
 
 	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", Repositories: names, ReadOnly: true}})
-	if err != nil || !strings.Contains(release, "token-2") {
-		t.Fatalf("Mint narrowed to %d repositories = %q, %v; want ada's token", len(names), release, err)
+	if err != nil || !strings.Contains(release.Value, "token-2") {
+		t.Fatalf("Mint narrowed to %d repositories = %q, %v; want ada's token", len(names), release.Value, err)
 	}
 	if revoked := github.takeRevoked(); len(revoked) != 0 {
 		t.Fatalf("revokes at GitHub = %q, want none", revoked)

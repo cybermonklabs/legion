@@ -32,14 +32,20 @@ same step before and after its change, and compares the two rows.
 | `marker.go` | The write marker `lgm<nonce><counter>x`: its format, the run's nonce and the parse that keeps one run's markers |
 | `routes.go` | The route-mix file parser and the request paths |
 | `delivery.go` | The join of writes, database commits and receipts into delivery latencies |
-| `sample.go` | The 5 s sampler: CPU, RSS, Postgres connections, goroutines, pool waiters, heap, NATS `/varz`. The transaction-id probe. |
+| `sample.go` | The 5 s sampler: CPU, RSS, Postgres connections, goroutines, pool waiters, NATS `/varz`, and the heap every 15 s under `-heap-samples`. The transaction-id probe. |
 | `lockprobe.go` | The 20 ms sampler of the commit-order lock |
 | `locksampler.go` | The 1 s sampler of every ungranted lock in `pg_locks` |
-| `pgpoll.go` | The poll loop of the lock probes (`pollPG`), and the error policy of the probes' reads, which the 5 s sampler shares: failed reads are counted, the first three are logged, and so is their total past three |
+| `pgpoll.go` | The poll loop of the lock probes (`pollPG`) and of the room sampler (`poll`), and the error policy of the probes' reads, which the 5 s sampler shares: failed reads are counted, the first three are logged, and so is their total past three |
 | `live.go` | The dashboard live sockets' reader of `GET /ws/live` event frames, and the live frame latencies |
+| `editors.go` | The browser-editor workload: Yjs peers on the document websocket, the relay latency and the durable-latency probe (Editors, below) |
+| `rooms.go` | The document rooms' measurements: the 100 ms sampler of the connections rooms hold, and the window's readings of the proxy's wire counts, `dispatch_rooms` and `artifact_versions` (Document rooms, below) |
 | `sse.go` | The reader of `GET /api/v1/events`, the dashboard's stream on a Dispatch build that serves no `/ws/live` (The dashboard stream, below) |
 | `dashboard.go` | The probe that chooses between the two, once, before the window |
-| `proxy.go` | The TCP latency proxy toward Postgres |
+| `reconnect.go` | The live sockets' loop, with `-live-resume` the dashboard's reconnect, the stale sockets and the refetch, and the reconnect table's numbers |
+| `restart.go` | `-restart-at`: `stack.sh restart-dispatch` inside the window, and the CPU in the minute after it |
+| `mentions.go` | `-mention-frac`: the mentions of the comment writes, and their write latencies |
+| `proxy.go` | The TCP latency proxy toward Postgres, and toward the listener for `--envoy-rtt`, and its wire-count endpoint |
+| `pgwire.go` | The proxy's reading of the Postgres wire protocol: round trips, room work and the timing of version inserts |
 | `tables.go` | `TABLES.md` from one or more `summary.json` files, the pprof tops and the goroutine summary |
 | `cgroup.go` | `loadgen cgroup-merge`: a step's `cgroup.json` from the cluster sampler's `cgroup.jsonl` (cores, working set and per-minute figures per container, and the sampler-gap failure) |
 | `cgrouptables.go` | How `tables` and `curves` read a step's `cgroup.json` and `step-failed.json` |
@@ -70,12 +76,12 @@ same step before and after its change, and compares the two rows.
 | `commit-trigger.sql` | The commit-time trigger for the delivery latency from commit |
 | `refs-sample-2026-10-27.json` | The reference seed's input: for each of 160 production issues sampled on 2026-10-27, the version count of every member of its references answer. 160 arrays of numbers, no issue key and no name. |
 | `routes-2026-10-26-1719Z.txt` | The default route mix |
-| `stack.sh` | The local stack: `setup`, `start`, `seed`, `reset` (and `reset --replay`), `stop`, `status`, `build-info`, `loadgen`, `replay-seed-patch-check`, `replay-seed`, which seeds the LINUX replay, runs `replay-check-seed` and dumps the database only when it passed, and the replay's `replay-manifest`, `replay-get` and `replay-prepare` |
+| `stack.sh` | The local stack: `setup`, `start`, `seed`, `reset` (and `reset --replay`), `restart-dispatch`, `stop`, `status`, `build-info`, `loadgen`, `replay-seed-patch-check`, `replay-seed`, which seeds the LINUX replay, runs `replay-check-seed` and dumps the database only when it passed, and the replay's `replay-manifest`, `replay-get` and `replay-prepare` |
 | `replay.sh` | The LINUX replay's `stack.sh` commands, sourced by it: `replay-seed-patch-check`, `replay-seed`, `replay-manifest`, `replay-get`, `replay-prepare` and the `reset --replay` that resets from a prepared template |
 | `run-step.sh` | The one command for a named step |
 | `run-series.sh` | The series of six steps, 0.25x to 10x |
 | `restart-step.sh` | One step whose listener is killed in the middle of the window, and its report (The listener restart, below) |
-| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT` and `LOADTEST_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
+| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
 | `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
 | `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
@@ -115,17 +121,21 @@ same step before and after its change, and compares the two rows.
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `LOADTEST_ROOT` | `${TMPDIR:-/tmp}/dispatch-loadtest` | The directory that holds all the stack's state, binaries and step output. On a Legion pod, `$TMPDIR` is `/legion/scratch/tmp`, the issue's volume. |
-| `LOADTEST_SRC` | The checkout that holds the script | The checkout that `stack.sh setup` builds `envoy-dispatch`, `envoy-listener` and `loadgen` from. |
+| `LOADTEST_SRC` | The checkout that holds the script | The checkout that `stack.sh setup` builds `envoy-listener` and `loadgen` from, and `envoy-dispatch` unless `LOADTEST_DISPATCH_SRC` or `LOADTEST_DISPATCH_COMMIT` names another. |
+| `LOADTEST_DISPATCH_SRC` | `LOADTEST_SRC` | The checkout that `stack.sh setup` builds `envoy-dispatch` from. It need not hold this package (Before and after across commits, below). `build-info`, `meta.json` and `seed.meta.json` record its commit. |
 | `LOADTEST_PG_PORT` | `15000 + 10k` | The Postgres port. |
 | `LOADTEST_PROXY_PORT` | `15001 + 10k` | The latency proxy port. |
+| `LOADTEST_PROXY_STATS_PORT` | `15007 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
 | `LOADTEST_NATS_PORT` | `15002 + 10k` | The NATS client port. |
 | `LOADTEST_NATS_MONITOR_PORT` | `15003 + 10k` | The NATS monitoring port (`/varz`). |
 | `LOADTEST_LISTENER_PORT` | `15004 + 10k` | The Envoy listener port. |
 | `LOADTEST_DISPATCH_PORT` | `15005 + 10k` | The Dispatch HTTP port. |
 | `LOADTEST_PPROF_PORT` | `15006 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
+| `LOADTEST_ENVOY_PROXY_PORT` | `15008 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
 | `LOADTEST_PROXY_RTT` | `1ms` | The round trip that the proxy adds, as a Go duration. Read when the proxy starts. |
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
-| `LOADTEST_DISPATCH_COMMIT` | unset | `stack.sh setup` builds `envoy-dispatch` alone from that commit (`run-step.sh --replay --dispatch-commit`). |
+| `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |
+| `LOADTEST_DISPATCH_COMMIT` | unset | `stack.sh setup` builds `envoy-dispatch` alone from that commit of `LOADTEST_SRC`, ahead of `LOADTEST_DISPATCH_SRC` (`run-step.sh --replay --dispatch-commit`). |
 | `LOADTEST_GOMAXPROCS` | nproc | Dispatch's `GOMAXPROCS` (`run-step.sh --replay --gomaxprocs`). |
 | `LOADTEST_REPLAY_ISSUE` | unset | The issue the replay's bundle and seed parts are file artifacts of. `stack.sh replay-get` and a `run-step.sh --replay` step require it and refuse before they start without it; the manifest names no issue. To find it, search Dispatch for the bundle parts' name before `.tar.zst` (the manifest's `bundle.parts[].file`; for this manifest, `dispatch search --query 'linux-replay-2026-10-26'`): among the hits is that issue's comment naming the parts. A search for the manifest's file name does not find it. |
 | `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get` alone, in its own shell, to download the replay's parts. |
@@ -134,9 +144,9 @@ same step before and after its change, and compares the two rows.
 
 Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
 `k` is the first 8 hex digits of the sha256 of its physical path, modulo 200, and each port is
-`15000 + 10k` plus the offset above, so every port lies between 15000 and 16996 and no two ports of
+`15000 + 10k` plus the offset above, so every port lies between 15000 and 16998 and no two ports of
 a root meet. The block is a hash, not a reservation: two roots land in one block about 1 pair in
-200, and then they hold the same 7 ports. Two Legion roles of one pod, each with its own
+200, and then they hold the same 9 ports. Two Legion roles of one pod, each with its own
 `LOADTEST_ROOT`, therefore almost always run a stack each with no port variable set; on a collision
 `stack.sh start` refuses the second stack (`check_port`, so no stack is ever shared) and the
 refusal names the block and the remedies: set the `LOADTEST_*_PORT` variables, or move to another
@@ -163,7 +173,10 @@ the key stays the same across steps. `stack.sh` stops each process by the pid in
 ```bash
 packages/envoy/loadtest/run-step.sh <name> --events <per s> --sessions <n> --requests <per s> \
   [--duration 180s] [--warmup 30s] [--grace 20s] [--event-mix <preset or kind=w,...>] \
-  [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed 1] [--out <dir>]
+  [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed 1] [--heap-samples] [--out <dir>] \
+  [--live-resume 0|1] [--live-stale <n>] [--restart-at <duration>] \
+  [--mention-frac <0..1>] [--mentions <n>] [--envoy-rtt <duration>] \
+  [--editors 0] [--editor-rate 2] [--editor-docs 10]
 ```
 
 A replay step takes `--replay` and the replay's flags instead (The replay, below).
@@ -175,7 +188,7 @@ packages/envoy/loadtest/run-step.sh step-1x --events 4 --sessions 400 --requests
 ```
 
 The step name comes first. It can hold only letters, digits, `.`, `_` and `-`. Every flag takes a
-value.
+value but `--heap-samples` and `--replay`, which take none.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -189,11 +202,21 @@ value.
 | `--route-mix` | the committed `routes-2026-10-26-1719Z.txt` | A route-mix file (Route mix, below). It must be a file. |
 | `--human` | `0.1` | The share of writes that a person makes, 0 to 1. |
 | `--live` | `max(1, round(requests/30))` | Dashboard streams, each subscribed to the event feed as a dashboard tab is: 2 at 60 req/s, 20 at 600 req/s. They open `GET /ws/live`, or `GET /api/v1/events` against a build that serves no live socket (The dashboard stream, below). |
-| `--rng-seed` | `1` | The seed of the event and request schedules. |
+| `--rng-seed` | `1` | The seed of the event, request and editor schedules. |
+| `--heap-samples` | off (no value) | Read Dispatch's heap profile every 15 s inside the window, which fills the `heap live MiB` column. Off by default: Dispatch writes the profile itself, so the read is charged to the CPU the step measures (Resources, below). |
 | `--out` | `$LOADTEST_ROOT/runs/<name>` | The step directory. It must not exist, or it must be empty. |
+| `--live-resume` | `0` | `1`: each live socket reconnects as the dashboard does, subscribing with `resume: {since: <last id>}`, and its reconnects are measured (The restart scenario, below). |
+| `--live-stale` | `0` | Of the `--live` sockets, how many reconnect once at the restart with `since = max(id) - 12600`. Needs `--live-resume 1`, `--restart-at` and an event log of at least 12,600 rows (`stack.sh seed --min-events 13000`). |
+| `--restart-at` | none | A Go duration into the window, less than `--duration`: `stack.sh restart-dispatch` runs then. |
+| `--mention-frac` | `0` | The share of comment writes (`comment`, `anchored`, `reply`) that mention `--mentions` live sessions, 0 to 1. |
+| `--mentions` | `3` | The sessions each such comment mentions: 1 to 10, and fewer than `--sessions`. |
+| `--envoy-rtt` | none | A Go duration such as `200ms`: Dispatch's `ENVOY_URL` goes through a latency proxy with that round trip in front of the listener. `loadgen` itself reaches the listener directly. |
+| `--editors` | `0` | Browser editors on document websockets (Editors, below). `0` starts none. |
+| `--editor-rate` | `2` | Updates per second per editor. More than 0. |
+| `--editor-docs` | `10` | The documents the editors share: the first N seeded specs in key order. With fewer editors than documents, the editors edit only as many documents as there are editors. |
 
-Rates are used as given. `0` is a real zero. The event and request schedules are open-loop Poisson
-from the RNG seed, so two runs of one step with one seed offer the same arrivals.
+Rates are used as given. `0` is a real zero. The event, request and editor schedules are open-loop
+Poisson from the RNG seed, so two runs of one step with one seed offer the same arrivals.
 
 `run-step.sh` does these steps in order:
 
@@ -205,9 +228,11 @@ from the RNG seed, so two runs of one step with one seed offer the same arrivals
 3. The migration check (Before and after across commits, below).
 4. `stack.sh reset`, with Dispatch's log in the step directory (The reset, below).
 5. `loadgen run`. It writes the step's files.
-6. It stops Dispatch. It also stops Dispatch when the step fails. Postgres, the proxy, NATS and the
-   listener keep running. `stack.sh stop` stops them.
-7. It copies the listener and NATS logs into the step directory and runs `loadgen tables` there.
+6. It stops Dispatch, and the listener's latency proxy of `--envoy-rtt`. It also stops them when
+   the step fails. Postgres, the proxy, NATS and the listener keep running. `stack.sh stop` stops
+   them.
+7. It copies the listener and NATS logs, and the log of the listener's latency proxy under
+   `--envoy-rtt`, into the step directory and runs `loadgen tables` there.
 
 A step of a series skips steps 1 to 3: `run-series.sh` did them once, before its first step (Run
 the series, below).
@@ -215,15 +240,18 @@ the series, below).
 Before step 1, `run-step.sh` takes the run lock of the root (One run at a time, below).
 
 **A step whose stack process exits fails.** The sampler checks every stack process (Dispatch, the
-listener, NATS, the proxy and Postgres) at each 5 s sample, and once more after the grace. A
-process is alive while `/proc/<pid>` exists and is not a zombie. When one has exited,
-`loadgen run` still writes `summary.json`, with `stack_exits` (each process's name, pid and the
-time it was first seen gone), and the other files that it can take. Then it exits with status 1:
-`loadgen run: dispatch (pid N) exited during the step (first seen gone at T); this row does not
-measure the load`. `run-step.sh` renders `TABLES.md` for diagnosis, with the mark
+listener, NATS, the proxy, Postgres and the listener's latency proxy) at each 5 s sample, and once
+more after the grace. A process is alive while `/proc/<pid>` exists and is not a zombie. At each
+sample the sampler reads `stack.json` again, so it follows a Dispatch that `-restart-at` restarted
+to its new pid, and Dispatch's absence while `stack.sh restart-dispatch` runs is not an exit. When
+one has exited, `loadgen run` still writes `summary.json`, with `stack_exits` (each process's name,
+pid and the time it was first seen gone), and the other files that it can take. Then it exits with
+status 1: `loadgen run: dispatch (pid N) exited during the step (first seen gone at T); this row
+does not measure the load`. `run-step.sh` renders `TABLES.md` for diagnosis, with the mark
 `(dispatch exited)` after the step name, and exits with status 1, pointing at `loadgen run`'s
 message and at `run.log`. A Dispatch crash or out-of-memory kill at a high step thus never reads as
-the overload that the series measures.
+the overload that the series measures. A restart that fails (Dispatch does not report `/healthz`
+within 120 s) leaves no Dispatch, which is such an exit.
 
 **A step whose commit rows cannot be read fails.** The committed counts, the receipts and the
 delivery latencies all come from the run's rows of `loadtest.event_commits` (Delivery latency,
@@ -256,9 +284,9 @@ the lock file and writes its pid, its PID namespace (`/proc/self/ns/pid`), comma
 a random token into it. Another run on the root that sees a live holder is refused at once. While
 it sees none, it tries the lock for up to 3 s, on descriptor 8 so that a waiting run never holds
 descriptor 9 on the file, and takes it when the lock is freed in that time. These `stack.sh`
-commands are refused the same way: `setup`, `start`, `seed`, `reset` and `stop`; `stack.sh
-status`, `build-info` and `loadgen` take no lock. A refusal exits with status 1 and names the root
-and the holder that it can find:
+commands are refused the same way: `setup`, `start`, `seed`, `reset`, `restart-dispatch` and
+`stop`; `stack.sh status`, `build-info` and `loadgen` take no lock. A refusal exits with status 1
+and names the root and the holder that it can find:
 
 - the pid in the lock file, when that pid runs in the refused caller's PID namespace. The pid is
   trusted only when the lock file names that namespace;
@@ -272,11 +300,12 @@ and the holder that it can find:
 
 The holder's own children pass: the holder exports the token as `LOADTEST_LOCK_TOKEN`, and a caller
 whose token equals the lock file's and whose descriptor 9 is the holder's locked one keeps that
-descriptor and goes on without locking. Thus the series' own `run-step.sh` calls, and the
-`stack.sh` calls of a run, are not refused, and a series step, with the `loadgen run` that it
-starts, keeps the root when `run-series.sh` is killed. A caller with the token but without the
-descriptor is refused. No stack process holds the lock: `stack.sh` starts each one with
-descriptor 9 closed.
+descriptor and goes on without locking. Thus the series' own `run-step.sh` calls, the `stack.sh`
+calls of a run, and the `stack.sh restart-dispatch` that `loadgen run -restart-at` makes
+(`stack.sh loadgen` passes the token to `loadgen` and `loadgen` inherits descriptor 9) are not
+refused, and a series step, with the `loadgen run` that it starts, keeps the root when
+`run-series.sh` is killed. A caller with the token but without the descriptor is refused. No stack
+process holds the lock: `stack.sh` starts each one with descriptor 9 closed.
 
 ## The listener restart
 
@@ -392,8 +421,9 @@ series directory.
   1,000 at 10x. That is 400·f up to 1x, and 400 + 600·(f − 1)/9 above it.
   `loadgen series-sessions <f>` prints the value.
 - The series passes every other step flag to each step: `--duration`, `--warmup`, `--grace`,
-  `--event-mix`, `--route-mix`, `--human`, `--rng-seed`. It refuses `--events`, `--sessions`,
-  `--requests`, `--live` and `--out`, because it sets them.
+  `--event-mix`, `--route-mix`, `--human`, `--rng-seed`, the restart scenario's flags, and
+  `--editors`, `--editor-rate` and `--editor-docs` (Editors, below), which it does not scale. It
+  refuses `--events`, `--sessions`, `--requests`, `--live` and `--out`, because it sets them.
 - With the default window, a step takes about 5 minutes and a series about 30 minutes.
 - `run-series.sh` runs the setup (one build of the checkout), the start, the seed and the migration
   check once, before the series directory exists, and reads the build's commit and dirty flag once
@@ -406,25 +436,55 @@ series directory.
   steps that ran (the failed step included when it wrote `summary.json`), and exits with status 1,
   naming the step.
 
+## The document-room steps
+
+Four named steps measure the document rooms' database work before and after a change. Each is
+one `run-step.sh` command. Run each on
+the build before the change and on the build after it, back to back, with the same seed, and
+give each run its own name (for example `1x-before` and `1x-after`):
+
+```bash
+# 1x: the full REST mix of step-1x, plus 20 editors at 2 updates/s on 10 specs.
+packages/envoy/loadtest/run-step.sh 1x --events 4 --sessions 400 --requests 60 \
+  --editors 20 --editor-rate 2 --editor-docs 10
+# 10x: the full REST mix at 10 times 1x, plus 200 editors at 2 updates/s on 100 specs.
+packages/envoy/loadtest/run-step.sh 10x --events 40 --sessions 4000 --requests 600 \
+  --editors 200 --editor-docs 100
+# The editors of 1x over the 0.25x REST mix, which main at c3d09eec survives (plan D7.6).
+packages/envoy/loadtest/run-step.sh editors-1x-over-0.25x --events 1 --sessions 100 --requests 15 \
+  --editors 20 --editor-docs 10
+# The editors of 10x over the 0.25x REST mix.
+packages/envoy/loadtest/run-step.sh editors-10x-over-0.25x --events 1 --sessions 100 --requests 15 \
+  --editors 200 --editor-docs 100
+```
+
+- The 10x step runs 4,000 sessions, as plan D7.6 names it; the series' `step-10x` runs 1,000
+  (Run the series, above). Its sessions wrap over the 1,000 issues.
+- The editor rate is 2 updates a second in every step (`--editor-rate`'s default).
+- The editors' tables are Editors and Document rooms (The tables, below). `loadgen tables` over
+  the step directories puts the runs side by side.
+
 ## The stack (`stack.sh`)
 
 | Command | What it does |
 | --- | --- |
-| `stack.sh setup` | Builds `envoy-dispatch`, `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json`. Each run does it again, incrementally. |
-| `stack.sh start` | Starts Postgres, the proxy, NATS and the listener. It keeps a process that already runs. It refuses a port that another process holds, and names that process when this PID namespace can see it. Dispatch starts only in `seed` and `reset`. |
-| `stack.sh seed [--force]` | Makes the seed template `dispatch_seed` (The seed, below). It does nothing when `dispatch_seed` and `seed.meta.json` exist. `--force` drops the old seed and seeds again. |
+| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json`. Each run does it again, incrementally. |
+| `stack.sh start` | Starts Postgres, the proxy, NATS and the listener. It keeps a process that already runs. It refuses a port that another process holds, and names that process when this PID namespace can see it. Dispatch (and the listener's latency proxy) start only in `seed` and `reset`. |
+| `stack.sh seed [--force] [--min-events N]` | Makes the seed template `dispatch_seed` (The seed, below). It does nothing when `dispatch_seed` and `seed.meta.json` exist. `--force` drops the old seed and seeds again. `--min-events N` extends the event log to N rows (The seed, below); on an existing seed with fewer rows, it extends that seed in place, in seconds, without seeding again. |
 | `stack.sh reset [LOG]` | Resets the stack to the seed and starts Dispatch, with its log in `LOG` (default `$LOADTEST_ROOT/logs/dispatch.log`). `run-step.sh` does this before each step. |
 | `stack.sh reset --replay [LOG]` | The same from this build's prepared replay template (The replay, below), refused without one; before Dispatch starts, `loadgen replay-checksum -db dispatch` into `$LOADTEST_ROOT/replay/last-reset.json`. |
+| `stack.sh restart-dispatch` | Stops Dispatch by the pid in its pidfile (SIGTERM, then SIGKILL after 60 s) and starts it again as the last `reset` started it: the binary and database, the Postgres path (`pg_direct`), the listener path (`envoy_rtt`) and the log (`dispatch_log`) that `stack.json` recorded, the log appended after a `stack.sh: restart-dispatch` line. It waits for `/healthz`, and writes the new pid into `stack.json` and the pidfile. The listener's latency proxy keeps running. `loadgen run -restart-at` calls it. |
 | `stack.sh replay-manifest --bundle-pack FILE --bundle DIR [--seed-dir DIR] [--part-version N]` | Prints a replay manifest from `replay-pack`'s JSON, the bundle's `bundle.meta.json` and `replay-seed`'s `seed.meta.json` (`"seed": null` without `--seed-dir`), every part at version N (default 1). |
 | `stack.sh replay-get [--manifest FILE] [--from-dir DIR]` | Gets, verifies and unpacks the manifest's bundle, and restores its seed dump into the template `dispatch_replay_seed` (The replay, below). |
 | `stack.sh replay-prepare` | Makes this build's replay template `dispatch_replay_<key>` from `dispatch_replay_seed` (The replay, below). |
-| `stack.sh stop [NAME...]` | Stops `dispatch`, `listener`, `nats`, `proxy` and `postgres`, or only the named ones. |
-| `stack.sh status` | Prints this root's ports and the `stack.json` that records them, each process's pid and ports, and the seed's migration, build commit and counts. |
-| `stack.sh build-info` | Prints the checkout's commit and `true` or `false` for uncommitted changes in its tree, as `<commit> <dirty>`. `run-step.sh` records them in `meta.json`. |
-| `stack.sh loadgen ARGS...` | Runs `$LOADTEST_ROOT/bin/loadgen` with the stack's environment, from the root. `run-step.sh` and `run-series.sh` call `loadgen` this way. |
+| `stack.sh stop [NAME...]` | Stops `dispatch`, `envoy_proxy`, `listener`, `nats`, `proxy` and `postgres`, or only the named ones. |
+| `stack.sh status` | Prints this root's ports and the `stack.json` that records them, each process's pid and ports, and the seed's migration, build commit, counts and event extension. |
+| `stack.sh build-info` | Prints the commit of the Dispatch checkout (`LOADTEST_DISPATCH_SRC`) and `true` or `false` for uncommitted changes in its tree, as `<commit> <dirty>`. `run-step.sh` records them in `meta.json`. |
+| `stack.sh loadgen ARGS...` | Runs `$LOADTEST_ROOT/bin/loadgen` with the stack's environment, from the root, with `LOADTEST_STACK_SH` (this script's path) and the run's `LOADTEST_LOCK_TOKEN`. `run-step.sh` and `run-series.sh` call `loadgen` this way. |
 
-`setup`, `start`, `seed`, `reset`, `stop`, `replay-seed`, `replay-get` and `replay-prepare` take the
-run lock for their run, and are refused while another run holds it (One run at a time, above).
+`setup`, `start`, `seed`, `reset`, `restart-dispatch`, `stop`, `replay-seed`, `replay-get` and
+`replay-prepare` take the run lock for their run, and are refused while another run holds it (One
+run at a time, above).
 
 The processes:
 
@@ -433,10 +493,19 @@ The processes:
   `log_min_duration_statement 50ms`, `log_lock_waits on`. It also adds
   `track_commit_timestamp = on`, for the delivery latency from commit, and
   `unix_socket_directories = ''`, for TCP only. Its logs are in `$LOADTEST_ROOT/pg/log`.
-- **The latency proxy**, `loadgen proxy -rtt 1ms`. It holds each chunk for half the round trip in
-  each direction. Dispatch reaches Postgres through it. In the root report, `-rtt 1ms` added about
-  4 ms per round trip: `select 1` took 4.18 ms p50 through the proxy and 0.13 ms directly. A short
-  sleep in gVisor oversleeps.
+- **The latency proxy**, `loadgen proxy -rtt 1ms -stats 127.0.0.1:<proxy_stats>`. It holds each
+  chunk for half the round trip in each direction. Dispatch reaches Postgres through it. In the
+  root report, `-rtt 1ms` added about 4 ms per round trip: `select 1` took 4.18 ms p50 through the
+  proxy and 0.13 ms directly. A short sleep in gVisor oversleeps. With `-stats`, it also reads the
+  Postgres wire protocol of every connection and serves its counts at `GET /stats` (Document
+  rooms, below). The parse reads the chunks the relay has already copied, on its own goroutines,
+  and never blocks the relay, so the delay is the same with or without it. Its CPU is in the
+  `proxy cores` column.
+
+  `stack.sh start` keeps a proxy that already runs. A proxy started from an older `loadgen` serves
+  no wire counts, so after a `setup` that rebuilt `loadgen`, run `stack.sh stop proxy` and
+  `stack.sh start`. A `stack.json` from before `proxy_stats` gains it at the next `setup`, which
+  refuses while a stack process runs: `stack.sh stop` first.
 - **NATS** with JetStream: `nats-server -js -a 127.0.0.1 -n <stack name> -m <monitor port>`, on a
   fresh store directory at each start.
 - **The listener**, with `ENVOY_MACHINE_ID=<stack name>` and a random API token.
@@ -444,9 +513,14 @@ The processes:
   (`DISPATCH_IDENTITY=header:X-Dispatch-User`, `DISPATCH_IDENTITY_HEADER_TRUSTED=1`). It reaches
   the stack's listener (`ENVOY_URL`) and NATS. It gets no `AWS_*` variables, so it calls no
   embedding model. `DISPATCH_WEB_DIST` is an empty directory.
+- **The listener's latency proxy** (`envoy_proxy`), only under `LOADTEST_ENVOY_RTT` (run-step.sh
+  `--envoy-rtt`): `loadgen proxy -rtt <d>` from `LOADTEST_ENVOY_PROXY_PORT` to the listener.
+  Dispatch's `ENVOY_URL` names it; `loadgen` reaches the listener directly. `reset` starts it
+  before Dispatch, and stops an earlier one first. Its log is `$LOADTEST_ROOT/logs/envoy-proxy.out`.
 
 `stack.json` holds the stack name (`loadtest-<random>`), the two random tokens, every port and
-every pid. It is mode 600. `loadgen` reads every endpoint and token from it.
+every pid, and how the running Dispatch was started: `pg_direct`, `envoy_rtt` and `dispatch_log`.
+It is mode 600. `loadgen` reads every endpoint and token from it.
 
 ## The seed
 
@@ -497,10 +571,27 @@ more for the references (2,232 s for the whole seed on 2026-10-29). It does thes
    that. Then it runs `vacuum analyze` and installs the commit-time trigger (`commit-trigger.sql`,
    which `loadgen trigger-sql` prints). `cluster.sh seed` runs the same command.
 5. It stops Dispatch.
-6. It writes `seed.meta.json` and renames the database to `dispatch_seed`, the template.
+6. With `--min-events N`, it extends the event log to N rows (below), then runs `vacuum analyze`:
+   the clones are written after `seed-finish`'s own analyze, so they need their own.
+7. It writes `seed.meta.json` and renames the database to `dispatch_seed`, the template.
 
 The seed content does not depend on the clock. Each issue's text comes from a generator seeded by
 its project and number.
+
+**The event-log extension.** A stale socket of the restart scenario resumes 12,600 events behind
+the head, so the log has to hold at least that many. The issue and comment seed writes 10,004
+events, and the reference seed one more per target version and source document. `--min-events N`
+clones `comment.created` events, as test data, until the log holds N rows: the seed's comment
+events in id order, from the first one again when more are needed, each clone a new row on its
+source's issue with that issue's next sequence number (the issue's `last_seq` moves with it),
+`published_at` set (so the outbox publishes none of them) and `created_at` the time of the
+extension. The clones carry their source's payload, so `comment.created` events repeat comment
+ids; nothing in a step reads them but the replay and the issue event list
+(`GET /api/v1/issues/{key}/events`), which shows each issue about three more comment events.
+`--min-events 13000` holds the restart scenario's floor on a seed that holds fewer rows, and adds
+nothing to one that already holds more. On an existing seed with fewer rows,
+`stack.sh seed --min-events N` extends `dispatch_seed` in place, vacuums its event table and
+rewrites `seed.meta.json`.
 
 `$LOADTEST_ROOT/seed.json` is what `loadgen run` reads: the project keys and, per issue, its key,
 project, `artifact_id` (the spec), `spec_name`, `spec_bytes`, `quotes` (the requirement cells),
@@ -508,16 +599,17 @@ project, `artifact_id` (the spec), `spec_name`, `spec_bytes`, `quotes` (the requ
 for the issue keys.
 
 `$LOADTEST_ROOT/seed.meta.json` records `migration` (the highest Dispatch migration applied),
-`migrations` (every Dispatch migration version applied, in order),
-`build_commit` and `build_dirty` (the checkout), `dispatch_commit`, `dispatch_binary_sha256` and
-`dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch that made the
-seed, another commit than `build_commit` when `setup` ran with `LOADTEST_DISPATCH_COMMIT`),
-`created_at`, `seed_seconds`, `postgres_version` and `counts`:
-projects, issues, comments, artifacts, artifact versions, `ref_targets` (the artifacts named like
-`ref-target-%`), `ref_target_versions` (their versions), `ref_sources` (the artifacts named
-`references.md`), `artifact_refs` (the rows of `refs` that point at an artifact) and events. The
-reference plan writes 1,000 targets, 19,471 target versions and 310 source documents. Before the
-references, one seed counted 4 projects, 1,000 issues, 8,000 comments, 1,000 artifacts, 1,000
+`migrations` (every Dispatch migration version applied, in order), `build_commit` and `build_dirty` (the Dispatch checkout), `dispatch_commit`,
+`dispatch_binary_sha256` and `dispatch_build` (the whole of
+`$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch that made the seed, another commit than
+`build_commit` when `setup` ran with `LOADTEST_DISPATCH_COMMIT`), `created_at`, `seed_seconds`,
+`postgres_version`, `counts` and `event_extension`. `counts` holds projects, issues, comments,
+artifacts, artifact versions, `ref_targets` (the artifacts named like `ref-target-%`),
+`ref_target_versions` (their versions), `ref_sources` (the artifacts named `references.md`),
+`artifact_refs` (the rows of `refs` that point at an artifact) and events. `event_extension` is
+`{min_events, cloned_comment_events}`, or `null` without `--min-events`. The reference plan writes
+1,000 targets, 19,471 target versions and 310 source documents. Before the references and without
+`--min-events`, one seed counted 4 projects, 1,000 issues, 8,000 comments, 1,000 artifacts, 1,000
 artifact versions and 10,004 events.
 
 ### Read the references back
@@ -548,7 +640,9 @@ Every step starts from the same state, so the before and after runs of a fix sta
 1. It stops Dispatch and the listener.
 2. It drops database `dispatch` and creates it again from the template `dispatch_seed`.
 3. It restarts NATS on a fresh JetStream store, then the listener.
-4. It starts Dispatch on the step's build and waits up to 120 s until `/healthz` reports `ok` and
+4. It stops the listener's latency proxy, and under `LOADTEST_ENVOY_RTT` starts it again with
+   that round trip.
+5. It starts Dispatch on the step's build and waits up to 120 s until `/healthz` reports `ok` and
    `nats`. If not, it prints the end of the log and exits with status 1.
 
 The generator's revision tokens start at `r0`, because the database is at the seed again.
@@ -571,23 +665,38 @@ them sits at the migration level a seed without them sat at, and an older build'
 
 `stack.sh seed` builds nothing. It uses the binaries of the last `setup`, so run `setup` with the
 checkout that seeds first. `setup` builds `loadgen` from `LOADTEST_SRC` too, so that checkout must
-hold this package.
+hold this package. For an older Dispatch whose checkout lacks this package (or lacks a flag the
+step uses), keep `LOADTEST_SRC` on this checkout and name the older one in
+`LOADTEST_DISPATCH_SRC`: the same `loadgen` then runs against both builds.
 
-`run-step.sh` with another `LOADTEST_SRC` prepares the stack for that checkout: it runs `setup`,
-which builds that checkout's Dispatch, listener and loadgen into `$LOADTEST_ROOT/bin` over the ones
-the seed used, `start` and `seed`, which does nothing while the template and `seed.meta.json` exist.
-Then it compares the set of migration versions in that checkout
-(`packages/envoy/internal/dispatch/store/migrations`) with the set `seed.meta.json` records. It
-refuses a build that lacks a version the seed holds, naming it; a build holding the seed's set runs.
-A migration merged below the seed's highest is caught too, which comparing only the highest would
-read as equal. For a build that holds versions the seed lacks, it prints a note naming how many: a
-backfill that those migrations start runs inside each step of that build. A `seed.meta.json`
-written before it recorded `migrations` is compared by its highest migration alone, with a note
-saying so. For example, a build at migration 0128 on a seed at 0120 indexes the
-blocks of all 1,000 specs in every step. A newer build migrates the restored copy forward when
-Dispatch starts; an older build cannot start on a seed that a newer build made. To measure one
-build alone, seed with it (`stack.sh seed --force`, with a checkout that has `seed-refs`).
-`meta.json` records the build commit and whether the tree had uncommitted changes.
+```bash
+LOADTEST_DISPATCH_SRC=<base checkout> packages/envoy/loadtest/run-step.sh restart-before <flags>
+packages/envoy/loadtest/run-step.sh restart-after <flags>
+```
+
+`LOADTEST_DISPATCH_COMMIT=<rev>` is the other way to name that older Dispatch: `setup` then builds
+`envoy-dispatch` alone from that commit of `LOADTEST_SRC`, in a `git archive` export of its
+`packages/envoy` (The replay, below), and ignores `LOADTEST_DISPATCH_SRC`. Use it when the older
+build is a commit of this checkout rather than a checkout of its own.
+
+`run-step.sh` with another `LOADTEST_SRC` or `LOADTEST_DISPATCH_SRC` prepares the stack for that
+checkout: it runs `setup`, which builds that checkout's Dispatch, listener and loadgen into
+`$LOADTEST_ROOT/bin` over the ones the seed used, `start` and `seed`, which does nothing while the
+template and `seed.meta.json` exist. Then it compares the Dispatch that `setup` built with
+`seed.meta.json`: the `migrations` of `bin/envoy-dispatch.json`, the build record `setup` wrote,
+and, without that record, the migration files in the Dispatch checkout
+(`packages/envoy/internal/dispatch/store/migrations` of `LOADTEST_DISPATCH_SRC`), with the set
+`seed.meta.json` records. It refuses a build that lacks a version the seed holds, naming it; a
+build holding the seed's set runs. A migration merged below the seed's highest is caught too,
+which comparing only the highest would read as equal. For a build that holds versions the seed
+lacks, it prints a note naming how many: a backfill that those migrations start runs inside each
+step of that build. A `seed.meta.json` or a build record written before it recorded `migrations`
+is compared by its highest migration alone, with a note saying so. For example, a build at migration
+0128 on a seed at 0120 indexes the blocks of all 1,000 specs in every step. A newer build migrates
+the restored copy forward when Dispatch starts; an older build cannot start on a seed that a newer
+build made. To measure one build alone, seed with it (`stack.sh seed --force`, with a checkout that
+has `seed-refs`). `meta.json` records the build commit and whether the tree had uncommitted
+changes.
 
 Committed rate at 1x varies from run to run. Across the runs of 2026-10-27 it was 0.34 to 2.14
 events/s. The lowest ran a build at migration 0128 on a seed at 0120, with the block-index backfill
@@ -607,7 +716,8 @@ the same wrap. A step with fewer than 1,000 sessions touches only the first N is
 
 - Each session registers with the listener as the pi plugin does: `POST /v1/interests/subscribe`,
   `self_subscribed: true`, port 0. It sends a heartbeat every 90 s. The heartbeats of all sessions
-  are spread evenly.
+  are spread evenly. It advertises no capability, or with `--mention-frac` the capability `steer`
+  (Comment mentions, below).
 - Each session subscribes over core NATS to its agent topic (`notifications.agent.<session>`) and
   to the topics of its five issues (`notifications.dispatch.issue.<key>.>`). The sessions share 50
   NATS connections. `run.log` records the subscriptions (N × 6 expected), the sessions registered
@@ -750,6 +860,62 @@ report.
 
 A request that the generator cannot start because 25,000 requests are in flight is dropped and
 counted. 25,000 is more than 600 req/s × the 30 s client timeout.
+
+### Editors
+
+`--editors N` adds browser editors: N Yjs peers that type into the seeded specs over Dispatch's
+document websocket, as the dashboard's editor does
+(`packages/dispatch/web/src/features/doc/connection.ts`).
+
+- Editor i edits spec i mod D of the first D seeded specs in key order (`--editor-docs`), as the
+  person `person-<i>`: the request carries `X-Dispatch-User: person-<i>`, the stack's header
+  identity, which the document websocket takes as a person (`docs.Service.requestActor`).
+- It connects to `/ws/doc/{artifact_id}?schema_version=<pmdoc.SchemaVersion()>`, on Hocuspocus
+  framing (each frame starts with the document's name). As `@hocuspocus/provider` does, it sends
+  the token frame (the dashboard's token is its schema version), then sync step 1. It answers the
+  room's sync step 1 and applies every update the room relays. It is synced once the room's sync
+  step 2 has arrived.
+- The editors connect when the step starts, at the start of the warm-up. An editor whose
+  connection ends or fails connects again 1 s later, with a new copy of the document.
+- Each editor sends updates at `--editor-rate` per second, open-loop Poisson from the RNG seed
+  (stream 3 + i, which also picks each update's word), from the step's start to the window's end.
+  Where an update lands in the document comes from another stream, so a skipped update does not
+  move the schedule. An update scheduled while its editor is not connected and synced is not sent;
+  `not_sent` counts it by reason.
+- An update is one keystroke's transaction on the editor's copy: it inserts a space and a word of
+  the seed's vocabulary, with no marks, into the text of a top-level paragraph, at a position
+  inside the text (never at its start or end). It never edits the document's first paragraph,
+  which in a seeded spec is the `Revision token rN` line that the event generator's edits replace,
+  nor a paragraph with more than one text run. The edit stays in the Proof schema
+  (`TestEditParagraphStaysInsideTheProofSchema`).
+- Every 50th update of an editor inserts, in place of the word, a space and a marker
+  `lge<n>x`, with n in 12 digits: 16 bytes, unique in the step, inserted as one string, so the
+  update's bytes hold it whole.
+- The room answers every sync step 2 and update an editor sends with one SyncStatus frame, in
+  order: 1 when it applied the update, 0 when it did not (a read-only connection, or an update it
+  refused). `acknowledged` and `refused` count these answers for the updates scheduled in the
+  window.
+
+The two latencies:
+
+- **Relay**: from just before an editor writes an update to its socket, to when another editor of
+  the same document reads the frame after which its copy holds the update (its state vector holds
+  the sender's clock after the update). Each other editor of the document that was connected and
+  synced when the update was sent counts one receipt. Both times are `loadgen`'s clock. The value
+  includes `loadgen`'s own scheduling of its readers. A document with one editor has no relay
+  latency; `TABLES.md` names those documents. That happens when N < 2D.
+- **Durable**: from the same send time to when a probe finds the marker's row in `doc_updates`.
+  The probe has its own direct Postgres connection (`application_name` `loadgen-durable-probe`),
+  not through the proxy. Every 10 ms it sends, in one pipelined batch, for each marker not yet
+  found, `select version from doc_updates where artifact_id = $1 and version > $2 and
+  position($3 in update) > 0`, so it reads the documents with a marker pending only. `$2` is the
+  highest version the probe had seen on the document before the marker was sent: its read of each
+  document's head before the first editor connects, then the versions of the markers it found. The
+  found time is when the batch's answer arrives, so the value is up to 10 ms plus the batch's
+  time late (±10 ms). A marker not found 60 s after its send is given up: `markers` minus
+  `markers_found`.
+
+Both latencies count only the updates whose schedule is in the window, as the other workloads do.
 
 ### The dashboard stream
 
@@ -1224,7 +1390,7 @@ What to compare, from each step's `summary.json` and `samples.json`:
 | The CPU | `summary.json` `replay.dispatch_cpu_s` | Dispatch's CPU-seconds over the window: the figure the three base runs and the three head runs are compared on. The spread is the highest base run's value less the lowest. |
 | The same work | `summary.json` `replay.end_state.sha256` | Equal hashes show the runs did the same work. Within one build they are always equal; across the two builds they are equal when neither replanned (`base_docs.replanned` false on both) and the builds' answers are the same, and can differ when the builds' renderings differ (The client's text is the build's, above). |
 | Not saturated | `summary.json` `replay.saturated` | False in every one of the six runs that are compared. A saturated run measures the box's limit, not the change (A saturated run, below). |
-| Memory | `samples.json` `heap_inuse` and `rss_kib` key `dispatch`, over the samples with `in_window` true | Dispatch's heap in use and its resident size during the window. |
+| Memory | `samples.json` `rss_kib` key `dispatch`, over the samples with `in_window` true | Dispatch's resident size during the window. It is the memory figure of a replay: a replay is compared on Dispatch's CPU, so it is run without `-heap-samples` and reads no heap profile in the window (Resources, below). |
 
 **A saturated run.** A run with `replay.saturated` true is discarded: it is not compared. Run it
 again in the same place of the interleave, under a new name and with the same flags: a saturated
@@ -1271,6 +1437,125 @@ command and the inputs (`replay.inputs`), and how many runs were saturated and r
   longer exist in them, so an anchor lands by the seed's rules (7,002 of 12,076 on the nearest
   surviving block).
 - **CLI start-up.** The time a CLI process takes to start between its requests.
+
+## The restart scenario
+
+The restart work measures a Dispatch build before and after with these flags: a Dispatch restart
+under load, dashboard live sockets that reconnect as a browser does (some of them an hour behind),
+the refetch a browser makes, and comments that mention live sessions through a slow listener. The
+same `loadgen` runs against both Dispatch builds (Before and after across commits, above):
+
+```bash
+packages/envoy/loadtest/stack.sh seed --min-events 13000
+packages/envoy/loadtest/run-step.sh restart-1x --events 4 --sessions 400 --requests 60 \
+  --live 50 --live-resume 1 --live-stale 10 --restart-at 90s \
+  --mention-frac 0.2 --mentions 3 --envoy-rtt 200ms
+```
+
+### Resuming sockets (`--live-resume`)
+
+Without `--live-resume`, each socket subscribes to the events view with no resume, and is dialed
+again 1 s after the socket ends. With it, each socket reconnects as the dashboard does
+(`packages/dispatch/web/src/api/live-socket.ts`, `api/event-feed.ts`):
+
+- It keeps the highest event id it has received, and subscribes with
+  `resume: {"since": "<that id>"}`, or with no resume when it has received none.
+- It waits the dashboard's backoff before each attempt (`live-socket.ts` `reconnectDelayMs`): the
+  first attempt after a dropped socket is spread uniformly over 2 s, and each later attempt waits
+  half of `min(1 s × 2^attempt, 30 s)` plus a random share of the other half. An attempt whose
+  dial is refused (Dispatch is down), or whose subscription Dispatch will not start, is a failed
+  attempt, and the socket backs off again.
+- Every end of a socket counts the same way: a Dispatch restart (close 1012), the close at a
+  socket's 30-60 min age (4001), a transport error.
+- Just before each attempt it reads the event log's head, `select max(id) from events`, over a
+  direct Postgres connection. The frames of the new socket whose event id is at or below that
+  head are the **replay**: they committed before the reconnect.
+- Each reconnect is one entry of `reconnects.json`: the socket, the kind (`last_id`, `stale`,
+  `no_id`), when its dial started and whether that was after the restart began, the `since`, the
+  head, the failed attempts before it, the gap from the previous socket's end to the
+  `events_start` frame, the time from the dial's start to that frame, the frame's
+  `replay_complete`, the replayed frames, their bytes (each frame's whole message), the time from
+  the dial's start to the last replayed frame, and the refetch.
+- Replayed frames count in `live frames`, but the live latency columns do not time them: their
+  delay is the socket's absence.
+
+A subscription's `events_start` says `replay_complete` true only when Dispatch replayed every
+event after the resume it was sent. `internal/dispatch/api/live_events.go` (`maxLiveReplay`,
+`maxLiveReplayBytes`) replays at most 256 events and 1 MiB of frames; past either bound it
+replays nothing and says false, as it does for a subscription that named no resume and for a
+resume above the head of a log this one replaced.
+
+`--live-resume` needs the live socket. A build that serves the SSE feed instead (The dashboard
+stream, above) is refused before the window: its streams are read without resuming.
+
+### Stale sockets (`--live-stale`)
+
+The first K sockets (0 to K − 1) subscribe once with `since = max(id) − 12600`, the head read just
+before the dial less 12,600: a tab that comes back after an hour at the outage night's 3.5
+events per second. They do it at their first reconnect that starts after `stack.sh
+restart-dispatch` has begun, and resume from their last id at every other reconnect.
+Event ids have gaps, so that `since` can cover fewer than 12,600 rows. `loadgen run` refuses
+`-live-stale` when the event log holds fewer than 12,600 rows; `stack.sh seed --min-events 13000`
+gives it more (The seed, above).
+
+### The refetch
+
+On a reconnect whose `events_start` says `replay_complete: false`, the dashboard refreshes every
+query it holds (`api/event-feed.ts` `refreshEverything`). The socket does the same with the route
+mix: it issues every route whose caller is `browser`, once each, all at once, as the socket's
+viewer (`X-Dispatch-User: viewer-<i>`), with `{key}` the socket's issue (issue i of the issues in
+use) and `{project}` that issue's project. In the default route mix these are the six routes of
+the dashboard tab:
+
+- `browser GET /api/v1/issues/{key}` (issue read)
+- `browser GET /api/v1/issues?project={project}` (issue list)
+- `browser GET /api/v1/inbox` (inbox)
+- `browser GET /api/v1/me/replies` (replies)
+- `browser GET /api/v1/me/state` (state)
+- `browser GET /api/v1/issues/{key}/events?after=0&limit=200` (issue events)
+
+The refetch counts in the Live reconnects table, not in the request columns. `run.log` lists the
+routes; `summary.json` keeps them in `live_reconnects.refetch_routes`. A route mix with no
+`browser` route makes no refetch.
+
+### The restart (`--restart-at`)
+
+At `--restart-at` into the window, `loadgen run`:
+
+1. takes a sampler sample at once, and the next samples 5 s apart from there;
+2. marks Dispatch as restarting, so its absence is not a stack exit;
+3. reads the old Dispatch pid's CPU ticks every 20 ms until it has exited, so its shutdown work
+   counts;
+4. runs `bash $LOADTEST_STACK_SH restart-dispatch`, under the run's lock token, and logs its
+   output in `run.log` (`restart:` lines);
+5. reads `stack.json` for the new pid.
+
+The sampler keeps each process's CPU ticks across its pids: the old pid's last reading plus the
+new pid's own. So `Dispatch cores` in the Resources table covers the window across the restart.
+The Restart table gives Dispatch's and Postgres's CPU-seconds from the restart's start to 60 s
+after it, and per 5 s, from the samples' ticks interpolated linearly at each end. The CPU profile
+(`cpu.pprof`) covers the window from the restarted Dispatch's `/healthz` to its end, since one
+profile cannot span two processes. Writes and requests sent while Dispatch is down fail, and count
+as such.
+
+### Comment mentions (`--mention-frac`, `--mentions`)
+
+- A comment write (`comment`, `anchored` or `reply`) mentions K sessions with probability F. The
+  draw comes from a generator seeded by the write's marker, so the event schedule is the same with
+  and without mentions. The K sessions are distinct and other than the writing session.
+- The comment's body carries `mentions: [{"target": "session:ses-lg-NNNN"}, ...]` and no
+  `delivery`, so Dispatch uses its default delivery, `steer`
+  (`internal/dispatch/api/comment_create.go` `validateCommentMentions`).
+- Dispatch resolves each mention with the listener (`GET /v1/registry/<session>`), and refuses a
+  session that does not advertise the delivery as a capability
+  (`internal/dispatch/api/envoy_resolve.go` `resolveDeliveryTarget`). So with `--mention-frac`
+  every session registers with `capabilities: ["steer"]`; the sessions are live (registered, with
+  their heartbeats). Dispatch then sends each mention through the listener
+  (`POST /v1/messages/send`), which publishes it to the session's own NATS subscription. A comment
+  with mentions also makes Dispatch resolve the issue's route.
+- `--envoy-rtt D` puts a latency proxy with round trip D between Dispatch and the listener, so
+  each of those listener calls costs about D more. `loadgen`'s own registrations and heartbeats
+  reach the listener directly.
 
 ## Delivery latency
 
@@ -1337,12 +1622,13 @@ Every percentile in the harness is the lower nearest rank: the value at index
 
 | File | What it holds |
 | --- | --- |
-| `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too. |
+| `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too. `live_reconnects`, `restart` and `comment_mentions` are `null` without `--live-resume`, `--restart-at` and `--mention-frac`. |
 | `TABLES.md` | The tables of this step. `loadgen tables` writes it. |
-| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `allow_foreign`, the pids and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
-| `run.log` | `loadgen run`'s log: the configuration with the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's pids, the NATS subscriptions, the registrations, the window, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof and NATS reads (and each one's total, past three), a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, and the failure line when a stack process exited or the commit rows were not read. An endpoint that a line names is written without its URL password. |
-| `samples.json` | The 5 s samples: CPU ticks and RSS per process, `/proc/stat` ticks, Postgres connections by state, goroutines, pool waiters, heap (every 15 s), NATS `/varz`. The heap is `heap_live_bytes` and `heap_live_objects`: the sums of `inuse_space` and `inuse_objects` in Dispatch's binary heap profile (`/debug/pprof/heap`), which the runtime scales from its sampled records to estimates of the live heap as of its last GC. It is not runtime.MemStats `HeapInuse`, and the sampler never reads `?debug=1`: that text formats every heap record, grew past 500 MB, and its reads took 29% of Dispatch's CPU in the r16 replay. An older run's `samples.json` holds `heap_inuse` (with `heap_alloc` and `heap_sys`, read in each sample, with no `heap_at`), runtime.MemStats from `?debug=1`; `loadgen curves` still reads it, under its own name. `failed_reads` names a sample's reads that failed (`postgres`, `goroutines`, `heap`, `nats`); their values in that sample are 0 (`nats` empty) and enter no statistic. A read that failed once the run had ended is neither named nor counted. The heap read runs on its own, one at a time with up to 2 minutes each, so a slow read of a large heap delays no sample: each read lands in the first sample after it ends, with its end in `heap_at`, and enters the window (`heap_in_window`, `resources.heap_live_mib`, `pprof_read_errors`) by that time. |
-| `cpu.pprof` | Dispatch's CPU profile over the whole window. |
+| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
+| `run.log` | `loadgen run`'s log: the configuration with the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's pids, the NATS subscriptions, the registrations, the window, the refetch routes under `--live-resume`, the restart's `restart:` lines, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof and NATS reads (and each one's total, past three), a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, and the failure line when a stack process exited or the commit rows were not read. An endpoint that a line names is written without its URL password. |
+| `samples.json` | The 5 s samples: CPU ticks (each process's ticks across its pids) and RSS per process, `/proc/stat` ticks, Postgres connections by state, goroutines, pool waiters, the heap (every 15 s, under `-heap-samples` alone), NATS `/varz`. With `--restart-at`, one more sample at the restart's start. The heap is `heap_live_bytes` and `heap_live_objects`: the sums of `inuse_space` and `inuse_objects` in Dispatch's binary heap profile (`/debug/pprof/heap`), which the runtime scales from its sampled records to estimates of the live heap as of its last GC. It is not runtime.MemStats `HeapInuse`, and the sampler never reads `?debug=1`: that text formats every heap record, grew past 500 MB, and its reads took 29% of Dispatch's CPU in the r16 replay. Without `-heap-samples`, which is the default, no sample holds a heap read at all and the harness asks Dispatch for no heap profile inside the window (Resources, below). An older run's `samples.json` holds `heap_inuse` (with `heap_alloc` and `heap_sys`, read in each sample, with no `heap_at`), runtime.MemStats from `?debug=1`; `loadgen curves` still reads it, under its own name. `failed_reads` names a sample's reads that failed (`postgres`, `goroutines`, `heap`, `nats`); their values in that sample are 0 (`nats` empty) and enter no statistic. A read that failed once the run had ended is neither named nor counted. Dispatch's pprof reads fail while `--restart-at` restarts it. The heap read runs on its own, one at a time with up to 2 minutes each, so a slow read of a large heap delays no sample: each read lands in the first sample after it ends, with its end in `heap_at`, and enters the window (`heap_in_window`, `resources.heap_live_mib`, `pprof_read_errors`) by that time. |
+| `reconnects.json` | Under `--live-resume`: every reconnect of every live socket, in and out of the window (The restart scenario, above). |
+| `cpu.pprof` | Dispatch's CPU profile over the whole window; with `--restart-at`, from the restarted Dispatch's `/healthz` to the window's end. |
 | `heap.pprof` | Dispatch's heap profile at the end of the window. |
 | `heap-start.pprof`, `heap-end.pprof` | Under `-source replay`: Dispatch's heap profile at the window's start and end (The replay, above). |
 | `end_state.json` | Under `-source replay`: the end state of every document the run wrote, read after the drain, and its sha256 (`replay.end_state`, The replay, above). |
@@ -1353,10 +1639,11 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | `cpu.top.txt`, `cpu.cum.txt` | `go tool pprof -top` of `cpu.pprof`: by own time (40 nodes) and by cumulative time (80 nodes). |
 | `heap.top.txt` | `go tool pprof -top` of `heap.pprof`, by in-use bytes (40 nodes). |
 | `envelope-<type>.json` | One envelope that a session got on an issue topic, per event type, with a marker when one arrived. |
-| `envelope-agent.<type>.json` | The same for an agent topic. |
+| `envelope-agent.<type>.json` | The same for an agent topic. `envelope-agent.send.json` is a listener send there, which carries no event type: a mention under `--mention-frac`. |
 | `relay-frames.csv` | Under consumer delivery, one row per relay frame: the session, the stored subject, the stream sequence, `Envoy-Delivered`, the store time and the receipt time (Unix ns), the event id, whether it was a duplicate, the frame's dedupe identity (the envelope's `event_id`, else its `dedupe_key`) and whether the session answered it `done`. |
 | `dispatch.log` | Dispatch's log for the step. |
 | `listener.log`, `nats.log` | The listener's and NATS's logs since their restart in the reset. |
+| `envoy-proxy.log` | Under `--envoy-rtt`: the log of the latency proxy in front of the listener. |
 | `restart.json`, `backlog.json`, `warm.json`, `restart-report.json` | Of a `restart-step.sh` step only: the restart's times and start attempts, the backlog runs' summaries, and the report (The listener restart, above). |
 
 A file that a step could not take is absent, and `run.log` names the reason. The Postgres log stays
@@ -1371,7 +1658,8 @@ series `TABLES.md`, because `run-step.sh` already wrote them for each step.
 
 ## The tables
 
-`TABLES.md` has nine tables, with one row per step, and a tenth, Replay, when a step replayed.
+`TABLES.md` has fourteen tables, with one row per step (two tables, Live reconnects and Requests
+by route, have more rows), and a fifteenth, Replay, when a step replayed.
 The window is the measured window (`--duration`). "Cores" means CPU-seconds per second. A cell is
 `-` when it has no value, and also when the read that it comes from failed; a failed read also
 marks the step name with `(commit rows not read)`, `(1 failed read)` or `(<n> failed reads)`
@@ -1456,10 +1744,10 @@ divided by 100 ticks per second and by the seconds between the two samples.
 | `box busy` | percent | The share of the box's total CPU time (all CPUs) that was not idle or I/O wait, from `/proc/stat`. | `resources.sys_busy_frac` |
 | `box busy before` | percent | The same share over 5 s just before the step, read by `run-step.sh` before its reset, while Dispatch is stopped: the other work on the machine, other roles' processes in the pod included. Above 10%, the step shared the box (`run.log` warns). | `meta.json` `box_busy_before` |
 | `Dispatch RSS max MiB` | MiB | Dispatch's highest resident memory (`VmRSS`) in a sample. | `resources.rss_mib_max.dispatch` |
-| `heap live MiB p50 / max` | MiB | Dispatch's live heap, read every 15 s: the in-use bytes of its heap profile (`/debug/pprof/heap`, the sum of `inuse_space`), a sampled estimate, not runtime.MemStats `HeapInuse`. A step of an older run, whose `summary.json` holds `resources.heap_inuse_mib` (runtime.MemStats `HeapInuse` from `?debug=1`) in its place, shows that with the mark `(MemStats HeapInuse, older run)`, and a note under the table says it is a different metric. | `resources.heap_live_mib`, or an older run's `resources.heap_inuse_mib` |
+| `heap live MiB p50 / max` | MiB | Dispatch's live heap, read every 15 s under `-heap-samples`: the in-use bytes of its heap profile (`/debug/pprof/heap`, the sum of `inuse_space`), a sampled estimate, not runtime.MemStats `HeapInuse`. `-` for a step run without that flag, which is the default: it read no heap (Why the harness reads no heap profile in the window, below). A step of an older run, whose `summary.json` holds `resources.heap_inuse_mib` (runtime.MemStats `HeapInuse` from `?debug=1`) in its place, shows that with the mark `(MemStats HeapInuse, older run)`, and a note under the table says it is a different metric. | `resources.heap_live_mib`, or an older run's `resources.heap_inuse_mib` |
 | `goroutines p50 / max` | count | Dispatch's goroutines, from `/debug/pprof/goroutine?debug=1`. | `resources.goroutines` |
 | `goroutines waiting for a pool connection p50 / max` | count | Dispatch's goroutines with a pgx pool `Acquire` frame (puddle) in their stack. | `resources.pool_acquire_goroutines` |
-| `Postgres connections max` | count | The highest number of `pg_stat_activity` rows for database `dispatch`. It includes up to 4 connections of `loadgen`: the sampler, the lock probe, the ungranted-lock sampler and the transaction-id probe. | `resources.pg_conns_total.max` |
+| `Postgres connections max` | count | The highest number of `pg_stat_activity` rows for database `dispatch`. It includes up to 4 connections of `loadgen`: the sampler, the lock probe, the ungranted-lock sampler and the transaction-id probe; a step with editors adds 2 (the room sampler and the durable probe), and the window's two readings of `artifact_versions` hold 1 for a moment each. | `resources.pg_conns_total.max` |
 | `connections waiting on a lock p50` | count | The p50 of `dispatch` connections with state `active` and wait event type `Lock`, over the samples that saw at least one. `0` when no sample saw one. An advisory lock wait has this type. | `resources.pg_conns_by_state["active\|Lock"]` |
 | `Dispatch CPU-s per operation` | CPU-seconds | Dispatch's mean cores divided by the operation rate. An operation is a committed write or a sent request in the window. `-` when the commit rows were not read. | `resources.dispatch_cpu_s_per_op` |
 
@@ -1483,6 +1771,33 @@ totals count every sample from the warm-up to the end of the grace period, while
 two totals can differ. A failed read enters no statistic, so the Postgres, goroutine, pool-waiter
 and heap columns are over the reads that worked, and a column with no read that worked shows `-`,
 not 0. `TABLES.md` repeats this under the table when a row has the mark.
+
+**Why the harness reads no heap profile in the window.** By default the sampler takes no heap
+profile from Dispatch while the window runs: it sends no request to `/debug/pprof/heap` at all,
+`heap live MiB p50 / max` shows `-`, and Dispatch's resident memory (`Dispatch RSS max MiB`, read
+from `/proc`) is the memory the tables show. Dispatch writes any heap profile itself, inside its
+own process, so every profile read inside the window is charged to the CPU this harness measures
+for Dispatch, and the binary profile `-heap-samples` reads (below) has had no measurement of its
+own share in a replay. The text form this sampler read before shows what such a read can cost:
+over six GC-pass runs, `runtime/pprof.writeHeap`'s cumulative time was 46% to 51% of the
+profile's total (`go tool pprof -top -cum -nodecount=100000 <dispatch binary> cpu.pprof`, the
+`runtime/pprof.writeHeap` line's cum). On an older Dispatch build that text render buffered
+gigabytes in `text/tabwriter`; a client that timed out (30 s) left the render running, and the
+renders piled up until one run grew Dispatch's RSS to 9.4 GB and the pod was OOM-killed. No
+sampler reads the text form now. The goroutine profile is far cheaper to render and stays. The
+binary profiles at the window's edges stay too (`heap-start.pprof`, `heap-end.pprof`, and
+`heap.pprof` and `heap.txt` after the CPU profile): they are taken before the window's measured
+work, or once it has ended.
+
+**Reading the heap in the window: `-heap-samples`.** A run given `-heap-samples`
+(`run-step.sh --heap-samples`, and every `cluster.sh step`, whose curves show the heap series)
+reads Dispatch's live heap every 15 s inside the window, as the `heap live MiB p50 / max` column
+and `samples.json` `heap_live_bytes` above describe. That read takes the binary profile
+(`/debug/pprof/heap`, no `?debug=1`), which is far cheaper than the text: the text's reads took
+29% of Dispatch's CPU in the r16 replay. It is not free, though: Dispatch writes the binary
+profile itself, inside the process, so those writes are charged to the CPU this harness measures
+for Dispatch. Use the flag where the heap is the question (a capacity curve, a leak hunt), and
+leave it off where Dispatch's CPU is (a replay that compares one build against another).
 
 ### Session delivery, listener and NATS
 
@@ -1565,9 +1880,9 @@ The columns below are the same for either stream; `config.dashboard` names which
 | --- | --- | --- | --- |
 | `step` | name | The step name, with the mark `(commit rows not read)` when the run's commit rows could not be read (Events, delivery and requests, above). | `config.step`, `events.commits_error` |
 | `NATS delivery ms from sent p50 / p99` | ms | Delivery latency from sent (Delivery latency, above), over every issue-topic receipt of a primary event. `-` when the commit rows were not read. | `events.delivery_ms_from_sent` |
-| `live frame ms from created_at p50 / p99` | ms | The frame time minus the `created_at` of the frame's event, over every frame with a `created_at`. | `live.live_frame_ms_from_created_at` |
-| `live frame ms from write response p50 / p99` | ms | The frame time minus the time when the client read the write's response. Only the frame of a primary event counts. Its write must be in the window, have a 2xx status and be committed. A write with no complete response has no response time, so its frames do not count. `-` when the commit rows were not read. | `live.live_frame_ms_from_write_response` |
-| `live frames` | count | The event frames of all dashboard streams that arrived in the window. | `live.live_frames` |
+| `live frame ms from created_at p50 / p99` | ms | The frame time minus the `created_at` of the frame's event, over every frame with a `created_at` that a reconnect did not replay (The restart scenario, above). | `live.live_frame_ms_from_created_at` |
+| `live frame ms from write response p50 / p99` | ms | The frame time minus the time when the client read the write's response. Only the frame of a primary event counts, and not a replayed one. Its write must be in the window, have a 2xx status and be committed. A write with no complete response has no response time, so its frames do not count. `-` when the commit rows were not read. | `live.live_frame_ms_from_write_response` |
+| `live frames` | count | The event frames of all dashboard streams that arrived in the window, replayed ones included. | `live.live_frames` |
 | `live order violations` | count | The frames whose event id is not more than the event id of the previous frame on the same connection. The check starts again on each new connection. A value above 0 means that a stream sent events out of id order. | `live.live_order_violations` |
 | `transport` | name | The dashboard stream the step's streams ran on: `live` (`GET /ws/live`) or `sse` (`GET /api/v1/events`). The column is there only when a step used something other than `live`. A step whose `summary.json` has no `config.dashboard` is read from the older `live.transport` (`sse` there is `sse` here, `ws` and `none` are `live`), and one with neither field, from a run before either, reads `live`. | `config.dashboard`, else `live.transport` |
 
@@ -1618,6 +1933,163 @@ step whose sampler took no sample has `-` in every cell.
 | --- | --- | --- | --- |
 | `step` | name | The step name, with the mark `(1 failed read)` when the transaction-id probe's connect or one of its two reads failed (Commit-order lock, above). | `config.step`, `resources.xid_read_error` |
 | `transaction ids per s` | transaction ids per second | The transaction ids that Postgres assigned per second in the window, in all databases of the server. The transaction-id probe reads the next transaction id (`pg_snapshot_xmax(pg_current_snapshot())`) at the window start and at the window end. It divides the difference by the seconds between the two reads. The probe assigns no transaction id itself. `-` with the mark when a read failed (`resources.xid_read_error` holds the error, and `run.log` shows it); `-` alone when `resources` is null. | `resources.xids_per_s` |
+
+### Live reconnects
+
+The reconnects of the resuming live sockets (`--live-resume`, The restart scenario, above) whose
+dial started in the window. There is one row per step for `all` reconnects, then one per kind that
+occurred: `last_id` (`since` the last event id received), `stale` (`since = max(id) − 12600`, at the
+restart) and `no_id` (no resume). A step without `--live-resume` has one row of `-`. "Per
+reconnect" columns hold one value for each reconnect, a reconnect that replayed nothing as 0.
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name. | `config.step` |
+| `kind` | name | `all`, or the kind of reconnect. | the keys of `live_reconnects.groups` |
+| `reconnects (complete)` | count | The reconnects, then those whose `events_start` said `replay_complete: true`. | `.reconnects`, `.complete` |
+| `after restart` | count | The reconnects whose dial started after `stack.sh restart-dispatch` began. | `.after_restart` |
+| `failed attempts` | count | The attempts before these reconnects whose dial was refused, or whose subscription Dispatch would not start (Dispatch down or starting). | `.failed_attempts` |
+| `gap s p50 / max` | s | From the end of the previous socket to the reconnect's `events_start` frame: how long the socket had no feed. | `.gap_ms` |
+| `events_start ms p50 / max` | ms | From the reconnect's dial start to its `events_start` frame. | `.start_ms` |
+| `replayed frames per reconnect p50 / max` | count | The frames whose event id is at or below the event log's `max(id)` read just before the dial. | `.replay_frames` |
+| `replayed KiB per reconnect p50 / max` | KiB | The bytes of those frames' messages. | `.replay_bytes` |
+| `replayed KiB total` | KiB | The bytes of every replayed frame. | `.replay_bytes_total` |
+| `replay ms p50 / max` | ms | From the dial start to the last replayed frame, over the reconnects that replayed a frame. | `.replay_ms` |
+| `refetches` | count | The reconnects whose subscription did not replay in full and that made the refetch. | `.refetches` |
+| `refetch requests (failures)` | count | The refetch's GETs, each dashboard route once per refetch, then those with a status outside 2xx or a transport error. | `.refetch_requests`, `.refetch_failures` |
+| `refetch KiB` | KiB | The response bodies of the refetch's GETs. | `.refetch_bytes` |
+| `refetch ms p50 / p99` | ms | Each refetch GET from arrival to the end of its response body. | `.refetch_ms` |
+
+`live_reconnects` also holds `stale_sockets` and `refetch_routes`, and each group holds
+`replay_frames_total`. Every value of each reconnect is in `reconnects.json`.
+
+### Restart
+
+The restart of `--restart-at` (The restart scenario, above). A step without it has one row of `-`.
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name. | `config.step` |
+| `restart at s` | s | `--restart-at`: when into the window the restart was due. | `restart.at_s` |
+| `restart s (stop to /healthz)` | s | From the start of `stack.sh restart-dispatch` (it stops Dispatch at once) to its end, when the new Dispatch reported `/healthz` `ok` and `nats` or the restart failed. | `restart.duration_s` (`restart.at`, `restart.done`) |
+| `pid old → new` | pid | Dispatch's pid before and after. | `restart.old_pid`, `restart.new_pid` |
+| `Dispatch CPU-s in 60 s` | CPU-seconds | Dispatch's CPU from the restart's start to 60 s after it: the old process's shutdown, the new one's start and its load, the old pid's ticks up to its exit plus the new pid's. The sampler's cumulative ticks are interpolated linearly at each end. `-` when the samples do not reach 60 s after the restart. | `restart.dispatch_cpu_s_60s` |
+| `Dispatch CPU-s per 5 s` | CPU-seconds | The same per 5 s from the restart's start, up to the last 5 s the samples cover. | `restart.dispatch_cpu_s_per_5s` |
+| `Postgres CPU-s in 60 s` | CPU-seconds | The stack's Postgres CPU (Resources, above) over the same 60 s. | `restart.postgres_cpu_s_60s` |
+| `Postgres CPU-s per 5 s` | CPU-seconds | The same per 5 s. | `restart.postgres_cpu_s_per_5s` |
+| `error` | text | Why the restart failed, when it did. | `restart.error` |
+
+### Comment mentions
+
+The comment writes (`comment`, `anchored`, `reply`) of `--mention-frac` (The restart scenario,
+above), split by whether they mention sessions. A step without it has one row of `-`. Each cell is
+the write latency p50 / p99 of the 2xx writes (from arrival to the end of the response body, as in
+Write latency by kind), then (2xx / offered). `-` when there was no such write.
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name. | `config.step` |
+| `mention share / sessions per comment` | percent, count | `--mention-frac` and `--mentions`. | `comment_mentions.mention_frac`, `.mentions_per_comment` |
+| `window with mentions` | ms, then count | The comment writes scheduled in the window that mention sessions. | `comment_mentions.window.with_mentions`: `write_ms`, `ok_2xx`, `offered` |
+| `window without mentions` | ms, then count | Those that mention none. | `comment_mentions.window.without_mentions` |
+| `after restart with mentions` | ms, then count | The comment writes sent from the restart's start to 60 s after it that mention sessions. `-` without `--restart-at`. | `comment_mentions.after_restart_60s.with_mentions` |
+| `after restart without mentions` | ms, then count | Those that mention none. | `comment_mentions.after_restart_60s.without_mentions` |
+
+### Editors
+
+The browser editors (Editors, above). A step without editors, and a `summary.json` from before
+them, has no `editors` (null), and its cells are `-`. Updates, latencies and markers count the
+updates scheduled in the window; connects, connect failures and closes count the whole step,
+warm-up and grace included.
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name. | `config.step` |
+| `editors on documents (with one editor)` | count | The editors, the documents they edit, then how many of those documents have one editor. A note under the table names those documents per step. | `editors.editors`, `editors.docs`, `editors.single_editor_docs` |
+| `updates/s target / sent` | updates per second | Editors × `--editor-rate`, then the updates sent in the window divided by the window. | `editors.target_per_s`, `editors.sent_per_s` |
+| `updates sent / acknowledged / refused` | count | The updates sent, then those the room answered with SyncStatus 1, then with 0. The rest had no answer by the end of the grace. | `editors.sent`, `editors.acknowledged`, `editors.refused` |
+| `updates not sent` | count | The updates scheduled in the window that were not sent, then the count per reason: `disconnected` (the editor was not connected and synced), `no paragraph` (its copy held no paragraph it may edit) or `write failed` (the socket refused the frame). | `editors.not_sent` |
+| `relay ms p50 / p99` | ms | Relay latency over every receipt (Editors, above). | `editors.relay_ms` |
+| `durable ms p50 / p99 (found / markers)` | ms, then count | Durable latency, ±10 ms, then the markers found and the markers sent. `-` when the probe could not connect or read the heads; a note names why. | `editors.durable_ms`, `editors.markers_found`, `editors.markers`, `editors.durable_note` |
+| `connects / connect failures` | count | The connections opened, then the connection attempts that failed, with the count per reason: `http <status>` for a refused upgrade, `dial` for any other failure. | `editors.connects`, `editors.connect_failures` |
+| `closes by code` | count | The connections the room ended, per WebSocket close code (`1006`: no close frame), most first; `read error` and `unreadable frame` for the other ends. `0` when the room ended none. | `editors.closes` |
+
+`editors` also holds `readonly_connections` (the room admitted the editor read-only, so it
+refused its updates) and `auth_denied` (the room refused the token frame).
+
+### Document rooms
+
+Dispatch's document rooms' database work. Every step after this table was added has `rooms`; a
+`summary.json` from before it has none, and its cells are `-`. A note under the table says why a
+step has no value for a column.
+
+**Round trips.** The latency proxy reads the Postgres wire protocol of each client connection
+(`pgwire.go`), and `loadgen run` reads its counts (`GET /stats` on `ports.proxy_stats`) at the
+window's start and at its end; the columns are the differences.
+
+- The parser follows the startup (an SSLRequest or GSSENCRequest first, which the server refuses
+  with one byte: the harness DSN is `sslmode=disable`), then the typed frames. It maps every
+  prepared statement's name, the unnamed one included, to its SQL from the `Parse` frames.
+- A **round trip** is each `Sync`, each simple `Query` and each function call: each is what a
+  client waits on, and Postgres answers each with one `ReadyForQuery`. A `Flush` is one too when a
+  frame since the last round trip awaits an answer. pgx v5.11 sends no `Flush`: only
+  `pgconn.Pipeline.SendFlushRequest` does, and neither pgx nor Dispatch calls it; `flush` in
+  `rooms.round_trips` counts them. The startup's `ReadyForQuery` is no round trip.
+- A round trip is **room work** when one of its statements (the SQL of a `Parse`, the statement a
+  `Bind` names, or a `Query`'s text), matched case-insensitively, names `doc_updates`,
+  `doc_checkpoints`, `doc_pending_authors` or `doc_settlements_pending`, or takes, tries or frees
+  the document's advisory lock as Dispatch writes it: `pg_advisory_(xact_)lock(hashtext($n))`,
+  `pg_try_advisory_lock(hashtext($n))`, `pg_advisory_unlock(hashtext($n))`. A lock on
+  `hashtext` of a literal (`'issue-rank:' || $1`) or on two keys is not a room's. The match is on
+  the SQL text, so it counts the same on any build.
+- The proxy counts every connection through it: Dispatch's, and no other, since `loadgen`'s
+  samplers reach Postgres directly. A connection whose stream the parser cannot follow (a frame it
+  cannot read, an encrypted stream, or a parser 4,096 chunks behind the relay) is not counted from
+  then on; `unparsed_connections` counts them, and a note names the step.
+- The two readings are some milliseconds after the window's start and end, `interval_s` apart.
+- `-` with a note when Dispatch reaches Postgres directly (`LOADTEST_PG_DIRECT=1`), when
+  `stack.json` names no `proxy_stats`, when the proxy serves no `/stats` (one started from an
+  older `loadgen`), or under `-allow-foreign`. `proxy_stats` is no endpoint flag: a foreign run
+  takes nothing from `stack.json`, so it reads no proxy's counts, and the rule that a foreign run
+  gives every endpoint flag does not cover it.
+
+**Connections held by rooms.** In a step with editors only, a sampler reads every 100 ms, from the
+window's start to its end, over its own direct connection (`loadgen-room-sampler`), the backends
+of database `dispatch` that hold or wait for a single-key advisory lock (`pg_locks`,
+`locktype = 'advisory'`, `objsubid = 1`) other than the events commit-order lock
+`0x4449535041544348` (`internal/dispatch/events/broker.go`), together with the backends that are
+not idle and whose statement names `doc_updates`. `loadgen`'s own backends are left out. A step
+without editors runs no such sampler, so its load is the one the other tables measured before the
+sampler existed: each read of `pg_locks` costs Postgres CPU (Ungranted locks, above). Its failed
+reads, a failed connect counting as one, mark the row `(<n> failed reads)` as the other probes'
+failed reads do (Commit-order lock, above); `rooms.connections.errors` counts them, and `run.log`
+shows the first three and their total.
+
+**Batches.** `loadgen run` reads Dispatch's `dispatch_rooms` from the profiler's `/debug/vars` at
+the window's start and end. A build that serves no `dispatch_rooms` reads `not served by this
+build`, with the profiler's answer when it answered an error; the cell shows it on one line, its
+white space collapsed and `|` escaped.
+
+**Whole markdown per version.** At the window's start and end, over a direct
+connection, `loadgen run` reads `pg_total_relation_size('artifact_versions')` (heap, TOAST and
+indexes) and the table's rows. The proxy times each round trip that runs a statement matching
+`insert into artifact_versions`: from its `Sync` or `Query` reaching Postgres (after the proxy's
+delay) to Postgres's `ReadyForQuery` reaching the proxy, so it is Postgres's time for the insert
+and its triggers, plus a loopback hop, without the added round trip. A round trip that only
+prepares the insert is not timed.
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name, with the mark `(<n> failed reads)` when the room sampler had failed reads. | `config.step`, `rooms.connections.errors` |
+| `round trips room / all` | count | The room-work round trips, then all round trips, in the window. | `rooms.round_trips.room`, `.all` |
+| `room round trips per update` | round trips | Room-work round trips divided by the editor updates sent in the window. The numerator includes room work that is not the editors' (a REST edit's write to a room, a settlement, a room's load). `-` without editors. | `rooms.round_trips.room_per_update` |
+| `connections held by rooms p50 / p99 / max` | count | The backends counted per sample. | `rooms.connections.held` |
+| `shared-pool share` | percent | Over every sample, the counted backends whose `application_name` is not `dispatch-room-appends` or `dispatch-rooms` (Dispatch's room pools) or `dispatch-compaction` (its compaction pool), divided by all counted backends. A build whose room appends use the shared pool reads 100%. | `rooms.connections.shared_pool_share` |
+| `append batches / updates / round trips` | count | `dispatch_rooms`' `append_batches`, `appended_updates` and `append_round_trips` in the window. | `rooms.batches` |
+| `batch sizes (updates: batches)` | count | `dispatch_rooms`' `batch_sizes` in the window: for each bucket of updates per batch that holds a batch, its batches. | `rooms.batches.batch_sizes` |
+| `artifact_versions KiB/s` | KiB per second | The growth of `artifact_versions` divided by the seconds between the two reads. Postgres grows a relation by 8 KiB pages, so the growth is exact to a few pages per relation. | `rooms.versions.bytes_per_s` |
+| `versions written` | count | The rows `artifact_versions` gained. | `rooms.versions.written` |
+| `version insert ms p50 / p99 (count, total ms)` | ms, then count and ms | The timed version inserts: p50 / p99 over those the proxy's ring of the latest 16,384 still held (`insert_samples_missing` counts the rest), then their count and their time in all, which are exact. | `rooms.versions.insert_ms`, `.insert_count`, `.insert_total_ms` |
 
 ### Requests by route
 
@@ -1699,15 +2171,20 @@ Give `-nats-server-name` to keep the NATS check. The sampler gets no pids. `meta
   and a session actor.
 - **No embeddings.** Dispatch gets no AWS credentials or region. Meaning search is unavailable, and
   search falls back to keyword.
-- **A smaller dataset.** 1,000 issues and about 10,000 events at the start of each step. A replay
-  step starts on LINUX's 1,047 issues at their real sizes (The replay, above).
-- **No browser documents.** No document websockets and no dashboard refetch fan-out. The browser
-  share of the route mix is plain GETs. The live sockets subscribe to the event feed alone (no
-  delivery or agent views), time each event frame, and do nothing more.
+- **A smaller dataset.** 1,000 issues, and an event log of the 10,004 events of the issue and
+  comment seed plus one per reference target version and source document, at the start of each
+  step (`stack.sh seed --min-events N` raises it to N rows, the extra ones cloned comment events).
+  A replay step starts on LINUX's 1,047 issues at their real sizes (The replay, above).
+- **Browser documents in editor steps only.** A step with `--editors` opens document websockets
+  and types into specs (Editors, above); the others open none. The browser share of the route mix
+  is plain GETs. The live sockets subscribe to the event feed alone (no delivery or agent views)
+  and time each event frame; with `--live-resume` they also reconnect and refetch as the dashboard
+  does (The restart scenario, above), but hold no query cache: the refetch is the route mix's
+  dashboard routes, not the queries a real tab holds.
 - **One listener, sessions on NATS.** The sessions receive from NATS directly, as the pi plugin's
-  self-subscription does. They register with port 0, so the listener delivers nothing to them,
+  self-subscription does. They register with port 0, so the listener pushes nothing to them,
   unless they ask for consumer delivery (Consumer delivery, above): then the one listener relays
-  every session's consumer.
+  every session's consumer. A mention's send reaches them on their agent topic.
 - **One process each.** One Dispatch process, one NATS server and one listener, all on
   `127.0.0.1`. Dispatch's `GOMAXPROCS` is `LOADTEST_GOMAXPROCS`, nproc by default; production's
   was 16.
@@ -1883,7 +2360,7 @@ so. A write (`drop database`, a `kubectl cp`, a start in the runner) is never re
 | --- | --- |
 | `up <up's flags>` | Refuses, before it creates anything, a commit with no image, a `--pg-major` other than production's, a `--pg-volume` that is not a whole number of Gi or is above 240Gi, an image tag that does not resolve to a digest, stored-order flags it cannot build the checker from (The stored-order check, below: a `--dispatch-commit` the git store does not hold; a tree without `cmd/dispatch/storedorder.go` and no `--stored-order-source`, or one with it and a `--stored-order-source`; a source or checker commit the git store does not hold or whose tree lacks INFRA-707's files or registration), an overlay whose subcommand table lacks the registration's anchor, a checker that does not compile (naming the dispatch commit, the source commit and the compiler's first error), and a `--browsertype-commit` that the git store does not hold, whose tree has no `loadtest/browsertype` or whose `browsertype` has no `-protect` or no `-person` flag (Browser typing, below). Refuses with exit status 2 while the lock exists. Then takes the lock, installs the copy, builds `loadgen` and (with `--browsertype-commit`) `browsertype`, starts the heartbeat and the sampler, and prints each container's requests and limits and the size of the Postgres data volume. |
 | `seed` | `loadgen seed` from the runner through Dispatch's Service, then `loadgen seed-finish`. Then it stops Dispatch and the listener and renames the database to the template `dispatch_seed`. |
-| `step NAME FACTOR [--duration 10m] [--reads-only] [--typing [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]` | The reset, the Postgres data volume read (The Postgres data volume, below), then one `loadgen run` at FACTOR × (4 events/s, 60 requests/s) with the `series-sessions` count, then the crash check, the stored-order check, `cgroup-merge` and `tables`. FACTOR can be fractional (`8.5`). `--reads-only` sends 0 events, and is refused with `--typing`. Postgres's write-out counters go into `pg-stats-before.json` and `pg-stats-after.json`. `--typing` adds browser typing (below), into the documents `loadgen plan-docs` says the step's own writes plan the most versions for. |
+| `step NAME FACTOR [--duration 10m] [--reads-only] [--typing [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]` | The reset, the Postgres data volume read (The Postgres data volume, below), then one `loadgen run` at FACTOR × (4 events/s, 60 requests/s) with the `series-sessions` count, then the crash check, the stored-order check, `cgroup-merge` and `tables`. The run is given `-heap-samples`, so its samples carry the heap the curves and the trend show (Resources, above); a `replay` step is not. FACTOR can be fractional (`8.5`). `--reads-only` sends 0 events, and is refused with `--typing`. Postgres's write-out counters go into `pg-stats-before.json` and `pg-stats-after.json`. `--typing` adds browser typing (below), into the documents `loadgen plan-docs` says the step's own writes plan the most versions for. |
 | `series [--duration 10m]` | 1x, 2x, 3x, 5x, 7x, 10x and `10x-reads`, then the refinement (below). |
 | `soak [--duration 60m]` | The step `10x-hour`. |
 | `db-size CPU MEMORY` | Postgres at the Cloud SQL tier of CPU and MEMORY (for example `4 15Gi`), restarted on the same claim. Postgres's `cpu.max` must then read the new limit. |
@@ -2336,7 +2813,7 @@ its cores and working set from `cgroup.json`. It also holds:
 
 ### An image for a commit
 
-`up` resolves `--dispatch-commit` to `ghcr.io/sjawhar/legion/envoy:<full sha>` by digest. A main
+`up` resolves `--dispatch-commit` to `ghcr.io/cybermonklabs/legion/envoy:<full sha>` by digest. A main
 commit that touches the image's inputs (`packages/envoy` among them) gets its image on push. A
 branch head gets one from:
 
@@ -2442,11 +2919,12 @@ failed kill and the nap that would follow it included.
   - no reset per step. `cluster.sh` resets its copy before each step (Running on a cluster copy,
     above).
 - `cluster.sh` runs the 10-minute steps, the hour with its trend, and INFRA-639's replay of
-  LINUX's log on the 16 and the 4 vCPU database. Sampling of the production database and restarts
-  during load are not in this package.
-- The browser-editor load work adds its browser-editor workload, its round-trip counter and its
-  document-room sampler
-  to this package.
+  LINUX's log on the 16 and the 4 vCPU database.
+  Sampling of the production database is not in this package.
+  Restarts during load are: `--restart-at` restarts Dispatch on the local stack (The restart
+  scenario, above), and `restart-step.sh` restarts the listener (The listener restart, above).
+- The editors type only into paragraphs of specs, one word at a time; they neither format, delete,
+  nor send awareness, and each editor keeps one document.
 - The replay of LINUX's write log is this package's second request source (`-source replay`). The
   route-mix file and `routes.go` stay its GET generator.
 - `run-series.sh` passes no `-replay-*` flag: a replay step is one `run-step.sh <name> --replay`

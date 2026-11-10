@@ -2,6 +2,10 @@
 # Legion's pod baseline. The operator copies it into their own directory with models.yml and
 # applies both with apply.sh; to change the model a role uses, edit its line under modelRoles and
 # run apply.sh again (README.md beside this file).
+# modelRoles.default is the model every role's session runs on, a resumed one included: each launch
+# names --model @default, Oh My Pi's own name for that role. A settings set without that key is
+# refused nowhere — the session starts, silently, on one of Oh My Pi's built-in models, which this
+# route does not serve.
 #
 # Every model turn runs on the anthropic provider models.yml routes through the gateway, including a
 # retry on another model (retry below). Oh My Pi falls back from a failing provider without a word,
@@ -10,8 +14,8 @@
 # Google and the local servers Oh My Pi uses with no key, as scripts/e2e/lib/install-model-gateway.sh
 # does for the tmux proofs, and OpenAI. Records merge key by key across settings layers, so every
 # role Legion's prompts reach is named: the shipped review, oracle and deep-worker agents' @review,
-# @oracle and @deep (the planner's plan-reviewer and plan-gap-analyst run on @review and @oracle),
-# and the bundled scout's @smol and reviewer's @slow.
+# @oracle and @deep (the planner's plan-reviewer and the architect's goal-red-team run on @review,
+# the planner's plan-gap-analyst on @oracle), and the bundled scout's @smol and reviewer's @slow.
 enabledModels:
   - anthropic/claude-fable-5
   - anthropic/claude-fable-5-1

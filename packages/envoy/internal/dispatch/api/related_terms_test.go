@@ -22,13 +22,11 @@ func relatedTermsServer(t *testing.T) (http.Handler, *store.Store, *server) {
 	return handler, database, served
 }
 
+// refreshTermStats refreshes the project's statistics and answers its item count, which is the
+// picker's N; refreshTermStatsPass answers the whole of what the pass did.
 func refreshTermStats(t *testing.T, database *store.Store, project string) int {
 	t.Helper()
-	items, err := refreshSearchTermStats(context.Background(), database.Pool, project)
-	if err != nil {
-		t.Fatalf("refresh %s's search term statistics: %v", project, err)
-	}
-	return items
+	return refreshTermStatsPass(t, database, project).Items
 }
 
 // awaitTermStatsRefresh waits for the refresh of project's statistics srv has running, if any,
@@ -45,7 +43,7 @@ func awaitTermStatsRefresh(t *testing.T, srv *server, project string) {
 // pickTerms picks from text as an ask's question is picked: the whole text is its title.
 func pickTerms(t *testing.T, srv *server, project, text string, exclude relatedExclusion) relatedTerms {
 	t.Helper()
-	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, project, text, text, exclude)
+	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, project, text, text, exclude, probeUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick related terms: %v", err)
 	}
@@ -372,8 +370,11 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 	if _, counted := ndoc["astrolab"]; counted {
 		t.Fatalf("statistics %v count 'astrolab', which only the older version holds", ndoc)
 	}
-	if ndoc["sextant"] != 1 || ndoc["altitud"] != 1 {
-		t.Fatalf("statistics %v, want 'sextant' and 'altitud' in the one latest version", ndoc)
+	// Two of the project's items hold the latest version's words: the document, and the issue,
+	// whose own vector carries its primary document's text (20261105145242). The title's word is
+	// the issue's alone, which is what tells the two items apart in the counts.
+	if ndoc["sextant"] != 2 || ndoc["altitud"] != 2 || ndoc["instrument"] != 1 {
+		t.Fatalf("statistics %v, want 'sextant' and 'altitud' in the issue and the one latest version, and 'instrument' in the issue alone", ndoc)
 	}
 }
 
@@ -394,7 +395,7 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 	if term, _ := pickedTerm(picked, "walrus"); term.Surface != "Walruses" {
 		t.Fatalf("walrus's surface = %q, want the text's own 'Walruses'", term.Surface)
 	}
-	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL),
+	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, ""),
 		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK)
 	if err != nil {
 		t.Fatalf("run the keyword body under the related q: %v", err)
@@ -428,7 +429,7 @@ func TestRelatedTermsSurfacesComeFromTheTitleAlone(t *testing.T) {
 
 	title := "Walruses on the move"
 	text := title + "\nThey cross the tundra each spring."
-	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, "SURF", text, title, relatedExclusion{})
+	picked, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, "SURF", text, title, relatedExclusion{}, probeUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick related terms: %v", err)
 	}
@@ -437,7 +438,7 @@ func TestRelatedTermsSurfacesComeFromTheTitleAlone(t *testing.T) {
 	if !pickedWalrus || !pickedTundra || walrus.Surface != "Walruses" || tundra.Surface != "" {
 		t.Fatalf("terms %+v, want walrus written 'Walruses' as the title has it and tundra, only in the spec, with no surface", picked.Terms)
 	}
-	untitled, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, "SURF", text, "", relatedExclusion{})
+	untitled, err := srv.pickRelatedTerms(context.Background(), srv.deps.Store.Pool, "SURF", text, "", relatedExclusion{}, probeUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick related terms with no title: %v", err)
 	}

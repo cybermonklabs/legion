@@ -147,11 +147,11 @@ bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   
 # CI passes its service's DSN; the devbox brings its own container on an ephemeral port.
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
-  # ghcr.io/sjawhar/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
+  # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
   docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
-    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/sjawhar/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
+    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
   # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
   for i in $(seq 1 40); do
@@ -204,7 +204,7 @@ jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/
 pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not
-# (LEGION-791): a max_fix_attempts the default would not answer, a github_apps block whose
+# (LEGION-791): a review_round_cap the default would not answer, a github_apps block whose
 # inline PEM fixture is the App key the state must never print, and an envoy_url carrying userinfo
 # at the default host and port, the credential the settings must mask. The loader takes github_apps
 # as the workflow configured and then wants projects too (resolveStage3: `projects must declare at
@@ -219,7 +219,10 @@ port: $port
 postgres_dsn: $LEGION_E2E_PG_DSN
 state_dir: $work/state
 operator_token_file: $work/operator-token
-max_fix_attempts: 5
+review_round_cap: 5
+# The wake pacing off (INFRA-976): this proof's waits are bounded, and at the default of 8 wakes a
+# minute every wake after the first would spend those waits queueing for its turn.
+worker_wakes_per_minute: 0
 envoy_url: http://legion:fixture-envoy-password@127.0.0.1:9020
 projects:
   FIXTURE: {}
@@ -296,7 +299,7 @@ jq -e '(.capabilities | length) == 21
 # its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
 # App key — the App rides as its id and installations alone, and nothing anywhere in the document
 # reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
-jq -e '.settings.max_fix_attempts == 5
+jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
   and .settings.envoy_url == "http://xxxxx@127.0.0.1:9020"
@@ -304,7 +307,7 @@ jq -e '.settings.max_fix_attempts == 5
   and ([.. | strings | select(test("BEGIN|PRIVATE KEY|postgres://|fixture-envoy-password|://[^/@ ]+:[^/@ ]+@"))] | length) == 0
   and (.settings.github_apps.implement | keys) == ["app_id", "installations"]' \
   "$work/state1.json" || {
-  echo "the state does not carry the resolved settings with the fixture's max_fix_attempts, the masked envoy_url and no credential, credential file or App key"
+  echo "the state does not carry the resolved settings with the fixture's review_round_cap, the masked envoy_url and no credential, credential file or App key"
   exit 1
 }
 "$work/legion" legions --json |

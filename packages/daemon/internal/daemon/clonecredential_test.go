@@ -5,12 +5,12 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -22,16 +22,11 @@ const realGit = "/usr/bin/git"
 // git runs the real git over the clone's own repository and returns its stdout.
 func git(t *testing.T, clone string, args ...string) string {
 	t.Helper()
-	command := exec.Command(realGit, append([]string{"--git-dir=" + filepath.Join(clone, ".git")}, args...)...)
 	// --git-dir is not a working directory: the helper runs in the clone it reads, never in the
-	// directory the test process happens to have.
-	command.Dir = clone
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	return stdout.String()
+	// directory the test process happens to have, and under an environment of its own, so no
+	// GIT_ variable of this process can send it to another repository or configuration.
+	argv := append([]string{realGit, "--git-dir=" + filepath.Join(clone, ".git")}, args...)
+	return fixturegit.Isolated(t, t.TempDir()).Out(clone, argv...)
 }
 
 // A tmux daemon's boot rewrites every shared clone an older daemon provisioned, one per repository,
@@ -49,16 +44,16 @@ func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
 	}
 	// The clone's helper keys are read with `git config --get-all`, which lists every scope, and the
 	// host's own config can carry the very helper asserted here (`gh auth setup-git` writes the
-	// github.com one to ~/.gitconfig). Neither the global nor the system file may reach the test:
-	// its own git, its `git init`, and the fix-up's runner all inherit this process's environment.
-	// Nor may the environment's own scope, the GIT_CONFIG_COUNT block: a Legion issue pod sets it
-	// to credential.https://github.com.helper twice, the empty reset and `legion git-credential`,
-	// so a test that shuts out only the files reads four values of that key where the clone's file
-	// holds two. GIT_CONFIG_COUNT=0 has git read none of the pairs, in this process and in every
-	// child of it.
+	// github.com one to ~/.gitconfig). Neither the global nor the system file may reach the test,
+	// and each reader is shut out of them by the measure that fits it. The fix-up runs its git
+	// through workspace.execRunner.Run, which builds that child's environment out of this
+	// process's own, so the two t.Setenv lines below are the measure for it. That child needs no
+	// measure against the environment's own scope: the runner drops the pod's GIT_CONFIG_* block
+	// itself (withoutGitConfigPairs, internal/workspace/config.go:256 and :577-581). The test's
+	// own git helper and its `git init` below read nothing of this process's environment: each
+	// carries fixtureenv.Isolated, which shuts out the files and the environment block alike.
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	t.Setenv("GIT_CONFIG_COUNT", "0")
 	cfg := config.Config{Project: "WIDGETS", StateDir: t.TempDir(), Runtime: config.Runtime{Name: "tmux"}}
 	tools := map[string]string{"git": realGit}
 	var logs bytes.Buffer
@@ -81,13 +76,10 @@ func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
 		if err := os.MkdirAll(located.Clone, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		initialise := exec.Command(realGit, "init", "-q", located.Clone)
 		// The clone's directory is made just above, so the init runs inside it rather than in
-		// whatever directory the test process has.
-		initialise.Dir = located.Clone
-		if out, err := initialise.CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v\n%s", err, out)
-		}
+		// whatever directory the test process has, and under an environment of its own, as the
+		// git helper above does.
+		fixturegit.Isolated(t, t.TempDir()).Run(located.Clone, append([]string{realGit}, fixturegit.InitWorkTree(located.Clone, "")[1:]...)...)
 		old := "!gh auth git-credential"
 		git(t, located.Clone, "config", "--add", "credential.helper", old)
 		git(t, located.Clone, "config", "--add", "credential.https://github.com.helper", old)

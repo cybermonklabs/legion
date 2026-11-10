@@ -1,5 +1,7 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import type { WriteAdvice } from "@legion/contracts";
-import { ASK_QUESTION_MAX } from "@legion/contracts/dispatch-tools";
+import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { Artifact } from "../web/src/api/types";
 
@@ -21,10 +23,13 @@ import {
   rejectSuggestion,
   requestApproval,
   reviewArtifact,
+  withOpenedAsk,
 } from "./api";
+import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
 import { resetDatabase } from "./seed";
+import { navigateInApp } from "./sends";
 import { assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -69,7 +74,7 @@ test("a spec's approval is a human review pinned to its version: requested by th
   const artifactID = issue.primary_artifact_id;
 
   // The agent asks for approval; the Inbox shows the request and the two reviews it offers.
-  const requested = await requestApproval(artifactID, {}, session);
+  const requested = withOpenedAsk(await requestApproval(artifactID, {}, session));
   expect(requested.version).toBe(1);
   const alice = await asUser(browser, "alice");
   try {
@@ -108,7 +113,7 @@ test("a spec's approval is a human review pinned to its version: requested by th
       session
     );
     await expect
-      .poll(async () => (await getArtifact(artifactID, { login: "alice" })).versions.length)
+      .poll(async () => ((await getArtifact(artifactID, { login: "alice" })).versions ?? []).length)
       .toBeGreaterThan(1);
     await createNamedVersion(artifactID, "revised", { login: "alice" });
     await page.reload();
@@ -151,6 +156,52 @@ test("a spec's approval is a human review pinned to its version: requested by th
       reason: "Name the rollback path.",
       ask_id: null,
     });
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a reason longer than the server takes shows the server's own refusal in the Request changes dialog", async ({
+  browser,
+}) => {
+  await createProject({ key: "LONGREASON", name: "Long reason" });
+  const issue = await createIssue({
+    project: "LONGREASON",
+    spec: "The plan.",
+    title: "Reason past the bound",
+  });
+  const artifactID = issue.primary_artifact_id;
+  await requestApproval(artifactID, {}, session);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("button", { exact: true, name: "Request changes" }).click();
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    const field = dialog.getByLabel("Reason");
+    await expect(field).toBeVisible();
+
+    // One UTF-16 unit past the bound the server holds a review's reason to. `fill` puts the
+    // whole text in through the page's own editing pipeline, the path a paste takes, and the
+    // last character is not whitespace, so the server's trim leaves the length as written.
+    const reason = `${bodyOf(DISPATCH_EVENT_BODY_MAX)}x`;
+    await field.fill(reason);
+    await expect.poll(async () => (await field.inputValue()).length).toBe(reason.length);
+
+    await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
+
+    // What the reader is shown is the server's refusal, which names the field and the bound,
+    // in place of the sentence the dialog says for a failure it cannot read.
+    await expect(dialog.getByRole("alert")).toHaveText(
+      `reason is 1 characters over the ${DISPATCH_EVENT_BODY_MAX}-character limit ` +
+        `(${reason.length}/${DISPATCH_EVENT_BODY_MAX})`
+    );
+    await expect(dialog.getByText("Could not request changes. Try again.")).toHaveCount(0);
+
+    // The draft stays in the field, and no review was written.
+    await expect(field).toHaveValue(reason);
+    expect((await getArtifact(artifactID, { login: "alice" })).approval?.state).toBe("awaiting");
   } finally {
     await alice.close();
   }
@@ -337,10 +388,8 @@ test("an approval request stays in one Inbox card while its document version mov
     title: "Follow approval",
   });
   const artifactID = issue.primary_artifact_id;
-  const requested = await requestApproval(
-    artifactID,
-    { summary: "Caps retries at three attempts." },
-    session
+  const requested = withOpenedAsk(
+    await requestApproval(artifactID, { summary: "Caps retries at three attempts." }, session)
   );
   const alice = await asUser(browser, "alice");
   try {
@@ -361,11 +410,13 @@ test("an approval request stays in one Inbox card while its document version mov
     await expect
       .poll(async () => {
         movedArtifact = await getArtifact(artifactID, { login: "alice" });
-        return movedArtifact.versions.length;
+        return (movedArtifact.versions ?? []).length;
       })
       .toBeGreaterThan(1);
     if (movedArtifact === undefined) throw new Error("the moved artifact was not read");
-    const movedVersion = Math.max(...movedArtifact.versions.map((version) => version.number));
+    const movedVersion = Math.max(
+      ...(movedArtifact.versions ?? []).map((version) => version.number)
+    );
 
     await page.reload();
     await expect(row).toHaveAttribute("data-inbox-section", "agent");
@@ -375,10 +426,8 @@ test("an approval request stays in one Inbox card while its document version mov
     await page.goto(`/issues/${issue.key}`);
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on agents (1)");
 
-    const handedBack = await requestApproval(
-      artifactID,
-      { summary: "Adds the rollback budget." },
-      session
+    const handedBack = withOpenedAsk(
+      await requestApproval(artifactID, { summary: "Adds the rollback budget." }, session)
     );
     expect(handedBack.ask.id).toBe(requested.ask.id);
     await page.goto("/");
@@ -407,10 +456,12 @@ test("a human comment, revision, and hand-back return an approval card to Waitin
     spec: "The plan.",
     title: "Hand-back turn",
   });
-  const requested = await requestApproval(
-    issue.primary_artifact_id,
-    { summary: "Names the initial proposal." },
-    session
+  const requested = withOpenedAsk(
+    await requestApproval(
+      issue.primary_artifact_id,
+      { summary: "Names the initial proposal." },
+      session
+    )
   );
   await createComment(
     issue.key,
@@ -448,7 +499,9 @@ test("an unchanged hand-back after a human comment and a progress note returns t
     title: "Unchanged hand-back",
   });
   const summary = "Names the existing proposal.";
-  const requested = await requestApproval(issue.primary_artifact_id, { summary }, session);
+  const requested = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary }, session)
+  );
   await createComment(
     issue.key,
     { ask_id: requested.ask.id, body: "Please clarify the rollout." },
@@ -472,7 +525,9 @@ test("an unchanged hand-back after a human comment and a progress note returns t
     // - the question waits on the reader again, live. The row the reading column is showing
     // is held in the band they saw it in until they look away (INFRA-575, `heldRow`), so its
     // band is read on their next look at the list.
-    const handedBack = await requestApproval(issue.primary_artifact_id, { summary }, session);
+    const handedBack = withOpenedAsk(
+      await requestApproval(issue.primary_artifact_id, { summary }, session)
+    );
     expect(handedBack.ask.id).toBe(requested.ask.id);
     await expect(page.getByText(/^Blocked on you: 1 item/)).toBeVisible();
     await page.reload();
@@ -497,10 +552,12 @@ test("a hand-back is an Activity line, live and after a reload, and leaves one a
 }) => {
   await createProject({ key: "LINE", name: "Hand-back line" });
   const issue = await createIssue({ project: "LINE", spec: "The plan.", title: "Hand-back line" });
-  const requested = await requestApproval(
-    issue.primary_artifact_id,
-    { summary: "Names the existing proposal." },
-    session
+  const requested = withOpenedAsk(
+    await requestApproval(
+      issue.primary_artifact_id,
+      { summary: "Names the existing proposal." },
+      session
+    )
   );
   await createComment(
     issue.key,
@@ -526,7 +583,7 @@ test("a hand-back is an Activity line, live and after a reload, and leaves one a
     await expect(handBackLine).toHaveCount(0);
 
     // The human's comment left the request waiting on its agent, so this call hands it back.
-    const handedBack = await requestApproval(issue.primary_artifact_id, {}, session);
+    const handedBack = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
     expect(handedBack.ask.id).toBe(requested.ask.id);
     await expect(handBackLine).toHaveCount(1);
     // The hand-back rewords nothing: no edit line anywhere.
@@ -555,7 +612,9 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
   await createProject({ key: "KEEP", name: "Kept answer" });
   const issue = await createIssue({ project: "KEEP", spec: "The plan.", title: "Kept answer" });
   const summary = "Names the existing proposal.";
-  const requested = await requestApproval(issue.primary_artifact_id, { summary }, session);
+  const requested = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary }, session)
+  );
   await createComment(
     issue.key,
     { ask_id: requested.ask.id, body: "Please clarify the rollout." },
@@ -616,11 +675,19 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
 }, testInfo) => {
   await createProject({ key: "GATE", name: "Gate" });
   const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
-  // Nearly as long as the ask cap leaves a summary, budgeted as the server budgets it
-  // (`approvalQuestion` in `internal/dispatch/api/reviews.go`): the cap less the question at the
-  // longest version a request can reach, less the space before the summary. Cut at a word, so the
+  // Nearly as long as the ask bound leaves a summary, budgeted as the server budgets it
+  // (`approvalQuestion` in `internal/dispatch/api/reviews.go`): the bound on an ask's question
+  // and options together, less the question at the longest version a request can reach, less
+  // the two fixed options it carries, less the space before the summary. Cut at a word, so the
   // text still reads as a sentence.
-  const room = ASK_QUESTION_MAX - "Approve spec.md (version 9999999999)?".length - 1;
+  const options = [
+    "Approve",
+    "Approve this version of the document.",
+    "Request changes",
+    "Say what must change before it can be approved.",
+  ].reduce((units, text) => units + text.length, 0);
+  const room =
+    DISPATCH_EVENT_BODY_MAX - "Approve spec.md (version 9999999999)?".length - options - 1;
   const opening =
     "Retries a failed push at most three times, one minute apart, and then stops and names the push that failed. ";
   const ending = "Nothing else in the retry path changes.";
@@ -628,7 +695,9 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
   const summary = filler.slice(0, filler.lastIndexOf(" ") + 1) + ending;
   expect(summary.length).toBeGreaterThan(room - 15);
   expect(summary.length).toBeLessThanOrEqual(room);
-  const requested = await requestApproval(issue.primary_artifact_id, { summary }, session);
+  const requested = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary }, session)
+  );
   expect(requested.ask.question).toBe(`Approve spec.md (version 1)? ${summary}`);
 
   const alice = await asUser(browser, "alice");
@@ -637,17 +706,27 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
     // The question's own card is where the Inbox shows the question itself: the row's card
     // below 1280 px, and the drawer's from there up, since the Inbox page's reading column
     // shows an approval as the document under review rather than a card (INFRA-575) and its
-    // short row gives the question one line on purpose. Whole is the card's promise, so the
-    // window is made tall enough to hold the whole card: what is left to flag is a clip, not
-    // a surface scrolling as it is meant to.
-    const viewport = page.viewportSize();
-    if (viewport !== null && hasReadingPane(page)) {
-      await page.setViewportSize({ height: 2600, width: viewport.width });
-    }
+    // short row gives the question one line on purpose.
     const card = await approvalCard(page, requested.ask.id);
     await expect(card).toBeVisible();
     const question = card.locator("p", { hasText: ending });
     await expect(question).toHaveText(requested.ask.question);
+    // Whole is the card's promise, so the window is made tall enough to hold the whole card:
+    // what is left to flag is a clip, not a surface scrolling as it is meant to. A summary at
+    // this bound is thousands of lines, past any height a person's window has, so the height
+    // is the one the card itself reports rather than a number written here.
+    const viewport = page.viewportSize();
+    if (viewport !== null && hasReadingPane(page)) {
+      const needed = await question.evaluate((element) => {
+        let height = element.scrollHeight;
+        for (let node: Element | null = element; node !== null; node = node.parentElement) {
+          height = Math.max(height, node.scrollHeight);
+        }
+        return height;
+      });
+      await page.setViewportSize({ height: needed + 100, width: viewport.width });
+      await expect(question).toHaveText(requested.ask.question);
+    }
     // Whole means nothing between the question and its card clips it: no clamp, ellipsis or box
     // shorter or narrower than the text it holds.
     await assertWhole(question);
@@ -657,6 +736,13 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
   }
 });
 
+// A settlement that writes no version is proved by outlasting the window it would run in: the
+// harness holds it to 250 ms (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`), so a second of
+// real time covers four of them. It is the server's own timer, which no page clock reaches.
+const SETTLED_MS = 1_000;
+
+// SLOW(>=2s): Two users, two pages, and a settle window that must be outlasted to prove no
+// version was written.
 test("reading an approved spec and moving the caret through its numbered list leaves its approval current", async ({
   browser,
 }) => {
@@ -668,7 +754,7 @@ test("reading an approved spec and moving the caret through its numbered list le
     title: "Design gate",
   });
   const artifactID = issue.primary_artifact_id;
-  const requested = await requestApproval(artifactID, {}, session);
+  const requested = withOpenedAsk(await requestApproval(artifactID, {}, session));
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
   try {
@@ -697,9 +783,10 @@ test("reading an approved spec and moving the caret through its numbered list le
       await reader.keyboard.press(key);
     }
     await expect.poll(async () => (await getArtifactText(artifactID)).token).not.toBe(opened);
-    // Settlement runs two seconds after the room's last update, and a version it wrote for
-    // either update would leave the approval pinned to an older one.
-    await reader.waitForTimeout(3000);
+    // Settlement runs 250 ms after the room's last update (`DISPATCH_TEST_SETTLE_DELAY`,
+    // `e2e/run-server.sh`), and a version it wrote for either update would leave the approval
+    // pinned to an older one. A second of real time is four of those windows.
+    await sleep(SETTLED_MS);
     const artifact = await getArtifact(artifactID, { login: "alice" });
     expect(artifact.versions).toHaveLength(1);
     expect(artifact.approval).toMatchObject({ latest_version: 1, state: "approved", version: 1 });
@@ -719,7 +806,7 @@ test("an agent's comment on part of an identifier in an approved spec leaves its
     title: "Design gate",
   });
   const artifactID = issue.primary_artifact_id;
-  const requested = await requestApproval(artifactID, {}, session);
+  const requested = withOpenedAsk(await requestApproval(artifactID, {}, session));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -738,9 +825,10 @@ test("an agent's comment on part of an identifier in an approved spec leaves its
       { anchor: { artifact: "spec", quote: "id column" }, body: "Is this indexed?" },
       session
     );
-    // Settlement runs two seconds after the room's last update, and a version it wrote would
-    // leave the approval pinned to an older one.
-    await page.waitForTimeout(3000);
+    // Settlement runs 250 ms after the room's last update (`DISPATCH_TEST_SETTLE_DELAY`,
+    // `e2e/run-server.sh`), and a version it wrote would leave the approval pinned to an older
+    // one. A second of real time is four of those windows.
+    await sleep(SETTLED_MS);
     const artifact = await getArtifact(artifactID, { login: "alice" });
     expect(artifact.versions).toHaveLength(1);
     expect(artifact.approval).toMatchObject({ latest_version: 1, state: "approved", version: 1 });
@@ -770,7 +858,7 @@ test("rejecting a suggestion on part of an identifier in an approved spec leaves
     },
     session
   );
-  const requested = await requestApproval(artifactID, {}, session);
+  const requested = withOpenedAsk(await requestApproval(artifactID, {}, session));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -784,9 +872,10 @@ test("rejecting a suggestion on part of an identifier in an approved spec leaves
     const approved = (await getArtifact(artifactID, { login: "alice" })).approval;
 
     await rejectSuggestion(suggestion.id, { login: "bob" });
-    // Settlement runs two seconds after the room's last update, and a version it wrote would
-    // leave the approval pinned to an older one.
-    await page.waitForTimeout(3000);
+    // Settlement runs 250 ms after the room's last update (`DISPATCH_TEST_SETTLE_DELAY`,
+    // `e2e/run-server.sh`), and a version it wrote would leave the approval pinned to an older
+    // one. A second of real time is four of those windows.
+    await sleep(SETTLED_MS);
     expect((await getArtifact(artifactID, { login: "alice" })).approval).toMatchObject({
       latest_version: approved?.version,
       state: "approved",
@@ -797,7 +886,7 @@ test("rejecting a suggestion on part of an identifier in an approved spec leaves
   }
 });
 
-test("an approval request for an unassigned issue's non-primary document remains actionable while the primary is draft @phone", async ({
+test("an approval request for an unassigned issue's non-primary document remains actionable while the primary is draft", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "GATE", name: "Gate" });
@@ -810,7 +899,7 @@ test("an approval request for an unassigned issue's non-primary document remains
     { content: "Supporting review target.", name: "supporting-design.md" },
     session
   );
-  const nonPrimary = await requestApproval(supporting.artifact.id, {}, session);
+  const nonPrimary = withOpenedAsk(await requestApproval(supporting.artifact.id, {}, session));
   await expect
     .poll(
       async () => (await getArtifact(issue.primary_artifact_id, { login: "alice" })).approval?.state
@@ -853,9 +942,6 @@ test("an approval request for an unassigned issue's non-primary document remains
     // Every open issue ask remains visible in the issue margin; the target being a secondary
     // document must not hide this decision while the primary approval stays draft.
     await page.goto(`/issues/${issue.key}/artifacts/${supporting.artifact.slug}`);
-    if (testInfo.project.name === "iphone") {
-      await page.getByRole("button", { name: "Open review panel (1 open ask)" }).click();
-    }
     const margin = needsYouCards(page);
     const nonPrimaryMarginCard = margin.getByTestId(`ask-${nonPrimary.ask.id}`);
     await expect(nonPrimaryMarginCard).toBeVisible();
@@ -884,7 +970,7 @@ test("an approval ask's Inbox row, drawer link and bare ask route land on the sp
   // Alice's own issue, so the request is in her Inbox and her drawer, which both open on the
   // reader's own work; the agent still requests the approval.
   const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
-  const requested = await requestApproval(issue.primary_artifact_id, {}, session);
+  const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
   const specPath = `/issues/${issue.key}/spec?ask=${requested.ask.id}`;
 
   const anchoredAsk = await createAsk(
@@ -917,8 +1003,9 @@ test("an approval ask's Inbox row, drawer link and bare ask route land on the sp
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
 
     // The drawer's card names the document and version it asks about, as a link; following it
-    // opens the spec and closes the drawer.
-    await page.goto("/agents");
+    // opens the spec and closes the drawer. The drawer rides the shell the reader is already in,
+    // so this leg needs no cold route of its own.
+    await navigateInApp(page, "/agents");
     await page.locator("body").focus();
     await page.keyboard.press("i");
     await expect(drawer(page)).toBeVisible();
@@ -949,22 +1036,22 @@ test("an approval ask's Inbox row, drawer link and bare ask route land on the sp
   }
 });
 
-test("an open approval ask's document link reaches the issue's Conversation, and a project document's own approval link reaches its document, while the margin omits the link on both @phone", async ({
+test("an open approval ask's document link reaches the issue's Conversation, and a project document's own approval link reaches its document, while the margin omits the link on both", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "GATE", name: "Gate" });
   const issue = await createIssue(
     { project: "GATE", spec: "The plan.", title: "Design gate" },
     session
   );
-  const requested = await requestApproval(issue.primary_artifact_id, {}, session);
+  const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
 
   const doc = await createProjectDocument(
     "GATE",
     { content: "# Runbook\n", name: "runbook.md" },
     session
   );
-  const docApproval = await requestApproval(doc.artifact.id, {}, session);
+  const docApproval = withOpenedAsk(await requestApproval(doc.artifact.id, {}, session));
   const docPath = `/projects/GATE/documents/${doc.artifact.slug}?ask=${docApproval.ask.id}`;
 
   const alice = await asUser(browser, "alice");
@@ -983,15 +1070,9 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     await expect(page).toHaveURL(`/issues/${issue.key}/spec?ask=${requested.ask.id}`);
 
     // The issue margin lists the same ask (it is already on that document), without the link.
-    if (testInfo.project.name === "iphone") {
-      await page.getByRole("button", { name: "Open review panel (1 open ask)" }).click();
-    }
     const marginCard = needsYouCards(page).getByTestId(`ask-${requested.ask.id}`);
     await expect(marginCard).toBeVisible();
     await expect(marginCard.getByRole("link", { name: /spec\.md, version/ })).toHaveCount(0);
-    if (testInfo.project.name === "iphone") {
-      await page.getByRole("button", { name: "Close review panel (1 open ask)" }).click();
-    }
 
     // A project-level document's approval request links its own document the same way. A
     // document has no assignee, so the Unassigned filter is where the Inbox lists it. The link
@@ -1007,9 +1088,6 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     await expect(inboxLink).toHaveAttribute("href", docPath);
 
     await page.goto(`/projects/GATE/documents/${doc.artifact.slug}`);
-    if (testInfo.project.name === "iphone") {
-      await page.getByRole("button", { name: "Open review panel (1 open ask)" }).click();
-    }
     const docMarginCard = needsYouCards(page).getByTestId(`ask-${docApproval.ask.id}`);
     await expect(docMarginCard).toBeVisible();
     await expect(docMarginCard.getByRole("link", { name: /runbook\.md, version/ })).toHaveCount(0);
@@ -1026,7 +1104,7 @@ test("an approval ask keeps its document link and the version it asked about onc
     { project: "GATE", spec: "The plan.", title: "Design gate" },
     session
   );
-  const requested = await requestApproval(issue.primary_artifact_id, {}, session);
+  const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
   await answerAsk(
     requested.ask.id,
     { expected_edited_at: null, selected: ["Approve"] },
@@ -1042,7 +1120,8 @@ test("an approval ask keeps its document link and the version it asked about onc
   );
   await expect
     .poll(
-      async () => (await getArtifact(issue.primary_artifact_id, { login: "alice" })).versions.length
+      async () =>
+        ((await getArtifact(issue.primary_artifact_id, { login: "alice" })).versions ?? []).length
     )
     .toBeGreaterThan(1);
 

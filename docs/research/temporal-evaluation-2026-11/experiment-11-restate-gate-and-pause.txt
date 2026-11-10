@@ -1,0 +1,197 @@
+Experiment 11, Restate: a wait for a person, and the paused state.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+restate-server-version: 1.8.1
+restate-server-started-by-this-experiment: true
+restate-ingress-address: 127.0.0.1:24594
+restate-admin-address: 127.0.0.1:20782
+invocation-status-read-from: POST /query against the server's sys_invocation and sys_journal views: restate-server 1.8.1's admin API has no GET /invocations, only the per-invocation pause, resume, kill, cancel and purge operations
+[service1] restateservice: pid=28726
+[service1] time=2026-11-07T22:37:42.929Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service1] restateservice: goroutines=5
+[service1] restateservice: handlers-in-flight=0
+service1-pid: 28726
+service-endpoint: http://127.0.0.1:49355
+deployment-id: dp_17hnBmJvzuJQ38DW5N520Uh
+wait-invocation-id: inv_167rig6RB8in6JJyXRVBNhaX9Fx2cfiKZ2
+[service1] restateservice: goroutines=12
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=12
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=12
+[service1] restateservice: handlers-in-flight=0
+awakeable-published: issue=INFRA-1546 awakeable=sign_1-xz_pnCRSEdg0SYGK9LdgvaKIwIc2WDdAAAAEQ asked-by-pid=28726 at=2026-11-07T22:37:43.944023136Z
+awakeable-id: sign_1-xz_pnCRSEdg0SYGK9LdgvaKIwIc2WDdAAAAEQ
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=13
+[service1] restateservice: handlers-in-flight=1
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=11
+[service1] restateservice: handlers-in-flight=0
+invocation-while-waiting: status=suspended in_flight=false pinned_deployment_id=dp_17hnBmJvzuJQ38DW5N520Uh retry_count=0 journal_size=3 suspended_waiting_for_signals=[1]
+invocation-in-flight-while-waiting: false
+what-the-server-is-waiting-on: [1]
+journal-while-waiting: 0:Command: Input(-), 1:Command: Run(ask-the-person), 2:Notification: Run(-)
+handlers-in-flight-in-the-service-process-while-waiting: 0
+goroutines-in-the-service-process-at-rest: 5
+goroutines-in-the-service-process-while-waiting: 11
+goroutines-the-attempt-left-behind-in-the-process-that-opened-the-wait: the process that ran the attempt keeps the HTTP/2 connection the server opened to it, so its goroutine count stays above its count at rest even once the handler is gone; the number that answers what an open wait costs is the replacement's, below
+service-process-killed-while-waiting-pid: 28726
+kill-signal: SIGKILL
+invocation-after-the-waiting-process-was-killed: status=suspended in_flight=false pinned_deployment_id=dp_17hnBmJvzuJQ38DW5N520Uh retry_count=0 journal_size=3 suspended_waiting_for_signals=[1]
+suspended-wait-survived-the-kill: true
+[service2] restateservice: pid=28753
+[service2] time=2026-11-07T22:37:50.577Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service2] restateservice: goroutines=5
+[service2] restateservice: handlers-in-flight=0
+replacement-pid: 28753
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+invocation-while-the-replacement-held-the-open-wait: status=suspended in_flight=false pinned_deployment_id=dp_17hnBmJvzuJQ38DW5N520Uh retry_count=0 journal_size=3 suspended_waiting_for_signals=[1]
+goroutines-in-the-replacement-process-while-the-wait-was-open: 7
+handlers-in-flight-in-the-replacement-process-while-the-wait-was-open: 0
+what-the-handler-process-holds-while-it-waits: nothing of the invocation: a process that was started after the wait was already open holds 7 goroutines and 0 handlers in flight, which is what it holds when it is doing nothing at all -- the wait lives entirely in the server
+awakeable-resolved-over: POST http://127.0.0.1:24594/restate/awakeables/<id>/resolve
+[service2] restateservice: goroutines=10
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=10
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=10
+[service2] restateservice: handlers-in-flight=0
+handler-went-on-from-where-it-suspended: issue=INFRA-1546 answer=approved applied-by-pid=28753 at=2026-11-07T22:37:54.586362224Z
+wait-invocation-final: status=completed in_flight=false pinned_deployment_id=dp_17hnBmJvzuJQ38DW5N520Uh retry_count=0 journal_size=7 completion_result=success
+wait-invocation-output-http-status: 200 OK
+wait-invocation-output: {"awakeableID":"sign_1-xz_pnCRSEdg0SYGK9LdgvaKIwIc2WDdAAAAEQ","answer":"approved","askedByPID":28726,"appliedByPID":28753}
+timed: journal-entries-for-one-open-wait: 3
+timed: journal-size-reported-by-the-server: 3
+timed: attempts-in-flight-while-one-wait-was-open: 0
+timed: handlers-in-flight-in-the-service-process-while-one-wait-was-open: 0
+timed: goroutines-in-the-service-process-while-one-wait-was-open: 7
+timed: completion-retention-on-this-invocation: PT86400S
+timed: journal-retention-on-this-invocation: PT86400S
+timed: wall-clock-this-gate-actually-waited: 11.557s, from the question being asked to the answer being applied
+timed: server-default-journal-retention: 1d
+timed: server-default-idempotency-retention: 1d
+timed: server-default-workflow-completion-retention: 1d
+timed: server-invoker-inactivity-timeout: 1m
+timed: server-invoker-abort-timeout: 10m
+timed: retention-and-timeout-source: the restate-server binary's own effective configuration, printed by --dump-config
+reasoned: cost-of-one-gate-open-1-days: 3 journal entries and no attempt, for the whole 1 days: a suspended invocation costs the rows it already has and nothing per unit of time, because nothing runs and nothing is held open
+reasoned: cost-of-one-gate-open-7-days: 3 journal entries and no attempt, for the whole 7 days: a suspended invocation costs the rows it already has and nothing per unit of time, because nothing runs and nothing is held open
+reasoned: cost-of-one-gate-open-30-days: 3 journal entries and no attempt, for the whole 30 days: a suspended invocation costs the rows it already has and nothing per unit of time, because nothing runs and nothing is held open
+reasoned: journal-entries-for-1000-gates-open-30-days: 3000
+reasoned: what-the-retention-defaults-do-to-a-wait-of-days: nothing: 1d journal retention and 1d workflow-completion retention are counted from an invocation's completion, not from its creation, so a wait of days is not shortened by them -- what they bound is how long the finished invocation stays readable afterwards
+reasoned: what-the-inactivity-and-abort-timeouts-do-to-a-wait-of-days: nothing to a suspended wait, everything to a blocking one: 1m inactivity and 10m abort are measured against an attempt that is holding a connection without making progress, and a handler blocked on an awakeable holds none -- a handler that instead slept in its own code would be asked to suspend after 1m and aborted 10m later
+reasoned: what-a-pod-cannot-do: it cannot make the wait cost anything by restarting: the process that opened the wait was killed and replaced during this run, and the wait neither ended nor was re-run -- what a pod holds for an open gate is nothing at all
+pause-policy: registered on Exp11Pause with max-attempts 3, initial-interval 300ms, factor 1.5, max-interval 1s, on-max-attempts pause
+pause-policy-set-by: the Go SDK's WithInvocationRetryPolicy at service registration, discovered by the server when the deployment was registered
+server-default-on-max-attempts: pause after 70 attempts (the server's own effective configuration)
+failing-invocation-id: inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq
+[service2] time=2026-11-07T22:37:54.633Z level=WARN msg="Invocation returned a non-terminal failure" method=Exp11Pause/Fix invocationID=inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq err="the session's credentials are missing: a person has to look (attempt 1)"
+[service2] time=2026-11-07T22:37:54.633Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp11Pause/Fix invocationID=inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq err="the session's credentials are missing: a person has to look (attempt 1)"
+[service2] restateservice: goroutines=9
+[service2] restateservice: handlers-in-flight=0
+[service2] time=2026-11-07T22:37:54.968Z level=WARN msg="Invocation returned a non-terminal failure" method=Exp11Pause/Fix invocationID=inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq err="the session's credentials are missing: a person has to look (attempt 2)"
+[service2] time=2026-11-07T22:37:54.968Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp11Pause/Fix invocationID=inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq err="the session's credentials are missing: a person has to look (attempt 2)"
+[service2] restateservice: goroutines=9
+[service2] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=9
+[service2] restateservice: handlers-in-flight=0
+[service2] time=2026-11-07T22:37:55.508Z level=WARN msg="Invocation returned a non-terminal failure" method=Exp11Pause/Fix invocationID=inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq err="the session's credentials are missing: a person has to look (attempt 3)"
+[service2] time=2026-11-07T22:37:55.508Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp11Pause/Fix invocationID=inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq err="the session's credentials are missing: a person has to look (attempt 3)"
+invocation-while-it-was-still-retrying: status=backing-off in_flight=false retry_count=2 journal_size=1 next_retry_at=2026-11-07T22:37:55.501Z last_failure=[500 Internal] the session's credentials are missing: a person has to look (attempt 2) [...]
+attempts-before-pausing: 3
+attempt-line-1: attempt=1 pid=28753 at=2026-11-07T22:37:54.630357081Z
+attempt-line-2: attempt=2 pid=28753 at=2026-11-07T22:37:54.965375739Z
+attempt-line-3: attempt=3 pid=28753 at=2026-11-07T22:37:55.505527075Z
+invocation-when-paused: status=paused in_flight=false retry_count=0 journal_size=1
+paused-is-terminal: false
+journal-while-paused: 0:Command: Input(-)
+events-while-paused: after 0: TransientError [500] the session's credentials are missing: a person has to look (attempt 1); after 0: TransientError [500] the session's credentials are missing: a person has to look (attempt 2); after 0: Paused
+why-it-paused-is-readable-from: sys_journal_events: once an invocation is paused its sys_invocation_state row is gone, so last_failure reads empty and the failing attempts and the pause itself are only in the event rows
+paused-invocations-listed-by: SELECT ... FROM sys_invocation WHERE status = 'paused' through POST /query
+paused-invocations-found: 1
+paused-invocation: inv_1hdJ6uGicssL2WTKMeMfKc4zaAfmg7hHHq Exp11Pause/Fix status=paused in_flight=false retry_count=0 journal_size=1
+resume-http-status: 200 OK
+[service2] restateservice: goroutines=9
+[service2] restateservice: handlers-in-flight=0
+attempts-after-resuming: 1
+resumed-invocation-final: status=completed in_flight=false pinned_deployment_id=dp_17hnBmJvzuJQ38DW5N520Uh retry_count=0 journal_size=2 completion_result=success
+resumed-invocation-output-http-status: 200 OK
+resumed-invocation-output: "succeeded on attempt 4 in pid 28753"
+what-paused-is: a non-terminal state the server holds the whole journal in: it is listable with one SQL predicate, resumable with one admin call, and left alone until somebody makes it -- the invocation neither died nor kept retrying. Its cost is that the reason is not on the invocation: once paused, sys_invocation_state is gone and last_failure reads empty, so an operator asking why has to read sys_journal_events
+self-pause-invocation-id: inv_1ffF50djjkQx3H1qRdmTahFckjDuqiNT82
+[service2] time=2026-11-07T22:37:55.795Z level=WARN msg="Unexpected when reading input" method=Exp11SelfPause/PauseMyself err="stream error: stream ID 11; CANCEL"
+[service2] time=2026-11-07T22:37:55.799Z level=WARN msg="Invocation returned a non-terminal failure" method=Exp11SelfPause/PauseMyself invocationID=inv_1ffF50djjkQx3H1qRdmTahFckjDuqiNT82 err="the handler was never released and was never stopped either: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e11/exp11-self-pause-release did not appear within 30s"
+[service2] time=2026-11-07T22:37:55.799Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp11SelfPause/PauseMyself invocationID=inv_1ffF50djjkQx3H1qRdmTahFckjDuqiNT82 err="the handler was never released and was never stopped either: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e11/exp11-self-pause-release did not appear within 30s"
+[service2] time=2026-11-07T22:37:55.799Z level=WARN msg="Failed to drain request stream" method=Exp11SelfPause/PauseMyself err="stream error: stream ID 11; CANCEL"
+handler-pausing-itself: attempt=1 pid=28753 invocation=inv_1ffF50djjkQx3H1qRdmTahFckjDuqiNT82
+self-pause-admin-api-answered: 202 Accepted
+handler-can-pause-itself: true
+invocation-after-the-handler-paused-itself: status=paused in_flight=false retry_count=0 journal_size=1
+what-happened-to-the-attempt-that-was-running: the server stopped it where it was: the handler's own body never returned, and nothing it had not already journaled survived
+self-paused-resume-http-status: 200 OK
+[service2] restateservice: goroutines=11
+[service2] restateservice: handlers-in-flight=0
+self-paused-invocation-final: status=completed in_flight=false pinned_deployment_id=dp_17hnBmJvzuJQ38DW5N520Uh retry_count=0 journal_size=2 completion_result=success
+self-pause-log-lines: 3
+self-pause-line-1: attempt=1 pid=28753 invocation=inv_1ffF50djjkQx3H1qRdmTahFckjDuqiNT82
+self-pause-line-2: self-pause-http-status=202 Accepted
+self-pause-line-3: attempt=2 pid=28753 invocation=inv_1ffF50djjkQx3H1qRdmTahFckjDuqiNT82
+limit: one open wait and two paused invocations on a single-node server with one partition, measured over seconds rather than days: it shows what Restate holds while a handler waits and what `paused` is to drive, not how a cluster of many thousands of open waits behaves, nor what a journal costs after a month of real retention
+experiment 11: PASS

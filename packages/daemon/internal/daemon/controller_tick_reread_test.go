@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -263,6 +264,7 @@ func (d *tickDispatch) PostMessage(context.Context, string, string) error { retu
 func (d *tickDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }
+func (d *tickDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *tickDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -272,7 +274,6 @@ func (d *tickDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMe
 func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
 	return dispatch.Approval{}, nil
 }
-func (d *tickDispatch) BuildCommit(context.Context) (string, error) { return "", nil }
 func (d *tickDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
@@ -280,6 +281,7 @@ func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject
 	return nil, nil
 }
 func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 
 // tickRecords is the record store the boot gives the runtime (openWorkflow): this project's
 // issues alone, with no outbox wake, since no outbox runs in a tick test.
@@ -293,7 +295,7 @@ func tickRuntime(t *testing.T, pool *pgxpool.Pool, client dispatch.Client) *work
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	records := tickRecords()
-	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 1, "CAPTURE", log)
 	return &workflowRuntime{
 		pool: pool, records: records, admission: admission,

@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -16,16 +15,14 @@ import (
 )
 
 // pullRequestOpened records the pull request a branch opened, and a reopen is the same pull
-// request: its fix and blocked attempts are what bound the review rounds, so they are carried
-// over rather than rebuilt at zero, which made closing and reopening a way to buy a fresh cap, and
-// so is the counted attempt the cap holds a red in (classify.FixAttemptCapHolds), and its newest
+// request: its newest
 // review, which orders every review it will have, and what its base branch requires - its required
 // checks, and its required workflows with their runs at the head they were read at - as last read,
-// so the reopened head's first settlement is judged by all of it (classify.HeadChecks). A reopen at
+// so the reopened head's first settlement is judged by all of it (classify.HeadChecks), are
+// carried over rather than rebuilt. A reopen at
 // another head than the recorded one - commits pushed while the pull request was closed, which no
 // synchronize reports - is judged as a synchronize to that head would be
-// (classify.AdvancePullRequestHead): onto a red verdict it counts, onto a green one, or onto a
-// settled head whose base branch requires nothing, it leaves the counted attempt. A new generation
+// (classify.AdvancePullRequestHead). A new generation
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
@@ -69,12 +66,12 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			(recorded.State == record.PullRequestOpen && !fact.UpdatedAt.After(recorded.HeadUpdatedAt)) {
 			return intake.Result{}, nil
 		}
-		// The reopen keeps the count, the planned mark, the pushes - facts about commits - and the
+		// The reopen keeps the planned mark, the pushes - facts about commits - and the
 		// head run, so a push that arrives after the reopen settles the move the reopen made as it
 		// would have had it arrived first (classify.Reopen); the CI settlement starts afresh.
 		carried := classify.Reopen(*recorded, fact.HeadSHA)
-		pr.FixAttempts, pr.BlockedAttempts, pr.ReviewSeen = carried.FixAttempts, carried.BlockedAttempts, recorded.ReviewSeen
-		pr.HeadCounted, pr.PlannedRed, pr.Pushes, pr.Moves, pr.Run = carried.HeadCounted, carried.PlannedRed, carried.Pushes, carried.Moves, carried.Run
+		pr.ReviewSeen = recorded.ReviewSeen
+		pr.PlannedRed, pr.Pushes, pr.Moves, pr.Run = carried.PlannedRed, carried.Pushes, carried.Moves, carried.Run
 		e.stampRun(&pr)
 		pr.Required, pr.Workflows, pr.WorkflowsHead = carried.Required, carried.Workflows, carried.WorkflowsHead
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
@@ -233,10 +230,9 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	// the rule (standingRed). A push that closes a head run, or whose replay changed the pull
 	// request's judgement (classify.ApplyPush) - the recorded head's own, or one for an earlier head
 	// that completes the chain of a move in the run - decides the checks as the settlement it
-	// replayed would have (decideChecks): a count taken back can lift the fix-attempt cap off the red
-	// that stands, a planned mark or a settlement can change what the red is, a red held while the
-	// run waited is judged now, a red the replay makes stand in awaiting_merge withdraws the READY,
-	// and a count the red stays held at is reported. A phase with no checks_red row - implementing,
+	// replayed would have (decideChecks): a planned mark or a settlement can change what the red
+	// is, and a red held while the run waited is judged now, a red the replay makes stand in
+	// awaiting_merge withdraws the READY. A phase with no checks_red row - implementing,
 	// planning - moves nothing (sendBack), and in awaiting_merge standingRed does not act. Any other
 	// push for a head that has not arrived yet (its synchronize still on its way) changes nothing the
 	// rule reads at the recorded head, whose red may be the one the push fixed, so it applies
@@ -312,8 +308,9 @@ func waitingForTree(issue string, number int, waiting []string) string {
 // waited for the rest of the tree instead, tells the root's architect once. It is the two places
 // a wait is newly entered — the merge arriving at an issue in awaiting_merge (merged), and an
 // issue reaching awaiting_merge on a pull request already merged (transition) — and nowhere else:
-// notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on every
-// child's departure (closeAwaitingRoot) and on every boot (sweepMerged), so those two tell nobody.
+// notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on the
+// departure of every issue beneath it (closeAwaitingMerge) and on every boot (sweepMerged), so
+// those two tell nobody.
 func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	waiting, err := e.closeMerged(ctx, tx, issue, pr)
 	if err != nil || len(waiting) == 0 {
@@ -327,40 +324,47 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // upgrade's data move left, which the close clears), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
 // table's row to done (transition), which leaves: a child's close retires five of its claims and
-// opens its production check in the implementer's live session, and a root's lingers its tree and
-// opens its check behind the linger's rows (leave). A merge is the one fact GitHub never sends
+// opens its production check in the live session of the role the project's `production_check`
+// names, and retires all six and opens no check where that setting is off; a root's close lingers
+// its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub never sends
 // again, so one that lands while the tree lingers, where no transition runs, still closes the
 // issue: it writes what leave would that a lingering tree allows — the phase done, the status
 // done, the pull request disarmed, a child's architect told child-closed — and opens the check,
-// whose first look is a wake, since the linger suspended the implementer. It retires nobody and
+// whose first look is a wake, since the linger suspended that role. It retires nobody and
 // suspends nothing: the linger's own rows already did, and the tree's close retires every member's
 // claims. The boot's sweep closes a migrated issue the same way (booted).
 //
-// A root's close waits for the rest of its tree: the linger it would begin suspends every member
-// mid-turn, so a child's finished phase would be refused 409 TREE_LINGERING and its work lost. This
-// wait is where the daemon keeps a tree's order, so nothing beneath an issue holds its acceptance
-// (signOff). It reads the flat tree (treeMembers), not the parent relation, because the linger
-// stops every member of the tree, whatever it hangs under. It is kept inside the branch where the
-// tree does not linger: a member of a tree that already lingers must still close at its merge,
-// which suspends nothing further and is the one thing that still moves there.
+// A merged issue's close waits for the issues beneath it, on the one set both acceptance rules
+// read (OpenBeneath): for a tree root that is every other member of the tree still in the
+// workflow, read from the flat tree rather than the parent relation because the linger its close
+// begins stops every member whatever it hangs under — a child's finished phase would be refused
+// 409 TREE_LINGERING and its work lost — and for an issue below the root it is the issues whose
+// chain of recorded parents reaches it, whose merges its own head is meant to carry. The set
+// leaves out an issue the daemon itself holds at admitted beneath this one — without that the
+// two would wait on each other for ever, as OpenBeneath's own comment sets out. The departure of
+// any of them re-reads this wait (leave's closeAwaitingMerge), so the close happens as soon as
+// the last one leaves. The wait is kept inside the branch where the tree does not linger: a
+// member of a tree that already lingers must still close at its merge, which suspends nothing
+// further and is the one thing that still moves there.
 func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) ([]string, error) {
-	if issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.AwaitingMerge {
-		issue.Phase, issue.Hold = phase.AwaitingMerge, nil
-	}
-	if issue.Phase != phase.AwaitingMerge {
+	// An issue held from awaiting_merge is awaiting its merge still (awaitsMerge, the one
+	// predicate written over that wait), and the close goes on from the phase itself, so every
+	// row below reads one shape.
+	if !awaitsMerge(issue) {
 		return nil, nil
 	}
+	issue.Phase, issue.Hold = phase.AwaitingMerge, nil
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return nil, err
 	}
 	if !lingers {
-		waiting, err := e.openBeside(ctx, tx, issue)
+		waiting, err := e.openBeneath(ctx, tx, issue)
 		if err != nil {
 			return nil, err
 		}
 		if len(waiting) > 0 {
-			e.logOnCommit(ctx, "workflow: a merged root's close waits for the rest of its tree", "issue", issue.Key, "tree", issue.Tree,
+			e.logOnCommit(ctx, "workflow: a merged issue's close waits for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
@@ -370,12 +374,13 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !ok {
 		return nil, nil
 	}
-	if err := e.status(ctx, tx, issue, row.Status); err != nil {
+	status := PhaseStatus(row.To)
+	if err := e.status(ctx, tx, issue, status); err != nil {
 		return nil, err
 	}
-	issue.Phase, issue.Hold, issue.ReadyPendingVersion = row.To, nil, nil
-	if row.Status != "" {
-		issue.Status = row.Status
+	issue.Phase, issue.Hold, issue.ReadyPending = row.To, nil, nil
+	if status != "" {
+		issue.Status = status
 	}
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return nil, err
@@ -390,27 +395,6 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		}
 	}
 	return nil, e.openCheck(ctx, tx, issue, *pr, true)
-}
-
-// openBeside is the sorted keys of the other members of issue's tree that are still in the
-// workflow (InWorkflow) when issue is that tree's root, and nothing at all when it is not: only a
-// root's close lingers the tree, so only a root waits for it.
-func (e *Engine) openBeside(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return nil, nil
-	}
-	members, err := e.treeMembers(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	open := []string{}
-	for _, member := range members {
-		if member.Key != issue.Key && InWorkflow(member) {
-			open = append(open, member.Key)
-		}
-	}
-	slices.Sort(open)
-	return open, nil
 }
 
 // closed records the pull request closed unmerged, which a re-admitted generation drops, and tells

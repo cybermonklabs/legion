@@ -20,7 +20,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-var updateDeliveryLiveFixtures = flag.Bool("update", false, "rewrite packages/contracts/fixtures/live from the frames the diff writes")
+// updateFixtures is this package's one -update flag: a test binary takes one flag of a name, and
+// two tests here write a file the repository commits — the live frame fixtures under
+// packages/contracts/fixtures/live, and the route index at testdata/routes.txt.
+var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live and testdata/routes.txt")
 
 // liveJSONField is one JSON field of a struct as encoding/json writes it: its name and type.
 type liveJSONField struct {
@@ -948,10 +951,12 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	}
 	snapshotAt := heldTo.Add(-time.Minute)
 	delta.Sub, delta.Seq, delta.ChangedAt = "timeline-1", "42", &deployedAt
-	event, err := liveEventFrame("events-1", liveFixtureEvent())
+	fixture := liveFixtureEvent()
+	encoded, err := encodeLiveEvent(fixture)
 	if err != nil {
-		t.Fatalf("build the event frame fixture: %v", err)
+		t.Fatalf("encode the event frame fixture: %v", err)
 	}
+	event := liveEventFrame("events-1", relayedEvent{Event: fixture, Encoded: encoded})
 	frames := map[string]any{
 		"snapshot.json":  held.snapshot("timeline-1", 41, &snapshotAt),
 		"delta.json":     delta,
@@ -980,7 +985,7 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 		}
 		got = append(got, '\n')
 		path := filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "live", name)
-		if *updateDeliveryLiveFixtures {
+		if *updateFixtures {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}

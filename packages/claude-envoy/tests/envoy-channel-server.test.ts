@@ -1,20 +1,25 @@
 import { expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
 import marketplace from "../../../.claude-plugin/marketplace.json" with { type: "json" }
 import plugin from "../.claude-plugin/plugin.json" with { type: "json" }
 import ompPlugin from "../.omp-plugin/plugin.json" with { type: "json" }
+import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
 import {
+  type ChannelNotifier,
+  type ChannelSession,
   createChannelDelivery,
   enqueueChannelMessage,
   MCP_SERVER_INFO,
-  sanitizeChannelMetadata,
+  sessionCapabilities,
   startChannelSession,
 } from "../src/envoy-channel-server"
+import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
 import {
   deliveryRaw,
@@ -24,14 +29,21 @@ import {
   FakeNotifier,
   noInterest,
   recordingClient,
-  scratchState,
   sessionOptions,
   settled,
+  useScratchState,
+  waitFor,
 } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
+
+const scratchState = useScratchState()
+/** A scratch HOME for a channel server this file runs as a child process of its own. */
+const temporaryHome = temporaryDirectories("claude-envoy-home")
+/** The plugin's entries in the repository's marketplace, which the two cases below read. */
+const marketplaceEntries = marketplace.plugins.filter((entry) => entry.name === plugin.name)
 
 /**
  * A role-lane envelope the listener forwarded to the direct subject and awaits a receipt for,
@@ -47,7 +59,7 @@ const roleForwardRaw = JSON.stringify({
   payload_summary: "Review please",
 })
 
-test("emits each Envoy envelope as the exact Claude channel notification", async () => {
+test("writes each Envoy envelope into the session as the rendered card that names its sender", async () => {
   const notifier = new FakeNotifier()
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
@@ -59,63 +71,11 @@ test("emits each Envoy envelope as the exact Claude channel notification", async
 
   expect(notifier.notifications).toEqual([
     {
-      method: "notifications/claude/channel",
-      params: {
-        content:
-          'envoy:\n  to: you (ses_claude)\n  from: ses_sender\n  at: "2025-10-09T08:53:20Z"\n  id: evt-42\n  urgency: high\n  reply_with:\n    tool: envoy_send\n    args:\n      session_id: ses_sender\n      in_reply_to: evt-42\n      message: ...\n  summary: Use the channel',
-        meta: {
-          producer: "agent",
-          topic: directSubject,
-          event_id: "evt-42",
-          dedupe_key: "delivery-42",
-          urgency: "high",
-          from_session: "ses_sender",
-        },
-      },
+      content:
+        'envoy:\n  to: you (ses_claude)\n  from: ses_sender\n  at: "2025-10-09T08:53:20Z"\n  id: evt-42\n  urgency: high\n  reply_with:\n    tool: envoy_send\n    args:\n      session_id: ses_sender\n      in_reply_to: evt-42\n      message: ...\n  summary: Use the channel',
+      eventId: "evt-42",
     },
   ])
-})
-
-test("presents an ad-hoc topic's forward on the agent subject with the topic it was published to", async () => {
-  const notifier = new FakeNotifier()
-  const delivery = createChannelDelivery({
-    identity: new SessionIdentity("ses_claude", "/tmp"),
-    notifier,
-    configFile: sessionConfigFile("claude", process.env),
-  })
-  // The publish route forwards an ad-hoc topic's envelope, unchanged, to each self-subscribed
-  // session's agent subject, and that copy can arrive before the one on the topic itself.
-  const adHocForward = JSON.stringify({
-    event_id: "evt-team-3",
-    dedupe_key: "publish.0123456789abcdef0123456789abcdef",
-    source: "agent",
-    source_session: "ses_sender",
-    topic: "notifications.team.deploy-squad",
-    issued_at: 1_760_000_000_000,
-    payload_summary: "Deploy done",
-  })
-
-  await delivery.enqueue({ subject: directSubject, raw: adHocForward })
-
-  expect(notifier.notifications).toHaveLength(1)
-  expect(notifier.notifications[0]?.params.meta).toEqual({
-    producer: "agent",
-    topic: "notifications.team.deploy-squad",
-    event_id: "evt-team-3",
-    dedupe_key: "publish.0123456789abcdef0123456789abcdef",
-    from_session: "ses_sender",
-  })
-})
-
-test("strips unsafe channel meta keys before notifying Claude Code", () => {
-  expect(
-    sanitizeChannelMetadata({
-      producer: "envoy",
-      "from-session": "ses_sender",
-      "1bad": "dropped",
-      event_id: "evt-1",
-    }),
-  ).toEqual({ producer: "envoy", event_id: "evt-1" })
 })
 
 test("enqueues a forwarded role-lane event before publishing its adapter receipt", async () => {
@@ -169,7 +129,7 @@ test("never answers the reply inbox of a JetStream publish to the direct subject
 test("delivers each dedupe key once while acknowledging every forwarded request after enqueue", async () => {
   const nats = new FakeNats()
   const notifier = new FakeNotifier(nats.order)
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
       connection: nats,
@@ -190,7 +150,6 @@ test("delivers each dedupe key once while acknowledging every forwarded request 
     ])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -234,7 +193,7 @@ function listenerSend(send: string): string {
 test("a Dispatch Retry the listener re-sends under the same dedupe key reaches Claude once", async () => {
   const nats = new FakeNats()
   const notifier = new FakeNotifier()
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
       connection: nats,
@@ -248,10 +207,9 @@ test("a Dispatch Retry the listener re-sends under the same dedupe key reaches C
     await settled()
 
     expect(notifier.notifications).toHaveLength(1)
-    expect(notifier.notifications[0]?.params.meta["event_id"]).toBe("evt-attempt")
+    expect(notifier.notifications[0]?.eventId).toBe("evt-attempt")
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -259,7 +217,7 @@ test("a send whose notification failed is delivered when it is sent again", asyn
   const nats = new FakeNats()
   const delivered: string[] = []
   let failNext = true
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
       connection: nats,
@@ -269,7 +227,7 @@ test("a send whose notification failed is delivered when it is sent again", asyn
             failNext = false
             throw new Error("the MCP transport refused the write")
           }
-          delivered.push(String(notification.params.meta["event_id"]))
+          delivered.push(String(notification.eventId))
         },
       },
     }),
@@ -288,7 +246,102 @@ test("a send whose notification failed is delivered when it is sent again", asyn
     expect(delivered).toEqual(["evt-retry"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
+  }
+})
+
+// What replaces the server's record of the cards it has (INFRA-1026 review, round eleven): the
+// server is at-least-once and re-hands the event, and the mod's write is idempotent by the
+// Envoy event id, so the engine sees the one message once. Both copies are therefore handed
+// over, each carrying `evt-42`, and the inbox names the message once. The mod's own half of
+// this is driven against the real `$` in `./mod.test.ts`.
+test("a card Envoy sends again is handed over again, under the one event id", async () => {
+  const notifier = new FakeNotifier()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", "/tmp"),
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+  })
+
+  expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
+  expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
+
+  expect(notifier.notifications.map(({ eventId }) => eventId)).toEqual(["evt-42", "evt-42"])
+  // One message, named once: the inbox lists the card, not every frame carrying it.
+  expect(delivery.inbox().map(({ event_id }) => event_id)).toEqual(["evt-42"])
+})
+
+// Repro `R-A` (INFRA-1026 review, round eleven) at the server: a mod that never answers — a
+// SIGSTOPped Claude Code, one that polls for nothing, one that is gone — leaves the frame
+// unanswered, so Envoy sends the card again and this server writes it to the session again. The
+// message is never lost to keep it from arriving twice, and what keeps it from arriving twice is
+// the mod's record of its Envoy event id (`../hooks/mod-writer.ts`, `writeOnce`), not a record
+// here.
+test("a card the mod never answered is written again when Envoy resends it", async () => {
+  const nats = new FakeNats()
+  const written: string[] = []
+  const holding: Array<() => void> = []
+  const claude = modSession({
+    link: {
+      connected: () => true,
+      request: <N extends ModCallName>(
+        call: N,
+        args: ModCallArguments[N],
+        options?: { readonly timeoutMs?: number },
+      ): Promise<ModCallResults[N]> => {
+        if (call !== "session.message") {
+          return Promise.reject(new Error(`the card path made an unexpected mod call: ${call}`))
+        }
+        written.push((args as ModCallArguments["session.message"]).message.text)
+        // A mod that answers nothing: the caller's own bound ends the wait, as the link's does.
+        const held = Promise.withResolvers<ModCallResults[N]>()
+        const timer = setTimeout(
+          () =>
+            held.reject(
+              new Error(`the mod did not answer ${call} within ${options?.timeoutMs ?? 0} ms`),
+            ),
+          options?.timeoutMs ?? 0,
+        )
+        timer.unref()
+        holding.push(() => {
+          clearTimeout(timer)
+          held.reject(new Error("the session ended"))
+        })
+        return held.promise
+      },
+    },
+    showMs: 40,
+    warn: () => undefined,
+  })
+  const notifier: ChannelNotifier = {
+    notification: async ({ content, blocks, eventId }) => {
+      await claude.show({
+        content: blocks ?? [{ text: content, type: "text" }],
+        text: content,
+        ...(eventId === undefined ? {} : { eventId }),
+      })
+    },
+  }
+  const stateDirectory = scratchState()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      notifier,
+    }),
+  )
+
+  try {
+    nats.emit(directSubject, deliveryRaw)
+    await waitFor(async () => written.length === 1, "the card's first write")
+    // Past the bound: a real wait, since the channel server's own startup and heartbeat waits
+    // need real time and no fake clock reaches this bound through the live pipeline.
+    await Bun.sleep(80)
+    nats.emit(directSubject, deliveryRaw)
+    await waitFor(async () => written.length === 2, "the resent card's own write")
+
+    expect(written).toHaveLength(2)
+  } finally {
+    for (const stop of holding.splice(0)) stop()
+    await session.shutdown()
   }
 })
 
@@ -328,8 +381,35 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
   })
 })
 
+// A frame with no `event_id` names no event, so the inbox cannot read one as a copy of another:
+// two of them are two messages, and both are written to the session (INFRA-1026 review). The
+// rule before this one keyed every such frame by the word the entry shows — `unknown` — so the
+// inbox named the first and silently dropped the rest while the session read all of them.
+test("every frame with no event id is listed, since none of them names a copy", async () => {
+  const notifier = new FakeNotifier()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", "/tmp"),
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+  })
+  const unnamed = (summary: string): string =>
+    JSON.stringify({
+      source: "agent",
+      source_session: "ses_sender",
+      issued_at: 0,
+      payload_summary: summary,
+    })
+
+  expect(await delivery.enqueue({ subject: directSubject, raw: unnamed("the first") })).toBe(true)
+  expect(await delivery.enqueue({ subject: directSubject, raw: unnamed("the second") })).toBe(true)
+
+  // Written twice, so listed twice: the inbox says what the session was handed.
+  expect(notifier.notifications).toHaveLength(2)
+  expect(delivery.inbox().map(({ summary }) => summary)).toEqual(["the second", "the first"])
+})
+
 test("registers no delivery mode for a session whose channel Claude Code did not load", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const subscribes: unknown[] = []
   const client: FakeClient = recordingClient([], {
     subscribe: async (input) => {
@@ -341,7 +421,7 @@ test("registers no delivery mode for a session whose channel Claude Code did not
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
       client,
-      capabilities: [],
+      capabilities: () => [],
     }),
   )
 
@@ -351,13 +431,12 @@ test("registers no delivery mode for a session whose channel Claude Code did not
     ])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
     await Bun.sleep(5)
   }
 })
 
 test("registers aside capability and soft-reclaims the role persisted for a resumed session id", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
   await writeFile(roleFile, JSON.stringify({ session_id: "ses_claude", role: "reviewer" }))
@@ -374,47 +453,78 @@ test("registers aside capability and soft-reclaims the role persisted for a resu
     },
   })
 
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
-      client,
-      pluginVersion: "afe10b2f3e1b",
-    }),
-  )
+  const options = sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+    client,
+    pluginVersion: "afe10b2f3e1b",
+  })
+  const session = await startChannelSession(options)
 
   try {
     expect(subscribes).toEqual([
       expect.objectContaining({
         sessionID: "ses_claude",
         topics: [directSubject],
-        capabilities: ["aside"],
+        capabilities: ["aside", "steer"],
         selfSubscribed: true,
         plugin: { name: "@sjawhar/claude-envoy", version: "afe10b2f3e1b" },
       }),
     ])
     expect(setRoles).toEqual([
-      { sessionID: "ses_claude", role: "reviewer", soft: true, previousSessionID: "ses_claude" },
+      {
+        sessionID: "ses_claude",
+        role: "reviewer",
+        soft: true,
+        previousSessionID: "ses_claude",
+        clientInstanceID: options.clientInstanceID,
+      },
     ])
     expect(JSON.parse(await readFile(roleFile, "utf8"))).toEqual({
       session_id: "ses_claude",
       role: "reviewer",
+      client_instance_id: options.clientInstanceID,
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
-test("Claude Code versions the plugin by its commit; omp and the MCP server report package.json's", () => {
-  // Claude Code updates an installed plugin only when its computed version changes. With no
-  // version in plugin.json or the marketplace entry it takes the version of a relative-path plugin
-  // from the marketplace commit it installs from, so every merge to main reaches an update; a
-  // declared version nothing bumps holds every install at the tree it was first installed from.
+test("the committed manifests declare no version the release would have to bump; omp and the MCP server report package.json's", () => {
+  // Claude Code names an installed plugin by the `version` of its .claude-plugin/plugin.json,
+  // never by the version the registry served: with none it calls the install `unknown`, caches
+  // it under that name and sees no later release as an update (measured on 2.1.311). So
+  // release.yaml's claude_envoy_build writes the release's version into the manifest it packs,
+  // and the committed one declares none — a string committed here would hold every install at it
+  // until someone changed it, and the release writes it anyway. The entry in the marketplace
+  // declares no `version` of its own either, which is what leaves the packed manifest to name
+  // an install; the range on the entry's npm source is a field of its own, below.
   expect(plugin).not.toHaveProperty("version")
-  const entries = marketplace.plugins.filter((entry) => entry.name === plugin.name)
-  expect(entries).toHaveLength(1)
-  expect(entries[0]).not.toHaveProperty("version")
+  expect(marketplaceEntries).toHaveLength(1)
+  expect(marketplaceEntries[0]).not.toHaveProperty("version")
   expect(ompPlugin.version).toBe(pkg.version)
   expect(MCP_SERVER_INFO).toEqual({ name: "envoy", version: pkg.version })
+})
+
+test("the marketplace entry installs the plugin from npm, by name, above the placeholder", () => {
+  // release.yaml's claude_envoy_build packs this package and its publish job uploads that tarball
+  // to npm, so the registry name is package.json's own, read here rather than written twice. The
+  // source's `version` is a range, not the version of an install: it leaves out 0.0.0, the
+  // placeholder a person published so that trusted publishing could attach to the package at all,
+  // and takes `latest`, which the resolver prefers while it satisfies the range. npm's `latest`
+  // is that placeholder until the first release, and it holds no plugin, so an install before
+  // then must fail by name rather than install nothing. 1.0.0 is what the version step computes
+  // for the first release (release-bump.sh over CLAUDE_ENVOY_VERSION_ARGS from the placeholder's
+  // 0.0.0). 99.0.0 is every release after it: a range that pinned the major, `^1.0.0` or `1.x`,
+  // would take the placeholder out and the first release in just as well, and then hold every
+  // install at the last 1.x while the releases carried on. Those three are what the range is
+  // for, so they are what is asserted, rather than the string that happens to hold them.
+  expect(marketplaceEntries).toHaveLength(1)
+  const source = marketplaceEntries[0]?.source
+  expect(source?.source).toBe("npm")
+  expect(source?.package).toBe(pkg.name)
+  const range = source?.version ?? ""
+  expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
+  expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
+  expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)
 })
 
 test("the Oh My Pi manifest declares no MCP server", () => {
@@ -471,32 +581,33 @@ const rejectedCommentFrameRaw = JSON.stringify({
 })
 
 test("answers a rejected targeted frame on Dispatch instead of notifying the model", async () => {
-  const replies: Array<{
-    readonly path: string
-    readonly auth: string | null
-    readonly body: unknown
-  }> = []
-  const server = Bun.serve({
-    port: 0,
-    fetch: async (request) => {
-      replies.push({
-        path: new URL(request.url).pathname,
-        auth: request.headers.get("authorization"),
-        body: await request.json(),
-      })
-      return Response.json({})
-    },
-  })
-  process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-  process.env["DISPATCH_TOKEN"] = "reply-token"
-  const notifier = new FakeNotifier()
-  const delivery = createChannelDelivery({
-    identity: new SessionIdentity("ses_claude", process.cwd()),
-    notifier,
-    configFile: sessionConfigFile("claude", process.env),
-  })
-
+  let server: Server<undefined> | undefined
   try {
+    const replies: Array<{
+      readonly path: string
+      readonly auth: string | null
+      readonly body: unknown
+    }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        replies.push({
+          path: new URL(request.url).pathname,
+          auth: request.headers.get("authorization"),
+          body: await request.json(),
+        })
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = "reply-token"
+    const notifier = new FakeNotifier()
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier,
+      configFile: sessionConfigFile("claude", process.env),
+    })
+
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
     // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
@@ -514,7 +625,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
-    server.stop(true)
+    server?.stop(true)
   }
 })
 
@@ -522,36 +633,38 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
 // Dispatch frame the channel answered with an error is answered again rather than dropped as a
 // repeat of its dedupe key.
 test("a Dispatch frame the channel answered with an error is answered again when re-sent", async () => {
-  const control = JSON.parse(
-    rejectedFrameRaw.replaceAll(
-      "44444444-4444-4444-8444-444444444444",
-      "55555555-5555-4555-8555-555555555555",
-    ),
-  )
-  const replied: string[] = []
-  const controlAnswered = Promise.withResolvers<void>()
-  const server = Bun.serve({
-    port: 0,
-    fetch: (request) => {
-      const path = new URL(request.url).pathname
-      replied.push(path)
-      if (path.includes("55555555")) controlAnswered.resolve()
-      return Response.json({})
-    },
-  })
-  process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-  process.env["DISPATCH_TOKEN"] = "reply-token"
-  const nats = new FakeNats()
-  const notifier = new FakeNotifier()
-  const stateDirectory = await scratchState()
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", process.cwd()), stateDirectory, {
-      connection: nats,
-      notifier,
-    }),
-  )
-
+  let server: Server<undefined> | undefined
+  let session: ChannelSession | undefined
   try {
+    const control = JSON.parse(
+      rejectedFrameRaw.replaceAll(
+        "44444444-4444-4444-8444-444444444444",
+        "55555555-5555-4555-8555-555555555555",
+      ),
+    )
+    const replied: string[] = []
+    const controlAnswered = Promise.withResolvers<void>()
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        const path = new URL(request.url).pathname
+        replied.push(path)
+        if (path.includes("55555555")) controlAnswered.resolve()
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = "reply-token"
+    const nats = new FakeNats()
+    const notifier = new FakeNotifier()
+    const stateDirectory = scratchState()
+    session = await startChannelSession(
+      sessionOptions(new SessionIdentity("ses_claude", process.cwd()), stateDirectory, {
+        connection: nats,
+        notifier,
+      }),
+    )
+
     nats.emit(directSubject, rejectedFrameRaw)
     // The listener mints a fresh event id for the re-send; its dedupe key is the first send's.
     nats.emit(
@@ -569,39 +682,39 @@ test("a Dispatch frame the channel answered with an error is answered again when
     expect(notifier.notifications).toEqual([])
     expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(2)
   } finally {
-    await session.shutdown()
-    server.stop(true)
-    await rm(stateDirectory, { recursive: true, force: true })
+    await session?.shutdown()
+    server?.stop(true)
   }
 })
 
 test("answers a malformed targeted comment through its supplied comment reply address", async () => {
-  const replies: Array<{
-    readonly path: string
-    readonly auth: string | null
-    readonly body: unknown
-  }> = []
-  const server = Bun.serve({
-    port: 0,
-    fetch: async (request) => {
-      replies.push({
-        path: new URL(request.url).pathname,
-        auth: request.headers.get("authorization"),
-        body: await request.json(),
-      })
-      return Response.json({})
-    },
-  })
-  process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-  process.env["DISPATCH_TOKEN"] = "reply-token"
-  const notifier = new FakeNotifier()
-  const delivery = createChannelDelivery({
-    identity: new SessionIdentity("ses_claude", process.cwd()),
-    notifier,
-    configFile: sessionConfigFile("claude", process.env),
-  })
-
+  let server: Server<undefined> | undefined
   try {
+    const replies: Array<{
+      readonly path: string
+      readonly auth: string | null
+      readonly body: unknown
+    }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        replies.push({
+          path: new URL(request.url).pathname,
+          auth: request.headers.get("authorization"),
+          body: await request.json(),
+        })
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = "reply-token"
+    const notifier = new FakeNotifier()
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier,
+      configFile: sessionConfigFile("claude", process.env),
+    })
+
     await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
 
     expect(notifier.notifications).toEqual([])
@@ -618,7 +731,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       },
     ])
   } finally {
-    server.stop(true)
+    server?.stop(true)
   }
 })
 
@@ -731,7 +844,7 @@ async function runChannelServer(
 }
 
 test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread old file, lists no tool, and exits 0 when stdin ends", async () => {
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-off-"))
+  const home = temporaryHome("off")
   const configDirectory = join(home, "claude-config")
   const old = join(home, ".config", "opencode", "envoy.json")
   await mkdir(configDirectory)
@@ -746,49 +859,49 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
       },
     }),
   )
-  try {
-    const { exitCode, responses, stderr } = await runChannelServer({
-      HOME: home,
-      CLAUDE_CONFIG_DIR: configDirectory,
-      CLAUDE_CODE_SESSION_ID: "ses_off",
-      CLAUDE_PLUGIN_DATA: home,
-    })
-    const file = join(configDirectory, "envoy.json")
-    const notice = `${old} is not read for this profile; copy or link it to ${file}, or write that file`
 
-    expect(responses.get(2)?.["result"]).toEqual({ tools: [] })
-    expect(responses.get(3)?.["error"]).toMatchObject({
-      message: expect.stringContaining(
-        `Envoy is off for this session: no envoy.json at ${file}: Envoy is off; ${notice}`,
-      ),
-    })
-    expect(stderr).toContain(
-      `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
-    )
-    expect(exitCode).toBe(0)
-  } finally {
-    await rm(home, { recursive: true, force: true })
-  }
+  const { exitCode, responses, stderr } = await runChannelServer({
+    HOME: home,
+    CLAUDE_CONFIG_DIR: configDirectory,
+    CLAUDE_CODE_SESSION_ID: "ses_off",
+    CLAUDE_PLUGIN_DATA: home,
+  })
+  const file = join(configDirectory, "envoy.json")
+  const notice = `${old} is not read for this profile; copy or link it to ${file}, or write that file`
+
+  expect(responses.get(2)?.["result"]).toEqual({ tools: [] })
+  expect(responses.get(3)?.["error"]).toMatchObject({
+    message: expect.stringContaining(
+      `Envoy is off for this session: no envoy.json at ${file}: Envoy is off; ${notice}`,
+    ),
+  })
+  expect(stderr).toContain(
+    `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
+  )
+  expect(exitCode).toBe(0)
 }, 20_000)
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-off-file-"))
-  const configDirectory = join(home, "claude-config")
-  await mkdir(configDirectory)
-  await writeFile(
-    join(configDirectory, "envoy.json"),
-    JSON.stringify({ envoy: { enabled: false } }),
-  )
-  const broker = new FakeNatsServer()
-  const listenerCalls: string[] = []
-  const listener = Bun.serve({
-    port: 0,
-    fetch: (request) => {
-      listenerCalls.push(`${request.method} ${new URL(request.url).pathname}`)
-      return Response.json({ error: "no call belongs here" }, { status: 500 })
-    },
-  })
+  let stopBroker: (() => Promise<void>) | undefined
+  let listener: Server<undefined> | undefined
   try {
+    const home = temporaryHome("off-file")
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    await writeFile(
+      join(configDirectory, "envoy.json"),
+      JSON.stringify({ envoy: { enabled: false } }),
+    )
+    const broker = new FakeNatsServer()
+    stopBroker = () => broker.stop()
+    const listenerCalls: string[] = []
+    listener = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        listenerCalls.push(`${request.method} ${new URL(request.url).pathname}`)
+        return Response.json({ error: "no call belongs here" }, { status: 500 })
+      },
+    })
     const { exitCode, responses } = await runChannelServer({
       HOME: home,
       CLAUDE_CONFIG_DIR: configDirectory,
@@ -803,74 +916,78 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     expect(broker.connections).toBe(0)
     expect(listenerCalls).toEqual([])
   } finally {
-    listener.stop(true)
-    await broker.stop()
-    await rm(home, { recursive: true, force: true })
+    listener?.stop(true)
+    await stopBroker?.()
   }
 }, 20_000)
 
 // The listener's bearer and the NATS seed are resolved once and handed to the client and the
 // connection: a server that dropped either would leave the session unregistered or signed out.
 test("the server calls the listener with the file's envoy.token and signs in to NATS with its seed", async () => {
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-credentials-"))
-  const configDirectory = join(home, "claude-config")
-  await mkdir(configDirectory)
-  const broker = new FakeNatsServer({ nonce: "fake-nonce" })
-  const user = nkeys.createUser()
-  const auth: Array<string | null> = []
-  const registered = Promise.withResolvers<void>()
-  const plugins: unknown[] = []
-  const listener = Bun.serve({
-    port: 0,
-    fetch: async (request) => {
-      auth.push(request.headers.get("Authorization"))
-      const url = new URL(request.url)
-      if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const body = (await request.json()) as {
-          session_id: string
-          topics: string[]
-          plugin: string
-          plugin_version: string
-        }
-        plugins.push({ plugin: body.plugin, plugin_version: body.plugin_version })
-        registered.resolve()
-        return Response.json({
-          session_id: body.session_id,
-          machine_id: "test",
-          dir: "/tmp",
-          topics: body.topics,
-        })
-      }
-      if (request.method === "DELETE") return new Response(null, { status: 200 })
-      return Response.json({ error: "not found" }, { status: 404 })
-    },
-  })
-  await writeFile(
-    join(configDirectory, "envoy.json"),
-    JSON.stringify({
-      envoy: {
-        enabled: true,
-        url: `http://127.0.0.1:${listener.port}`,
-        natsUrls: [broker.url],
-        token: "file-token",
-        natsSeed: new TextDecoder().decode(user.getSeed()),
-      },
-    }),
-  )
-  const server = Bun.spawn(["bun", channelEntry], {
-    cwd: home,
-    env: {
-      PATH: process.env["PATH"] ?? "",
-      HOME: home,
-      CLAUDE_CONFIG_DIR: configDirectory,
-      CLAUDE_CODE_SESSION_ID: "ses_credentials",
-      CLAUDE_PLUGIN_DATA: home,
-    },
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  let stopBroker: (() => Promise<void>) | undefined
+  let listener: Server<undefined> | undefined
+  let server: Subprocess<"pipe", "pipe", "pipe"> | undefined
   try {
+    const home = temporaryHome("credentials")
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    const broker = new FakeNatsServer({ nonce: "fake-nonce" })
+    stopBroker = () => broker.stop()
+    const user = nkeys.createUser()
+    const auth: Array<string | null> = []
+    const registered = Promise.withResolvers<void>()
+    const plugins: unknown[] = []
+    listener = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        auth.push(request.headers.get("Authorization"))
+        const url = new URL(request.url)
+        if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
+          const body = (await request.json()) as {
+            session_id: string
+            topics: string[]
+            plugin: string
+            plugin_version: string
+          }
+          plugins.push({ plugin: body.plugin, plugin_version: body.plugin_version })
+          registered.resolve()
+          return Response.json({
+            session_id: body.session_id,
+            machine_id: "test",
+            dir: "/tmp",
+            topics: body.topics,
+          })
+        }
+        if (request.method === "DELETE") return new Response(null, { status: 200 })
+        return Response.json({ error: "not found" }, { status: 404 })
+      },
+    })
+    await writeFile(
+      join(configDirectory, "envoy.json"),
+      JSON.stringify({
+        envoy: {
+          enabled: true,
+          url: `http://127.0.0.1:${listener.port}`,
+          natsUrls: [broker.url],
+          token: "file-token",
+          natsSeed: new TextDecoder().decode(user.getSeed()),
+        },
+      }),
+    )
+    server = Bun.spawn(["bun", channelEntry], {
+      cwd: home,
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: home,
+        CLAUDE_CONFIG_DIR: configDirectory,
+        CLAUDE_CODE_SESSION_ID: "ses_credentials",
+        CLAUDE_PLUGIN_DATA: home,
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+
     await Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)])
     expect(broker.connects[0]).toMatchObject({ nkey: user.getPublicKey() })
     expect(new Set(auth)).toEqual(new Set(["Bearer file-token"]))
@@ -879,10 +996,9 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     server.kill("SIGTERM")
     expect(await server.exited).toBe(0)
   } finally {
-    server.kill("SIGKILL")
-    listener.stop(true)
-    await broker.stop()
-    await rm(home, { recursive: true, force: true })
+    server?.kill("SIGKILL")
+    listener?.stop(true)
+    await stopBroker?.()
   }
 }, 20_000)
 
@@ -902,16 +1018,17 @@ function recordingListener(calls: string[]) {
 // Inbound messages arrive over NATS; the tools call the listener. An Envoy with no NATS server
 // keeps its tools, as pi-envoy's does, and registers nothing a delivery would reach deaf.
 test("with Envoy on and no NATS server the server serves its listener tools with inbound off, and says so", async () => {
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-no-nats-"))
-  const configDirectory = join(home, "claude-config")
-  await mkdir(configDirectory)
-  const calls: string[] = []
-  const listener = recordingListener(calls)
-  await writeFile(
-    join(configDirectory, "envoy.json"),
-    JSON.stringify({ envoy: { url: `http://127.0.0.1:${listener.port}` } }),
-  )
+  let listener: Server<undefined> | undefined
   try {
+    const home = temporaryHome("no-nats")
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    const calls: string[] = []
+    listener = recordingListener(calls)
+    await writeFile(
+      join(configDirectory, "envoy.json"),
+      JSON.stringify({ envoy: { url: `http://127.0.0.1:${listener.port}` } }),
+    )
     const { exitCode, responses, stderr } = await runChannelServer(
       {
         HOME: home,
@@ -940,30 +1057,32 @@ test("with Envoy on and no NATS server the server serves its listener tools with
     expect(calls).toEqual(["GET /v1/sessions"])
     expect(exitCode).toBe(0)
   } finally {
-    listener.stop(true)
-    await rm(home, { recursive: true, force: true })
+    listener?.stop(true)
   }
 }, 20_000)
 
 test("a refused NATS seed leaves the listener tools on, opens no NATS connection, and says why", async () => {
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-seed-refused-"))
-  const configDirectory = join(home, "claude-config")
-  await mkdir(configDirectory)
-  const calls: string[] = []
-  const listener = recordingListener(calls)
-  const broker = new FakeNatsServer()
-  const file = join(configDirectory, "envoy.json")
-  await writeFile(
-    file,
-    JSON.stringify({
-      envoy: {
-        url: `http://127.0.0.1:${listener.port}`,
-        natsUrls: ["nats://file.internal.example:4222"],
-        natsSeed: "SUFILESEED",
-      },
-    }),
-  )
+  let listener: Server<undefined> | undefined
+  let stopBroker: (() => Promise<void>) | undefined
   try {
+    const home = temporaryHome("seed-refused")
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    const calls: string[] = []
+    listener = recordingListener(calls)
+    const broker = new FakeNatsServer()
+    stopBroker = () => broker.stop()
+    const file = join(configDirectory, "envoy.json")
+    await writeFile(
+      file,
+      JSON.stringify({
+        envoy: {
+          url: `http://127.0.0.1:${listener.port}`,
+          natsUrls: ["nats://file.internal.example:4222"],
+          natsSeed: "SUFILESEED",
+        },
+      }),
+    )
     const { exitCode, responses, stderr } = await runChannelServer(
       {
         HOME: home,
@@ -983,8 +1102,14 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     expect(calls).toEqual(["GET /v1/sessions"])
     expect(exitCode).toBe(0)
   } finally {
-    listener.stop(true)
-    await broker.stop()
-    await rm(home, { recursive: true, force: true })
+    listener?.stop(true)
+    await stopBroker?.()
   }
 }, 20_000)
+
+test("a Legion pane takes Aside and Send from the start and gains BTW when its mod connects", () => {
+  // The pane's messages go through the bridge's inbox, which needs no mod; the side turn a BTW
+  // is does. A terminal session's own rule is driven end to end in `envoy-channel-mcp.test.ts`.
+  expect(sessionCapabilities({ pane: true, mod: false })).toEqual(["aside", "steer"])
+  expect(sessionCapabilities({ pane: true, mod: true })).toEqual(["aside", "steer", "btw"])
+})

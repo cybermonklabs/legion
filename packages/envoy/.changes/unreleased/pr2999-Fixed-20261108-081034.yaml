@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The airlock proxy no longer carries one more frame to the service after it cut a joined connection whose grant stopped carrying it: the connection under the decrypted connection''s TLS drops whatever a read already in flight returns, where a read deadline in the past left that one read free to return the bytes.'
+time: 2026-11-08T08:10:34.583280176Z
+custom:
+    Issue: pr2999

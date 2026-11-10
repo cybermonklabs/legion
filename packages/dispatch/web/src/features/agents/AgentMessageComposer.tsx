@@ -53,6 +53,7 @@ export function AgentMessageComposer({
   onClose,
   replyTo,
   sendKey,
+  standing = false,
 }: {
   agent: Agent;
   /** The row's hold on that send (`useSending(sendKey)`): while it is out the message is
@@ -67,6 +68,10 @@ export function AgentMessageComposer({
   replyTo: AgentReply | null;
   /** The row's `agentSendKey`, which names the composer's send. */
   sendKey: MutationKey;
+  /** The reply target is this box's standing address rather than a Reply the reader pressed,
+   *  so the box takes no focus of its own (`MentionComposer`'s `standing`): what the Inbox
+   *  column's thread box is, mounted again for every row the reader steps onto. */
+  standing?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const store = useHeldSends();
@@ -164,7 +169,7 @@ export function AgentMessageComposer({
    *  picked. The select and the toggle keep naming it, marked, until the reader picks another -
    *  the issue header's Status select keeps a closed issue's own status among its options the same
    *  way - so what the picker shows, what the toggle says and where the message goes stay one
-   *  issue; a send to it is the server's to refuse (409 `ISSUE_CLOSED`). */
+   *  issue; a send to it posts, since a closed issue takes comments. */
   const committedClosed =
     issueKey !== "" &&
     issues.data !== undefined &&
@@ -331,6 +336,7 @@ export function AgentMessageComposer({
         }}
         owner={composerOwner}
         replyTo={replyTo?.target ?? null}
+        standing={standing}
       />
     </div>
   );

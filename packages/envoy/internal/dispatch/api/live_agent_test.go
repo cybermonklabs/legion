@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -157,26 +158,63 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 	}
 }
 
-// A session's own conversation is for a person watching it: a bearer's socket is refused the view,
-// and a caller with no credential never gets a socket at all.
-func TestAgentStreamRefusesEveryCallerButAHuman(t *testing.T) {
+// A caller with no credential never gets a socket at all, so it never reaches the session it
+// asked about. What a credential that does resolve may watch is the scope it holds, which
+// TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt below decides.
+func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 
 	if status := rig.refused(t, nil); status != http.StatusUnauthorized {
 		t.Fatalf("an anonymous viewer's upgrade answered %d, want 401", status)
 	}
-	bearer := rig.dial(t, withBearer("agent-token"))
-	bearer.subscribeAgent(t, "agent", plannerSessionID)
-	bearer.refusal(t, agentFeedWait, "agent", "HUMAN_ONLY")
-	bearer.quiet(t, 300*time.Millisecond, "after the bearer's agent view was refused")
-	// A refused caller never reached the session: it was never told a viewer is attached, so
-	// the session it asked about stays silent.
 	if got := source.Watches(plannerSessionID); got != 0 {
 		t.Fatalf("a refused viewer armed the session %d times, want 0", got)
 	}
 	if got := source.Viewers(plannerSessionID); got != 0 {
 		t.Fatalf("a refused viewer holds %d subscriptions to the session's frames, want 0", got)
+	}
+}
+
+// What a socket may watch is what its credential holds, not whether it is a browser: a personal
+// token holding the person scope is served a session's conversation exactly as a person's cookie
+// is, and a credential that holds no scope — another personal token, the deployment's shared
+// token — is refused the view with the code the HTTP routes answer, OAUTH_SCOPE_REQUIRED, in a
+// frame naming the scope it lacks. /ws/live is one socket serving every view, so this check is
+// the view's own and not the route table's.
+func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
+	source := agentstream.NewMemory()
+	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
+	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
+
+	holder := rig.dial(t, withBearer(personalTokenHolding(t, rig.database, model.ScopePerson)))
+	holder.subscribeAgent(t, "agent", plannerSessionID)
+	if data := holder.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
+		t.Fatalf("the person-scoped token's first frame is %s, want the responder verdict", data)
+	}
+	if data := holder.agentFrame(t, "agent", "replay"); data != `{"v":1,"kind":"replay-body"}` {
+		t.Fatalf("the person-scoped token's second frame is %s, want the session's replay", data)
+	}
+
+	// Each refused caller asks after a second session, which no admitted viewer watches, so the
+	// relay's own count proves the refusal stopped before the session was reached.
+	for name, token := range map[string]string{
+		"a personal token holding no scope": personalTokenHolding(t, rig.database),
+		"the deployment's shared token":     "agent-token",
+	} {
+		client := rig.dial(t, withBearer(token))
+		client.subscribeAgent(t, "agent", reviewerSessionID)
+		refusal := client.refusal(t, agentFeedWait, "agent", codeScopeRequired)
+		if !strings.Contains(refusal.Message, model.ScopePerson) {
+			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
+		}
+		client.quiet(t, 300*time.Millisecond, "after the agent view of "+name+" was refused")
+		if got := source.Watches(reviewerSessionID); got != 0 {
+			t.Fatalf("%s armed the session %d times, want 0", name, got)
+		}
+		if got := source.Viewers(reviewerSessionID); got != 0 {
+			t.Fatalf("%s holds %d subscriptions to the session's frames, want 0", name, got)
+		}
 	}
 }
 
@@ -233,13 +271,68 @@ func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
 	}
 }
 
-// A viewer that falls behind ends its subscription rather than losing a frame. The relay never
-// parses a frame, so it cannot tell a superseded snapshot from a tool result or from the settled
-// frame of an earlier message; dropping the wrong one would leave a tool call reading "running…"
-// with nothing later to correct it. Ending the subscription costs the page a subscribe, and the
-// subscribe rebuilds from the session's own replay. The subscription here waits for room as a
-// socket's does while its page reads nothing, so it drains nothing of what the session publishes.
-func TestAgentStreamEndsTheStreamWhenAViewerFallsBehind(t *testing.T) {
+// paddedFrame is a frame of exactly size bytes that names its place in the sequence.
+func paddedFrame(seq, size int) agentstream.Frame {
+	head := fmt.Sprintf(`{"seq":%d,"pad":"`, seq)
+	return agentstream.Frame(head + strings.Repeat("x", size-len(head)-len(`"}`)) + `"}`)
+}
+
+// agentFrameOf reads the subscription's next frame, which must be agent's frame named event, and
+// answers its data.
+func agentFrameOf(t *testing.T, stream *gatedStream, event string) string {
+	t.Helper()
+	frame, ok := stream.next(t, "the "+event+" of agent").(LiveAgentFrame)
+	if !ok || frame.Sub != "agent" || frame.Event != event {
+		t.Fatalf("frame = %+v, want the %s of agent", frame, event)
+	}
+	return string(frame.Data)
+}
+
+// A view's budget is bytes, not frames: agentStreamBufferBytes of them. Everything published while
+// its page reads nothing is held, up to the whole budget, and reaches the page in order. The
+// subscription here waits for room as a socket's does while its page reads nothing, so it drains
+// nothing of what the session publishes until the test lets it.
+func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		frames int
+		size   int
+	}{
+		{name: "200 small frames", frames: 200, size: 1 << 10},
+		// A session snapshots a message at most every 100 ms, so a two-second replay wait on a
+		// large message queues about this many snapshots of it.
+		{name: "20 snapshots of a large message", frames: 20, size: 300 << 10},
+		{name: "the whole budget", frames: agentStreamBufferBytes / (1 << 20), size: 1 << 20},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := agentstream.NewMemory()
+			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
+			stream := newGatedStream()
+			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
+			t.Cleanup(running.stop)
+			pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+
+			for index := range test.frames {
+				source.Publish(plannerSessionID, paddedFrame(index, test.size))
+			}
+			close(stream.gate)
+
+			agentFrameOf(t, stream, "responder")
+			for index := range test.frames {
+				if data := agentFrameOf(t, stream, "frame"); data != string(paddedFrame(index, test.size)) {
+					t.Fatalf("frame %d is %d bytes, %.20q, want frame seq %d", index, len(data), data, index)
+				}
+			}
+		})
+	}
+}
+
+// A viewer that falls further behind than its budget ends its subscription rather than losing a
+// frame. The relay never parses a frame, so it cannot tell a superseded snapshot from a tool
+// result or from the settled frame of an earlier message; dropping the wrong one would leave a
+// tool call reading "running…" with nothing later to correct it. Ending the subscription costs
+// the page a subscribe, and the subscribe rebuilds from the session's own replay.
+func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 	source := agentstream.NewMemory()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()
@@ -247,20 +340,22 @@ func TestAgentStreamEndsTheStreamWhenAViewerFallsBehind(t *testing.T) {
 	t.Cleanup(running.stop)
 	pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
-	// More frames than the view holds for a page that reads nothing.
-	for index := range agentStreamBuffer * 4 {
-		source.Publish(plannerSessionID, agentstream.Frame(fmt.Sprintf(`{"seq":%d}`, index)))
+	// The whole budget, and then one frame more than it holds.
+	frames := agentStreamBufferBytes / (1 << 20)
+	for index := range frames {
+		source.Publish(plannerSessionID, paddedFrame(index, 1<<20))
 	}
+	source.Publish(plannerSessionID, paddedFrame(frames, 64))
 	close(stream.gate)
 	if frame, ok := stream.next(t, "the responder").(LiveAgentFrame); !ok || frame.Event != "responder" {
 		t.Fatalf("first frame = %+v, want the responder", frame)
 	}
-	// What was held before the view fell behind may still go, in order; after it, the end.
+	// What was held before the view fell past its budget may still go, in order; after it, the end.
 	for last := -1; ; {
 		switch frame := stream.next(t, "the end of agent").(type) {
 		case LiveAgentFrame:
 			var seq int
-			if _, err := fmt.Sscanf(string(frame.Data), `{"seq":%d}`, &seq); err != nil || frame.Event != "frame" || seq != last+1 {
+			if _, err := fmt.Sscanf(string(frame.Data), `{"seq":%d,`, &seq); err != nil || frame.Event != "frame" || seq != last+1 {
 				t.Fatalf("frame %+v after seq %d, want the next frame in order", frame, last)
 			}
 			last = seq

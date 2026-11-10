@@ -2,7 +2,6 @@ package launcher
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -23,6 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const launcherChildEnv = "LEGION_LAUNCHER_TEST_CHILD"
@@ -73,33 +75,20 @@ type rig struct {
 }
 
 // roleConn is the daemon end of one role's launcher connection: the frames it reads, the hello
-// that opened it and the last state the role reported on it.
+// that opened it, the last state the role reported on it and the last report it made of the
+// pod's workspace restore.
 type roleConn struct {
-	t      *testing.T
-	conn   net.Conn
-	reader *bufio.Reader
-	writer *shimwire.Writer
-	hello  shimwire.LauncherHello
-	latest shimwire.LauncherState
+	t        *testing.T
+	conn     net.Conn
+	reader   *bufio.Reader
+	writer   *shimwire.Writer
+	hello    shimwire.LauncherHello
+	latest   shimwire.LauncherState
+	restored *shimwire.LauncherRestored
 }
 
 // lockedBuffer is a bytes.Buffer the launcher and its children can write while a test reads it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type lockedBuffer = testlog.Buffer
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
@@ -107,20 +96,15 @@ func newRig(t *testing.T) *rig {
 }
 
 // shortTempDir is a temporary directory of its own for a test that binds a unix socket under it:
-// such a path has barely a hundred bytes, where t.TempDir()'s carries the whole of the test's name
-// (docs/testing.md). It is made under /tmp rather than under TMPDIR, which os.MkdirTemp("") would
-// read and which is itself long on a dev box whose temporary directory is on a data disk; a system
-// with no writable /tmp falls back to TMPDIR, where only the longest of these paths would not fit.
+// such a path has barely a hundred bytes, where t.TempDir()'s carries the whole of the test's
+// name (docs/testing.md). TMPDIR places it, as it places every other temporary directory, and
+// the helper falls back to /tmp for the socket path's length alone, when the longest path below
+// the directory would not fit under TMPDIR. The budget is the session socket of a generation,
+// the longest path the launcher itself builds under this directory (launcher.go's
+// generationDir, and childStart below).
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "lch")
-	if err != nil {
-		if dir, err = os.MkdirTemp("", "lch"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	return testtmp.Dir(t, filepath.Join(shimwire.GenerationDir(999), ompsessions.SocketName))
 }
 
 // newSessionRig runs a launcher that carries cfg's session database and dialer, the fake standing
@@ -220,6 +204,9 @@ func (g *roleConn) next() shimwire.Frame {
 	if state, ok := frame.(shimwire.LauncherState); ok {
 		g.latest = state
 	}
+	if report, ok := frame.(shimwire.LauncherRestored); ok {
+		g.restored = &report
+	}
 	return frame
 }
 
@@ -230,19 +217,21 @@ func (g *roleConn) send(frame shimwire.Frame) {
 	}
 }
 
-// answer sends command and returns its answer, skipping state frames.
+// answer sends command and returns its answer, skipping the frames the launcher reports of its
+// own accord: its state, and what became of the pod's workspace restore.
 func (g *roleConn) answer(command shimwire.Frame) shimwire.Frame {
 	g.t.Helper()
 	g.send(command)
 	return g.reply()
 }
 
-// reply is the next answer the launcher sends, skipping state frames.
+// reply is the next answer the launcher sends, skipping the frames it reports of its own accord.
 func (g *roleConn) reply() shimwire.Frame {
 	g.t.Helper()
 	for {
-		frame := g.next()
-		if _, state := frame.(shimwire.LauncherState); !state {
+		switch frame := g.next(); frame.(type) {
+		case shimwire.LauncherState, shimwire.LauncherRestored:
+		default:
 			return frame
 		}
 	}
@@ -273,6 +262,14 @@ func (g *rig) generationDir(generation uint64) string {
 // childStart is a start of the stand-in child for generation, reading its Envoy credential
 // through the pointer the daemon names, looking for its generation's session socket where the
 // launcher binds it, and publishing both to marker.
+//
+// Every start names a LEGION_WORKSPACE of the test's own. The launcher merges a start's
+// environment over the process's (launcher.go's mergeEnv) and a restore reads the workspace from
+// the merged one (restore.go's bundleRestore.apply), so a start that named none would restore
+// into whatever workspace the process holds — in an issue pod, the live one its roles work in.
+// The package's guard takes that variable out of the test process (main_test.go), and this makes
+// the guard the second line rather than the only one: the start names a directory of this test,
+// so even an unguarded run reaches nothing of the pod's.
 func (g *rig) childStart(generation uint64, marker string, files map[string]string) shimwire.LauncherStart {
 	g.t.Helper()
 	self, err := os.Executable()
@@ -284,6 +281,7 @@ func (g *rig) childStart(generation uint64, marker string, files map[string]stri
 		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation,
 		Argv: []string{self, "-test.run=^TestLauncherChild$"},
 		Env: []string{launcherChildEnv + "=1", "LEGION_LAUNCHER_MARKER=" + marker,
+			"LEGION_WORKSPACE=" + filepath.Join(g.t.TempDir(), "workspace"),
 			"ENVOY_TOKEN_FILE=" + filepath.Join(dir, "ENVOY_TOKEN"),
 			"LEGION_LAUNCHER_SOCKET=" + filepath.Join(dir, ompsessions.SocketName)},
 		Files: files,
@@ -302,18 +300,24 @@ type observed struct {
 // verbatim. The stand-in child and the namespace tests' shell scripts both write such markers.
 func published(t *testing.T, marker string) (int, string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if body, err := os.ReadFile(marker); err == nil {
-			pid, rest, _ := strings.Cut(string(body), " ")
-			if n, err := strconv.Atoi(pid); err == nil {
-				return n, rest
-			}
+	var pid int
+	var rest string
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(marker)
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		head, tail, _ := strings.Cut(string(body), " ")
+		n, err := strconv.Atoi(head)
+		if err != nil {
+			return false
+		}
+		pid, rest = n, tail
+		return true
+	}) {
+		t.Fatal("the child never published its marker")
 	}
-	t.Fatal("the child never published its marker")
-	return 0, ""
+	return pid, rest
 }
 
 // publishedAll waits for the stand-in child's `<pid> <socket> <credential>` marker and reports
@@ -330,17 +334,9 @@ func publishedAll(t *testing.T, marker string) observed {
 // PID 1 is the test's own stand-in rather than a reaping init — the probe pod runs `sleep` —
 // every ended descendant the launcher killed is a zombie until the container exits.
 func gone(pid int) bool {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return true
-		}
-		if zombie(pid) {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
+	return testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid)
+	})
 }
 
 // zombie says whether pid has ended and is only waiting to be reaped: the third field of
@@ -513,30 +509,40 @@ func TestStartsAreIdempotentAndRefusedBeforeWriting(t *testing.T) {
 	}
 }
 
-// toldRecreated starts generation with env (resuming resume, "" for none), returns the
-// WorkspaceRecreatedVariable value its child was started with, and stops it.
-func (g *rig) toldRecreated(generation uint64, env []string, resume string) string {
+// told starts generation with env as its start command's own Env (resuming resume, "" for none),
+// answers what expansion — a shell parameter expansion the child prints, such as `$NAME` or
+// `${NAME-unset}` — came out in that child's environment, and stops the generation.
+func (g *rig) told(generation uint64, expansion string, env []string, resume string) string {
 	g.t.Helper()
 	told := filepath.Join(g.t.TempDir(), "told")
 	command := shimwire.LauncherStart{
 		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation,
-		Argv: []string{"/bin/sh", "-c", `printf '%s' "$` + WorkspaceRecreatedVariable + `" > "$TOLD.tmp" && mv "$TOLD.tmp" "$TOLD"; exec sleep 600`},
+		Argv: []string{"/bin/sh", "-c", `printf '%s' "` + expansion + `" > "$TOLD.tmp" && mv "$TOLD.tmp" "$TOLD"; exec sleep 600`},
 		Env:  append([]string{"TOLD=" + told}, env...), ResumeFile: resume,
 	}
 	if got := g.start(command); !got.OK {
 		g.t.Fatalf("start of generation %d = %#v", generation, got)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if body, err := os.ReadFile(told); err == nil {
-			g.stop(generation)
-			return string(body)
+	var said string
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(told)
+		if err != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			g.t.Fatalf("generation %d's child never said what it was told", generation)
-		}
-		time.Sleep(10 * time.Millisecond)
+		said = string(body)
+		return true
+	}) {
+		g.t.Fatalf("generation %d's child never said what it was told", generation)
 	}
+	g.stop(generation)
+	return said
+}
+
+// toldRecreated starts generation with env (resuming resume, "" for none), returns the
+// WorkspaceRecreatedVariable value its child was started with, and stops it.
+func (g *rig) toldRecreated(generation uint64, env []string, resume string) string {
+	g.t.Helper()
+	return g.told(generation, "$"+WorkspaceRecreatedVariable, env, resume)
 }
 
 // newWorkspace is a directory shaped as a workspace for the creation record (workspace.Created).
@@ -664,15 +670,18 @@ func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 // role's output, role-init's refusals among it — when it never does.
 func (f *fleet) waitForRoleFile(path string) string {
 	f.t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if body, err := os.ReadFile(path); err == nil && len(body) > 0 {
-			return string(body)
+	var said string
+	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(path)
+		if err != nil || len(body) == 0 {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		said = string(body)
+		return true
+	}) {
+		f.t.Fatalf("%s was never written; the launcher's log: %s", path, f.stderr.String())
 	}
-	f.t.Fatalf("%s was never written; the launcher's log: %s", path, f.stderr.String())
-	return ""
+	return said
 }
 
 // An issue pod's one container holds one authenticated connection per resident role, each with
