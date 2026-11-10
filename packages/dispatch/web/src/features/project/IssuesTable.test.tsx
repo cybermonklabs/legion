@@ -1661,3 +1661,25 @@ test("Finish completes when a refused write was retried from Pending changes", a
     expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
   );
 });
+
+// A collapsed group keeps its heading however few of its rows the page holds: the heading is
+// the only way back to them.
+test("a collapsed group keeps its heading and reopens", async () => {
+  const user = userEvent.setup();
+  table(
+    [
+      issue("CORE-1", { status: "backlog", title: "Alpha" }),
+      issue("CORE-2", { status: "todo", title: "Bravo" }),
+    ],
+    "?group=status"
+  );
+  await screen.findByRole("row", { name: "CORE-2 Bravo" });
+  const todo = screen.getByRole("button", { name: /Todo.*1 issue/ });
+  await user.click(todo);
+  await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-2 Bravo" })).toBeNull());
+  // The heading is still there, and still reads the group's own count.
+  const collapsed = screen.getByRole("button", { name: /Todo.*1 issue/ });
+  expect(collapsed.textContent).not.toContain("0 of");
+  await user.click(collapsed);
+  expect(await screen.findByRole("row", { name: "CORE-2 Bravo" })).toBeDefined();
+});

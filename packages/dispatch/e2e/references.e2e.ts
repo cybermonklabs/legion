@@ -25,7 +25,8 @@ test.beforeEach(async ({ context }) => {
   await signIn(context, "alice");
 });
 
-test("an issue and its ask show a cross-project message and structural backlinks", async ({
+// @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
+test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

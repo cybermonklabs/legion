@@ -22,14 +22,19 @@ import type { Listing } from "../configurations";
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** What `playwright test --list` reports for the config at `configPath`, relative to
- *  packages/dispatch, run under `environment` and nothing else of the shell's. The run starts no
- *  server and no browser; it costs about five seconds. */
+ *  packages/dispatch, run under `environment` and nothing else of the shell's, with `extra`
+ *  before the `--list`. The run starts no server and no browser; it costs about five seconds.
+ *
+ *  `extra` is where a caller names the projects or the grep whose selection it is reading -
+ *  `e2e/__tests__/pull-request-lane.test.ts` lists the lane the shard job runs. It goes before
+ *  `--list` because Playwright reads the `--list` of `--grep --list` as that option's value. */
 export async function listing(
   configPath: string,
-  environment: Record<string, string>
+  environment: Record<string, string>,
+  extra: readonly string[] = []
 ): Promise<Listing> {
   const child = Bun.spawn(
-    ["bunx", "playwright", "test", "--config", configPath, "--list", "--reporter=json"],
+    ["bunx", "playwright", "test", "--config", configPath, ...extra, "--list", "--reporter=json"],
     {
       cwd: dispatchPackage,
       // No harness port or lane reaches the listing, so it is the plain one the config exempts
@@ -46,9 +51,9 @@ export async function listing(
   ]);
   if (code !== 0) {
     const named =
-      Object.entries(environment)
-        .map(([key, value]) => `${key}=${value}`)
-        .join(" ") || "the default run";
+      [...extra, ...Object.entries(environment).map(([key, value]) => `${key}=${value}`)].join(
+        " "
+      ) || "the default run";
     throw new Error(`listing ${configPath} ${named} exited ${code}:\n${stderr}\n${stdout}`);
   }
   return JSON.parse(stdout) as Listing;

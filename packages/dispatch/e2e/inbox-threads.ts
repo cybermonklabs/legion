@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { Actor, Message } from "../web/src/api/types";
-import type { FakeSession } from "./agents";
+import type { Actor, InboxRow, Message } from "../web/src/api/types";
+import { type FakeSession, setLiveSessions } from "./agents";
 import {
   acceptAgentDelivery,
   answerAsk,
@@ -9,8 +9,13 @@ import {
   createAsk,
   createBroadcast,
   createComment,
+  createIssue,
   createMessage,
+  createProject,
+  getInbox,
+  patchIssue,
   replyToMessageDelivery,
+  requestApproval,
 } from "./api";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
@@ -367,4 +372,112 @@ export function newestDeliveryOf(items: readonly Pick<Message, "deliveries">[]) 
         last === undefined || attempt.created_at >= last.created_at ? attempt : last,
       undefined
     );
+}
+
+/** The ask block the twelve-row seed below writes into its decision issue's spec. */
+const DECISION_BLOCK = "ledger-order";
+const DECISION_QUESTION = "Which service moves first?";
+const decisionSpec = [
+  "# Rollout order",
+  "",
+  "The ledger and the mirror each keep a clock of their own.",
+  "",
+  `:::ask{#${DECISION_BLOCK} urgency="med" multiple="false" state="open"}`,
+  DECISION_QUESTION,
+  "",
+  "- Ledger first",
+  "- Mirror first",
+  ":::",
+  "",
+].join("\n");
+
+/** What one seeded list holds, by row id, so each assertion names the row it means. */
+export interface Twelve {
+  readonly accepted: string;
+  readonly agents: readonly string[];
+  readonly askThread: string;
+  /** How many rows that seeding leaves in the Inbox. */
+  readonly listed: number;
+  readonly replies: readonly string[];
+}
+
+/** The Inbox row `match` names, once the server has indexed the block that carries it. */
+async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
+  await expect.poll(async () => (await getInbox()).some(match)).toBe(true);
+  const row = (await getInbox()).find(match);
+  if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
+  return row;
+}
+
+/**
+ * Twelve rows: three asks (two questions and a decision block), two approval requests, four
+ * unread Reply threads and three unread Agent rows - plus a Send the session took as a turn of
+ * its live conversation, which is no row at all.
+ *
+ * The ask thread's issue is bob's and its ask is answered, so the Inbox lists it as a Reply row
+ * and as no Ask row: an open ask on an issue assigned to the reader is their Waiting-on-you row
+ * instead (`myRepliesOwner`, the server's replies.go).
+ *
+ * Shared by `inbox-threads.stub.e2e.ts` and `inbox-threads.e2e.ts`, whose rows read the same
+ * list from two layers.
+ */
+export async function seedTwelve(): Promise<Twelve> {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+
+  for (const title of ["Lease handover", "Retry budget"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await createAsk(issue.key, { question: `${title}: what is the rule?` }, asSession());
+  }
+  await createIssue({ project: "CORE", spec: decisionSpec, title: "Rollout order" });
+  await indexedRow((row) => row.block_id === DECISION_BLOCK);
+
+  for (const title of ["Mirror runbook", "Clock drift"]) {
+    const issue = await createIssue({
+      project: "CORE",
+      spec: `# ${title}\n\nThe mirror replays what the ledger wrote.\n`,
+      title,
+    });
+    await requestApproval(
+      issue.primary_artifact_id,
+      { summary: `The ${title} draft.` },
+      asSession()
+    );
+  }
+
+  const replies: string[] = [];
+  for (const [title, root, reply] of [
+    ["Audit clock", "Please fix the flaky clock test.", "Done: the clock test is green."],
+    ["Lease renewal", "The lease renews twice an hour.", "It renews once an hour now."],
+  ] as const) {
+    const issue = await createIssue({ project: "CORE", title });
+    replies.push(await seedCommentThread(issue.key, root, reply));
+  }
+  const messageIssue = await createIssue({ project: "CORE", title: "Build status" });
+  replies.push(
+    await seedMessageThread(messageIssue.key, "Where is the nightly build?", "On the mirror.")
+  );
+  const askIssue = await createIssue({ project: "CORE", title: "Window size" });
+  await patchIssue(askIssue.key, { assignee: "bob" });
+  const askThread = await seedAskThread(
+    askIssue.key,
+    "Which window does the mirror replay?",
+    "Replaying the last hour now."
+  );
+  replies.push(askThread);
+
+  const agents = [
+    await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] }),
+    await seedBroadcastThread({ body: "Stand by for the rollout.", reply: "Standing by." }),
+    await seedAgentThread({
+      body: "Steer: hold the mirror.",
+      delivery: "steer",
+      replies: ["Holding."],
+    }),
+  ];
+  const accepted = await seedAcceptedSend({
+    body: "Steer: take this as your own turn.",
+    reply: "Took it.",
+  });
+  return { accepted, agents, askThread, listed: 12, replies };
 }

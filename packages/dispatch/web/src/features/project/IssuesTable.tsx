@@ -275,7 +275,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       : undefined;
   // A page is a flat slice of leaves, so its last heading can be one whose rows all start on
   // the next page. A heading with nothing under it here is left for the page that holds its
-  // rows; the ones that stay say how many of their rows this page shows.
+  // rows; the ones that stay say how many of their rows this page shows. A collapsed group
+  // keeps its heading whatever the page holds — it is the only way back to its rows.
   const onThisPage = new Map<string, number>();
   for (const row of pageRows)
     if (!row.getIsGrouped()) {
@@ -286,11 +287,12 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     ...(continued === undefined
       ? []
       : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
-    ...pageRows.flatMap((row) =>
-      row.getIsGrouped() && (onThisPage.get(row.id) ?? 0) === 0
-        ? []
-        : [{ row, ...(row.getIsGrouped() ? { shown: onThisPage.get(row.id) } : {}) }]
-    ),
+    ...pageRows.flatMap((row) => {
+      if (!row.getIsGrouped()) return [{ row }];
+      if (!row.getIsExpanded()) return [{ row }];
+      const here = onThisPage.get(row.id) ?? 0;
+      return here === 0 ? [] : [{ row, shown: here }];
+    }),
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
   // neither the rows this page holds nor a notice above the table is measured from here.
