@@ -100,8 +100,8 @@ interface SlotRow {
   readonly detail: string;
 }
 
-/** Each slot's holder, live, in the Issues tab's table: slot, phase, children not started, CI and
- *  what the slot is used for (the detail in the cell's hover). */
+/** Each slot's holder, live, in the Issues tab's table: slot, phase, what the slot is used for
+ *  (the detail, with a held root's children not started, in the cell's hover) and CI. */
 function Slots({ board, project }: { board: LegionBoardResponse; project: string }): ReactNode {
   const phases = useMemo(() => legionPhases(board), [board]);
   const rows = useMemo((): SlotRow[] => {
@@ -117,9 +117,11 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
         (other) =>
           other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
       );
+      // The children not started go in the hover: the title cell's pill already counts children.
+      const waiting = `; ${card.children} not started`;
       return busy
-        ? { use: "held: children", detail: "Held for its children, which work" }
-        : { use: "held: idle", detail: "Held for its children; no child works" };
+        ? { use: "held: children", detail: `Held for its children, which work${waiting}` }
+        : { use: "held: idle", detail: `Held for its children; no child works${waiting}` };
     };
     return cards
       .filter((card) => card.slot !== null)
@@ -177,15 +179,6 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
             ),
             filter: "picks",
             size: 130,
-          },
-          {
-            id: "children_not_started",
-            header: "Children",
-            info: "Children not started",
-            value: (row) => row.card.children,
-            cell: (row) => <span className="tabular-nums">{row.card.children}</span>,
-            filter: false,
-            size: 96,
           },
           {
             id: "slot_ci",
