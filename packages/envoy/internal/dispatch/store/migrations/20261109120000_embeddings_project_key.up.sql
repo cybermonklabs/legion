@@ -57,45 +57,34 @@
 -- value written with the row stays true for as long as the row lives.
 --
 -- What this costs to apply. The ALTER adds a nullable column with no default, which rewrites
--- no row and is a catalog change alone. The index is built over every row of the table, under
--- the ACCESS EXCLUSIVE lock the ALTER above already took and holds to this migration's commit,
--- so reads and writes of embeddings wait for the build: the key is two text columns of
--- 1,107,674 rows on the load-test deployment, where the deployment's own build of it is what
--- the plans above were measured on. A plain `create index`, as every migration's is - the
--- runner applies each migration inside one transaction, where `concurrently` cannot run.
+-- no row: it writes one pg_attribute row and takes embeddings' ACCESS EXCLUSIVE lock for as
+-- long as that takes, which is microseconds once the lock is granted.
 -- pgmigrate.LockTimeout (5 s) bounds the wait for the lock itself, and the runner fails the
 -- boot past it rather than holding every reader of embeddings behind a queued ALTER.
 --
+-- The index the scoped arms read is not here. It was, inside this transaction and under that
+-- same ACCESS EXCLUSIVE lock, which made this migration a build over every row of the table
+-- with every reader and writer of embeddings queued behind it; 20261110155257 builds it
+-- concurrently instead, and its header holds the index's own design and what a failed
+-- concurrent build leaves behind.
+--
 -- The pre-deploy census reports the table's size and refuses a migration touching a table over
--- pgmigrate.CensusTableLimit (1 GiB). embeddings is far over it wherever it holds a million
--- 1,536-float vectors, and there is no shape of this change that is not: a column and an index
--- are not catalog-only statements, and `create index concurrently` cannot run in the runner's
--- transaction. The refusal is the deploy's to answer, with this header's figures for what the
--- migration does while it holds the lock.
+-- pgmigrate.CensusTableLimit (1 GiB), which embeddings is far over wherever it holds a million
+-- 1,536-float vectors, unless the migration is exempt (pgmigrate/census.go:494-503); a census
+-- that refuses fails the deploy (cmd/dispatch/README.md, "Database migrations"). The column
+-- and the index are each exempt apart, which is why they are apart. ADD COLUMN of a nullable
+-- text with no default is a catalog-only ALTER (pgmigrate/exempt.go, catalogOnlyAlterTable),
+-- and a create function in plpgsql is catalog-only too (catalogOnlyFunction): it writes pg_proc
+-- and has the language's validator parse the body, reading no row of any table it names. So
+-- every statement left in this file is one of those kinds, which is what the exemption asks of
+-- a migration, and the limit does not apply to it however large embeddings is
+-- (TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape reads it as
+-- "alter table and create function").
 --
 -- The backfill of the rows already stored is 20261109120100's, a migration of its own because
 -- it is the only part of this change whose cost grows with the deployment, and that cost is an
 -- hour: see its header.
 alter table embeddings add column project_key text;
-
--- The index the scoped arms read. (kind, project_key) and in that order, because every arm
--- names its kind as a literal and the project as $2, so one kind's rows of one project are a
--- contiguous range of it. A btree, not an HNSW one: this index is what the planner uses when a
--- small project's rows are few enough to sort exactly, and the ordering by distance is
--- embeddings_cosine's (0072) job, which the LOOP row above is the planner choosing.
---
--- Partial over the five kinds meaning search reads, as embeddings_window_owner
--- (20261102233625) is partial over the four window kinds, and for a sharper reason than its
--- size: the whole-text rows it leaves out - the retired 'comment', 'message', 'ask' and
--- 'document' kinds the block index deletes as each owner gains a current window - are read by
--- one statement, the retirement's own delete, which must reach each row by its primary key
--- and not by its kind (docs/block_index.go, retireWholeText). An index on (kind, …) that held
--- those rows offers the planner a read of every row of such a kind, and it took it:
--- docs.TestRetirementReachesEachWholeTextRowThroughItsPrimaryKey fails on exactly that plan.
--- Outside that list the index therefore does not exist, and inside it every arm proves the
--- predicate from the kind literal it already names.
-create index embeddings_kind_project on embeddings (kind, project_key)
-  where kind in ('issue', 'document_block', 'comment_block', 'message_block', 'ask_part');
 
 -- embeddings_owner_project_key is the project of the item an embeddings row stands for, read
 -- from that item, and null where the item is gone or its kind owns no project. It is the one

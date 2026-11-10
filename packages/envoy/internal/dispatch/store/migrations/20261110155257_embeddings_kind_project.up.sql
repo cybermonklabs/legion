@@ -1,0 +1,73 @@
+-- pgmigrate:non-transactional
+-- 20261110155257_embeddings_kind_project.up.sql — the index a project-scoped meaning arm reads,
+-- built concurrently.
+--
+-- It is 20261109120000's index, taken out of that migration. There it stood inside the
+-- migration's own transaction, under the ACCESS EXCLUSIVE lock that migration's ALTER takes and
+-- holds to its commit, so every reader and writer of embeddings waited out a build over every
+-- row of the table - 1,107,674 of them on the load-test deployment, where the deployment's own
+-- build of this index is what 20261109120000's four measured plans were taken on. The
+-- pre-deploy census refuses that too: a migration touching a table over
+-- pgmigrate.CensusTableLimit (1 GiB) is refused unless it is exempt (pgmigrate/census.go:494-503)
+-- and a census that refuses fails the deploy (cmd/dispatch/README.md, "Database migrations").
+--
+-- Apart, each half is exempt. ADD COLUMN of a nullable text with no default is a catalog-only
+-- ALTER (pgmigrate/exempt.go, catalogOnlyAlterTable), and a migration whose first line is
+-- `-- pgmigrate:non-transactional` holding exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction
+-- and is exempt from the size limit (pgmigrate/nontransactional.go:25-64,
+-- pgmigrate/census.go:235-238). What the build takes on embeddings is SHARE UPDATE EXCLUSIVE,
+-- which no ordinary read or write of the table waits on; what it costs instead is two passes
+-- over the table and a wait for every older snapshot between them.
+--
+-- The version is this file's own creation time, as every version added since the numbered set
+-- is (store/README.md), so it sorts above 20261109120100's cursor row and 20261110064913's
+-- label trigger rather than between them. Nothing of the fill reads this index: the cursor is a
+-- one-row table of its own, the label trigger reads the row being inserted, and the pass walks
+-- embeddings_pkey by keyset (store/embedding_project_key_fill.go). Boot applies every version
+-- schema_migrations lacks in version order, so a database that took the earlier shape of
+-- 20261109120000, with the index built inside it, already holds a valid index of this name and
+-- IF NOT EXISTS skips the build there.
+--
+-- (kind, project_key) and in that order, because every arm names its kind as a literal and the
+-- project as $2, so one kind's rows of one project are a contiguous range of it. A btree, not
+-- an HNSW one: this index is what the planner uses when a small project's rows are few enough
+-- to sort exactly, and the ordering by distance is embeddings_cosine's (0072) job, which the
+-- LOOP row of 20261109120000's table is the planner choosing.
+--
+-- Partial over the five kinds meaning search reads, as embeddings_window_owner
+-- (20261102233630) is partial over the four window kinds, and for a sharper reason than its
+-- size: the whole-text rows it leaves out - the retired 'comment', 'message', 'ask' and
+-- 'document' kinds the block index deletes as each owner gains a current window - are read by
+-- one statement, the retirement's own delete, which must reach each row by its primary key
+-- and not by its kind (docs/block_index.go, retireWholeText). An index on (kind, …) that held
+-- those rows offers the planner a read of every row of such a kind, and it took it:
+-- docs.TestRetirementReachesEachWholeTextRowThroughItsPrimaryKey fails on exactly that plan.
+-- Outside that list the index therefore does not exist, and inside it every arm proves the
+-- predicate from the kind literal it already names.
+--
+-- What a failed build leaves, which a transactional one cannot leave at all. CREATE INDEX
+-- CONCURRENTLY commits its catalog rows before it scans, so a build that fails, is cancelled or
+-- is killed leaves an index of this name marked invalid: the planner ignores an invalid index
+-- for every query, while Postgres goes on maintaining it on each write once the build has
+-- reached its second phase, so it costs the writes and buys no read.
+--
+-- A project-scoped search loses no row over that. Its predicate is `e.project_key = $2` on the
+-- row itself, not on this index, so the arm answers the same rows through embeddings_cosine's
+-- iterative scan with that predicate inside it - 20261109120000's LOOP plan, 289.7 ms for a
+-- large project - where this index would have given a small project's rows an exact read at
+-- 13.7 ms. That is the whole of what an invalid index costs the read path, and it is why this
+-- build is safe to leave to the next boot.
+--
+-- Nothing has to be repaired by hand. The version is recorded only after a build that finished,
+-- so the next boot runs this migration again, and the runner drops an invalid index of this
+-- name on this table with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go:66-73, dropOwnLeftover). IF NOT EXISTS alone would not cure
+-- it: Postgres skips the statement for any relation of that name, an invalid index included,
+-- and a boot that skipped it that way would record the version over a half-built index for
+-- good. A build that keeps failing is a lock or an old snapshot the boot's log names, not an
+-- index to drop by hand - and a hand that does drop it is left with the plan above until the
+-- next boot builds it again.
+create index concurrently if not exists embeddings_kind_project
+    on embeddings (kind, project_key)
+    where kind in ('issue', 'document_block', 'comment_block', 'message_block', 'ask_part');

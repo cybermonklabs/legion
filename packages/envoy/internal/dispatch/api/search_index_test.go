@@ -214,6 +214,11 @@ func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 // of its own as a search reads it. A plan test explains what a search sends rather than a
 // statement named by hand, so the switch between the two scoped shapes is under test with
 // them.
+//
+// Unfiltered, as the search these plans are measured for is: a search narrowing by status,
+// author or updated_since takes the joined statement whatever the fill's row says, and its plan
+// is the joined one this test explains on the other side of the switch (meaningStatementFor,
+// TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep).
 func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, project string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -222,7 +227,7 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 		t.Fatalf("begin a transaction to read the fill's progress in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx))
+	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a

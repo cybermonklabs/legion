@@ -641,15 +641,19 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // scoped on the candidate row's own column or unscoped, it takes its windows through the index
 // under the kind, model and project filters alone and joins the comment above that limit, where
 // the three window arms beside it join inside the ordered select; scoped on the owner it joins
-// inside that select as they do, which is the arm the release before this change ran.
+// inside that select as they do, which is the arm the release before this change ran and the
+// arm a request narrowing by status, author or updated_since takes (meaningStatementFor).
 //
 // Every arm's project filter is one predicate on the candidate row itself,
 // `e.project_key = $2` (meaningProjectScope), and the statement is composed three times: once
 // scoped on that column, with the predicate in each candidate CTE; once scoped on the owner
 // table each arm already joins, as every arm found a project before that column existed; and
 // once unscoped, with no project predicate in any of them. runMeaningSearch picks between them
-// by whether the caller named a project and whether the fill that labels the stored rows has
-// finished (meaningStatementFor). Statements rather than one predicate reading "$2 is empty,
+// over three things: whether the request narrows by any of q's three filters, whether the caller
+// named a project, and whether the fill that labels the stored rows has finished
+// (meaningStatementFor). A filtered request takes the joined one whatever the other two say,
+// because its comment arm is the only one of the three that applies those filters inside its
+// candidate limit. Statements rather than one predicate reading "$2 is empty",
 // or it is the row's project", because one generic plan of that OR has to serve both cases and
 // can lose the good plan of either: measured on the load-test deployment, the scoped form
 // takes a small project's windows through embeddings_kind_project (800 of 800 rows, 13.7 ms)
@@ -700,8 +704,10 @@ var (
 // meaning search answers from the labelled part of the corpus alone. The joined predicate reads
 // the project off the owner, which every row has whether it is labelled or not, so it answers
 // for the whole corpus, at the recall and the plan this change exists to improve: the read
-// path serves it until the fill's own row reads done, and the pass retires it
-// (meaningStatementFor).
+// path serves it until the fill's own row reads done, and the pass retires it for the
+// unfiltered searches (meaningStatementFor), which is every search but the one narrowing by
+// status, author or updated_since - that one keeps it for its filters' sake, not for the
+// column's.
 //
 // column is the owner column the joined shape reads, one per arm, each of them a predicate on
 // a table the arm joins: the issue arm an "$2 is empty, or it matches" over issues.project_key,
@@ -710,9 +716,12 @@ var (
 // inside its candidate limit as the others carry theirs - which for that arm means its joins go
 // below the limit too, since the column is theirs (searchMeaningCommentArmJoined). What
 // meaningOneProject replaces is the plan that costs, not the rows it finds.
-// meaningOneProject ignores column: the candidate row carries the project itself. Nothing else
-// about an arm moves: each still joins q and carries q's three filters (searchRowFilters), in
-// all three shapes alike.
+// meaningOneProject ignores column: the candidate row carries the project itself. What moves
+// between the shapes beside the project predicate is where the comment arm carries q's three
+// filters (searchRowFilters): inside the candidate limit under meaningOneProjectJoined, as every
+// other arm carries them in every shape, and above it in the arm the other two scopes take,
+// which is why a request narrowing by one of them runs the joined statement whatever project it
+// names (meaningStatementFor).
 type meaningProjectScope int
 
 const (
@@ -891,14 +900,19 @@ totals as (
 // searchMeaningScan holds the numbers) - so the depth is a request, not a guarantee, and a
 // project the index does not reach is as absent as one a predicate excluded.
 //
-// Everything else is as the other window arms have it. The floor (searchMeaningFloor, $10) and
-// the per-item window dedup - `distinct on` over the comment, its nearest window first, carrying
-// that window's id and covers - run above the join rather than beside it, and q's own three
-// filters (searchRowFilters) run there too, since status, author and written are columns of the
-// comment and its issue, which only that select has joined. The project predicate is the one
-// filter that had to move down into the candidate CTE: it is the one a search names on nearly
-// every request, so it is the one whose absence from the index scan spent the whole candidate
-// set on other projects.
+// Everything else is as the other window arms have it, bar where q's filters run. The floor
+// (searchMeaningFloor, $10) and the per-item window dedup - `distinct on` over the comment, its
+// nearest window first, carrying that window's id and covers - run above the join rather than
+// beside it, which is where the joined arm keeps them too, so neither of them moved. q's own
+// three filters (searchRowFilters) did move: they run above the limit here, since status, author
+// and written are columns of the comment and its issue, which only that select has joined, where
+// the joined arm carries them inside it. A filter above the limit narrows the wrong rows - one
+// author's searchWindowCandidates+1 nearer windows fill the candidate set, and a search for
+// another author's comment is answered with none of them - so a request that names any of the
+// three does not run this arm at all: it runs the joined statement, whose comment arm is main's
+// (meaningStatementFor). The project predicate is the one filter that had to move the other
+// way, down into the candidate CTE: it is the one a search names on nearly every request, so it
+// is the one whose absence from the index scan spent the whole candidate set on other projects.
 func searchMeaningCommentArm(scope meaningProjectScope) string {
 	if scope == meaningOneProjectJoined {
 		return searchMeaningCommentArmJoined
@@ -965,9 +979,11 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // lose it, 999 do not (INFRA-988,
 // TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling).
 //
-// The fill's row reading done is what retires it (meaningStatementFor): the plan the arm above
-// has is this change's whole point, and this is the price of serving every row until the pass
-// has labelled them.
+// The fill's row reading done is what retires it for the unfiltered searches
+// (meaningStatementFor): the plan the arm above has is this change's whole point, and this is
+// the price of serving every row until the pass has labelled them. A search narrowing by status,
+// author or updated_since keeps it for good, since those three filters are inside this arm's
+// limit and above the other's.
 var searchMeaningCommentArmJoined = `meaning_comment_candidates as (
   select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, c.created_at) as updated_at,
@@ -1229,10 +1245,12 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	// The flag is read only where it can change the statement: a search naming no project runs
-	// the unscoped one whatever the fill has reached.
-	filled := parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
-	statement := meaningStatementFor(parameters.project, filled)
+	// Each flag is read only where it can change the statement: a filtered search runs the
+	// joined one whatever the fill has reached, and a search naming no project runs the unscoped
+	// one, so neither pays for the progress row's savepoint.
+	filtered := parameters.filtered()
+	filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
+	statement := meaningStatementFor(parameters.project, filled, filtered)
 	rows, err := tx.Query(ctx, statement,
 		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)
 	if err != nil {
@@ -1248,15 +1266,37 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	return response, nil
 }
 
-// meaningStatementFor is the meaning statement a search of project runs, filled being what
-// embeddingProjectKeysFilled answered in that search's own transaction: a search naming no
-// project takes the unscoped statement, a project on a database whose fill has finished takes
-// the one reading `e.project_key = $2`, and a project on a database whose fill is still
-// running takes the one reading the owner each arm joins, which is the only one of the three
-// that can answer for a row the fill has not reached (meaningProjectScope). The related-item
-// check chooses among its own three the same way (relatedMeaningStatementFor).
-func meaningStatementFor(project string, filled bool) string {
+// meaningStatementFor is the meaning statement a search of project runs. filled is what
+// embeddingProjectKeysFilled answered in that search's own transaction, and filtered whether the
+// request narrows by any of q's three filters (searchParameters.filtered).
+//
+// A filtered search takes the joined statement, whatever project it names and whatever the fill
+// has reached, because that is the only one of the three whose comment arm applies those filters
+// inside its ordered, limited candidate select. The arm the other two take reads the nearest
+// searchWindowCandidates comment windows first and filters above that limit, so one author's
+// thousand nearer windows fill the candidate set and a search for another author's comment is
+// answered with none of them, where the route says each of the three narrows every leg
+// (routes_table.go, GET /api/v1/search) and the web client shows them as doing so
+// (packages/dispatch/web/src/api/client.ts). What it costs that search is main's plan, the joins
+// below the ordering that searchMeaningCommentArm measures, and that is the price of answering
+// the contract the route states.
+//
+// One statement serves the filtered searches that name a project and those that do not: every
+// joined arm's project predicate reads "$2 is empty, or the owner matches it"
+// (meaningProjectScope.candidateProject), which a search naming no project answers by binding $2
+// empty, exactly as the keyword legs it unions already do.
+//
+// Unfiltered, the choice is the project's and the fill's: a search naming no project takes the
+// unscoped statement, a project on a database whose fill has finished takes the one reading
+// `e.project_key = $2`, and a project on a database whose fill is still running takes the joined
+// one, the only one of the three that can answer for a row the fill has not reached
+// (meaningProjectScope). The related-item check chooses among its own three the same way and has
+// no filtered case to choose for: its q binds all three filters empty (relatedQOpener), so no
+// caller of it can narrow by them (relatedMeaningStatementFor).
+func meaningStatementFor(project string, filled, filtered bool) string {
 	switch {
+	case filtered:
+		return searchQueryMeaningJoined
 	case project == "":
 		return searchQueryMeaning
 	case filled:
@@ -1290,14 +1330,31 @@ func meaningStatementFor(project string, filled bool) string {
 // transaction the meaning statement is about to run on: without the savepoint the promise
 // above is not kept, and the search answers 500 rather than the joined statement's page. Both
 // failures were measured that way at this change's head (INFRA-988) - the progress table
-// missing, which is a binary newer than its database, and a value this process cannot scan,
-// whose first search on each pooled connection met `cached plan must not change result type`
-// (SQLSTATE 0A000), which pgx does not retry inside a transaction. Rolling back to the
-// savepoint leaves the transaction exactly as it was.
+// missing, and a value this process cannot scan, whose first search on each pooled connection
+// met `cached plan must not change result type` (SQLSTATE 0A000), which pgx does not retry
+// inside a transaction. Rolling back to the savepoint leaves the transaction exactly as it was.
 //
-// What it costs is two round trips on a connection the search already holds - the savepoint
-// and the rollback to it - for every project-scoped meaning search. The other way out was to
-// read the row before beginMeaningScan opens the transaction at all, which costs no savepoint
+// A missing table is not a binary newer than its database: the boot migrates before it serves
+// (cmd/dispatch/main.go), so a process that serves a search has applied every migration it
+// carries. What does reach that state is a database somebody repaired by hand, one restored
+// from a dump taken before the migration, or one somebody is in the middle of moving - and each
+// of them is a fact about the deployment, which is why the read says so and answers the
+// complete page rather than failing the request.
+//
+// The savepoint also carries the bound on how long that read may wait. The row is one row of a
+// one-row table, so the only wait it can take is a lock somebody else holds on the table, and
+// behind an ACCESS EXCLUSIVE lock the read waited out searchMeaningStatementBound's whole 15
+// seconds before it degraded - 15,002 ms measured at this change's head, against 202 ms with
+// the setting below (INFRA-988). A search that is going to answer from the joined statement
+// anyway must not spend a quarter of a minute learning that, so the savepoint sets
+// embeddingProjectKeysFilledLockWait before the read and the deferred rollback takes it back
+// off the transaction the meaning statement then runs on.
+//
+// What it costs is three round trips on a connection the caller already holds - the savepoint,
+// the lock bound and the rollback - for every search that reads it: a project-scoped meaning
+// search narrowing by none of q's filters, and the related-item check of one project, which
+// narrows by none of them ever (relatedMeaningSearch). The other way out was to read the row
+// before beginMeaningScan opens the transaction at all, which costs no savepoint
 // but a second acquisition from the pool per search, and the pool is the resource a deployment
 // under meaning-search load runs out of first (searchMeaningScan's own measurement of 219
 // backends holding it full). This way also keeps the read where both callers already make it,
@@ -1316,12 +1373,26 @@ func embeddingProjectKeysFilled(ctx context.Context, tx pgx.Tx) bool {
 	// Rolled back whether the read answered or failed: it wrote nothing either way, and the
 	// rollback is what hands the transaction back usable when it failed.
 	defer func() { _ = read.Rollback(ctx) }()
+	// Inside the savepoint, so the rollback above restores whatever the transaction had: a
+	// `set local` is undone by a rollback to the savepoint it was made in, exactly as the read's
+	// own failure is.
+	if _, err := read.Exec(ctx, embeddingProjectKeysFilledLockWait); err != nil {
+		return degraded(err)
+	}
 	var done bool
 	if err := read.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
 		return degraded(err)
 	}
 	return done
 }
+
+// embeddingProjectKeysFilledLockWait bounds the progress read's wait for the one lock it can
+// queue behind, set inside the savepoint that read runs in (embeddingProjectKeysFilled). 200 ms
+// is far above what taking an uncontended lock on a one-row table costs and far below the 15
+// seconds a search may not spend on a flag: a read that waits that long is behind a lock
+// somebody holds on embeddings_project_key_backfill - a hand repair, a migration of a later
+// release - and the answer it would give is the one a failed read already gives.
+const embeddingProjectKeysFilledLockWait = `set local lock_timeout = '200ms'`
 
 // embeddingProjectKeysFilledQuery reads that row's done and nothing else of it: the kind and id
 // beside it are the pass's keyset cursor, which the pass alone reads

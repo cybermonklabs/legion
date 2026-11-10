@@ -296,16 +296,34 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 // process logged both errors and took the lease again every five minutes for the rest of its
 // life, for a row that is not coming back. Nothing deletes it - migration 20261109120100
 // inserts it and no statement of this release removes it - so such a database is one somebody
-// repaired by hand, and the loop says so once and stops.
+// repaired by hand, one restored from a dump taken before that migration, or one somebody is
+// moving, and the loop says so once and stops.
 //
 // What it holds is the stopping and the saying once: the loop returns, and over many retry
 // intervals it writes one error line and no more. A loop that still tried would write one per
 // interval and never return.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
+	fillStopsWhenItsProgressIsGone(t, "delete from embeddings_project_key_backfill")
+}
+
+// The same stop for the same reason, the table gone rather than the row in it. Postgres answers
+// the whole statement SQLSTATE 42P01 there where it answers no row here, and the store names
+// both absences with one sentinel (store.ErrEmbeddingProjectKeyProgressGone), because the fill
+// wants the same thing of both: nothing it can do brings either back. Until this was matched,
+// the loop stopped on the row and tried the table every interval for the life of the process.
+func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressTableIsGone(t *testing.T) {
+	fillStopsWhenItsProgressIsGone(t, "drop table embeddings_project_key_backfill")
+}
+
+// fillStopsWhenItsProgressIsGone runs the loop on a database the statement gone has taken the
+// fill's progress from, and holds it to the two properties above: it returns, and it writes one
+// error line however many retry intervals pass.
+func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
+	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
-	if _, err := database.Pool.Exec(ctx, "delete from embeddings_project_key_backfill"); err != nil {
-		t.Fatalf("remove the fill's progress row: %v", err)
+	if _, err := database.Pool.Exec(ctx, gone); err != nil {
+		t.Fatalf("take the fill's progress away with %q: %v", gone, err)
 	}
 	const retry = 50 * time.Millisecond
 	fillRetryEvery(t, retry)
@@ -325,7 +343,7 @@ func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(20 * retry):
-		t.Fatal("the fill kept trying for a progress row that is gone, so it takes the lease every interval for the life of the process")
+		t.Fatalf("the fill kept trying after %q, so it takes the lease every interval for the life of the process", gone)
 	}
 
 	// Long enough for a loop that had not stopped to have tried again several times.
@@ -337,6 +355,6 @@ func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
 		}
 	}
 	if len(failures) != 1 {
-		t.Errorf("the fill logged %d errors for a progress row that is gone, want the one line that says so: %v", len(failures), failures)
+		t.Errorf("the fill logged %d errors after %q, want the one line that says so: %v", len(failures), gone, failures)
 	}
 }

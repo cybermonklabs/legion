@@ -2,10 +2,40 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// ErrEmbeddingProjectKeyProgressGone is the row 20261109120100 creates for the fill to record
+// its place in not being there to read: the row absent from the table, or the table absent from
+// the database. Every read of that row below answers it wrapped around Postgres's own error, so
+// the caller that has to tell this apart from a failure it should try again - the loop that
+// keeps taking the lease until the labelling is over (api.RunEmbeddingProjectKeyFill) - reads
+// one sentinel rather than a SQLSTATE of its own.
+//
+// The two are one condition and not two because the fill wants the same thing of both: nothing
+// in this release deletes either, so a database missing one is a database somebody repaired by
+// hand, one restored from a dump taken before 20261109120100, or one somebody is moving, and in
+// every one of them the pass has no cursor to start from and no done to record. Waiting brings
+// neither back.
+var ErrEmbeddingProjectKeyProgressGone = errors.New("the embeddings project_key fill has no progress row to read")
+
+// embeddingProjectKeyProgressGone wraps err in that sentinel where it is one of the two
+// absences, and hands back every other error as it stands. 42P01 is undefined_table, which is
+// what Postgres answers for the whole statement when the table is not there; pgx.ErrNoRows is
+// what a `select` of the one row answers when the table is there and the row is not.
+func embeddingProjectKeyProgressGone(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &pgErr) && pgErr.Code == "42P01") {
+		return fmt.Errorf("%w: %w", ErrEmbeddingProjectKeyProgressGone, err)
+	}
+	return err
+}
 
 // EmbeddingProjectKeyBatch is how many embeddings rows one transaction of
 // FillEmbeddingProjectKeys labels, and this is the one passage that says what a label costs and
@@ -179,7 +209,8 @@ const fillEmbeddingProjectKeysBatchQuery = `
 func (s *Store) EmbeddingProjectKeyFillDone(ctx context.Context) (bool, error) {
 	var done bool
 	if err := s.Pool.QueryRow(ctx, "select done from embeddings_project_key_backfill").Scan(&done); err != nil {
-		return false, fmt.Errorf("read whether the embeddings project_key fill is finished: %w", err)
+		return false, fmt.Errorf("read whether the embeddings project_key fill is finished: %w",
+			embeddingProjectKeyProgressGone(err))
 	}
 	return done, nil
 }
@@ -212,7 +243,8 @@ func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
 	var done bool
 	if err := s.Pool.QueryRow(ctx, "select kind, id, done from embeddings_project_key_backfill").
 		Scan(&fromKind, &fromID, &done); err != nil {
-		return 0, fmt.Errorf("read the embeddings project_key fill's progress: %w", err)
+		return 0, fmt.Errorf("read the embeddings project_key fill's progress: %w",
+			embeddingProjectKeyProgressGone(err))
 	}
 	if done {
 		slog.Info("dispatch: the embeddings project_key fill has nothing to do: every row stored before this release carries its project")
@@ -269,7 +301,8 @@ func (s *Store) fillEmbeddingProjectKeysBatch(ctx context.Context) (int64, bool,
 	defer tx.Rollback(ctx)
 	var fromKind, fromID string
 	if err := tx.QueryRow(ctx, fillEmbeddingProjectKeysCursorQuery).Scan(&fromKind, &fromID); err != nil {
-		return 0, false, fmt.Errorf("take the embeddings project_key fill's cursor: %w", err)
+		return 0, false, fmt.Errorf("take the embeddings project_key fill's cursor: %w",
+			embeddingProjectKeyProgressGone(err))
 	}
 	var labelled int64
 	var finished bool

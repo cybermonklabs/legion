@@ -570,6 +570,11 @@ func (s *server) relatedMeaningSearch(
 // it has - which is the only one of the three a row the fill has not reached can answer.
 // Search picks among the same three the same way (meaningStatementFor); meaningProjectScope
 // argues why there are three statements rather than one predicate.
+//
+// It takes no filtered case, where search's chooser does: a search narrowing by status, author
+// or updated_since has to run the joined statement, whose comment arm applies those three
+// inside its candidate limit, and no check can narrow by them at all - the check's own q binds
+// all three empty (relatedQOpener), which is the same q every statement here opens with.
 func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
 	switch {
 	case project == "":
