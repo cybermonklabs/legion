@@ -3216,6 +3216,20 @@ jobs:
     # and the write (3), the two readings, each a sha256 of that binary (2), and the report step
     # (1). That is 14, and a job its own limit cuts off reports `cancelled`, which ci-ok fails,
     # so the limit is the next minute up.
+    # Measured, this job sits far inside that budget, and the ladder those two minutes allow for
+    # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
+    # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
+    # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
+    # The reason is the shape of this job's faulted install. It reads ci_tools_fetch_fallback
+    # (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and
+    # tries no primary (.github/scripts/ci-tools.sh lines 1252 to 1261), and the primary it does
+    # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
+    # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
+    # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
+    # The two minutes above stay as the headroom of the run where npm does not answer at once.
+    # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
+    # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
+    # drive no such ladder, must not move.
     timeout-minutes: 15
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other

@@ -523,11 +523,18 @@ ci_tools__tempfile() {
 # `timeout-minutes: 10`.
 # Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
 # nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
-# This issue's tester measured both shapes at the manifest's `max_time` of 60: a source that
-# answers 504 at once costs 7 attempts in 126 s with the bound and 8 attempts in 127 s without
-# it, and a host that hangs costs 124 s with the bound where the ladder without it costs about
-# ten minutes. Either way a row's primary costs about two minutes before the second source is
-# read, inside every ci.yaml budget.
+# This issue's tester measured both shapes at the manifest's `max_time` of 60. Against a source
+# that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
+# 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
+# which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
+# against a port that refuses at once took 1m3.064s and exited 7. In job 129743677408 of
+# .github/workflows/ci.yaml, each negative-control step that drives one ladder measured about
+# 64 s, and each step that drives two ladders measured about 126 s, so 126 s is two ladders and
+# not one.
+# The hang is the other shape. It costs 124 s with the bound, where the ladder without the
+# bound costs about ten minutes. So a row's primary costs about one minute before the second
+# source is read against a source that refuses at once, and about two minutes against a host
+# that hangs. Both are inside every ci.yaml budget.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
