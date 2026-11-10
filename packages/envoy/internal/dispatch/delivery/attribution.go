@@ -108,38 +108,31 @@ var (
 
 const (
 	// maxHostName is the longest run of host bytes read before the path: a DNS name is at most
-	// 253 bytes (RFC 1035), so a longer run is no host.
+	// 253 bytes (RFC 1035), so a longer run is no host. It bounds the digits of a port too,
+	// since the digits a writer puts between a colon and the path name no host: a port no URL
+	// may carry is still github.com, and measuring those digits against 65535 would only lose
+	// citations to a typo.
 	maxHostName = 253
-	// maxCitationURL is how far back of a body one citation may be read: the scan left of a host
-	// stops there and refuses, which keeps one match's read bounded whatever the body holds.
-	maxCitationURL = 2048
-	// maxPortDigits bounds the run of digits read as a port before the path. It is a host name's
-	// length rather than a port's five, because the digits a writer puts between a colon and the
-	// path decide no host: `github.com:99999` and `github.com:443443443` name no port a URL may
-	// carry, and both are still github.com, so reading them as the port credits the citation
-	// where measuring them against 65535 would drop it for a typo. The bound is only what keeps
-	// the read constant.
-	maxPortDigits = maxHostName
 )
 
-// citesGitHubIssue says whether the issue path running from pathAt to end is the path of a URL
-// whose authority ends in github.com: `https://github.com/acme/widgets/issues/7`,
-// `GITHUB.COM/acme/widgets/issues/7` and `https://user@github.com/…` are citations, while
-// `evilgithub.com/…`, `https://example.test/github.com/…`, `https://github.com@evil.test/…` and
-// `https://github.com/acme/widgets/blob/main/docs/issues/12` are not.
+// citesGitHubIssue says whether the issue path running from pathAt to end belongs to a URL whose
+// host is github.com. It asks one question, and it is the question the alert this file was
+// changed for asks: what is the host of the URL this path hangs off?
 //
-// Two readings decide it, and neither covers for the other. authorityBefore says where the
-// authority owning this path begins, and refuses a path that belongs to another URL: the blob
-// path above is refused there, because what stands before it is a path segment rather than an
-// authority. net/url then says what that authority's host is, which is the reading that tells
-// github.com from a name that merely looks like it — the digits after a colon, userinfo, upper
-// case, a trailing dot, a punycode or percent-encoded name are all its answer rather than this
-// file's.
+// The bytes immediately before the path are that URL's authority, as the default branch's own
+// expression read them, and net/url says what host they name. That reading refuses every name
+// that merely looks like github.com — `evilgithub.com`, `www.github.com`, `pages.github.com`,
+// `github.com.evil.test`, `github.com@evil.test`, a percent-encoded or punycode lookalike, a
+// trailing-dot name — and it refuses a github.com URL whose path is not an issue's, because the
+// bytes before `/main/docs/issues/12` in a blob URL are `blob` rather than a host. The path
+// comparison states what that leaves true: the authority runs to where the match begins, so the
+// matched path is the whole path of what was read.
 //
-// The path comparison states what the two together leave true: the authority runs to where the
-// match begins, so the matched path is the whole path of what was read. No body reaches it with
-// a different answer, and it is here so that a later change to the reading above cannot credit a
-// path that is not the issue's without this line failing.
+// What stands further left decides nothing, which is the one thing five review rounds taught
+// this file: every rule for it credited some shapes a reader writes and dropped others, while
+// the default branch, which reads no further left than this, credits them all. So a citation
+// inside another URL's path, query or fragment is credited here as it is there, and the whole of
+// what this change does to attribution is to stop crediting a host that is not github.com.
 func citesGitHubIssue(body string, pathAt, end int) bool {
 	host := authorityBefore(body, pathAt)
 	if host < 0 {
@@ -150,29 +143,14 @@ func citesGitHubIssue(body string, pathAt, end int) bool {
 		parsed.EscapedPath() == body[pathAt:end]
 }
 
-// authorityBefore is where the authority owning the path at pathAt begins, or -1 where the bytes
-// before the path are the path of some other URL, or no authority at all. Each of its three reads
-// carries a bound of its own — a port's digits, a host name's length, and maxCitationURL for the
-// scan to the left of the host — so one match costs the same whatever stands before it in the
-// body, and a body of any size costs its own length plus that constant per match.
-//
-// What may stand before a host and leave it a host: nothing, because the body begins there; an
-// `@`, which makes what came before it userinfo of this same URL; a `//` where a URL may begin,
-// which is after a scheme (`https://github.com/…`), in running text (`(//github.com/…)`) and
-// inside another URL where a whole URL is written out
-// (`https://example.test/r?u=https://github.com/…`, which cites what it writes); and a host
-// where a URL may begin, however the prose wraps it — `(github.com/…)`, `Refs:github.com/…`,
-// `#12,github.com/…`, a backtick, a quote, a non-breaking space, or CJK text with no space in
-// it.
-//
-// What does not: a single `/`, since the bytes are then a path segment of another URL, as in
-// `https://example.test/github.com/…`; and a host inside a URL already under way, as in
-// `https://example.test/r?u=github.com/…` and `HTTPS://EXAMPLE.TEST/~GITHUB.COM/…`, which cite
-// example.test whatever they carry after it. urlMayBeginAt tells the two apart.
+// authorityBefore is where the authority owning the path at pathAt begins, or -1 where no host
+// stands before the path at all. It reads the port's digits and then the run of host bytes, each
+// bounded by a host name's length, so one match costs the same constant whatever the body holds
+// around it and a body of any size costs its own length plus that constant per match.
 func authorityBefore(body string, pathAt int) int {
 	at := pathAt
 	digits := at
-	for digits > 0 && at-digits < maxPortDigits && isDigitByte(body[digits-1]) {
+	for digits > 0 && at-digits < maxHostName && isDigitByte(body[digits-1]) {
 		digits--
 	}
 	if digits < at && digits > 0 && body[digits-1] == ':' {
@@ -182,58 +160,16 @@ func authorityBefore(body string, pathAt int) int {
 	for start > 0 && at-start < maxHostName && isHostByte(body[start-1]) {
 		start--
 	}
-	switch {
-	case start == at, at-start >= maxHostName:
+	if start == at || at-start >= maxHostName {
 		return -1 // no host before the path, or a run too long to be one
-	case start == 0, body[start-1] == '@':
-		return start
-	case body[start-1] == '/':
-		if start >= 2 && body[start-2] == '/' && urlMayBeginAt(body, start-2) {
-			return start // the // that opens an authority
-		}
-		return -1 // a path segment of another URL
-	case urlMayBeginAt(body, start):
-		return start
-	default:
-		return -1
 	}
-}
-
-// urlMayBeginAt says whether a URL may begin at start, which it may where whatever stands to the
-// left of start has ended rather than being a URL start stands inside of. Scanning left:
-//
-//   - the body's start, and a byte no URL may hold (isURLByte), end what came before, and so does
-//     a byte that separates or closes an item of running text — `,` `;` `&` `+` `:` `)` `]` `}`
-//     `>` — so a URL may begin here;
-//   - an opening bracket — `(` `[` `{` `<` — wraps what follows rather than ending what came
-//     before, so the scan carries on past it, as it does past any other byte a URL may hold;
-//   - a `/`, `?` or `#` says the URL to the left has left its authority behind, so start stands
-//     inside that URL's path, query or fragment and no URL begins here.
-//
-// The scan stops after maxCitationURL bytes and answers no there.
-func urlMayBeginAt(body string, start int) bool {
-	for at := start; at > 0 && start-at < maxCitationURL; at-- {
-		switch b := body[at-1]; {
-		case strings.IndexByte("([{<", b) >= 0: // wraps what follows: read on past it
-		case !isURLByte(b), strings.IndexByte(",;&+:)]}>", b) >= 0:
-			return true
-		case b == '/', b == '?', b == '#':
-			return false
-		}
-	}
-	return start < maxCitationURL
+	return start
 }
 
 func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 
 func isHostByte(b byte) bool {
 	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
-}
-
-// isURLByte is every byte RFC 3986 allows inside a URL. A byte outside it ends the URL, so what
-// follows begins a word of its own.
-func isURLByte(b byte) bool {
-	return isHostByte(b) || strings.IndexByte("_~:/?#[]@!$&'()*+,;=%", b) >= 0
 }
 
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {

@@ -205,29 +205,31 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		{"after a word of prose carrying a slash", "Related issues/PRs:github.com/acme/widgets/issues/7", []string{cited}},
 		{"a scheme-relative URL in parentheses", "(//github.com/acme/widgets/issues/7)", []string{cited}},
 		{"a scheme-relative URL in brackets", "[//github.com/acme/widgets/issues/7]", []string{cited}},
-		// What wraps it is read as the prose it is, and what stands inside another URL is not: a
-		// `/`, `?` or `#` left of the host says that URL has left its authority behind.
-		{"inside another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/7 here.", nil},
-		{"inside another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/7 here.", nil},
-		{"inside another host's path behind a tilde", "See https://example.test/~github.com/acme/widgets/issues/7 here.", nil},
-		{"inside another host's path behind a bracket", "See https://example.test/(github.com/acme/widgets/issues/7) here.", nil},
-		// An `@` makes what stands before it userinfo of this same URL, wherever that is, which
-		// is how the default branch reads it too: the host after the `@` is the one a reader
-		// reaches, so the citation is credited, and `github.com@evil.test` is the other way
-		// round and is credited to nobody (citation_boundary_test.go holds that pair).
+		// What stands to the left of the authority decides nothing, here as on the default
+		// branch: a github.com issue path inside another URL's query, fragment or path is
+		// credited, because the bytes the path hangs off name github.com. Whether such a URL
+		// ought to credit at all is a question of its own, asked of the person this work is for
+		// and not answered by this change, whose subject is a host that is not github.com.
+		{"inside another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"inside another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"inside another host's path behind a tilde", "See https://example.test/~github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"inside another host's path behind a bracket", "See https://example.test/(github.com/acme/widgets/issues/7) here.", []string{cited}},
+		// An `@` before the host leaves github.com the authority the path hangs off, so the
+		// citation is credited; `github.com@evil.test` is the other way round, with evil.test the
+		// authority, and is credited to nobody (citation_boundary_test.go holds that pair).
 		{"userinfo carrying another host's name", "See https://example.test/x@github.com/acme/widgets/issues/7 here.", []string{cited}},
 		// Whatever digits stand between a colon and the path are read as the port, however many:
 		// they name no host, so a port no URL may carry leaves the citation where it was rather
-		// than dropping it for a typo. Past the bound the digits are no port, and what runs into
-		// the path is no host name either.
+		// than dropping it for a typo. Past a host name's length the digits are no port, and what
+		// then runs into the path is no host name either.
 		{"a port no URL may carry", "See https://github.com:99999/acme/widgets/issues/7 here.", []string{cited}},
 		{"digits where a port should be", "See https://github.com:443443443/acme/widgets/issues/7 here.", []string{cited}},
 		{"more digits than a host name is long", "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here.", nil},
-		// The scan left of a host stops after maxCitationURL bytes and refuses there, so a host
-		// that far inside one unbroken run of URL bytes is no citation, while a hundred bytes of
-		// the same run leave one.
-		{"a citation past the bound in one run of URL bytes", strings.Repeat("~", 2100) + "github.com/acme/widgets/issues/7", nil},
-		{"a citation within the bound", strings.Repeat("~", 100) + "github.com/acme/widgets/issues/7", []string{cited}},
+		// The host is the run of host bytes before the path and nothing further, so a long run of
+		// bytes no host name may hold leaves the citation where it was, while a run of host bytes
+		// longer than a host name is no host at all.
+		{"a citation after a long run of bytes no host holds", strings.Repeat("~", 2100) + "github.com/acme/widgets/issues/7", []string{cited}},
+		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
@@ -238,12 +240,12 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 }
 
 // TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
-// finder walks it once, and each match reads at most maxCitationURL bytes left of its path. The
-// body is 1 MiB with no whitespace in it and an issue path every thirteen bytes, the shape a
-// reading that walked back to the nearest space pays the square of — that walk costs about 1.5 s
-// at 64 KiB, so about 380 s at 1 MiB, against about a third of a second here, nearly all of it
-// the finder's own pass over the body. The deadline is thirty times that measured cost, so a
-// loaded machine stays green, and far under what the quadratic walk would need.
+// finder walks it once, and each match reads at most a host name's length of digits and host
+// bytes before its path. The body is 1 MiB with no whitespace in it and an issue path every
+// thirteen bytes, which is the shape a reading that walks back to the nearest space pays the
+// square of: such a walk costs about 1.5 s at 64 KiB and so about 380 s at 1 MiB, where this one
+// costs about a third of a second, nearly all of it the finder's own pass. The deadline is some
+// thirty times that, so a loaded machine stays green and a walking reader cannot pass.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
 	const deadline = 10 * time.Second
