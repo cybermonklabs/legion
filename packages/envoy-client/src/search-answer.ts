@@ -95,11 +95,13 @@ function searchResultLine(result: SearchResult, baseUrl: string): string {
 }
 
 /** What this client reads from `GET /api/v1/search`: the route table's answer, which always
- *  carries the four paging fields, or a Dispatch older than search paging, which carries none of
- *  them (`SearchResultsPage`). */
+ *  carries the four paging fields, the reading of the words and the filters the search applied,
+ *  or a Dispatch older than search paging, which carries none of them — paging, `query` and
+ *  `filters` all arrived after it, so the legacy arm omits all three. */
 export type SearchAnswerRead =
   | SearchResponse
-  | (Omit<SearchResponse, keyof SearchResultsPage> & SearchResultsPageAbsentAs<undefined>);
+  | (Omit<SearchResponse, keyof SearchResultsPage | "query" | "filters"> &
+      SearchResultsPageAbsentAs<undefined>);
 
 /**
  * The `dispatch_search` tool's text and details for one answer: refuses a later page from a

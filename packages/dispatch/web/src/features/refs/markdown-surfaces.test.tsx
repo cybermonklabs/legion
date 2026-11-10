@@ -30,6 +30,7 @@ import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
 import { ThreadCard } from "../margin/ThreadCard";
 import type { Thread } from "../margin/useMarginItems";
 import { SearchPalette } from "../search/SearchPalette";
+import { searchAnswer } from "../search/search-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
@@ -544,18 +545,11 @@ test("a search hit's snippet renders formatted with the matched words still high
       "<mark>second</mark>"
     ),
   };
-  const search = spyOn(api, "search").mockResolvedValue({
-    limit: 20,
-    offset: 0,
-    reachable: 1,
-    results: [hit],
-    took_ms: 1,
-    total: 1,
-  });
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
   const view = render(
     <Providers>
       <KeymapProvider>
-        <SearchPalette mode="search" onClose={() => {}} />
+        <SearchPalette onClose={() => {}} open />
       </KeymapProvider>
     </Providers>
   );
@@ -925,18 +919,17 @@ describe("a Dispatch picture on every surface", () => {
       rank: 1,
       snippet: PICTURE.replace("layout", "<mark>layout</mark>"),
     };
-    const search = spyOn(api, "search").mockResolvedValue({
-      limit: 20,
-      offset: 0,
-      reachable: 1,
-      results: [hit],
-      took_ms: 1,
-      total: 1,
-    });
+    const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
+    // The bar lists a project row for every project whose key or name holds the words
+    // (`SearchPalette.tsx`), so it reads the project list. This page's origin is not the
+    // suite's, so the shell's own `/api/v1/projects` answer does not resolve against it: the
+    // read is answered here at the api client, with the empty list that answer carries, which
+    // leaves the one hit as the only option in the list this row reads.
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
     const view = render(
       <Providers>
         <KeymapProvider>
-          <SearchPalette mode="search" onClose={() => {}} />
+          <SearchPalette onClose={() => {}} open />
         </KeymapProvider>
       </Providers>
     );
@@ -954,6 +947,7 @@ describe("a Dispatch picture on every surface", () => {
     } finally {
       view.unmount();
       search.mockRestore();
+      listProjects.mockRestore();
     }
   });
 

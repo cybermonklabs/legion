@@ -18,8 +18,14 @@ export function searchResponse(
   fields: Partial<SearchResponse> = {}
 ): SearchResponse {
   return {
+    // The route echoes the four filters it narrowed by on every answer; a fixture narrows by
+    // none, so it echoes none.
+    filters: {},
     limit: 20,
     offset: 0,
+    // Every answer names the forms the query was read as and whether the fallback is what
+    // answered; a fixture's query holds no operator and broadened nothing.
+    query: { broadened: false, operators: [] },
     reachable: hits.length,
     results: [...hits],
     took_ms: 1,

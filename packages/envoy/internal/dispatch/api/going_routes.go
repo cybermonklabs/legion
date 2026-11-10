@@ -222,7 +222,8 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 // of all of them.
 func (s *server) goingSearch(project string) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
-		found, err := s.runSearch(ctx, everyKindSearch(q, project, searchDefaultLimit, 0))
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0}
+		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err
 		}

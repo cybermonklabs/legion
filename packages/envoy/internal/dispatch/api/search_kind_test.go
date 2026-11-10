@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -240,11 +242,11 @@ func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
 	}
 }
 
-// A set naming none of the indexed kinds matches no row at all, so runSearch answers it with an
+// A set leaving out every indexed kind matches no row at all, so runSearch answers it with an
 // empty page and reads nothing: a server holding no store proves the read, since any read of its
 // nil pool would panic here.
 func TestSearchOverNoIndexedKindAnswersEmptyWithNoRead(t *testing.T) {
-	request := searchParams{q: "astrolabe", kinds: 0, limit: searchDefaultLimit, offset: 3}
+	request := searchParameters{text: "astrolabe", kinds: searchNoKind, limit: searchDefaultLimit, offset: 3}
 	response, err := directServer(Deps{}).runSearch(context.Background(), request)
 	if err != nil {
 		t.Fatalf("search over no kind: %v", err)
@@ -260,16 +262,17 @@ func TestSearchOverNoIndexedKindAnswersEmptyWithNoRead(t *testing.T) {
 
 // The kind filter is literal SQL built from searchIndexedKinds alone - the kinds left out, named
 // positively, which searchKindsCTE negates - and it binds nothing: the related-item check's
-// derived statements number their own parameters on from search's ($9 to $14), and a bound
-// parameter here would renumber them.
+// derived statements number their own parameters on from search's, and a bound parameter here
+// would renumber them. A set that leaves nothing out is the zero value, which is what a search
+// naming no kind and every other caller of the run functions searches.
 func TestSearchKindFilterIsLiteralSQLThatBindsNothing(t *testing.T) {
 	cases := []struct {
 		values []string
 		kinds  searchKinds
 		want   string
 	}{
-		{values: nil, kinds: searchEveryKind, want: ""},
-		{values: []string{"issue", "document", "comment", "ask", "message"}, kinds: searchEveryKind, want: ""},
+		{values: nil, kinds: 0, want: ""},
+		{values: []string{"issue", "document", "comment", "ask", "message"}, kinds: 0, want: ""},
 		{values: []string{"issue"}, want: "kind in ('document', 'comment', 'ask', 'message')"},
 		{values: []string{"issue", "issue"}, want: "kind in ('document', 'comment', 'ask', 'message')"},
 		{values: []string{"ask", "message"}, want: "kind in ('issue', 'document', 'comment')"},
@@ -280,7 +283,7 @@ func TestSearchKindFilterIsLiteralSQLThatBindsNothing(t *testing.T) {
 			if !known {
 				t.Fatalf("parseSearchKinds(%v) refused known kinds", test.values)
 			}
-			if test.kinds != 0 && kinds != test.kinds {
+			if test.want == "" && kinds != test.kinds {
 				t.Fatalf("parseSearchKinds(%v) = %d, want %d", test.values, kinds, test.kinds)
 			}
 			if got := kinds.exclusion(); got != test.want {
@@ -288,27 +291,38 @@ func TestSearchKindFilterIsLiteralSQLThatBindsNothing(t *testing.T) {
 			}
 		})
 	}
-	if got := searchKinds(0).exclusion(); got != "kind in ('issue', 'document', 'comment', 'ask', 'message')" {
-		t.Fatalf("the empty set's exclusion = %q, want every kind left out", got)
+	if got := searchNoKind.exclusion(); got != "kind in ('issue', 'document', 'comment', 'ask', 'message')" {
+		t.Fatalf("searchNoKind's exclusion = %q, want every kind left out", got)
 	}
 
 	kinds, _ := parseSearchKinds([]string{"ask"})
 	statements := kinds.statements()
-	for parameter := 9; parameter <= 14; parameter++ {
-		if placeholder := fmt.Sprintf("$%d", parameter); strings.Contains(statements.keyword, placeholder) {
-			t.Fatalf("the keyword statement over one kind names %s; it binds $1 to $8 and nothing else", placeholder)
-		}
+	// Binding nothing is read as binding what the unfiltered statement binds: the filter adds no
+	// parameter of its own, whatever numbers the statement already carries.
+	if got, want := highestParameter(statements.keyword), highestParameter(searchQuery); got != want {
+		t.Fatalf("the keyword statement over one kind binds up to $%d, searchQuery up to $%d", got, want)
 	}
-	for parameter := 12; parameter <= 14; parameter++ {
-		if placeholder := fmt.Sprintf("$%d", parameter); strings.Contains(statements.meaning, placeholder) {
-			t.Fatalf("the meaning statement over one kind names %s; it binds $1 to $11 and nothing else", placeholder)
-		}
+	if got, want := highestParameter(statements.meaning), highestParameter(searchQueryMeaning); got != want {
+		t.Fatalf("the meaning statement over one kind binds up to $%d, searchQueryMeaning up to $%d", got, want)
 	}
 	if !strings.Contains(statements.keyword, "kind in ('issue', 'document', 'comment', 'message')") ||
 		!strings.Contains(statements.meaning, "kind in ('issue', 'document', 'comment', 'message')") {
 		t.Fatal("neither statement carries the kinds it leaves out as literal SQL")
 	}
-	if searchEveryKind.statements().keyword != searchQuery || searchEveryKind.statements().meaning != searchQueryMeaning {
+	if searchKinds(0).statements().keyword != searchQuery ||
+		searchKinds(0).statements().meaning != searchQueryMeaning {
 		t.Fatal("every kind runs other text than searchQuery and searchQueryMeaning")
 	}
+}
+
+// highestParameter is the largest $n a statement names, so two statements can be compared for
+// what they bind without pinning a number this package's own statements may renumber.
+func highestParameter(statement string) int {
+	highest := 0
+	for _, match := range regexp.MustCompile(`\$(\d+)`).FindAllStringSubmatch(statement, -1) {
+		if number, err := strconv.Atoi(match[1]); err == nil && number > highest {
+			highest = number
+		}
+	}
+	return highest
 }
