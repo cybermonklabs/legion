@@ -2,15 +2,6 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project } from "@playwright/test";
 import { baseUrl } from "./api";
 import { stubProjectNames, tagged } from "./configurations";
-import { targetedListeners } from "./harness-listeners";
-import {
-  harnessPorts,
-  harnessVariables,
-  laneCount,
-  laneCountVariable,
-  workerCount,
-  workerCountVariable,
-} from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
@@ -68,135 +59,48 @@ if (harnessProcessCount === 2 && process.env.PLAYWRIGHT_BASE_URL) {
   );
 }
 
-// The rows of e2e/harness-listeners.ts this run targets, as the environment names them when this
-// config evaluates.
-const targeted = targetedListeners();
-
 // `DISPATCH_E2E_REUSE_SERVERS=1` says the harness ports name servers that are already running:
-// the ones e2e/run.ts started, which sets it for the command it runs, or a harness a person
-// started and left listening. Any other value is refused rather than quietly read as "no".
+// a harness a person started and left listening, or the one `e2e/harness-up.ts` printed for
+// another process to read. Any other value is refused rather than quietly read as "no".
 function resolveReuseServers(): boolean {
   const requested = process.env.DISPATCH_E2E_REUSE_SERVERS;
   if (requested === undefined || requested === "") return false;
   if (requested === "1") return true;
   throw new Error(
     `DISPATCH_E2E_REUSE_SERVERS must be "1" or unset, not ${JSON.stringify(requested)}. ` +
-      "Run the suite through e2e/run.ts, which sets it for the harness it starts, or set it to 1 " +
-      "to run against a harness you started yourself."
+      "Leave it unset to have this run start its own stacks (e2e/global-setup.ts), or set it to " +
+      "1 to run against a harness you started yourself."
   );
 }
 
-// A listing (`--list`) starts no server and runs no spec, so it needs no harness: it is read from
-// argv before a `--` separator, and yields to a UI token, since `--ui`/`--ui-*` outrank the
-// computed list mode (`lib/cli/testActions.js:52`, `:62`) and a UI session runs specs. The test is
-// loose (any `--list`, whatever precedes it), and Playwright reads the `--list` of `--grep --list`
-// or `--grep-invert --list` as the option's value, which is a real run. So a listing is exempt only
-// from the unset-ports refusal: with every port unset nothing is targeted, and such a run fails at
-// e2e/preflight.ts; with any port set it meets the reuse refusal below like any run.
-function isListMode(argv: readonly string[]): boolean {
-  if (argv.some((arg) => arg === "--ui" || arg.startsWith("--ui-"))) return false;
-  const separator = argv.indexOf("--");
-  const scanned = separator === -1 ? argv : argv.slice(0, separator);
-  return scanned.includes("--list");
-}
+// Read for the refusal alone, and read here rather than in the hook because this evaluates for
+// every run, a listing included, where `globalSetup` does not. What the answer MEANS - that this
+// run starts no stack - is the hook's, and it reads the variable itself, by then knowing it
+// holds "1" or nothing.
+resolveReuseServers();
 
-// How many workers the command line asks for, if it does: `--workers <n>`, `--workers=<n>`,
-// `-j <n>` or `-j<n>`, read before a `--` separator as the list mode above is. A worker is a
-// lane, and e2e/run.ts started one harness per lane before Playwright, so a command line that
-// asks for another number is refused rather than quietly leaving a lane unused or putting two
-// workers on one lane's servers.
-function workersOnCommandLine(argv: readonly string[]): string | undefined {
-  const separator = argv.indexOf("--");
-  const scanned = separator === -1 ? argv : argv.slice(0, separator);
-  for (const [index, argument] of scanned.entries()) {
-    if (argument === "--workers" || argument === "-j") return scanned[index + 1];
-    if (argument.startsWith("--workers=")) return argument.slice("--workers=".length);
-    if (argument.startsWith("-j") && argument.length > 2) return argument.slice(2);
-  }
-  return undefined;
-}
-
-// This config starts no server. e2e/run.ts starts the harness (e2e/harness-start.ts) on ports
-// the OS chooses, exports the ports the servers report, and only then runs Playwright, so this
-// module, every worker that re-imports it, and every helper that reads a port at import see the
-// real ports when they evaluate. Without it, the run targets servers a person started: every
-// port set and DISPATCH_E2E_REUSE_SERVERS=1, since e2e/seed.ts truncates the database those
-// servers hold. Anything else is refused here, before a single spec runs, but a listing with every
-// port unset; `harnessPorts()` also refuses a malformed or duplicated port, a listing's included.
-const runThroughWrapper =
-  "bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts [args] (`bun run " +
-  "e2e` builds the SPA and runs the same)";
-const ports = harnessPorts();
-const reuseServers = resolveReuseServers();
-const unset = targeted.filter((listener) => ports[listener.key].port === 0);
-const listing = isListMode(process.argv);
+// THE PORTS ARE UNSET WHEN THIS EVALUATES, AND THAT IS THE DESIGN. Playwright loads this config
+// before it runs `globalSetup`, which is what starts the stacks (e2e/global-setup.ts), so in this
+// process every harness port is unset and `harnessPorts()` answers 0 for each of them - no
+// refusal, no listener addressed, nothing read from them here. Every worker process re-evaluates
+// this file AFTER `globalSetup`, with the manifest that hook wrote in its environment, and it is
+// that evaluation which decides the worker's `use.baseURL` and every import-time origin beside it
+// (e2e/api.ts, e2e/plain-http-origin.ts). The four refusals this file used to make - the unset
+// ports, the missing `DISPATCH_E2E_REUSE_SERVERS`, a `--workers` that disagreed with the lane
+// count and a worker count no wrapper had lanes for - were all about a harness that had to be up
+// before Playwright started, which is no longer how a run works.
+//
 // What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
 // recording, whether it holds a stubbed row at all - which is what decides the static file
-// server below - and whether it is the stubbed layer alone, which is what exempts it from the
-// four refusals here and from the global setup. That module says why each question is asked and
-// why the third travels to the workers in an environment variable.
+// server below - and whether it is the stubbed layer alone, which is what tells `globalSetup` to
+// start nothing. That module says why each question is asked and why the third travels to the
+// workers in an environment variable.
 const stub = stubSelection({
   argv: process.argv,
   env: process.env,
   processes: harnessProcessCount,
   projects: stubProjectNames,
 });
-
-// One worker per lane, and the lanes are e2e/run.ts's: a worker resolves its own harness from
-// `TEST_PARALLEL_INDEX` (e2e/harness-ports.ts), so a run with more workers than lanes would put
-// two workers on one lane's servers and database, which e2e/seed.ts truncates per row.
-const lanes = laneCount();
-const asked = workersOnCommandLine(process.argv);
-
-// Every refusal of this config is about the harness, so they stand together under one guard: a
-// run of the stubbed layer alone reaches no server of it and meets none of them, and every
-// other run meets all four. Each keeps its own sentence, so a person who forgets the harness
-// still gets the line that fixes it.
-if (!stub.onlyStub) {
-  if (!listing && unset.length > 0) {
-    throw new Error(
-      `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
-        `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
-        `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
-        `${runThroughWrapper}. To run against servers you started yourself, set ` +
-        `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
-        "DISPATCH_E2E_REUSE_SERVERS=1."
-    );
-  }
-  if (!reuseServers && (!listing || unset.length < targeted.length)) {
-    const targets = targeted
-      .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
-      .join(", ");
-    throw new Error(
-      `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
-        `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
-        "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose " +
-        "database this run truncates."
-    );
-  }
-  if (asked !== undefined && asked !== String(lanes)) {
-    throw new Error(
-      `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
-        `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
-        `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that ` +
-        "many workers."
-    );
-  }
-  // `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run
-  // against servers a person started reads its own. That fallback is right for one worker and
-  // wrong for more: nothing exported a lane, so every worker would resolve lane 0 and share one
-  // harness's servers and database, which e2e/seed.ts truncates per row - rows would delete
-  // each other's fixtures and fail in ways that read as product faults. Only e2e/run.ts exports
-  // that variable.
-  if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
-    throw new Error(
-      `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing ` +
-        `exported ${laneCountVariable}, so there is one harness and every worker would share ` +
-        `it. Run this config through e2e/run.ts, which starts a lane per worker and exports ` +
-        `that count: ${runThroughWrapper}.`
-    );
-  }
-}
 
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
@@ -681,12 +585,17 @@ export default defineConfig({
   // project names `testIgnore: []`, which is what lets those rows reach it.
   testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
-  // Every row is independent: it empties its lane's database and fake listeners itself
+  // Every row is independent: it empties its stack's database and fake listeners itself
   // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
-  // different lanes. A file whose rows must run in order says so itself, with
+  // different stacks. A file whose rows must run in order says so itself, with
   // `test.describe.configure({ mode: "serial" })` and the reason.
   fullyParallel: true,
-  workers: lanes,
+  // One worker by default, where Playwright's own default is half the machine's cores. A worker
+  // costs a whole stack - a Postgres, a Go server and three to six fake listeners
+  // (e2e/harness-pool.ts) - so a 16-core workstation would otherwise start eight of them before
+  // its first row. CI names its own `--workers`, which `globalSetup` reads as `config.workers`
+  // and starts that many stacks for.
+  workers: 1,
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
@@ -716,16 +625,16 @@ export default defineConfig({
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
     trace: "retain-on-first-failure",
   },
-  // Runs before any row, against the servers the checks above require: it refuses a target that
-  // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not
-  // both read it or do not accept each other's cookies (e2e/preflight.ts). A run of the `stub`
-  // project alone reaches no such server, so it has no global setup at all.
-  globalSetup: stub.onlyStub
-    ? undefined
-    : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
-  // The one server this config starts, and it serves files: the built SPA, for the stubbed
-  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
-  // it before Playwright.
+  // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
+  // stops them afterwards (e2e/global-teardown.ts). Both hooks are declared for every run,
+  // including the two that start nothing - the stubbed layer alone, and a run against servers a
+  // person started - because that decision is the hook's own, which is where a reader now finds
+  // it. A deployed run starts a stack of the fakes alone, and the hook says why.
+  globalSetup: fileURLToPath(new URL("./global-setup.ts", import.meta.url)),
+  globalTeardown: fileURLToPath(new URL("./global-teardown.ts", import.meta.url)),
+  // The one server this config declares itself, and it serves files: the built SPA, for the
+  // stubbed layer's own origin (e2e/stub/static-server.ts). The harness is the pool's, which
+  // `globalSetup` starts (e2e/harness-pool.ts).
   //
   // It is declared for a run that holds a stubbed row and for no other (e2e/stub/selection.ts
   // says which runs those are and why the question has to be asked at all).

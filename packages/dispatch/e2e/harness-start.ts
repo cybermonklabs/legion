@@ -13,18 +13,33 @@
  *  before the first row starts until the harness stops, its port is in the environment of every
  *  row, and the server serves on it through the keeper's socket.
  *
- *  This is the harness's one starter: `e2e/run.ts` (Playwright), `e2e/local-instance.ts`
- *  (`bun run dispatch:local`) and the docs media harness (`docs/site/media/harness.ts`) call it,
- *  then set the ports it returns in the environment of whatever addresses the harness. A run with
- *  `PLAYWRIGHT_BASE_URL` starts only the rows marked `deployed`, the fakes a deployed server is
- *  tested with. `e2e/run.ts` calls it once per lane, each call with that lane's database and
- *  file-store bucket in `options.env` (`e2e/harness-ports.ts`), so one process starts a whole
- *  harness per Playwright worker. */
-import { createWriteStream, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+ *  This is the harness's one starter: `e2e/harness-pool.ts` (Playwright's own runner, through
+ *  `e2e/global-setup.ts`), `e2e/local-instance.ts` (`bun run dispatch:local`) and the docs media
+ *  harness (`docs/site/media/harness.ts`) call it, then set the ports it returns in the
+ *  environment of whatever addresses the harness. A run with `PLAYWRIGHT_BASE_URL` starts only
+ *  the rows marked `deployed`, the fakes a deployed server is tested with. The pool calls it once
+ *  per stack, each call with that stack's database and file-store bucket in `options.env`
+ *  (`e2e/harness-ports.ts`), so one process starts a whole harness per Playwright worker.
+ *
+ *  Nothing here is Bun's, because Playwright's runner is node's: the processes are
+ *  `node:child_process`'s (`e2e/local-instance-support.ts`), and their output is read as a node
+ *  stream. The listeners themselves are still bun programs, started as `bun <script>`
+ *  (`e2e/harness-listeners.ts`). */
+
+import type { ChildProcess } from "node:child_process";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { Subprocess } from "bun";
 
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
@@ -41,8 +56,9 @@ const keeperBootMs = 30_000;
 
 export interface HarnessProcess {
   readonly listener: HarnessListener;
-  /** The process, the leader of a process group of its own. */
-  readonly child: Subprocess;
+  /** The process, the leader of a process group of its own, as `node:child_process` returns it:
+   *  `exitCode` and `signalCode` say how it ended. */
+  readonly child: ChildProcess;
   /** The file its output goes to under `logDir`, or undefined when it goes to this process's
    *  stderr. */
   readonly log: string | undefined;
@@ -98,16 +114,17 @@ function watch(running: PipedRunning, listener: HarnessListener, logDir?: string
     const match = port === undefined ? listener.report.exec(line) : null;
     if (match !== null) port = Number(match[1]);
   };
-  const pump = async (stream: ReadableStream<Uint8Array>) => {
-    const reader = stream.getReader();
+  // The process's own bytes reach the log file or this process's stderr unchanged, and the same
+  // bytes are cut into lines for `see`, which is what finds the listener's reported port. The
+  // stream is `node:child_process`'s, so it is iterated rather than read through a web reader;
+  // its chunks are Buffers, which `write` and `TextDecoder` both take as they are.
+  const pump = async (stream: Readable) => {
     const decoder = new TextDecoder();
     let partial = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (file === undefined) process.stderr.write(value);
-      else file.write(value);
-      const lines = (partial + decoder.decode(value, { stream: true })).split("\n");
+    for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+      if (file === undefined) process.stderr.write(chunk);
+      else file.write(chunk);
+      const lines = (partial + decoder.decode(chunk, { stream: true })).split("\n");
       partial = lines.pop() ?? "";
       for (const line of lines) see(line);
     }
@@ -146,13 +163,13 @@ async function serving(watched: Watched, given: number, supervisor: Supervisor):
   const check = async (waitingFor: string) => {
     if (child.exitCode !== null || child.signalCode !== null) {
       // The last lines are the reason; let the output reach the tail first.
-      await Promise.race([watched.drained, Bun.sleep(1000)]);
+      await Promise.race([watched.drained, sleep(1000)]);
       throw refusal(watched, given, `exited ${child.exitCode ?? child.signalCode} ${waitingFor}`);
     }
     if (Date.now() > deadline) {
       throw refusal(watched, given, `did not ${waitingFor} within ${listener.bootMs / 1000} s`);
     }
-    await supervisor.untilInterrupted(Bun.sleep(100));
+    await supervisor.untilInterrupted(sleep(100));
   };
   let port = watched.reported();
   while (port === undefined) {
@@ -199,13 +216,20 @@ async function keepPort(
     environment
   );
   // Both streams are read to their end, so a full pipe never stops the keeper; its stderr is the
-  // reason it failed.
-  const stderr = new Response(child.stderr).text().catch(() => "");
-  new Response(child.stdout).text().catch(() => "");
+  // reason it failed. They are node streams, so they are collected by iteration rather than
+  // through `new Response(...)`, which takes no node stream.
+  const collect = async (stream: Readable): Promise<string> => {
+    stream.setEncoding("utf8");
+    let text = "";
+    for await (const chunk of stream as AsyncIterable<string>) text += chunk;
+    return text;
+  };
+  const stderr = collect(child.stderr).catch(() => "");
+  collect(child.stdout).catch(() => "");
   const deadline = Date.now() + keeperBootMs;
   // The keeper writes the file through a rename once it serves its socket, so a file that exists
   // holds the whole port.
-  while (!(await Bun.file(portFile).exists())) {
+  while (!existsSync(portFile)) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
         `The Dispatch e2e harness cannot start: ${name} exited ` +
@@ -218,9 +242,9 @@ async function keepPort(
           `${keeperBootMs / 1000} s`
       );
     }
-    await supervisor.untilInterrupted(Bun.sleep(100));
+    await supervisor.untilInterrupted(sleep(100));
   }
-  return { port: Number((await Bun.file(portFile).text()).trim()), socket };
+  return { port: Number(readFileSync(portFile, "utf8").trim()), socket };
 }
 
 /** Starts the harness (see the module comment) and returns once every listener serves. A failure
