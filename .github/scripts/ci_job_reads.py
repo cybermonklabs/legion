@@ -806,8 +806,10 @@ DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
 go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m"""
 
-# The three tests of this module that load a plugin on the real Oh My Pi and read back what the
-# daemon's gates read. They run once per run of the router, in the plugin-pack job, and the race
+# The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
+# of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
+# promptreferences_omp_test.go's prompt reference probe, reads no file of the repository and stays
+# in the race step). They run once per run of the router, in the plugin-pack job, and the race
 # step that runs their package skips them by name:
 #   * promptreferences_omp_test.go:132 packs packages/pi-envoy and packages/pi-legion with `bun pm
 #     pack` (packedPlugin, :207-228), and each pack runs that package's prepack, which reads
@@ -819,9 +821,9 @@ go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -time
 #     repository. It is here because it is the other test of agentmodels_omp_test.go, and RULES is
 #     keyed on the source file rather than on the test: with both of that file's tests in this job,
 #     no test of that file runs outside this job, so what the plugin-pack gate declares below is
-#     the whole truth about the file. The check under this list is what holds that, rather than a
-#     reader noticing: it refuses a test of that file this list does not name, and a name this
-#     list holds that the package no longer declares.
+#     the whole truth about the file. hold_plugin_pack_tests(), below, is what holds that, rather
+#     than a reader noticing: it refuses a test of that file this list does not name, and a name
+#     this list holds that the package no longer declares.
 # Their reads - the lockfile, the two plugin packages, what their prepack reads, and skills/ - are
 # inputs of this one job rather than of the daemon's whole Go suite, so a lockfile-only change, or
 # a change to one skill, runs these tests and no other daemon Go test (dispatch://INFRA-1413, A4).
@@ -868,14 +870,17 @@ def hold_plugin_pack_tests():
     plugin-pack gate below and keyed on these test names, so a skill edit runs that test in no job
     at all. The second rule is agentmodels_omp_test.go's alone, because that whole file moved into
     this job and the gate's declaration therefore speaks for the file however it grows.
-    promptreferences_omp_test.go is not such a file - only its pack test moved, its other test,
-    TestThePromptReferenceProbeOnTheRealOhMyPi, runs in the daemon-go race step, and that file's
-    reads stay on a RULES row keyed on the file - so widening the rule to it would refuse a test
-    that belongs where it is. The files are read as text (GO_TOP_LEVEL_TEST over go_code_only, so
-    a `func Test…` in a comment or a string counts for nothing), since this script runs where no
-    Go toolchain is guaranteed. A file of the package that writes none of these names and is not
-    the whole-file one can declare none of them, so it is passed over unread: the package's tests
-    are 3.8 MB and go_code_only walks a file character by character."""
+    promptreferences_omp_test.go is not such a file - only its pack test moved, and its other
+    test, TestThePromptReferenceProbeOnTheRealOhMyPi, runs in the daemon-go race step and reads no
+    file of the repository - so widening the rule to it would refuse a test that belongs where it
+    is. What this guard does not see is a new test elsewhere in the package that packs a plugin
+    (packedPlugin): it would run in the race step with none of this gate's reads on that job's
+    filter, and a reader of such a test moves it here. The files are read as text
+    (GO_TOP_LEVEL_TEST over go_code_only, so a `func Test…` in a comment or a string counts for
+    nothing), since this script runs where no Go toolchain is guaranteed. A file of the package
+    that writes none of these names and is not the whole-file one can declare none of them, so it
+    is not scanned: the package's tests are 3.8 MB and go_code_only walks a file character by
+    character."""
     declared, whole_file = set(), None
     for path in sorted(Path(PLUGIN_PACK_SOURCE).glob("*_test.go")):
         text = path.read_text()
@@ -1361,8 +1366,8 @@ SCRIPT_TEST_GATES = [
     # for this repository's addresses, so that script is a second subject of this step.
     harness("check_ci_tools_test", "Test the tool manifest check", f"{SCRIPTS}/check-ci-tools.test.sh", [
         (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
-        (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:609-610 runs it in bash for plugin_download_url, and "
-                                     "check-ci-tools.test.sh:83 links it into every fixture"),
+        (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and "
+                                     "check-ci-tools.test.sh:100 links it into every fixture"),
         (".github/ci-tools.yaml", "check-ci-tools.test.sh:1733 runs the gate over this repository's own tree"),
         (f"{DAEMON}/docker/worker.Dockerfile",
          "check-ci-tools.test.sh:1733 runs the gate over that same tree, where it holds the mise, jj and uv "
@@ -1561,10 +1566,10 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
-    # The plugin-pack job: the three tests of internal/daemon that load a plugin on the real Oh
-    # My Pi (PLUGIN_PACK_TESTS, which the daemon-go race step skips by name) - the one that packs
-    # the two plugin releases and loads them, and the two prompt probes, one of which stages the
-    # prompts this checkout ships as the release stages them. The step runs those tests alone,
+    # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
+    # daemon-go race step skips by name - the one that packs the two plugin releases and loads
+    # them, and the two prompt probes of agentmodels_omp_test.go, one of which stages the prompts
+    # this checkout ships as the release stages them. The step runs those tests alone,
     # and compiles the package they are in to do it, so this filter is that package's whole test
     # closure as well as what the three read: the two plugin packages, what their prepack builds
     # each bundle from, skills/, and the lockfile the frozen install reads. The job exists for

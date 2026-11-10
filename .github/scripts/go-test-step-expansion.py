@@ -36,13 +36,15 @@ Five whole runs in that pod took 648 s, 402 s, 387 s, 461 s and 430 s, and a col
 tens of minutes, for an answer a person needs twice per change (at the head and at the merge
 base) rather than once per run. The checks it serves run by hand, before the merge.
 
-Between those hand runs one backstop holds part of the property, by side effect rather than by
-reading it: an edit to the race step's `-skip` in ci-job-daemon-go.yaml makes
-check-ci-filters.sh refuse, because the generated `!` block of the daemon_go_tests filter stops
-matching the test files that job reads, not because anything there understands a skip. So a
-changed skip is caught in CI, and the way this property really breaks is not: a `-run` list and
-a `-skip` list drifting apart while each stays consistent with the files its job reads is
-invisible to every CI job, and this script is the only thing that sees it.
+Between those hand runs CI holds the plugin-pack part of the property itself. The plugin-pack
+step's `-run` and the daemon-go race step's `-skip` are both built from one list,
+PLUGIN_PACK_TESTS in ci_job_reads.py, and check-ci-filters.sh pins each step's whole script, so an
+edit to either step's text is refused (a step whose script is not its pinned text counts as
+reading every Go file) and the two cannot come to name different tests. ci_job_reads.py's
+hold_plugin_pack_tests() refuses, at import, a name in that list that the package no longer
+declares and a test of agentmodels_omp_test.go the list does not name. What CI does not see is
+what this script decides: a (package, function) pair two steps of one run run without a declared
+reason, and one some step compiles while no step runs it.
 
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the
