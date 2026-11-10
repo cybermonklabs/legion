@@ -88,7 +88,7 @@ func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
 // did get the forward recognises the copy. Every report is queued, a late receipt from the claim's
 // own session too: a Go relaunch resumes the session id, so that report may come from the stopped
 // process. The copy is written due at the moment the re-hold decides, and the row runs then: at
-// once for an architect whose agent has taken its role, and otherwise after the first re-send
+// once for an architect whose agent has said it is ready, and otherwise after the first re-send
 // delay. Which claim and which report make which moment is
 // TestWhatAFailedForwardLeavesItsNotice's and TestWhenACopyIsDueAtOnce's; the two rows here are
 // the two moments, each carried from the decision to the row Postgres holds and on to the
@@ -405,7 +405,7 @@ func noticeRowID(t *testing.T, pool *pgxpool.Pool) int64 {
 // A listener that confirms a role message before it answers says when the architect's session
 // sent no receipt for a notice (504 receipt_timeout), as a session that stopped while its
 // registration lives does. The notice is queued again from the answer on the schedule a role-lane
-// exception gets — while the claim has not taken its role, each copy after the next of
+// exception gets — while the claim has not said it is ready, each copy after the next of
 // noticeReholdDelays, under the key of the row it copies — and the row that drew the answer
 // finishes. The answer to the third copy is logged once and queues nothing.
 func TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedule(t *testing.T) {
@@ -986,10 +986,10 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 
 // A claim can read live while its session hears nothing: a pane's NATS connection is reconnecting,
 // or the process died and the supervisor has not seen it yet. Every forward then comes back a late
-// receipt. Only the first copy goes at once, for a relaunch that took its role inside the receipt
-// window; the rest keep the re-send spacing, so the notice stays queued for the whole schedule, not
-// a few seconds, before the cap drops it. The run ticks every 5 seconds, so a copy due at once goes
-// on the next tick.
+// receipt. Only the first copy goes at once, for a relaunch that said it was ready inside the
+// receipt window; the rest keep the re-send spacing, so the notice stays queued for the whole
+// schedule, not a few seconds, before the cap drops it. The run ticks every 5 seconds, so a copy
+// due at once goes on the next tick.
 func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -1044,7 +1044,7 @@ func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
 	}
 }
 
-// A copy is due at once only while the architect's agent holds its role, and then only the first
+// A copy is due at once only while the architect's agent has said it is ready, and then only the first
 // copy, or a later one whose report names a session other than the one the claim is ready on. A
 // later copy that failed on the claim's own session, or whose report names no session, waits.
 func TestWhenACopyIsDueAtOnce(t *testing.T) {
@@ -1061,7 +1061,7 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 	}{
 		{"an unsupervised claim", supervise.Claim{}, 0, "ses_arch", false},
 		{"a relaunching claim", claimOn(supervise.StateLaunching), 0, "ses_old", false},
-		{"a registered claim, before it takes its role", claimOn(supervise.StateRegistered), 0, "ses_arch", false},
+		{"a registered claim, before it says it is ready", claimOn(supervise.StateRegistered), 0, "ses_arch", false},
 		{"a suspended claim", claimOn(supervise.StateSuspended), 0, "ses_old", false},
 		{"the first copy, its own session", claimOn(supervise.StateReady), 0, "ses_arch", true},
 		{"the first copy, another session", claimOn(supervise.StateWorking), 0, "ses_old", true},
@@ -1083,9 +1083,9 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 // What a failed forward leaves its notice, over the three verdicts and the copy's moment: an
 // architect that stopped with its finished tree is told nothing more and the decision is parked;
 // a notice already queued again the most times a notice is spends its last copy; and anything
-// else is copied, due at once while the architect's agent has taken its role (copyDueAtOnce) and
+// else is copied, due at once while the architect's agent has said it is ready (copyDueAtOnce) and
 // after the next of noticeReholdDelays otherwise. A lingering tree decides nothing while its
-// architect still holds its role, which is why reholdNotice reads the tree only when it does
+// architect has still said it is ready, which is why reholdNotice reads the tree only when it does
 // not.
 func TestWhatAFailedForwardLeavesItsNotice(t *testing.T) {
 	t.Parallel()
@@ -1110,7 +1110,7 @@ func TestWhatAFailedForwardLeavesItsNotice(t *testing.T) {
 		{name: "a suspended architect whose tree lingers", held: view(supervise.StateSuspended, false), lingers: true, want: reholdParked},
 		{name: "a retired architect whose tree lingers", held: view(supervise.StateRetired, false), lingers: true, want: reholdParked},
 		{name: "an architect being stopped as its tree lingers", held: view(supervise.StateWorking, true), lingers: true, want: reholdParked},
-		{name: "a lingering tree whose architect still holds its role", held: view(supervise.StateWorking, false), lingers: true, recipient: "ses_old", want: reholdCopy},
+		{name: "a lingering tree whose architect is still ready", held: view(supervise.StateWorking, false), lingers: true, recipient: "ses_old", want: reholdCopy},
 		{name: "a suspended architect whose tree does not linger", held: view(supervise.StateSuspended, false), recipient: "", want: reholdCopy, due: noticeReholdDelays[0]},
 		{name: "the last copy to an architect stopped with its tree", held: view(supervise.StateRetired, false), lingers: true, resends: len(noticeReholdDelays), want: reholdParked},
 	} {
