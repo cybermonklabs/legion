@@ -277,3 +277,32 @@ func askTheModel(t *testing.T, url string) string {
 	}
 	return string(body)
 }
+
+// TestTheGitHubStandsModesAreFlagsOfTheCommand is the command's own half of the GitHub stand's
+// two modes: a check script starts the stands in one of them, so the flag has to reach the stand
+// it names, and the two are one answer each to one token request, so a run naming both is
+// refused before it starts anything. What each mode answers is the stand-in package's own rows.
+func TestTheGitHubStandsModesAreFlagsOfTheCommand(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir(), "--github-refuse-tokens")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		out.Stands[standGitHub].URL+"/app/installations/7/access_tokens", strings.NewReader(`{"repositories":["proofs"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("ask the refusing GitHub stand for a token: %v", err)
+	}
+	defer answer.Body.Close()
+	if answer.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("the refusing GitHub stand answered %d; want the 422 that mints nothing", answer.StatusCode)
+	}
+
+	var stderr strings.Builder
+	if code := run(t.Context(), []string{"--github-refuse-tokens", "--github-widen-tokens"}, io.Discard, &stderr); code != exitUsageError {
+		t.Errorf("a run naming both modes exited %d; want %d", code, exitUsageError)
+	}
+	if !strings.Contains(stderr.String(), "two answers to one token request") {
+		t.Errorf("the refusal said %q; want it to name the two modes as one answer each", stderr.String())
+	}
+}
