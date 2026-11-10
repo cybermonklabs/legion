@@ -1483,12 +1483,17 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  *                `packages/daemon/internal/workflow/review.go` returns before it records any
  *                review while the issue stands outside `reviewing`, which this loop always
  *                does, so such a run leaves the finding where nobody acts on it.
- * The completions the daemon stand-in accepted are reported (`completions`) and scored by
+ *                The implementer's own act here is to send the reviewer nothing, so the run
+ *                often has one half: rig.sh boots no reviewer on an empty wake, and every term
+ *                over the reviewer's acts then reads as the terms of an agent that never ran
+ *                (BOOTS_OPTIONAL). An implementer that woke it anyway gets both halves read.
+ * The completions the daemon stand-in refused are reported (`completions`, which counts the
+ * accepted ones and is 0 for a loop the stand-in serves in `accepting`) and scored by
  * neither case: this loop runs in no phase and writes no handoff, so there is nothing for a
  * completion to carry, and what a role should have done instead of one is no part of the rule
  * these words give.
- * `ref`: both agents read skill://legion-worker/references/review-threads.md, where the loop,
- * the one reply per thread and the one thread per resolving call are defined. */
+ * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
+ * where the loop, the one reply per thread and the one thread per resolving call are defined. */
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
   const world = json(path.join(runDir, "world.json"), World);
   const threads = json(path.join(runDir, "threads.json"), Threads);
@@ -1599,11 +1604,16 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   // Each half's own session id, which is what the sender Envoy recorded is read against; a
   // transcript naming none makes the run a rig error, which `ownSession` throws, so no message
-  // is attributed to a half this cannot name.
+  // is attributed to a half this cannot name. A reviewer half with no transcript at all is a
+  // half the run never booted, which `unscored` allows only in code-defect, where the
+  // implementer's own act is to send the reviewer nothing (BOOTS_OPTIONAL, rig.sh's
+  // run_threads_closed): the terms over its sends are then the terms of an agent that never ran,
+  // and its gh calls, which are read by `by`, are none.
   const fixSender = ownSession(fixSession);
-  const reviewSender = ownSession(reviewSession);
+  const reviewSender = reviewSession.length === 0 ? undefined : ownSession(reviewSession);
   const told =
-    toldArchitect(runDir, fixSender, threads) || toldArchitect(runDir, reviewSender, threads);
+    toldArchitect(runDir, fixSender, threads) ||
+    (reviewSender !== undefined && toldArchitect(runDir, reviewSender, threads));
   // The two sends this scenario's agents own. The loop runs in `accepting`, where the daemon
   // starts no phase, so a step that sends none leaves the next role never learning its turn
   // began: the implementer's push is told to the reviewer's topic with the new head, and the
@@ -1616,12 +1626,9 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
   const toReviewerAlone = sentOnlyTo(runDir, fixSender, "reviewer");
-  const toldArchitectOfHead = publishedTo(
-    runDir,
-    reviewSender,
-    "architect",
-    tip === undefined ? [] : [tip]
-  );
+  const toldArchitectOfHead =
+    reviewSender !== undefined &&
+    publishedTo(runDir, reviewSender, "architect", tip === undefined ? [] : [tip]);
   // code-defect: the finding has one route, and it is the message to the architect. A review
   // submitted here is submitted in `accepting`, where the daemon records none
   // (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` moves nothing and a
@@ -1657,10 +1664,12 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
         approved &&
         toldArchitectOfHead &&
         moved === undefined;
-  const ref = [fixSession, reviewSession].every((entries) =>
-    readCalls(entries).some((call) =>
-      call.target.includes("skill://legion-worker/references/review-threads.md")
-    )
+  // Both halves read the reference, or the one half that ran where the run booted one (above).
+  const ref = [fixSession, ...(reviewSender === undefined ? [] : [reviewSession])].every(
+    (entries) =>
+      readCalls(entries).some((call) =>
+        call.target.includes("skill://legion-worker/references/review-threads.md")
+      )
   );
   const notes = [
     `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} completions=${completions}`,
@@ -1704,12 +1713,20 @@ const CASED: Record<string, CasedScenario> = Object.fromEntries(
 
 /** The agents a scenario's run boots after the first, each by the session directory it gets under
  * `<run>/sessions/` (rig.sh's worker_boot gives the first agent the run's own transcript and every
- * later one `<run>/sessions/<role>`). A run of such a scenario where one of them never started —
- * no transcript there, or one with no assistant message — measured no loop at all: the half that
- * did run cannot do what the score asks of the other, so the row would read as a failure of the
- * text under test when it is a failure of the rig. It is a rig error instead (unscored), as a run
- * whose own agent got no model turn already is. A scenario absent here boots one agent. */
+ * later one `<run>/sessions/<role>`). A run of such a scenario where one of them started and got
+ * no model turn — a session directory with no transcript, or one with no assistant message —
+ * measured no loop at all: the half that did run cannot do what the score asks of the other, so
+ * the row would read as a failure of the text under test when it is a failure of the rig. It is a
+ * rig error instead (unscored), as a run whose own agent got no model turn already is. A scenario
+ * absent here boots one agent. */
 const BOOTS: Record<string, string[]> = { "threads-closed": [RESOLVES] };
+/** The halves of those a run may leave unbooted, by `<scenario>:<case>`, because not booting one
+ * is the act the case measures. threads-closed's code-defect is the one: the implementer's own
+ * act there is to tell the architect and send the reviewer nothing, so a wake of none ends the
+ * loop where the rule ends it and rig.sh boots no reviewer (run_threads_closed). A half left
+ * unbooted has no session directory at all, which is how it is told from one that started and
+ * got no turn; that one stays a rig error in every case. */
+const BOOTS_OPTIONAL: Record<string, string[]> = { "threads-closed:code-defect": [RESOLVES] };
 /** The scenarios whose score reads what an agent sent, which are the scenarios the rig records
  * (rig.sh's start_recorder). A run of one of these is scored only on a whole record, opened and
  * closed by the recorder itself (`unscored`); every other scenario records nothing and reads
@@ -3954,10 +3971,11 @@ function median(values: number[]): number {
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
  *     not set up;
- *   - one of the agents it boots after the first (BOOTS) never started: that role's session
- *     directory holds no transcript, or one with no assistant message. The half that did run
- *     cannot do what the score asks of the other, so the row would read as a failure of the text
- *     under test;
+ *   - one of the agents it boots after the first (BOOTS) started and got no model turn: that
+ *     role's session directory holds no transcript, or one with no assistant message. The half
+ *     that did run cannot do what the score asks of the other, so the row would read as a failure
+ *     of the text under test. A half the run never booted at all, which has no session directory,
+ *     is a rig error too, unless the case is one not booting it is the act of (BOOTS_OPTIONAL);
  *   - it compared the wrong text: a tool call of the run (its own or a subagent's) read a file under
  *     the other label's checkout, or a skill file (a path to skills/dispatch, skills/dispatch-first,
  *     skills/dispatch-writing-specs or skills/legion-worker) anywhere but `allowed`: its own run
@@ -3991,6 +4009,7 @@ function median(values: number[]): number {
 function unscored(
   runDir: string,
   scenario: string,
+  caseName: string,
   dispatch: string | undefined,
   label: string,
   labels: Map<string, string>,
@@ -4018,7 +4037,12 @@ function unscored(
       (role) => [role, sessionIn(path.join(runDir, "sessions", role))] as const
     ),
   ];
+  // A half with no session directory is one the run never booted; a half with a directory and no
+  // model turn in it is one that started and measured nothing. The first is the act of a case
+  // that asks for it and a rig error elsewhere, the second a rig error always.
+  const optional = BOOTS_OPTIONAL[`${scenario}:${caseName}`] ?? [];
   for (const [role, booted] of halves.slice(1)) {
+    if (optional.includes(role) && !existsSync(path.join(runDir, "sessions", role))) continue;
     if (!booted.some((entry) => entry.message?.role === "assistant"))
       return `the ${role} half never started: sessions/${role} holds no transcript, or one with no assistant message`;
   }
@@ -4382,7 +4406,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const profile = path.join(work, "profiles", label);
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
-      reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
+      // The case the directory names: what the run was built for, which is what decides the
+      // halves it boots. The case the run itself recorded is read below, where it is held to this
+      // one (runCase), and a run whose two records disagree is a rig error of its own.
+      reason = unscored(dir, scenario, dirCase, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
         // A scenario that takes no case reads no case.txt and is handed "".
         const scored = score(

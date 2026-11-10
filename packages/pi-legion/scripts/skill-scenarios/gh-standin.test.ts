@@ -162,3 +162,53 @@ test("each call records the agent the run named, and none when it names one", ()
     .map((line) => JSON.parse(line).by);
   expect(recorded).toEqual(["implementer", undefined]);
 });
+
+// Catches: a stand-in with no answer for `gh api repos/<o>/<r>/compare/<a>...<b>`, which the rule
+// has the implementer run to show its push changes no code that runs (review-threads.md step 2).
+// The real GitHub API answers that form — measured on 2026-11-10, `gh api
+// repos/cybermonklabs/legion/compare/756789f8...main --jq '{status,ahead_by,behind_by}'` exited 0
+// — while this stand-in answered `gh: Not Found (HTTP 404)`, and the implementer's comparison
+// failed in all 10 text-fixes head runs of that batch. The two heads a comparison names are the
+// run's own, so it is read from the run's remote and no route serves it.
+test("a comparison of two commits is read from the run's own remote", () => {
+  const { dir, first, second } = runDir({ remote: true });
+  const compared = answer(dir, [
+    "api",
+    `repos/example/widgets/compare/${first}...${second}`,
+    "--jq",
+    "[.status, .ahead_by, .behind_by, (.files | length), .files[0].filename] | @tsv",
+  ]);
+  expect(compared).toBe(["ahead", 1, 0, 1, "docs.md"].join("\t"));
+  // The other way round is the same comparison read from the other side, as GitHub reads it.
+  expect(
+    answer(dir, [
+      "api",
+      `repos/example/widgets/compare/${second}...${first}`,
+      "--jq",
+      "[.status, .ahead_by, .behind_by, (.files | length)] | @tsv",
+    ])
+  ).toBe(["behind", 0, 1, 0].join("\t"));
+  // A comparison of one commit with itself changes nothing, which is what the fix's own
+  // comparison looks like when the implementer names the same head twice.
+  expect(
+    answer(dir, [
+      "api",
+      `repos/example/widgets/compare/${first}...${first}`,
+      "--jq",
+      "[.status, .ahead_by, .behind_by, (.files | length)] | @tsv",
+    ])
+  ).toBe(["identical", 0, 0, 0].join("\t"));
+});
+
+// Catches: a comparison answered out of the run's world for refs the remote has not got, which
+// would hand an agent counts of a comparison nobody made. GitHub answers 404 for a comparison of
+// commits a repository does not hold, and so does the stand-in, through the routes.
+test("a comparison the run's remote cannot resolve is 404, as GitHub answers it", () => {
+  const { dir } = runDir({ remote: true });
+  const call = Bun.spawnSync(
+    ["bun", STANDIN, "gh", "api", "repos/example/widgets/compare/deadbeef...cafed00d"],
+    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+  );
+  expect(call.exitCode).toBe(1);
+  expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
+});

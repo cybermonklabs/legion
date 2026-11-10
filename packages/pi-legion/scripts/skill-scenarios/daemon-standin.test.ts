@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { LegionStateResponse } from "@legion/contracts/legion-api";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -14,11 +14,21 @@ const skip = skipWithout("go");
 // makes it, and a hook cannot be registered from inside a test.
 const work = temporaryDirectory("skill-scenarios-standin");
 
-/** The stand-in, started on a port the kernel picks, with its own log and boot token file. It
- * prints `listening on http://127.0.0.1:<port>` once the socket is open, which is what this
- * waits for. */
+/** The repository rig.sh's worker world is on (its `worker_repo`, which fixture_write writes into
+ * every world.json), read from rig.sh itself so this file holds no second copy of it: the record
+ * the stand-in serves and the world the run's gh calls reach are one name or they are two
+ * worlds. */
+const WORLD_REPO =
+  /^worker_repo=(\S+)$/m.exec(readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8"))?.[1] ??
+  "";
+if (WORLD_REPO === "") throw new Error("rig.sh names no worker_repo");
+
+/** The stand-in, started on a port the kernel picks, with its own log and boot token file, on the
+ * world's repository and in `phase` when the caller names one. It prints
+ * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits
+ * for. */
 let started = 0;
-async function standin(role: string) {
+async function standin(role: string, startIn = "") {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
   // that reads the log reads its own run's lines and no earlier run's.
   started += 1;
@@ -35,7 +45,9 @@ async function standin(role: string) {
       token,
       "skills1",
       "LWEVAL-1",
+      WORLD_REPO,
       role,
+      startIn,
     ],
     { stdout: "pipe", stderr: "pipe" }
   );
@@ -48,10 +60,11 @@ async function standin(role: string) {
   }
   const url = /listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(printed)?.[1];
   if (url === undefined) throw new Error(`no address in ${printed}`);
-  const phase = async () => {
+  const record = async () => {
     const state = LegionStateResponse.parse(await (await fetch(`${url}/legion/v1/state`)).json());
-    return state.issues["LWEVAL-1"]?.phase;
+    return { issue: state.issues["LWEVAL-1"], repositories: state.repositories };
   };
+  const phase = async () => (await record()).issue?.phase;
   /** The settings the state read serves, as the body carries them: read before this checkout's
    * schema, which keeps unknown keys, so a key an older contract requires is visible here. */
   const settings = async () =>
@@ -82,7 +95,7 @@ async function standin(role: string) {
       }),
     });
   };
-  return { phase, complete, settings, stop: () => child.kill() };
+  return { phase, record, complete, settings, stop: () => child.kill() };
 }
 
 // Catches: a stand-in that serves one frozen state, where a reviewer that obeys its own rule —
@@ -138,6 +151,73 @@ test.skipIf(skip)(
         max_fix_attempts: expect.any(Number),
         worker_boot_timeout_seconds: expect.any(Number),
       });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that serves the role's own phase whatever the run is, so the loop after an
+// approval, which runs in `accepting` where the daemon starts no phase, reads `implementing` to
+// its implementer and `reviewing` to its reviewer. Each then reads a record saying it holds a
+// phase it does not hold, and the step the rule gives for `accepting` is unreachable
+// (review-threads.md step 1; rig.sh's run_threads_closed boots both halves there).
+test.skipIf(skip)(
+  "a boot names the phase the issue stands in, for either half of the loop after an approval",
+  async () => {
+    for (const role of ["implementer", "reviewer"]) {
+      const daemon = await standin(role, "accepting");
+      try {
+        expect(await daemon.phase()).toBe("accepting");
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that accepts a completion of a phase no run of the issue serves. The real
+// daemon refuses one it can attribute to no run, 409 HANDOFF_NO_RUN
+// (packages/daemon/internal/api/handoff.go, noRunCompletion), and the loop after an approval
+// holds no task at all: a stand-in answering 200 there teaches an agent that a phase it is in no
+// phase of completes, and the refusal the rule has it quote to its architect never arrives.
+test.skipIf(skip)(
+  "a completion in a phase the role works no run of is refused as the daemon refuses it",
+  async () => {
+    const daemon = await standin("implementer", "accepting");
+    try {
+      const refused = await daemon.complete(false);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({
+        code: "HANDOFF_NO_RUN",
+        error: expect.stringContaining("belongs to no run of LWEVAL-1"),
+      });
+      // Nothing moved: the issue stands where it stood, as the refusal says.
+      expect(await daemon.phase()).toBe("accepting");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in whose record names a repository the run's world has not got. Agents read
+// the record for the repository their `gh` calls name, so a second name is a second world: six of
+// the forty runs of 2026-11-10 submitted their review to `sjawhar/legion-smoke`, which this
+// stand-in named while the world was rig.sh's `worker_repo`, and the queries of the other
+// answered 404. The repository is the world's own, read from rig.sh here so the two cannot
+// disagree.
+test.skipIf(skip)(
+  "the record names the repository the run's world is on, in the issue and in the mapping",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const { issue, repositories } = await daemon.record();
+      expect(issue?.repo).toBe(WORLD_REPO);
+      expect(repositories.mapped).toEqual([{ repo: WORLD_REPO, default: true }]);
+      expect(repositories.owners).toEqual([WORLD_REPO.split("/")[0]]);
     } finally {
       daemon.stop();
     }

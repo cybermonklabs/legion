@@ -4,8 +4,11 @@
 // through, its exit status, the agent that made the call when the run names one
 // ($SKILL_SCENARIO_AGENT, a run that boots one agent per role), and the pull request body it
 // kept, if any), then answered from the
-// first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". A call no
-// route matches answers `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
+// first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". Three
+// answers are the run's own remote rather than a route's, since each is a fact of the run and no
+// frozen answer could tell one run from another: the pull request's head, its diff, and the
+// comparison of two commits (`comparison`, which needs no route at all). A call no route matches
+// and no remote serves prints `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
 // `--json a,b` picks fields and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr
 // edit --body`, `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an
 // object that has a `body` then answers with the new one, as GitHub's next read would, and the
@@ -106,19 +109,6 @@ function exit(status: number): never {
   );
   process.exit(status);
 }
-if (!route) {
-  console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
-  exit(1);
-}
-if (body !== undefined) {
-  const edited = routes.map((candidate) =>
-    typeof candidate.stdout === "object" && candidate.stdout !== null && "body" in candidate.stdout
-      ? { ...candidate, stdout: { ...candidate.stdout, body } }
-      : candidate
-  );
-  writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
-  kept = body;
-}
 /** The run's world (rig.sh's worker_fixture), or undefined when the run has none: a scenario
  * that builds no world writes no world.json, and a call of its own reads the fixture's answer.
  * Only a missing file is "no world". A world.json that does not parse is the rig's own fault, and
@@ -166,7 +156,96 @@ function branchDiff(nameOnly: boolean): string | undefined {
   if (world === undefined) return undefined;
   return fromRemote("diff", ...(nameOnly ? ["--name-only"] : []), world.base, world.branch);
 }
-let output: unknown = route.stdout ?? "";
+/** `repos/<owner>/<repo>/compare/<base>...<head>`, with the query string `gh api` lets a caller
+ * append. A ref may carry dots, and `...` is the separator, so each side is everything up to the
+ * last `...`. */
+const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?$/;
+/** What GitHub answers for `gh api repos/<o>/<r>/compare/<base>...<head>`, read from the run's
+ * own remote at the call, or undefined when this call is no such comparison or the remote cannot
+ * resolve both refs. The rule has the implementer read that comparison to show its push changes
+ * no code that runs (`skills/legion-worker/references/review-threads.md`, step 2), and the real
+ * GitHub API answers it: measured on 2026-11-10, `gh api
+ * repos/cybermonklabs/legion/compare/756789f8...main` printed `status`, `ahead_by`, `behind_by`
+ * and 300 files and exited 0, while this stand-in answered `gh: Not Found (HTTP 404)` and the
+ * implementer's comparison failed in all 10 text-fixes head runs of the batch before this. No
+ * route serves it and none should: an answer frozen into the fixture would read the same
+ * whatever the run pushed, where the two heads a comparison names are the run's own. `ahead_by`
+ * and `behind_by` are the commits each side holds that the other has not, `status` is GitHub's
+ * word for that pair, and `files` is the diff from the merge base, which is the change the head
+ * carries. Renames are not detected, so a moved file reads as one added and one removed, as
+ * GitHub's own answer does when it finds no rename. A ref the remote cannot resolve is no
+ * comparison of this world, and the call falls through to the routes, whose 404 is GitHub's own
+ * answer for a comparison of refs a repository has not got. */
+function comparison(): Record<string, unknown> | undefined {
+  if (as !== "gh" || args[0] !== "api") return undefined;
+  if (/(^|\s)(-X|--method)\s?(POST|PATCH|PUT|DELETE)(\s|$)/.test(joined)) return undefined;
+  const named = args.map((arg) => COMPARE.exec(arg)).find((match) => match !== null);
+  const [, base = "", head = ""] = named ?? [];
+  if (base === "" || head === "") return undefined;
+  const range = [`${base}...${head}`];
+  const ahead = fromRemote("rev-list", "--count", `${base}..${head}`);
+  const behind = fromRemote("rev-list", "--count", `${head}..${base}`);
+  const counts = fromRemote("diff", "--numstat", "--no-renames", ...range);
+  const letters = fromRemote("diff", "--name-status", "--no-renames", ...range);
+  if (ahead === undefined || behind === undefined) return undefined;
+  if (counts === undefined || letters === undefined) return undefined;
+  const aheadBy = Number(ahead);
+  const behindBy = Number(behind);
+  const status =
+    aheadBy === 0 && behindBy === 0
+      ? "identical"
+      : behindBy === 0
+        ? "ahead"
+        : aheadBy === 0
+          ? "behind"
+          : "diverged";
+  const words: Record<string, string> = { A: "added", M: "modified", D: "removed" };
+  const statusOf = new Map(
+    letters
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => {
+        const [letter = "", file = ""] = line.split("\t");
+        return [file, words[letter.slice(0, 1)] ?? "modified"] as const;
+      })
+  );
+  const files = counts
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [added = "", deleted = "", filename = ""] = line.split("\t");
+      // A binary file's counts are `-` in numstat, and GitHub reports 0 for one.
+      const additions = Number(added) || 0;
+      const deletions = Number(deleted) || 0;
+      return {
+        filename,
+        status: statusOf.get(filename) ?? "modified",
+        additions,
+        deletions,
+        changes: additions + deletions,
+      };
+    });
+  return { status, ahead_by: aheadBy, behind_by: behindBy, total_commits: aheadBy, files };
+}
+/** The comparison this call asks for, when it asks for one the run's remote can answer. It is
+ * read before the route check, since no route answers a comparison and a 404 there reads to the
+ * agent as a repository that does not hold the two commits its own run made. */
+const compared = comparison();
+if (!route && compared === undefined) {
+  console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
+  exit(1);
+}
+if (body !== undefined) {
+  const edited = routes.map((candidate) =>
+    typeof candidate.stdout === "object" && candidate.stdout !== null && "body" in candidate.stdout
+      ? { ...candidate, stdout: { ...candidate.stdout, body } }
+      : candidate
+  );
+  writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
+  kept = body;
+}
+// The comparison, where the call asked for one, is the answer; every other call is its route's.
+let output: unknown = compared ?? route?.stdout ?? "";
 if (typeof output === "object" && output !== null && "headRefOid" in output) {
   const tip = branchTip();
   if (tip !== undefined) {
@@ -203,5 +282,5 @@ if (filter !== undefined) {
   }
 }
 if (text !== "") process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
-if (route.stderr) process.stderr.write(route.stderr);
-exit(route.exit ?? 0);
+if (route?.stderr) process.stderr.write(route.stderr);
+exit(route?.exit ?? 0);

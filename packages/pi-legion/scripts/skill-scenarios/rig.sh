@@ -1572,19 +1572,28 @@ tester_proof_world() {
   fixture_write '[]' '""' '[]'
 }
 
-# round_world INDEX START GUARD [DOC_LINE] [TRIGGER] builds the base both worlds of a round after
+# The two text findings a round's world carries, each a named constant because a world states
+# which findings it has by passing them and no world takes either by default. The sentence the
+# change makes false, and a comment naming a push trigger `on:` does not carry: closing either
+# changes no code that runs. The negative control is the world that passes neither
+# (approved_world's dropped guard), and it says so in the same place, so no edit to a default
+# can quietly give it a text finding it is the control for not having.
+text_finding_doc_line='It prints the name exactly as it was given, spaces and all.'
+text_finding_trigger=' and on every push to main'
+
+# round_world INDEX START GUARD DOC_LINE TRIGGER builds the base both worlds of a round after
 # the implementer are built on, every step they share: the tester-proof world's commits, the two
 # files such a round reads — docs/cli.md, whose last sentence is DOC_LINE, and
 # .github/workflows/greet.yml, whose comment names TRIGGER beside the pull request trigger `on:`
 # carries (a file the implement App may push and the review App may not) — the implementer's
 # handoff over the four files its change touches, the tester's handoff body at $R/test.json,
 # which the runner records beside the implementer's, the issue workspace, and the diff `gh pr
-# diff` serves, which fixture_round_handoff leaves in $diff. DOC_LINE and TRIGGER default to the
-# two text findings every world but the dropped guard's carries: the sentence this change makes
-# false, and a comment naming a push trigger the file does not carry. Closing either changes no
-# code that runs. GUARD is fixture_cli's: `dropped` drops the CLI's blank-name guard, so a blank
-# name prints a greeting where R2 of the seeded spec asks for the usage line and exit 2, and a
-# behavioural finding stands.
+# diff` serves, which fixture_round_handoff leaves in $diff. DOC_LINE and TRIGGER are the world's
+# own and are required: every caller names the text findings it means its world to carry, an
+# empty TRIGGER being an honest comment and so a finding the world has not got. GUARD is
+# fixture_cli's: `dropped` drops the CLI's blank-name guard, so a blank name prints a greeting
+# where R2 of the seeded spec asks for the usage line and exit 2, and a behavioural finding
+# stands.
 #
 # It leaves the caller's own $src, $when, $C1, $diff, $worker_pr and $worker_pr_url set, as the
 # steps it calls do, and in $base_routes the two gh routes both worlds serve: `resolveReviewThread`,
@@ -1592,9 +1601,8 @@ tester_proof_world() {
 # of this fixture, and `gh pr diff`. Each world adds its own routes around them, in the order the
 # stand-in matches them (gh-standin.ts).
 round_world() {
-  local index=$1 start=$2 guard=$3
-  local doc_line=${4-'It prints the name exactly as it was given, spaces and all.'}
-  local workflow_trigger=${5-' and on every push to main'}
+  [ $# = 5 ] || fail "round_world: expected INDEX START GUARD DOC_LINE TRIGGER, got $# argument(s)"
+  local index=$1 start=$2 guard=$3 doc_line=$4 workflow_trigger=$5
   fixture_open "$index" "$start"
   fixture_docs_before
   fixture_first_commit
@@ -1618,7 +1626,7 @@ round_world() {
 # pushes nothing at all.
 review_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff base_routes extra
-  round_world "$index" "$start" "$guard"
+  round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
   extra=$(jq -n --argjson base "$base_routes" '[
     $base.resolve,
@@ -1658,14 +1666,16 @@ review_world() {
 approved_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff base_routes extra
   local threads entries threads_line reviews
-  # The threads the approval left, and the two files the dropped guard's world needs in place of
-  # round_world's own. Every world but that one documents the name as printed exactly as given,
-  # which the trim makes false, and carries a workflow comment naming a push trigger the file
-  # does not carry: two text findings, in the order the reviewThreads route lists them, each with
-  # what the reviewer wrote and what its PR body entry says still stands. The dropped guard's
-  # documents what R2 asks for, which only that guard makes false, and carries an honest comment,
-  # so its one finding is the code's and no text fix closes it.
-  local -a guard_files=()
+  # The threads the approval left, and the two files the world is written with. Every world but
+  # the dropped guard's documents the name as printed exactly as given, which the trim makes
+  # false, and carries a workflow comment naming a push trigger the file does not carry: two text
+  # findings, in the order the reviewThreads route lists them, each with what the reviewer wrote
+  # and what its PR body entry says still stands. The dropped guard's documents what R2 asks for,
+  # which only that guard makes false, and carries an honest comment — the empty trigger — so its
+  # one finding is the code's and no text fix closes it. Both sets are passed to round_world,
+  # which takes no default, so the negative control's own text is written here rather than left
+  # to what some other world does not override.
+  local doc_line=$text_finding_doc_line trigger=$text_finding_trigger
   threads=$(jq -n '[
     {id:"PRRT_kwDOfix001", path:"docs/cli.md", line:5,
      body:"The change trims the name, so `It prints the name exactly as it was given, spaces and all` is false. Say that it trims the spaces around the name.",
@@ -1675,14 +1685,15 @@ approved_world() {
      open:"the comment still names a push trigger the file does not carry"}
   ]')
   if [ -n "$guard" ]; then
-    guard_files=('A blank name, like no name at all, prints the usage line on stderr and exits 2.' '')
+    doc_line='A blank name, like no name at all, prints the usage line on stderr and exits 2.'
+    trigger=''
     threads=$(jq -n '[
       {id:"PRRT_kwDOfix101", path:"docs/cli.md", line:5,
        body:"`bun greet.ts \"  \"` prints a greeting and exits 0, so this sentence is false. R2 of the issue asks for the usage line and exit 2 on a blank name.",
        open:"a blank name still prints a greeting, so the sentence does not hold"}
     ]')
   fi
-  round_world "$index" "$start" "$guard" "${guard_files[@]}"
+  round_world "$index" "$start" "$guard" "$doc_line" "$trigger"
   # The section as the approval left it (skill://legion-worker/references/pr-body.md): the count
   # of what is open, then one entry per open thread, each stamped with the head the reviewer
   # read. The count line says what the counts are and nothing about who answers or resolves a
@@ -1922,6 +1933,13 @@ $2
 # and the world the scorer reads ($R/world.json), whose head is the PR's head, the implementer's
 # code commit, and whose base is the branch the pull request is open against, the other side of
 # the diff the gh stand-in serves from the run's own remote (gh-standin.ts).
+#
+# `gh pr list` is among the shared routes because the worker skill has a role with no pull
+# request number find one that way (`gh pr list --repo <repo> --head legion/<KEY> --state open
+# --json number`), and a 404 there reads to the agent as a branch with no pull request open on
+# it. The world has exactly one open pull request and its head is `legion/<key>`, so that one
+# pull request is GitHub's answer to any listing of this world's open ones; no role of these
+# scenarios lists another head.
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --argjson number "$worker_pr" --argjson extra "$1" \
@@ -1934,6 +1952,7 @@ fixture_write() {
                         {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
     | {routes:($extra + [
       {match:"^gh pr view", stdout:$pr},
+      {match:"^gh pr list", stdout:[$pr]},
       {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
       {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
       {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
@@ -1969,10 +1988,15 @@ run_project() {
   printf 'skills%.16s\n' "$digest"
 }
 
-# worker_boot NAME N ROLE boots the label's checkout's phase worker for ROLE on the run's issue
-# and waits for it: the part of a worker run that is the same in every phase. The run's prompt
-# and its world are the scenario's own (run_tester_proof, run_reviewer_text_findings,
-# run_threads_closed).
+# worker_boot NAME PROJECT ROLE [PHASE] boots the label's checkout's phase worker for ROLE on the
+# run's issue and waits for it: the part of a worker run that is the same in every phase. The run's
+# prompt and its world are the scenario's own (run_tester_proof, run_reviewer_text_findings,
+# run_threads_closed). PROJECT is the run's own Legion project, computed once by cmd_run and
+# passed to the recorder and to every boot of the run (run_project): two copies of it drift
+# silently, since the recorder would subscribe to one project's topics while the agents published
+# on another's and every send would read as never made. PHASE is the phase the issue stands in
+# while this agent runs, empty for the phase the role's own worker is started in (the daemon
+# stand-in's default); threads-closed passes `accepting`, where the daemon starts no phase.
 #
 # A run that boots a second agent calls this again with that agent's role, after writing its
 # prompt: the two run one after the other on the one run directory, so the second reads the gh
@@ -1982,11 +2006,8 @@ run_project() {
 # calls it records (SKILL_SCENARIO_AGENT), while the run keeps one calls.jsonl, one pushes.log
 # and one daemon.log.
 worker_boot() {
-  local name=$1 n=$2 role=$3 state project port
+  local name=$1 project=$2 role=$3 phase=${4:-} state port
   state=$R/state
-  # Each run its own Legion project, so no run claims another's role token or reads a message
-  # addressed to one: the run's scenario, case, label and number, and its batch (run_project).
-  project=$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
@@ -2010,7 +2031,11 @@ worker_boot() {
   fi
   mkdir -p "$sessions_dir"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
+  # The repository is the world's own ($worker_repo, which fixture_write writes into world.json),
+  # so the record the agent reads names the repository its gh calls reach: a stand-in naming
+  # another sends the run's review to a repository the world has not got.
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" \
+    "$project" "$worker_key" "$worker_repo" "$role" "$phase"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
@@ -2051,14 +2076,14 @@ worker_run_world() {
 }
 
 run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 pr head version
+  local name=$1 project=$2 index=$3 start=$4 pr head version
   worker_run_world "$index" "$start"
   version=$(jq -r .implement.version "$R/fixture.json")
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
   # record in (packages/daemon/internal/workflow/effects.go).
   printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
-  worker_boot "$name" "$n" tester
+  worker_boot "$name" "$project" tester
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
@@ -2070,8 +2095,8 @@ run_tester_proof() {
 # what it found. The case is in the run's name and in <run>/case.txt, which reviewerTextFindings
 # reads back and holds to the name.
 run_reviewer_text_findings() {
-  local name=$1 n=$2 index=$3 start=$4 review=$5 pr head version
-  start_recorder
+  local name=$1 project=$2 index=$3 start=$4 review=$5 pr head version
+  start_recorder "$project"
   worker_run_world "$index" "$start" "$review"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   version=$(jq -r .test.version "$R/fixture.json")
@@ -2079,7 +2104,7 @@ run_reviewer_text_findings() {
   # record in (packages/daemon/internal/workflow/effects.go): for a review round, the tester's.
   printf 'Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s. Handoff: test version %s (dispatch handoff-read --issue %s --phase test --version %s). Review it and finish your phase.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
-  worker_boot "$name" "$n" reviewer
+  worker_boot "$name" "$project" reviewer
   # What the run left on its issue: every handoff record, each with its body, beside the review
   # submission the gh stand-in recorded, which is what the score reads.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -2096,12 +2121,17 @@ run_reviewer_text_findings() {
 # The bus comes from the batch's own services file: `rig.sh run` is a process of its own, and the
 # URL the batch resolved lives there and in no variable of this one. It is exported rather than
 # passed as an argument, since a URL may carry userinfo and an argument list is world-readable.
+#
+# start_recorder PROJECT takes the run's project rather than computing one of its own: the
+# recorder subscribes to the topics of that project, and the agents publish on the topics
+# worker_boot gives them, so two computations of it that drift would leave every send read as
+# never made — a silent fail of the run rather than an error of the rig (cmd_run).
 start_recorder() {
+  local project=$1
   : >"$R/published.jsonl"
   export SKILL_SCENARIOS_NATS_URL
   SKILL_SCENARIOS_NATS_URL=$(sed -n 's/^ENVOY_NATS_URL=//p' "$services_env")
-  start_process record bun "$here/record-publishes.ts" "$R/published.jsonl" \
-    "legion-$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")-"
+  start_process record bun "$here/record-publishes.ts" "$R/published.jsonl" "legion-$project-"
   await_start record "$record_pid" 30 "the publish recorder to subscribe" \
     grep -q '^recording ' "$R/logs/record.log"
 }
@@ -2130,9 +2160,14 @@ reviewer_wake() {
 # names; then the reviewer, woken by the implementer's own message and by nothing else. Neither
 # is told what to do with a thread: that is the rule the scenario measures. The case is in the
 # run's name and in <run>/case.txt, which threadsClosed reads back and holds to the name.
+#
+# Both halves are booted in `accepting`: the round ended on the reviewer's approval, and that is
+# where the issue stands while the architect reads it (review-threads.md step 1). So each half's
+# `read_record` answers `accepting`, and the daemon stand-in refuses either half's
+# `handoff_complete` as the daemon does, since no run of any phase serves it there.
 run_threads_closed() {
-  local name=$1 n=$2 index=$3 start=$4 threads_case=$5 pr head open wake
-  start_recorder
+  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake
+  start_recorder "$project"
   worker_run_world "$index" "$start" "$threads_case"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   seed_ts review-handoff "$R/fixture.json" "$R/review.json"
@@ -2141,14 +2176,13 @@ run_threads_closed() {
   open=$(jq -r '.[] | "- Thread \(.id), \(.path): \(.body)"' "$R/threads.json")
   printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
-  worker_boot "$name-implementer" "$n" implementer
+  worker_boot "$name-implementer" "$project" implementer accepting
   # The reviewer's own wake is the implementer's message and nothing else: this loop runs in
   # `accepting`, where the daemon starts no phase and no architect speaks, so the reviewer learns
   # the fix is pushed from that message alone (review-threads.md step 2). An implementer that
-  # published none leaves the reviewer with no wake at all, which is what the loop's second half
-  # then is; the run fails on the send itself (threadsClosed's `toldReviewer`), and inventing a
-  # wake here would hand the reviewer the head the implementer never named. What the reviewer was
-  # given is kept whole in <run>/reviewer-wake.json, the two cases apart in its `wake`.
+  # published none leaves the reviewer with no wake at all; inventing one here would hand the
+  # reviewer the head the implementer never named. What the reviewer was given is kept whole in
+  # <run>/reviewer-wake.json, the two cases apart in its `wake`.
   wake=$(reviewer_wake)
   # One delivery per message, in Envoy's own order, which is what the reviewer's session would
   # have been handed; an implementer that published none leaves the prompt empty.
@@ -2156,7 +2190,19 @@ run_threads_closed() {
     <<<"$wake" >"$R/prompt.txt"
   jq -n --argjson wake "$wake" --rawfile prompt "$R/prompt.txt" \
     '{from:"implementer", wake:$wake, prompt:$prompt}' >"$R/reviewer-wake.json"
-  worker_boot "$name-reviewer" "$n" reviewer
+  # In code-defect the implementer's own act is to tell the architect and send the reviewer
+  # nothing, so a wake of none is the loop ending where the rule ends it and there is no second
+  # half to run. Booting one anyway put a reviewer in front of an empty prompt and then counted
+  # whatever it did towards the case's pass (`!approvedAny`, `resolves.length === 0`,
+  # `moved === undefined`): the rig's own agent answering the rig's own question. The run is
+  # scored on the halves it ran (score.ts's BOOTS and unscored). In text-fixes the implementer
+  # must have sent a wake, so the reviewer is booted on whatever it sent, an empty prompt
+  # included, and the empty wake is the fail on `toldReviewer` it already was.
+  if [ "$threads_case" = code-defect ] && [ "$(jq length <<<"$wake")" -eq 0 ]; then
+    note "$name: no reviewer half — the implementer sent the reviewer nothing, which is the act code-defect asks for"
+  else
+    worker_boot "$name-reviewer" "$project" reviewer accepting
+  fi
   # What the run left on its issue: every handoff record, each with its body, beside the calls the
   # gh stand-in recorded and the pushes the remote logged, which are what the score reads.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -2200,7 +2246,7 @@ threads_case() {
 
 cmd_run() {
   [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|reviewer-text-findings|threads-closed|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>"
-  local scenario=$1 n=$3 index=$4 start=$5 name run_case
+  local scenario=$1 n=$3 index=$4 start=$5 name run_case project
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
@@ -2217,12 +2263,18 @@ cmd_run() {
   # The run's own record of its case, which the scorer holds to the name above.
   [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
   cp "$P/built-from" "$R/built-from"
+  # The run's own Legion project, computed here and nowhere else, so no run claims another's role
+  # token or reads a message addressed to one: the run's scenario, case, label and number, and
+  # its batch (run_project). Its recorder subscribes to this project's topics and its agents
+  # publish on them, and a second computation of it that drifted from this one would leave every
+  # send read as never made, with nothing anywhere saying so (start_recorder, worker_boot).
+  project=$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")
   case $scenario in
   ask-on-message) run_ask_on_message "$name" ;;
   measure-before-ask) run_measure_before_ask "$name" ;;
-  tester-proof) run_tester_proof "$name" "$n" "$index" "$start" ;;
-  reviewer-text-findings) run_reviewer_text_findings "$name" "$n" "$index" "$start" "$run_case" ;;
-  threads-closed) run_threads_closed "$name" "$n" "$index" "$start" "$run_case" ;;
+  tester-proof) run_tester_proof "$name" "$project" "$index" "$start" ;;
+  reviewer-text-findings) run_reviewer_text_findings "$name" "$project" "$index" "$start" "$run_case" ;;
+  threads-closed) run_threads_closed "$name" "$project" "$index" "$start" "$run_case" ;;
   brainstorm) run_brainstorm "$name" ;;
   askgate) run_askgate "$name" "$run_case" ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;

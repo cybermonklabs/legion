@@ -15,7 +15,12 @@
  * tool's grant request, its completion, and the state document. The grant rule mirrors the real
  * daemon's: a grant lives for 60 seconds and redeems any number of times while it lives; an
  * unknown or expired grant id answers 403 `{"error":"Invalid or expired grant"}`. Nothing is
- * single-use. A completion of a phase that ends with a handoff record (daemon-pane.go's handoff
+ * single-use. A completion is served only while the issue stands in the phase this stand-in's
+ * role works: started in any other phase, every `handoff_complete` is refused 409
+ * `HANDOFF_NO_RUN`, as the daemon refuses a completion it can attribute to no run of the issue
+ * (`packages/daemon/internal/api/handoff.go`, `noRunCompletion`). That is the loop after an
+ * approval, which runs in `accepting`, where the daemon starts no phase and the claim holds no
+ * task at all. A completion of a phase that ends with a handoff record (daemon-pane.go's handoff
  * word for the role's phase) must name one, `handoffId` and a positive `handoffVersion`, and is
  * refused 400 `HANDOFF_RECORD_REQUIRED` otherwise; a completion of a phase that ends with none
  * and names one is refused 409 `HANDOFF_RECORD_MISMATCH`; both as the real daemon refuses them
@@ -32,11 +37,15 @@
  * the daemon; a completion's line carries the record it named, and a backward move's the phase it
  * asked for and why (score.ts threadsClosed).
  *
- * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>`
- * The state document holds that one issue, in the first phase its role works (daemon-pane.go's
- * `phase <role>`): the implementer works implementing and retro, and the daemon starts it in
- * either. Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the
- * kernel's pick).
+ * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <repo>
+ * <role> [phase]`
+ * The state document holds that one issue, on <repo>, which is the run's own world's repository
+ * (rig.sh's $worker_repo, the same name its world.json carries): a record naming another sends
+ * the agent's review to a repository the world has not got. The issue stands in [phase], or,
+ * where the caller names none, in the first phase its role works (daemon-pane.go's `phase
+ * <role>`): the implementer works implementing and retro, and the daemon starts it in either.
+ * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
+ * pick).
  */
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
@@ -50,22 +59,30 @@ import {
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
 
 const GRANT_TTL_MS = 60_000;
-const [portArg, logFile, bootTokenFile, project, issue, role] = Bun.argv.slice(2);
+const [portArg, logFile, bootTokenFile, project, issue, repo, role, phaseArg = ""] =
+  Bun.argv.slice(2);
 if (
   portArg === undefined ||
   logFile === undefined ||
   bootTokenFile === undefined ||
   project === undefined ||
   issue === undefined ||
+  repo === undefined ||
   role === undefined
 ) {
   console.error(
-    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>"
+    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <repo> <role> [phase]"
   );
   process.exit(2);
 }
 if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
+  process.exit(2);
+}
+/** The owner of the run's repository, which is the one owner the project maps. */
+const [REPO_OWNER = ""] = repo.split("/");
+if (REPO_OWNER === "" || !repo.includes("/")) {
+  console.error(`${repo} is not an <owner>/<name> repository`);
   process.exit(2);
 }
 /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
@@ -74,11 +91,20 @@ const ROLE_TOKEN = roleToken(project, issue, role);
 const SESSION_SECRET = "rig-secret";
 
 const startedAt = new Date().toISOString();
-/** The phase the role works, the first of the transition table it works, and the word of the
- * handoff record that phase ends with, empty when it ends with none. */
-const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n");
-/** `GET /legion/v1/state`: the one issue the worker holds, admitted in the phase its role works
- * (`workflow.RoleFor`, through daemon-pane.go), on the rig's one repository. `capabilities` is the
+/** The phase the role's own worker is started in, the first of the transition table it works,
+ * and the word of the handoff record that phase ends with, empty when it ends with none. */
+const [ROLE_PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", role]).split(
+  "\n"
+);
+/** The phase the issue stands in for this run: the caller's, or the role's own when it names
+ * none. A caller that names another is a run of a loop the daemon starts no phase for, and a
+ * completion there belongs to no run (`handle`'s `handoff/complete`). */
+const PHASE = phaseArg === "" ? ROLE_PHASE : phaseArg;
+/** `GET /legion/v1/state`: the one issue the worker holds, standing in the phase this stand-in
+ * was started for, on the run's own repository. That repository is the world's, given by the
+ * caller and never written twice: a record that named one repository while the run's gh
+ * stand-in served another had agents query both, the second answering 404, and six of the forty
+ * runs of 2026-11-10 submitted their review to the repository the record named. `capabilities` is the
  * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
  * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
  * durable consumers and `repositories` the project's mapping, each of which the reader requires;
@@ -99,7 +125,7 @@ const stateIn = (phase: string) =>
         phase,
         status: "in_progress",
         tree: issue,
-        repo: "sjawhar/legion-smoke",
+        repo,
         defaultBranch: "main",
         workers: {},
       },
@@ -110,8 +136,8 @@ const stateIn = (phase: string) =>
     wakesWaiting: [],
     capabilities: [],
     repositories: {
-      owners: ["sjawhar"],
-      mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
+      owners: [REPO_OWNER],
+      mapped: [{ repo, default: true }],
       refused: [],
       withoutWebhookApp: [],
       caches: [],
@@ -129,23 +155,25 @@ const stateIn = (phase: string) =>
     consumers: [],
   });
 
-/** The phase the stand-in serves now, which starts as the role's own and moves when that phase
- * ends. The daemon ends a review round on both halves, the review fact and the completion, and
- * the issue then stands in `accepting`, where the loop after an approval that leaves text
- * findings open runs (`skills/legion-worker/references/review-threads.md`, step 1). That step has
- * the reviewer read its record and send to the implementer only once the record shows
- * `accepting`, so a stand-in whose state never moved would answer `reviewing` for ever and make
- * the step unreachable: a reviewer that obeyed the rule would score as one that never sent.
+/** The phase the stand-in serves now, which starts as the phase it was started for and moves
+ * when that phase ends. The daemon ends a review round on both halves, the review fact and the
+ * completion, and the issue then stands in `accepting`, where the loop after an approval that
+ * leaves text findings open runs (`skills/legion-worker/references/review-threads.md`, step 1).
+ * That step has the reviewer read its record and send to the implementer only once the record
+ * shows `accepting`, so a stand-in whose state never moved would answer `reviewing` for ever and
+ * make the step unreachable: a reviewer that obeyed the rule would score as one that never sent.
  * Measured on the batch of 2026-11-08T13:08Z, where all five head runs approved correctly and
  * every one read `toldImplementer=false` for this reason. Only `reviewing` moves: the rig's run
  * ends with any other phase's completion, and no scenario reads the record after it. It moves on
  * any accepted completion of that phase, a round that submitted `REQUEST_CHANGES` included,
  * because this stand-in sees no review: the gh stand-in records those, and the two share nothing.
  * That is wider than the daemon, which moves an issue to `accepting` only on an approval, and it
- * is safe for these scenarios because the only one that completes a reviewing phase is
- * `reviewer-text-findings`, whose `defect` case the score reads by the submission rather than by
- * the record. A scenario that read the record after a `REQUEST_CHANGES` would need the review
- * recorded here first. */
+ * is safe for these scenarios because `reviewer-text-findings` is the one of them that stands in
+ * `reviewing` at all, and its `defect` case the score reads by the submission rather than by the
+ * record. threads-closed's reviewer completes its round too, but both its halves are started in
+ * `accepting` (rig.sh's run_threads_closed), where no completion is accepted and nothing moves.
+ * A scenario that read the record after a `REQUEST_CHANGES` would need the review recorded here
+ * first. */
 let servedPhase = PHASE;
 
 interface LogLine {
@@ -246,6 +274,22 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
       const refused = resolveGrant(parsed.data.grantId);
       if (refused) return { response: refused };
+      // The daemon attributes a completion to a run of the issue's own generation and phase, and
+      // refuses one it can attribute to none (`noRunCompletion`, with `heldTaskNotCurrent`'s
+      // reason for the task the claim holds). A worker started in a phase its role does not work
+      // holds no task at all: the loop after an approval runs in `accepting`, where the daemon
+      // starts no phase, so neither of its halves may complete one. The message is the daemon's,
+      // because the skill has the worker quote it to its architect.
+      if (PHASE !== ROLE_PHASE) {
+        const held = `this claim holds no task at all, and ${issue} is on generation 1 in ${PHASE}`;
+        return {
+          response: failure(
+            409,
+            "HANDOFF_NO_RUN",
+            `this completion belongs to no run of ${issue}: ${held}; nothing was recorded. Push nothing further, end this turn without completing and tell the architect; if the daemon queues this claim a generation-1 ${PHASE} task (none may: this run's phase can be another claim's) and its work and handoff are already done, call the same handoff_complete in that task's turn, and never redo the work or write a second handoff`
+          ),
+        };
+      }
       const { handoffId, handoffVersion } = parsed.data;
       if (HANDOFF_WORD !== "" && (handoffId === undefined || handoffVersion === undefined)) {
         const write = `\`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\``;

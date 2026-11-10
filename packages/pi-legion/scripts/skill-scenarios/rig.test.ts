@@ -710,6 +710,254 @@ describe("fixture_head_commit", () => {
   });
 });
 
+// The two text findings a round's world carries are named constants (rig.sh's
+// text_finding_doc_line and text_finding_trigger), and every world passes round_world the pair it
+// means to have. round_world takes no default, because a default is what made the negative
+// control's own text invisible: `${5-…}` kept the push-trigger comment out of the code-defect
+// world through an unset fifth argument, and `${5:-…}` would have put it back, adding a second
+// text-only finding to the control with no test anywhere to notice.
+describe("round_world and the worlds' own text findings", () => {
+  /** WORLD built with GUARD, with round_world stubbed: the arguments it was given, and what the
+   * stub had to set for the rest of the world to build (round_world's own outputs). */
+  function built(world: string, guard: string) {
+    const dir = freshDir(`world-text-${world}`);
+    const result = bash(
+      [
+        fn("fail"),
+        fn(world),
+        'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
+        "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001;",
+        '  base_routes=\'{"resolve":{"match":"r"},"diff":{"match":"d"}}\'; }',
+        "fixture_body() { :; }",
+        "fixture_checks() { :; }",
+        "fixture_write() { :; }",
+        "R=$1 worker_key=LWEVAL-1",
+        "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    const written = readFileSync(path.join(dir, "round-args"), "utf8");
+    return written.split("\n").slice(0, -1);
+  }
+
+  // Catches: a world that takes a finding from a default rather than naming it, so an edit to the
+  // default moves a world that never mentions it.
+  test("each world names the text findings it carries", () => {
+    expect(built("review_world", "")).toEqual(["1", "100", "", "THE-DOC-LINE", "THE-TRIGGER"]);
+    expect(built("review_world", "dropped")).toEqual([
+      "1",
+      "100",
+      "dropped",
+      "THE-DOC-LINE",
+      "THE-TRIGGER",
+    ]);
+    expect(built("approved_world", "")).toEqual(["1", "100", "", "THE-DOC-LINE", "THE-TRIGGER"]);
+  });
+
+  // Catches: a negative control that quietly gains a text finding. Its one finding is the code's,
+  // and the fifth argument it passes is the empty trigger — an honest workflow comment — which is
+  // a finding it is the control for not having.
+  test("the dropped guard's world documents R2 and carries an honest workflow comment", () => {
+    expect(built("approved_world", "dropped")).toEqual([
+      "1",
+      "100",
+      "dropped",
+      "A blank name, like no name at all, prints the usage line on stderr and exits 2.",
+      "",
+    ]);
+  });
+
+  // Catches: a round_world that answers a caller naming no text at all, which is the default
+  // coming back.
+  test("round_world refuses a call that names no doc line and trigger", () => {
+    const result = bash(`${fn("fail")}\n${fn("round_world")}\nround_world 1 100 ''`);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("expected INDEX START GUARD DOC_LINE TRIGGER");
+  });
+});
+
+// What worker_boot hands the daemon stand-in. Catches: a project computed a second time here
+// rather than taken from the run (the recorder would subscribe to one project's topics while the
+// agents published on another's, and every send would read as never made); a record naming a
+// repository the world has not got, which had agents query two repositories and the second
+// answer 404; and a boot that names no phase, which serves the role's own phase to a loop the
+// daemon starts no phase for.
+describe("worker_boot", () => {
+  /** worker_boot for ROLE in PHASE, with every process it starts stubbed, on a run whose world
+   * fixture_write wrote: what it handed the daemon stand-in, and that world's own repository. */
+  function boot(role: string, phase: string) {
+    const dir = freshDir(`worker-boot-${role}`);
+    mkdirSync(path.join(dir, "logs"), { recursive: true });
+    writeFileSync(path.join(dir, "logs", "daemon.log"), "listening on http://127.0.0.1:4321\n");
+    writeFileSync(path.join(dir, "worker.env"), "");
+    writeFileSync(path.join(dir, "services.env"), "");
+    const result = bash(
+      [
+        fn("worker_boot"),
+        fn("fixture_write"),
+        'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; }',
+        "await_start() { :; }",
+        "base_env() { :; }",
+        "standins() { :; }",
+        "launch() { :; }",
+        "bun() { :; }",
+        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 booted='' daemon_pid=''",
+        "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
+        "worker_pr_url=https://example.invalid/pull/1001",
+        "services_env=$R/services.env work=$R/work dispatch_port=1 profile=$R/p co=$R/c",
+        "fixture_write '[]' '\"\"' '[]'",
+        'worker_boot the-run "$4" "$5" "$6"',
+      ].join("\n"),
+      [dir, import.meta.dir, "example/widgets", "skillsproject1", role, phase]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return {
+      started: readFileSync(path.join(dir, "started-daemon"), "utf8").trim(),
+      world: JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")),
+    };
+  }
+
+  test("the stand-in is given the run's project, the world's repository and the phase", () => {
+    const { started, world } = boot("implementer", "accepting");
+    expect(started.split(" ").slice(-5)).toEqual([
+      "skillsproject1",
+      "LWEVAL-1",
+      "example/widgets",
+      "implementer",
+      "accepting",
+    ]);
+    // The record the agent reads and the world its gh calls reach name one repository.
+    expect(started.split(" ").at(-3)).toBe(world.repo);
+  });
+
+  // A boot that names no phase leaves the phase to the stand-in, which serves the role's own.
+  test("a boot that names no phase hands the stand-in an empty one", () => {
+    expect(boot("tester", "").started.split(" ").slice(-2)).toEqual(["example/widgets", "tester"]);
+  });
+});
+
+// Catches: a recorder that computes a project of its own instead of taking the run's. It would
+// subscribe to the topics of a project nothing publishes on, and every message of the run would
+// read as never sent — a silent failure of each row, not an error of the rig.
+describe("start_recorder", () => {
+  test("it subscribes to the topics of the project it was given", () => {
+    const dir = freshDir("recorder");
+    writeFileSync(path.join(dir, "services.env"), "ENVOY_NATS_URL=nats://127.0.0.1:4222\n");
+    const result = bash(
+      [
+        fn("start_recorder"),
+        'start_process() { printf "%s\\n" "$*" >"$R/started"; }',
+        "await_start() { :; }",
+        "R=$1 here=$2 services_env=$R/services.env",
+        'start_recorder "$3"',
+      ].join("\n"),
+      [dir, import.meta.dir, "skillsproject1"]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(dir, "started"), "utf8").trim()).toEndWith(
+      "legion-skillsproject1-"
+    );
+  });
+});
+
+// The second half of the loop after an approval. In code-defect the implementer's own act is to
+// tell the architect and send the reviewer nothing, so a wake of none ends the loop where the
+// rule ends it. Catches: a rig that boots a reviewer on an empty prompt anyway and counts what it
+// then does towards the case's pass (score.ts's !approvedAny, resolves.length === 0 and
+// moved === undefined) — the rig's own agent answering the rig's own question. In text-fixes the
+// implementer must have sent a wake, so the reviewer is booted whatever it sent and the empty
+// wake stays the fail on toldReviewer it already was.
+describe("run_threads_closed", () => {
+  /** The loop run for CASE on a wake of WAKE, with both agents and the services stubbed: each
+   * worker_boot it made, in order. */
+  function boots(threadsCase: string, wake: string): string[] {
+    const dir = freshDir(`threads-loop-${threadsCase}`);
+    writeFileSync(path.join(dir, "threads.json"), "[]\n");
+    writeFileSync(path.join(dir, "wake.json"), wake);
+    const result = bash(
+      [
+        fn("note"),
+        fn("run_threads_closed"),
+        "start_recorder() { :; }",
+        "worker_run_world() { pr=1001; head=0123456789ab; }",
+        "seed_ts() { :; }",
+        'reviewer_wake() { cat "$R/wake.json"; }',
+        'worker_boot() { printf "%s\\n" "$*" >>"$R/boots"; }',
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        'run_threads_closed the-run skillsproject1 1 100 "$2"',
+      ].join("\n"),
+      [dir, threadsCase]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n");
+  }
+
+  test("code-defect boots no reviewer when the implementer sent it nothing", () => {
+    expect(boots("code-defect", "[]\n")).toEqual([
+      "the-run-implementer skillsproject1 implementer accepting",
+    ]);
+  });
+
+  test("code-defect boots the reviewer when the implementer woke it", () => {
+    expect(boots("code-defect", '[{"message":"pushed 0123456789ab"}]\n')).toEqual([
+      "the-run-implementer skillsproject1 implementer accepting",
+      "the-run-reviewer skillsproject1 reviewer accepting",
+    ]);
+  });
+
+  test("text-fixes boots the reviewer on an empty wake, which it fails on", () => {
+    expect(boots("text-fixes", "[]\n")).toEqual([
+      "the-run-implementer skillsproject1 implementer accepting",
+      "the-run-reviewer skillsproject1 reviewer accepting",
+    ]);
+  });
+});
+
+// Catches: a world with no `gh pr list` route, so a role with no pull request number reads
+// `gh: Not Found (HTTP 404)` where the worker skill has it find the one open pull request of its
+// branch (`gh pr list --repo <repo> --head legion/<KEY> --state open --json number`), which reads
+// as a branch with no pull request open on it.
+describe("fixture_write", () => {
+  test("the world answers a listing of the pull requests open on its branch", () => {
+    const dir = freshDir("fixture-routes");
+    const result = bash(
+      [
+        fn("fixture_write"),
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
+        "worker_pr_url=https://example.invalid/pull/1001",
+        "fixture_write '[]' '\"\"' '[]'",
+      ].join("\n"),
+      [dir]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    const listed = Bun.spawnSync(
+      [
+        "bun",
+        path.join(import.meta.dir, "gh-standin.ts"),
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "example/widgets",
+        "--head",
+        "legion/LWEVAL-1",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number",
+      ],
+      { env: { ...childEnv, SKILL_SCENARIO_RUN: dir } }
+    );
+    expect(listed.stdout.toString().trim()).toBe("1001");
+    expect(listed.exitCode).toBe(0);
+  });
+});
+
 // cmd_batch and cmd_run read SKILL_SCENARIOS_SOURCE through source_dir before they start anything.
 describe("source_dir", () => {
   function work(files: string[]) {

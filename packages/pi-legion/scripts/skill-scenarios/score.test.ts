@@ -4122,6 +4122,7 @@ const fixNames = [
   "threads-closed-code-defect-head-6",
   "threads-closed-code-defect-head-7",
   "threads-closed-code-defect-head-8",
+  "threads-closed-code-defect-head-10",
   "threads-closed-head-9",
 ];
 const fix = fixRemotes(fixNames);
@@ -4154,8 +4155,11 @@ function fixRun(
     },
     transcripts.implementer ?? [...header, ...turn]
   );
-  // `reviewer: null` is the run whose second agent never started at all: rig.sh made the
-  // directory and nothing wrote a transcript into it.
+  // `reviewer: null` is the run with no second half: no sessions/reviewer at all, which is what
+  // a run the rig booted no reviewer for leaves (rig.sh's worker_boot makes that directory). The
+  // score reads it as the act of the case that asks for it and as a rig error elsewhere
+  // (BOOTS_OPTIONAL); a directory with a transcript that holds no assistant message, which is a
+  // half that started and measured nothing, is `reviewer: [...header]`.
   if (transcripts.reviewer === null) return;
   stagings.push(() => {
     const dir = path.join(runs, name, "sessions", "reviewer");
@@ -4599,6 +4603,26 @@ fixRun("threads-closed-code-defect-head-8", {
     )
   ),
 });
+// The half the run never booted. In code-defect the implementer's own act is to tell the
+// architect and send the reviewer nothing, and rig.sh boots no second agent on a wake of none
+// (run_threads_closed), so the run has one half and no sessions/reviewer at all. The text-fixes
+// runs above (head-17, head-18) are the same shape in the case where the wake was owed, and stay
+// rig errors.
+fixRun(
+  "threads-closed-code-defect-head-10",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z", "implementer")]),
+    "published.jsonl": bus(
+      sentTo(
+        "architect",
+        "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
+      )
+    ),
+  },
+  { reviewer: null }
+);
 // The rig's two records of the case disagree, and a directory that names no case at all.
 fixRun("threads-closed-code-defect-head-4", {
   "calls.jsonl": calls(closedBoth),
@@ -4900,9 +4924,20 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   );
   expect(out).toContain("threads-closed:text-fixes\thead\t9/26\t0/26\t6\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
-  expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
+  expect(out).toContain("threads-closed:code-defect\thead\t3/8\t0/8\t1\t0\n");
 });
 
+// Catches: a scorer that reads a code-defect run with no reviewer half as a rig error. The
+// implementer's own act there is to send the reviewer nothing, and rig.sh boots no second agent
+// on a wake of none, so every such run — the case's own pass — would be left out of the counts
+// and the arm would measure nothing. A text-fixes run missing that half stays a rig error, since
+// there the wake was owed (head-17 and head-18, below).
+test("threads-closed, code-defect: a run that woke no reviewer is scored on the half it ran", () => {
+  expect(out).toMatch(
+    /threads-closed-code-defect-head-10\tpass=true\t.*pushes=0 .*told=true moved=none/
+  );
+  expect(out).not.toContain("threads-closed-code-defect-head-10\trig error");
+});
 // Catches: a control that reads any review submission as a failure, which pins behaviour the
 // design never asked for — R1 licenses a `REQUEST_CHANGES` for a behavioural finding, which is
 // the finding's record on GitHub; one that takes that submission for the message to the
