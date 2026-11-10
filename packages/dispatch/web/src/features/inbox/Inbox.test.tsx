@@ -1803,8 +1803,9 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
 
 // The hand-on's optimistic `waiting_on_person` takes the row out of the reader's own list as
 // the write starts, which would unmount the card holding the control: the card registers its
-// write with the list (`AskHandOn`'s `onLive`), so the refusal is shown where the reader
-// pressed, by the instance that wrote, rather than lost to a remount.
+// write with the list through the context the list provides (`hand-on-live.ts`), so the
+// refusal is shown where the reader pressed, by the instance that wrote, rather than lost to a
+// remount.
 test("a refused hand-on keeps its row in the reader's own list, with the reason and a working Retry", async () => {
   const user = userEvent.setup();
   // Handed to alice on an issue bob holds, so the row is alice's and handing it back to bob
@@ -4120,6 +4121,95 @@ test("the answer keys act on the selected decision block, not the first one in t
   } finally {
     unmount();
     narrow();
+    getArtifact.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifactText.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    listIssueAsks.mockRestore();
+  }
+});
+
+// The same refusal, pressed on the card the reading column draws for a question written as a
+// decision block. That card is the document page's own (`ReadingPane` -> `PaneDocument` ->
+// `ProofDocument` -> `AskBlockCard`), so no prop of this list reaches it: the registration it
+// holds its row with is the one it reads from the context the list provides. Without it the
+// optimistic `waiting_on_person` drops the row, the column has nothing selected to draw, and
+// the refusal comes back to no card at all.
+test("a refused hand-on from the column's decision block keeps the row, with the reason on that card", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const mine = inboxIssue("ask-mine", "CORE-1", "Ship behind a flag?", {
+    asked_of: "alice",
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: "block-a",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const rows = [mine];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const people = mockPeople();
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "",
+    token: "",
+    version: null,
+  });
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
+    rows.map((row) => ({ ...row, last_reply: null }))
+  );
+  const handOn = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const { unmount } = renderInbox("/?item=ask-mine", { runtime: fake.runtime });
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const nodeViews = editor.viewProps.nodeViews as Record<
+      string,
+      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+    >;
+    const construct = nodeViews.ask;
+    if (construct === undefined) throw new Error("the ask node view was not installed");
+    act(() => {
+      editor.root.append(construct(askBlockNode("block-a", mine.question)).dom);
+    });
+    const card = await within(pane).findByTestId("ask-ask-mine");
+
+    await user.selectOptions(within(card).getByLabelText("Hand this question to"), "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    // Handed on optimistically, the row waits on somebody else - and the column keeps the card
+    // the reader pressed, which is the only surface the server's answer can reach.
+    await waitFor(() => expect(within(card).getByText("Handing on…")).toBeTruthy());
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    await act(async () => {
+      handOn.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await handOn.promise.catch(() => undefined);
+    });
+    const alert = await within(card).findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(card.isConnected).toBe(true);
+    expect(rowIds()).toEqual(["ask-mine"]);
+  } finally {
+    unmount();
+    narrow();
+    handAskTo.mockRestore();
+    people.mockRestore();
     getArtifact.mockRestore();
     getArtifactBlocks.mockRestore();
     getArtifactText.mockRestore();

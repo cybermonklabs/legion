@@ -62,6 +62,7 @@ import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
 import { BulkBar } from "./BulkBar";
 import { DismissControl, RowDismissContext } from "./DismissControl";
 import { ALL_GROUP_KEY, group, inFieldFilter, LATER_GROUP_KEY, sortRows } from "./grouping";
+import { AskHandOnLiveContext } from "./hand-on-live";
 import { InboxBar, type InboxFilters, type InboxPopover } from "./InboxBar";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
 import { ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
@@ -414,7 +415,6 @@ function InboxCardRow({
   marked,
   onAnswered,
   onAssignLive,
-  onHandOnLive,
   onMark,
   onRelease,
   onSnoozeLive,
@@ -433,9 +433,6 @@ function InboxCardRow({
   /** The same registration for this row's snooze write; the Inbox keeps a live row rendered
    *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
   onSnoozeLive: (askId: string, live: boolean) => void;
-  /** The same registration for a hand-on made from this row's card, which the optimistic
-   *  `waiting_on_person` would otherwise unmount with the row (`AskHandOn`). */
-  onHandOnLive: (askId: string, live: boolean) => void;
   /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
@@ -494,7 +491,6 @@ function InboxCardRow({
         initialThread={{ ask, ...ask.thread }}
         initialThreadUpdatedAt={threadUpdatedAt}
         onAnswered={onAnswered}
-        onHandOnLive={onHandOnLive}
       />
     </InboxRowShell>
   );
@@ -760,7 +756,9 @@ export function Inbox({
   // And the same for a hand-on, whose control sits in the card rather than beside it
   // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
   // write starts, so without this the card holding the control would be unmounted before the
-  // server answered and a refusal would come back to a fresh card that never failed.
+  // server answered and a refusal would come back to a fresh card that never failed. The cards
+  // register through the context this list provides below (`hand-on-live.ts`), since one of
+  // them is the document page's own and takes no prop of this list's.
   const [handingOn, setHandingOn] = useState<ReadonlySet<string>>(() => new Set());
   const onHandOnLive = useCallback((askId: string, live: boolean) => {
     setHandingOn((current) => {
@@ -1566,60 +1564,68 @@ export function Inbox({
   // unmount the whole list, taking the keyboard's focus, the bulk bar and every row's state
   // with it and mounting a fresh one a commit later.
   const page = (listColumn: ReactNode, subject: InboxListRow | undefined): ReactNode => (
-    // Every thread this list draws - in the column, and in a card below its width - draws its own
-    // Dismiss from here (`DismissControl`).
-    <RowDismissContext
-      value={{
-        dismiss: (named) => dismissRows([named]),
-        pending: dismissWrite.pending,
-        show,
-      }}
-    >
-      <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-        {header}
-        {paneShown ? (
-          // The two columns are a grid of two fractions, so the share the reader dragged the
-          // divider to is exactly the share the pane takes, at any width; the divider is the
-          // column between them and takes its own.
-          //
-          // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
-          // so a long document in the pane would make the row - and with it both columns'
-          // boxes - taller than the page, and neither column would scroll in itself. The page
-          // would scroll instead, which is how the pane came to show a document's top however
-          // far down it the reader's section sat.
-          <div
-            className="grid min-h-0 flex-1"
-            ref={columnsRef}
-            style={{
-              gridTemplateColumns:
-                subject === undefined
-                  ? "minmax(0, 1fr)"
-                  : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-              gridTemplateRows: "minmax(0, 1fr)",
-            }}
-          >
-            {listColumn}
-            {subject === undefined ? null : (
-              <>
-                <PaneDivider columns={columnsRef} onWidthChange={setPaneWidth} width={paneWidth} />
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
-                  <ReadingPane
-                    onAnswered={recordAnswered}
-                    onHandOnLive={onHandOnLive}
-                    onSnoozeLive={onSnoozeLive}
-                    row={subject}
-                    viewer={viewer}
+    // Every card this list draws - in the column, and in a row below its width - holds its own
+    // hand-on here while the server decides it (`hand-on-live.ts`), the decision block the
+    // column draws through the document page included, which no prop of this list reaches.
+    <AskHandOnLiveContext value={onHandOnLive}>
+      {/* Every thread this list draws - in the column, and in a card below its width - draws its
+          own Dismiss from here (`DismissControl`). */}
+      <RowDismissContext
+        value={{
+          dismiss: (named) => dismissRows([named]),
+          pending: dismissWrite.pending,
+          show,
+        }}
+      >
+        <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
+          {header}
+          {paneShown ? (
+            // The two columns are a grid of two fractions, so the share the reader dragged the
+            // divider to is exactly the share the pane takes, at any width; the divider is the
+            // column between them and takes its own.
+            //
+            // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
+            // so a long document in the pane would make the row - and with it both columns'
+            // boxes - taller than the page, and neither column would scroll in itself. The page
+            // would scroll instead, which is how the pane came to show a document's top however
+            // far down it the reader's section sat.
+            <div
+              className="grid min-h-0 flex-1"
+              ref={columnsRef}
+              style={{
+                gridTemplateColumns:
+                  subject === undefined
+                    ? "minmax(0, 1fr)"
+                    : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                gridTemplateRows: "minmax(0, 1fr)",
+              }}
+            >
+              {listColumn}
+              {subject === undefined ? null : (
+                <>
+                  <PaneDivider
+                    columns={columnsRef}
+                    onWidthChange={setPaneWidth}
+                    width={paneWidth}
                   />
-                </div>
-              </>
-            )}
-          </div>
-        ) : (
-          listColumn
-        )}
-      </div>
-    </RowDismissContext>
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                  <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
+                    <ReadingPane
+                      onAnswered={recordAnswered}
+                      onSnoozeLive={onSnoozeLive}
+                      row={subject}
+                      viewer={viewer}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            listColumn
+          )}
+        </div>
+      </RowDismissContext>
+    </AskHandOnLiveContext>
   );
 
   if (shown.length === 0 && held === undefined) {
@@ -1719,7 +1725,6 @@ export function Inbox({
         key={id}
         onAnswered={recordAnswered}
         onAssignLive={onAssignLive}
-        onHandOnLive={onHandOnLive}
         onSnoozeLive={onSnoozeLive}
         threadUpdatedAt={inbox.dataUpdatedAt}
         viewer={viewer}

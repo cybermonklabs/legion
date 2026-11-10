@@ -51,10 +51,6 @@ function subjectOf(ask: InboxRow): PaneSubject {
 export interface ReadingPaneProps {
   /** The reader's own answer landed; the list selects the next row. */
   onAnswered: (askId: string) => void;
-  /** The card's hand-on is in flight or refused, or has stopped being either: the Inbox keeps
-   *  a live row listed, which is what keeps this column on it long enough for a refusal to be
-   *  read, exactly as the head's two controls do. */
-  onHandOnLive: (askId: string, live: boolean) => void;
   /** The head's Snooze write is in flight or refused, or has stopped being either: the Inbox
    *  keeps a live row listed, which is what keeps this column on it long enough for a refusal
    *  to be read. */
@@ -68,7 +64,6 @@ export interface ReadingPaneProps {
 interface PaneFlowProps {
   ask: InboxRow;
   onAnswered: (askId: string) => void;
-  onHandOnLive: (askId: string, live: boolean) => void;
   onSnoozeLive: (askId: string, live: boolean) => void;
   viewer: string | undefined;
 }
@@ -77,18 +72,13 @@ interface PaneFlowProps {
  *  whose document it could not open. One card per question: the card holds the answer the
  *  reader gave in it, so the next question selected is a card of its own rather than this one
  *  showing that answer. */
-function QuestionCard({
-  ask,
-  onAnswered,
-  onHandOnLive,
-}: Pick<PaneFlowProps, "ask" | "onAnswered" | "onHandOnLive">): ReactNode {
+function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswered">): ReactNode {
   return (
     <AskCard
       ask={ask}
       initialThread={{ ask, ...ask.thread }}
       key={ask.id}
       onAnswered={onAnswered}
-      onHandOnLive={onHandOnLive}
       variant="full"
     />
   );
@@ -96,13 +86,7 @@ function QuestionCard({
 
 /** An anchored question, and a question in no document: the card the Inbox has always drawn,
  *  under the head's own controls. */
-function CardBody({
-  ask,
-  onAnswered,
-  onHandOnLive,
-  onSnoozeLive,
-  viewer,
-}: PaneFlowProps): ReactNode {
+function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): ReactNode {
   return (
     <PaneFrame
       head={
@@ -118,7 +102,7 @@ function CardBody({
         />
       }
     >
-      <QuestionCard ask={ask} onAnswered={onAnswered} onHandOnLive={onHandOnLive} />
+      <QuestionCard ask={ask} onAnswered={onAnswered} />
     </PaneFrame>
   );
 }
@@ -159,7 +143,6 @@ function ApprovalBody({
   artifactId,
   ask,
   onAnswered,
-  onHandOnLive,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { approval: AskApproval; artifactId: string }): ReactNode {
@@ -226,7 +209,7 @@ function ApprovalBody({
     // The card the column falls back to draws the whole question itself, and the question
     // belongs on screen once: a block above that card would say it twice.
     if (failed) {
-      return <QuestionCard ask={ask} onAnswered={onAnswered} onHandOnLive={onHandOnLive} />;
+      return <QuestionCard ask={ask} onAnswered={onAnswered} />;
     }
     /** The question the request itself asks, which is the requester's own words about the
      *  document below it. `AskCard`'s renderer draws it, so a message with a list or a link
@@ -307,7 +290,6 @@ function DecisionBody({
   ask,
   blockId,
   onAnswered,
-  onHandOnLive,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { artifactId: string; blockId: string }): ReactNode {
@@ -316,7 +298,7 @@ function DecisionBody({
       anchoredThread={undefined}
       artifactId={artifactId}
       blockId={blockId}
-      fallback={<QuestionCard ask={ask} onAnswered={onAnswered} onHandOnLive={onHandOnLive} />}
+      fallback={<QuestionCard ask={ask} onAnswered={onAnswered} />}
       head={(document) => (
         <ReadingPaneHead
           artifact={document.artifact}
@@ -348,7 +330,6 @@ function DecisionBody({
  */
 export function ReadingPane({
   onAnswered,
-  onHandOnLive,
   onSnoozeLive,
   row,
   viewer,
@@ -358,7 +339,7 @@ export function ReadingPane({
   }
   const ask = row.ask;
   const subject = subjectOf(ask);
-  const flow = { ask, onAnswered, onHandOnLive, onSnoozeLive, viewer };
+  const flow = { ask, onAnswered, onSnoozeLive, viewer };
   if (subject.kind === "approval") {
     return <ApprovalBody {...flow} approval={subject.approval} artifactId={subject.artifactId} />;
   }

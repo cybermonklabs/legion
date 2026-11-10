@@ -25,6 +25,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
+import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
 
@@ -200,13 +201,14 @@ function renderPane({
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
-            <ReadingPane
-              onAnswered={(id) => answered.push(id)}
-              onHandOnLive={(askId, live) => handOnLiveness.push([askId, live])}
-              onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
-              row={{ ask: row, kind: "ask" }}
-              viewer="alice"
-            />
+            <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
+              <ReadingPane
+                onAnswered={(id) => answered.push(id)}
+                onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
+                row={{ ask: row, kind: "ask" }}
+                viewer="alice"
+              />
+            </AskHandOnLiveContext>
           </MarginProvider>
         </DocumentRuntime.Provider>
       </QueryClientProvider>
@@ -216,6 +218,7 @@ function renderPane({
   return {
     answered,
     client,
+    handOnLiveness,
     opened,
     rerender: (row: InboxRow) => view.rerender(tree(row)),
     runtime: fake,
@@ -572,6 +575,38 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
   }
 });
 
+test("the column's card registers its hand-on, so the list keeps the row the column is on", async () => {
+  const user = userEvent.setup();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const row = issueAsk({
+    asked_of: "alice",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const held = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
+  // The control reads the people as the reader reaches for it, bob among them.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const { handOnLiveness, view } = renderPane({ ask: row });
+
+  try {
+    await user.selectOptions(await screen.findByLabelText("Hand this question to"), "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalled());
+    // The control sits in the card, not in the head, so the registration reaches the list
+    // through the context the Inbox provides rather than through a prop of this column's: the
+    // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
+    // the card that wrote is the only surface a refusal is shown on.
+    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
+  } finally {
+    held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
+    view.unmount();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
 test("a project document's head names the project and the document, and opens it at the section", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk({
@@ -734,7 +769,6 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
-              onHandOnLive={() => {}}
               onSnoozeLive={() => {}}
               row={{ kind: "thread", thread }}
               viewer="alice"

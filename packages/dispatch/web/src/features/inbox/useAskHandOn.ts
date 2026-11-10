@@ -22,8 +22,8 @@ export interface AskHandOnWrite {
  * The one way the SPA hands an ask to a person. The new person lands on every inbox cache at
  * once, so the row leaves the list it was in and joins theirs on the press, rolls back if the
  * server refuses, and every read carrying the ask - the Inbox and its owner's lists
- * (`invalidateOwnerReads`) - refetches once the hand-on settles, the same shape as
- * `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
+ * (`invalidateOwnerReads`), and the ask's own thread - refetches once the hand-on settles, the
+ * same shape as `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
@@ -75,6 +75,12 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
       // reads the ask from its owner's list, where the control's own value comes from, so an
       // Inbox-only refresh would snap the picker back to the person before the hand-on.
       invalidateOwnerReads(queryClient, ask);
+      // The Inbox's own Reply-thread card is the one surface that reads the ask from its thread
+      // instead (`ThreadBody`, `askThreadQuery`), which is kept for the session and never goes
+      // stale of itself. It is read again here rather than in `invalidateOwnerReads`, whose
+      // other caller - `useAskAnswerForm` - already refreshes that thread in each branch that
+      // moves it, and whose own subject is the reads that carry an ask besides its own thread.
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
     },
   });
   return {

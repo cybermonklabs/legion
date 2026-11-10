@@ -689,6 +689,43 @@ test("the hand-on control is on an open question and on no closed one", async ()
   }
 });
 
+// A hand-on moves whom the ask waits on, and the Inbox's Reply-thread card reads that person
+// from the ask's own thread (`ThreadBody`, `askThreadQuery`), which is kept for the session and
+// never goes stale of itself: without this read its picker would show the person from before
+// the hand-on until the `ask.asked_of` event landed.
+test("a hand-on reads the ask's thread again, so a card reading that thread follows the write", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({ answer: null, state: "open" });
+  let threadReads = 0;
+  const getAskThread = async () => {
+    threadReads += 1;
+    return thread({ ...open, asked_of: "bob" }, []);
+  };
+  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({ ...open, asked_of: "bob" });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const { view } = renderCard(
+    <AskCard ask={open} getAskThread={getAskThread} initialThread={thread(open, [])} />
+  );
+  const card = within(view.container);
+  try {
+    const control = await card.findByLabelText("Hand this question to");
+    // The people are read only once the reader reaches for the control (`AskHandOn`).
+    await user.click(control);
+    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const before = threadReads;
+    await user.selectOptions(control, "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalled());
+    await waitFor(() => expect(threadReads).toBeGreaterThan(before));
+  } finally {
+    view.unmount();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
 /** The thread's reply bodies, in the order the card draws them. */
 function threadReplyBodies(thread: HTMLElement): (string | null | undefined)[] {
   return Array.from(
