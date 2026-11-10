@@ -138,9 +138,9 @@ jobs:
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # The browser suite's step of this name, at the same bound: the build below, and
       # run-server.sh's own build inside the harness, fetch this module's dependencies
-      # themselves on a cache miss, where a go command reaches proxy.golang.org with no retry
-      # and no rule of .github/scripts/check-download-retry.sh can see it, because the fetch is
-      # inside a command whose purpose is something else.
+      # themselves on a cache miss, where a go command reaches proxy.golang.org with no retry.
+      # Rule 11 of .github/scripts/check-download-retry.sh requires this step of any job that
+      # compiles Go, and refused this one by name while it was missing.
       - name: Download the Go modules this job builds
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18

@@ -102,6 +102,15 @@ jobs:
       - name: Pull every base image the three builds read
         run: |
           for image in \$images; do docker pull "\$image"; done
+  airlock-lean:
+    runs-on: ubuntu-24.04
+    steps:
+      # Rule 11's exemption names this job, and its guard refuses an entry matching no job that
+      # compiles Go here, so every fixture carries the job its entry names, as each fixture
+      # carries the site an EXEMPTIONS entry names. The real job builds a package importing the
+      # standard library alone; a fixture needs only the verb.
+      - name: Compare the Go airlock with the model
+        run: go test ./internal/broker/airlock/
   dispatch:
     runs-on: ubuntu-24.04
     steps:
@@ -2585,5 +2594,31 @@ YAML
 run_check "$root"
 check "reads a go test too" \
   "$(contains "$out" "job .unit. compiles Go in step")"
+
+echo "case: rule 11's exemption holds a job that compiles Go and stops holding a renamed one"
+# The exemption path and its staleness guard, which the rule's own fixture above does not reach:
+# the fixture ci.yaml carries `airlock-lean`, so a tree whose GO_BUILD_EXEMPT names it passes
+# with that job compiling Go and no download, and the same tree with the job renamed is refused
+# twice - once for the renamed job, which no entry covers, and once for the entry, which now
+# matches no job compiling Go. That second refusal is what an entry keyed on the file alone
+# never made: it left a renamed job's exception live for the next job of that name.
+root=$(fixture go-exempt)
+run_check "$root"
+check "the exempted job passes" "$(is "$status" 0)"
+check "and no refusal names it" "$(is "$(contains "$out" 'airlock-lean')" false)"
+
+root=$(fixture go-exempt-stale)
+python3 - "$root/.github/workflows/ci.yaml" <<'PY_EDIT'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+open(p, "w").write(t.replace("  airlock-lean:", "  airlock-lean-renamed:", 1))
+PY_EDIT
+run_check "$root"
+check "a renamed job is refused" "$(is "$status" 1)"
+check "the renamed job is named" \
+  "$(contains "$out" "job 'airlock-lean-renamed' compiles Go in step")"
+check "and its stale exemption is named too" \
+  "$(contains "$out" "GO_BUILD_EXEMPT holds 'airlock-lean' of this file")"
 
 summary "check-download-retry.sh"

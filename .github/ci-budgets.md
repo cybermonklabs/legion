@@ -69,7 +69,9 @@ Where the verb is curl no helper is needed:
 `--retry 7 --retry-all-errors --max-time <bound>` beside `-fsSL` makes 8 attempts whose last starts 127 s after the first, and .github/scripts/ci-tools.sh's `ci_tools_curl` carries the one full explanation of that spelling, `--fail` and its `--retry-max-time 120` included:
 every tool install of .github/ci-tools.yaml fetches through it, and the actions that fetch anything else write the options themselves in the same shape.
 What retries is the download and never the work after it:
-each job's Go modules come down in a `go mod download` step of its own, after that job's cache restore and before its first Go step, so no `go build`, `go test`, `go vet` or `go run` is ever re-run by a retry.
+each job's Go modules come down in a `go mod download` step of its own, so no `go build`, `go test`, `go vet` or `go run` is ever re-run by a retry.
+Write that step after the job's cache restore and before its first Go step, which is where it does the work;
+rule 11 of `.github/scripts/check-download-retry.sh` asks every job that compiles Go for such a step by presence and reads no order, as its own reach paragraph says.
 Four bounds are the same wherever that kind of fetch is made, because the kind rather than the step decides them (dispatch://INFRA-1545):
 a `gh api` read is bounded at 30 s an attempt, which is ten times the about 3 s one takes;
 a release asset or release archive at 60 s, a download of tens of megabytes, the Bun release zip measured at 51,794,595 bytes;

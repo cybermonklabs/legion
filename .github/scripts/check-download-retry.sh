@@ -105,14 +105,29 @@
 #
 # AND A BUILD CAN FETCH, which is the limit of the verb list rather than of the reading set.
 # `go build`, `go test`, `go vet` and `go run` download a module this job's cache restore did not
-# bring, and no rule here reads that: a cache restore is not a download step, and the fetch is
-# inside a command whose purpose is something else, so it is in none of THE VERBS below and no
-# site of it is ever counted. The rule for Go is held by hand instead - each job's modules come
-# down in a `go mod download` step of its own, before that job's first Go command, which
-# .github/ci-budgets.md's Retries note states - and the instance that proves nothing here
-# enforces it is .github/workflows/dispatch-browser.yaml's embedder job, which compiled
-# ./cmd/dispatch after a cache restore alone, with every rule of this check passing, until
-# review round 13 of dispatch://INFRA-1545 read the job rather than the check.
+# bring, and that fetch is in none of THE VERBS below, so no site of it is ever counted: a cache
+# restore is not a download step, and the fetch sits inside a command whose purpose is something
+# else. Rule 11 below is what reads that shape now, and it reads less than the rules above it, so
+# each line of its reach is written here beside the line of the rule that decides it. What it
+# reads: a job's `run:` body, in a workflow file, matched for `go build|test|vet|run` against a
+# `go mod download` in a `run:` body of the same job. What it does not read, each a hole a reader
+# would otherwise fill in wrongly:
+#   - a composite action's steps, since its loop walks `workflows` where every other rule here
+#     walks `workflows + actions`;
+#   - a Go command inside a script the job calls, since it reads `step.get("run")` and follows
+#     no call;
+#   - the order of the two: a build before the download, or a build earlier in the same step,
+#     passes, because the rule asks whether the job holds a download and never where;
+#   - which module comes down: a download of `packages/envoy` answers for a
+#     `go -C packages/envoy/infra test` whose module `go.work` does not bind;
+#   - `go generate`, `go list -deps` and `go -C=dir build`, which fetch and are not in its
+#     pattern.
+# No live job of this tree does any of those, which is why emptying GO_BUILD_EXEMPT flags exactly
+# one job. dispatch://INFRA-2648 owns the reach and the measurement that would widen it. Twice the
+# shape was a real defect that every other rule passed - .github/workflows/dispatch-browser.yaml's
+# embedder job and .github/workflows/dispatch-browser-nightly.yaml's re-record job, each compiling
+# after a cache restore alone and each caught by a person reading the job rather than by this
+# check (review rounds 13 and 14 of dispatch://INFRA-1545).
 #
 # THE VERBS. A fetch is one of these commands, in command position, after the wrappers below are
 # stripped: curl, wget, apt-get/apt (update, install, download, upgrade, dist-upgrade, source,
@@ -2654,17 +2669,20 @@ for site in sites:
     else:
         problem(site.path, site.line, refusal)
 
-# Rule 11: a job that compiles Go after a cache restore downloads its modules in a step of its
-# own, retried. A `go build`, `go test`, `go vet` or `go run` fetches this module's dependencies
-# itself when the cache misses, and that fetch is in none of THE VERBS above, because it sits
-# inside a command whose purpose is something else: the rules above read it as no site at all.
-# Twice this was a real defect that every other rule passed — .github/workflows/dispatch-browser
-# .yaml's embedder job and dispatch-browser-nightly.yaml's re-record job, each caught by a person
-# reading the job rather than by this check — so the reading a person made is written here.
+# Rule 11: a job that compiles Go holds a retried `go mod download` of its own. A `go build`,
+# `go test`, `go vet` or `go run` fetches this module's dependencies itself when the cache misses,
+# and that fetch is in none of THE VERBS above, because it sits inside a command whose purpose is
+# something else: the rules above read it as no site at all. A cache restore is nothing to this
+# rule, which refuses a job that compiles Go with no download step whether or not it restores one.
+# What this rule reads, and the five things it does not, are written at AND A BUILD CAN FETCH
+# above, each beside the line that decides it; it reads less than its neighbours, so a reader who
+# assumes otherwise is reading the neighbours.
 #
 # The one job this rule reads and must not refuse carries its reason in GO_BUILD_EXEMPT: a job
 # that compiles a package importing the standard library alone downloads nothing, and its own
-# comment says so. An entry matching no job fails this check, as every other list here does.
+# comment says so. An entry matching no job compiling Go here fails this check, as EXEMPTIONS
+# does, so a renamed or deleted job takes its exception with it rather than leaving one live for
+# the next job of that name.
 GO_BUILD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+(?:build|test|vet|run)\b")
 GO_MOD_DOWNLOAD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+mod\s+download\b")
 GO_BUILD_EXEMPT = {
@@ -2675,7 +2693,6 @@ GO_BUILD_EXEMPT = {
 
 go_build_jobs: dict[tuple[str, str], tuple[int, str]] = {}
 go_download_jobs: set[tuple[str, str]] = set()
-workflow_jobs: set[tuple[str, str]] = set()
 for path in workflows:
     try:
         document = yaml.load(Path(path).read_text(), Loader=LineLoader)
@@ -2687,7 +2704,6 @@ for path in workflows:
         body = step.get("run")
         if not isinstance(body, str) or job is None:
             continue
-        workflow_jobs.add((path, job))
         if GO_MOD_DOWNLOAD.search(body):
             go_download_jobs.add((path, job))
         elif GO_BUILD.search(body) and (path, job) not in go_build_jobs:
@@ -2701,18 +2717,20 @@ for (path, job), (line, name) in sorted(go_build_jobs.items()):
             "its own. A go command fetches this module's dependencies itself when the cache "
             "misses, and that fetch is inside a command whose purpose is something else, so no "
             "other rule here reads it: the job downloads from proxy.golang.org with no retry and "
-            "nothing says so. Write the step the browser suite's jobs carry, between the cache "
-            "restore and the first Go command: `retry_fetch \"<module>'s Go modules\" 180 -- go "
-            "-C <module> mod download`, under a `timeout-minutes` above its 5 x 180 + 150 = "
-            "1050 s.")
+            "nothing says so. Write the step the browser suite's jobs carry, which this rule "
+            "asks for by presence and never by position: `retry_fetch "
+            "\"<module>'s Go modules\" 180 -- go -C <module> mod download`, under a "
+            "`timeout-minutes` above its 5 x 180 + 150 = 1050 s. Write it after the cache restore "
+            "and before the first Go command, which is where it does the work.")
 
 for (path, job), why in sorted(GO_BUILD_EXEMPT.items()):
-    # Only where the tree being read holds that job at all: this check runs over a scratch tree
-    # of its own harness as readily as over this repository, and an exception naming a job that
-    # tree does not have is an exception about another tree rather than a stale one. What it
-    # catches is the live staleness: the job is still there and compiles Go no longer, so the
-    # reason the entry gives is no longer the reason anything holds.
-    if (path, job) in workflow_jobs and (path, job) not in go_build_jobs:
+    # Every entry must match a job compiling Go in the tree being read, as EXEMPTIONS requires of
+    # its own. An earlier shape of this guard asked only that the job still exist, which left a
+    # renamed or deleted job's entry live and the next job of that name silently exempt; it was
+    # narrowed that far because the harness's fixture trees held no job this entry could match,
+    # and a guard shaped by what its fixtures can express is a guard that tests its fixtures.
+    # The fixtures carry an `airlock-lean` job of their own now, so the guard asks what it means.
+    if (path, job) not in go_build_jobs:
         problem(path, 1,
                 f"GO_BUILD_EXEMPT holds '{job}' of this file, and this check finds no job of that "
                 "name compiling Go here. An exception that matches nothing hides nothing and "
