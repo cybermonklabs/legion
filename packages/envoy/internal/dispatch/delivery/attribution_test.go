@@ -127,11 +127,12 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 		// hand is likelier to type it than any other lookalike. What the parse does with it is
 		// pinned here rather than left to be rediscovered: it is a subdomain, and another host.
 		{"www.github.com is a subdomain too", "See https://www.github.com/acme/widgets/issues/77 for context.", ""},
-		// The same string standing inside another URL is no citation either, wherever it sits:
-		// another host's path, its query or its fragment.
-		{"github.com in another host's path", "See https://example.test/github.com/acme/widgets/issues/77 for context.", ""},
-		{"github.com in another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/77 for context.", ""},
-		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", ""},
+		// The same string standing inside another URL is credited through the store as the parser
+		// credits it, which is what the default branch does: the authority the issue path hangs
+		// off is github.com, and what stands to its left decides nothing.
+		{"github.com in another host's path", "See https://example.test/github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		{"github.com in another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
 		// Userinfo before the host is a citation, because the host after it is github.com and
 		// that is where the reader goes; the host of `github.com@evil.test` is evil.test, which
 		// citation_boundary_test.go holds.
