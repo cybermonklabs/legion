@@ -1183,7 +1183,8 @@ jobs:
   # Chromium install at the 4 minutes that step measured rather than at the ladder the step's
   # own budget carries. Budget: that 660 s plus the arithmetic of this job's slowest retried
   # step, the Chromium install's one `retry_fetch` call, 5 x 300 + 150 = 1650 s, above the
-  # setup-bun step's 1482 s and the workspace install's 1050 s. 660 + 1650 = 2310 s -> 39 min,
+  # setup-bun step's 1482 s and the module download's and the workspace install's 1050 s each,
+  # as the multiprocess job's own comment lists them. 660 + 1650 = 2310 s -> 39 min,
   # which stands above the largest step budget of this job, the install's 28, so no job budget
   # fires before a step's own and the `if: failure()` upload below still runs, which a
   # cancelled job skips.

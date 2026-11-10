@@ -103,6 +103,17 @@
 # The harnesses left out are named at TEST_HARNESS below, with the two network calls they hold
 # today and why a retry at either would destroy what the test measures.
 #
+# AND A BUILD CAN FETCH, which is the limit of the verb list rather than of the reading set.
+# `go build`, `go test`, `go vet` and `go run` download a module this job's cache restore did not
+# bring, and no rule here reads that: a cache restore is not a download step, and the fetch is
+# inside a command whose purpose is something else, so it is in none of THE VERBS below and no
+# site of it is ever counted. The rule for Go is held by hand instead - each job's modules come
+# down in a `go mod download` step of its own, before that job's first Go command, which
+# .github/ci-budgets.md's Retries note states - and the instance that proves nothing here
+# enforces it is .github/workflows/dispatch-browser.yaml's embedder job, which compiled
+# ./cmd/dispatch after a cache restore alone, with every rule of this check passing, until
+# review round 13 of dispatch://INFRA-1545 read the job rather than the check.
+#
 # THE VERBS. A fetch is one of these commands, in command position, after the wrappers below are
 # stripped: curl, wget, apt-get/apt (update, install, download, upgrade, dist-upgrade, source,
 # build-dep), pip install, uv (sync, add, pip, tool, python, lock, export), bun install, bun add,

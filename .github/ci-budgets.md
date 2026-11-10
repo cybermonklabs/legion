@@ -5,11 +5,10 @@ A workflow file larger than 500 KB triggers no run at all:
 GitHub's limit is 500 KB per workflow file, and over it the only signal is a run named by the file's path that concludes `failure` at once with no job in it, so a file that grows past the limit stops testing anything.
 The comments that had grown it there were the background ones:
 the rules every budget is written to, the histories behind them, and the measurement campaigns they came from.
-Each step's and each job's own arithmetic stays beside the step in that file, where a reader judging that budget sees it, and each run of prose that moved left a line there naming the section below that now holds it.
+Each step's and each job's own arithmetic stays beside the step in that file, where a reader judging that budget sees it, and each run of prose that moved left a line there naming the section of this note that now holds it.
 
-In these notes `this file` and `this workflow` mean `.github/workflows/ci.yaml`, where this text was written.
-A `below` or an `above` means this note's own text, as it does in any document;
-where one points at a step of the workflow rather than at a paragraph here, it says `in ci.yaml`.
+In these notes `this file`, `this workflow` and a bare `below` or `above` mean `.github/workflows/ci.yaml`, where this text was written and where all but five of these pointers still point.
+The five that mean a paragraph of this note name it instead of pointing: the section this head's own last sentence names, the Budgets note, the figure rule 8 prices, the bypass the `env:` paragraph clears, and the 244 s the recovering floor quotes.
 
 ## The router
 
@@ -81,7 +80,7 @@ That last bound is the tightest of the four against its measurement, and it is t
 an attempt its bound kills leaves what it fetched in the module cache and the next attempt resumes from there, so a `go mod download` heals itself across a retry where a tarball fetch starts its bytes over.
 Every other bound is derived from its own step's measured maximum and names it beside the call.
 A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a bound:
-each is a sum of them, and the Budgets note below says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families above, carries the same rule at every download of its own.
+each is a sum of them, and the Budgets note of this file says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families above, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
 Two jobs below prove all of it against the fault it answers, rather than by reading:
 download-retry runs each of those sites — a curl of a release asset, `mise install`, `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
@@ -187,7 +186,7 @@ A ghcr-mirror row this run fills costs nine requests
 Carrying that term would put this job's ceiling near three hours (1500 + 8299 = 9799 s, by the Budgets note's rule of one slowest step) for every change the ci_images filter selects, to cover the one run in which the package answers no request of four rows until every ladder is exhausted
 — an outage of the package this job has to fail in rather than wait out, since the copy it fills is this repository's own.
 So the ceiling carries no term for that step.
-What a run that does exhaust those ladders ends on is that step's own budget, and that budget is the figure .github/scripts/check-download-retry.sh prices rather than the sum above:
+What a run that does exhaust those ladders ends on is that step's own budget, and that budget is the figure .github/scripts/check-download-retry.sh prices rather than the sum this paragraph adds up:
 the ladder's per-attempt bound is the row's `max_time`, a variable it cannot read, so its DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl` writes what one call of that helper costs, 741 s, and the passes of a loop it cannot count are not multiplied into it.
 The step below carries the next whole minute above that figure, and the nine requests a row really makes are why this job's ceiling is not raised to meet them.
 
@@ -353,7 +352,7 @@ run 42367176473 of this repository failed before any job, with no job record of 
 The upper-case pair is not needed, measured on 2026-11-07 against ci-fault-proxy.py with the lower-case pair alone set:
 `bun install` answered `ProxyConnectFailed (504)`, `gh api` answered `Gateway Timeout`, and `go mod download` answered `Gateway Timeout` for proxy.golang.org.
 curl reads the lower-case spelling for a plain-HTTP fetch and either for an HTTPS one, so one pair serves every client here.
-That refusal is the parser reading one `env:` map, which is why the bypass above is cleared through $GITHUB_ENV instead:
+That refusal is the parser reading one `env:` map, which is why the bypass this paragraph describes is cleared through $GITHUB_ENV instead:
 an environment file is lines and not a map, so it carries both spellings of no_proxy without the workflow refusing to start.
 
 A proxy per site, not one per job: a recovery window is counted from the proxy's first moment, so a second site under the first site's proxy would run after that window closed and would meet no fault.
@@ -378,7 +377,7 @@ What trips this floor is a run that ends EARLY: fewer attempts, or attempts that
 The readings sit just above it, as they must, and they are read on two clocks that must not be confused:
 `report` measures from the proxy's own start and so includes the probe, while a step's own duration does not.
 On report's clock, which is the one this floor is compared with, a drive of this action's body on this issue's pod read 255 s (review round 8 of dispatch://INFRA-1545) and the runner read 258 s in run 42573254973's job 129015393389.
-The 244 s quoted below is a drive of the same body on the step's own clock, which leaves out the probe's ten seconds, and is not a reading of this assertion.
+The 244 s this section quotes further down is a drive of the same body on the step's own clock, which leaves out the probe's ten seconds, and is not a reading of this assertion.
 
 An earlier reading of the same run called those four one ladder and asserted 2 with a 123 s floor.
 That number passes a step whose retry is gone, because the fallback's own single attempt is the second stall:

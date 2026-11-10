@@ -1640,10 +1640,11 @@ run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
 
+echo "case: every workflow file stays under the size GitHub starts a run from"
 # The size GitHub needs to start a run, in the rule that reads every workflow of the directory
 # rather than in a case of this suite alone: the file that grows is not the file whose filter
 # would select the check, so a pull request growing only dispatch-browser.yaml would never have
-# run the case above. The fixture writes a workflow of its own past the limit and reads the
+# run the case below. The fixture writes a workflow of its own past the limit and reads the
 # message for the file and its size, because a run with zero jobs gives a reader nothing else.
 root=$(fixture workflow-size)
 run_check "$root"
@@ -1663,7 +1664,6 @@ mv "$root/.github/workflows/fat.yaml" "$root/.github/workflows/fat.yml"
 run_check "$root"
 check "reading the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/fat.yml::")"
-
 
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
