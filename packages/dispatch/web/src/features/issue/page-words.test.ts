@@ -255,7 +255,7 @@ test("every gap line is one sentence that says what is absent", () => {
   for (const line of Object.values(GAP_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(GAP_LINES.no_origin).toBe("Nothing explains this node: it names nothing it came from.");
+  expect(GAP_LINES.no_origin).toBe("This node does not say which node it came from.");
 });
 
 test("every gap a row draws has a short word, one per gap the page names", () => {

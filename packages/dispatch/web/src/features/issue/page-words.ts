@@ -55,7 +55,9 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
  */
 export const NODE_TYPE_NAMES = freeze({
   ask: "ask",
-  callout: "callout",
+  /** A `callout` block: a note somebody set apart from the text around it. The page draws the
+   *  word a reader uses, never the schema's own token (R21). */
+  callout: "note",
   check: "check",
   child_issue: "child issue",
   comment: "comment",
@@ -100,9 +102,13 @@ export const NODE_STATE_WORDS = freeze({
   check: {
     failed: "Failed",
     "no-result": "No result",
-    older: "Older",
+    /** The newest result was recorded against work older than the work as it stands, so it no
+     *  longer speaks for it, whatever it found. */
+    older: "Out of date",
     passed: "Passed",
-    unmarked: "Unmarked",
+    /** There is a result, and nothing judged whether it still speaks for the work, so the page
+     *  will not say that it passed. */
+    unmarked: "Not judged",
   },
   decision: {
     replaced: "Replaced",
@@ -274,7 +280,7 @@ export const EMPTY_STATE_LINES = freeze({
  */
 export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
-  no_origin: "Nothing explains this node: it names nothing it came from.",
+  no_origin: "This node does not say which node it came from.",
   no_plan_task: "No plan task serves this requirement.",
   no_read_back: "Nobody is recorded as having read these sentences back.",
   no_summary_author: "Nobody is recorded as having written these sentences.",
@@ -291,11 +297,16 @@ export type GapKind = keyof typeof GAP_LINES;
  */
 export const GAP_WORDS = freeze({
   no_check: "No check",
-  no_origin: "Nothing explains it",
+  /** The node names nothing it came from, so a reader cannot follow it back. */
+  no_origin: "Origin not named",
   no_plan_task: "No plan task",
-  no_read_back: "Not read back",
-  no_summary_author: "No author",
-  shaped_disagreement: "Two origins",
+  /** Nobody is recorded as having read these sentences back. Dispatch records that of nobody
+   *  yet (dispatch://INFRA-1278), which is why the head says it of every issue. */
+  no_read_back: "Nobody read it back",
+  /** Nobody is recorded as having written them, which the head says the same way. */
+  no_summary_author: "Author not recorded",
+  /** A decision says it shaped the node, and the node came from another one. */
+  shaped_disagreement: "Origins disagree",
 } as const satisfies Record<GapKind, string>);
 
 /**
@@ -352,14 +363,14 @@ export const RESULT_VERDICT_WORDS = freeze({
 } as const);
 
 /**
- * One line per read the page draws from that Dispatch does not serve yet (R20). A preset says
- * what it does not hold rather than drawing a count with nothing behind it: the coverage read
- * counts the checks that serve a requirement and names none of them, and the chain read that
- * would name them (dispatch://INFRA-1098 item 14) has no route.
+ * One line per thing the page cannot show yet, because Dispatch does not serve it (R20). A
+ * preset says what it cannot show rather than drawing a count with nothing behind it: the
+ * coverage read counts the checks that serve a requirement and names none of them, and the
+ * chain read that would name them (dispatch://INFRA-1098 item 14) has no route.
  */
 export const WAITING_LINES = freeze({
   chain:
-    "Each requirement counts the checks that serve it, and naming them waits on a read Dispatch does not answer yet.",
+    "Each requirement shows how many checks serve it, and Dispatch cannot yet say which checks those are.",
 } as const);
 
 /**
@@ -398,6 +409,9 @@ export const CONTROL_LABELS = freeze({
   add: "Add",
   /** The other requirements a transcluded node is also drawn under (R23). */
   also_under: "Also under",
+  /** What the blocked-by line says while the issue waits on no other issue
+   *  (`BlockedByControl.tsx`). */
+  blocked_by_none: "nothing",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
@@ -436,10 +450,14 @@ export const CONTROL_LABELS = freeze({
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
   /** The one row a branch below the three drawn levels folds to, which opens it in place: the
-   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1). */
-  deeper_nodes: "nodes deeper in this branch",
+   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1). It says
+   *  what pressing it shows, because that row is the only way to those nodes. */
+  deeper_nodes: "more nodes below this row, press to show them",
   /** Takes a version of an artifact down (R16). */
   download: "Download",
+  /** Opens the editor of a property beside the value it already holds, where that value is
+   *  drawn: the issues this one waits on (`BlockedByControl.tsx`). */
+  edit: "Edit",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
   /** What an external link says of an address the browser will not open. */
@@ -448,8 +466,9 @@ export const CONTROL_LABELS = freeze({
   filter: "Filter",
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
-  /** What a folded branch says it holds, after the count of the nodes under it (R1). */
-  folded_nodes: "nodes folded",
+  /** What a folded branch says it holds, after the count of the nodes under it (R1): they are
+   *  not gone, they are out of sight until the branch is opened. */
+  folded_nodes: "nodes hidden inside",
   /** How many checks a pull request has, before the count GitHub gives. */
   github_checks: "checks",
   /** What an external link says when Dispatch holds no token for its repository: the line is
@@ -468,6 +487,10 @@ export const CONTROL_LABELS = freeze({
   keep_open: "Keep open",
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
+  /** The editor for where this issue's messages go, as a name rather than as the sentence the
+   *  property is labelled with ("Messages go to"): the box carries it, and the shell's
+   *  indicator calls a write of that field by it. */
+  message_route: "Message route",
   /** The word the name-a-version control shows; `name_version` is its accessible name (R16). */
   name: "Name",
   /** Gives the open document's current text a version of its own (R16). */
@@ -490,8 +513,6 @@ export const CONTROL_LABELS = freeze({
   presets: "Issue presets",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
   release_claim: "Release",
-  /** Reopens a closed issue, from the actions control or the closed issue's own line (R11). */
-  reopen_issue: "Reopen issue",
   /** What reopening does, as the control's own words rather than a tooltip (R11). */
   reopen_into_backlog: "Reopen into Backlog",
   /** Why the repository shown may not be the issue's own, said beside the control rather than
@@ -526,10 +547,10 @@ export const CONTROL_LABELS = freeze({
   subtree_done: "Whole tree done",
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
    *  which is its last heartbeat plus the grace the server refuses a take until (R11, row
-   *  four). */
-  takeable: "takeable",
+   *  four). The time it stands before follows this word. */
+  takeable: "free for another agent from",
   /** The same once that moment has passed and the server would grant the take now. */
-  takeable_now: "takeable now",
+  takeable_now: "free for another agent to take now",
   /** What a chip says of a target nothing answers to now (`ReferenceTarget.gone`). */
   target_gone: "Deleted",
   /** What a chip says of a block a decision shaped and changed after: the decision changed

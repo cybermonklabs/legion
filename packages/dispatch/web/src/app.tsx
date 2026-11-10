@@ -703,7 +703,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <MarginProvider>
       <ReferenceNamesProvider>
-        <MarginSlotProvider>
+        {/* Below `xl` the margin is a sheet over the page, and collapsed it is a rail, so in
+            neither does it draw the page's panel: the page draws it in its own column instead
+            (`features/margin/margin-slot.tsx`, dispatch://INFRA-1196 R11). */}
+        <MarginSlotProvider drawsSlot={marginColumnShown && !isCompactViewport}>
           <div
             className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
             data-testid="app-shell"

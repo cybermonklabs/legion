@@ -1,9 +1,6 @@
 import type { ReactNode } from "react";
 
 import type { Artifact } from "../../api/types";
-import { ArtifactDocument } from "../artifacts/ArtifactDocument";
-import type { DocumentToolbar } from "../doc/ProofDocument";
-import { DocumentStage } from "./document-stage";
 import { NODE_TYPE_NAMES, PRESET_NAMES, type Preset } from "./page-words";
 
 /** The preset each of the two documents belongs to, which is what names its panel: the Checks
@@ -14,16 +11,16 @@ const PRESET_OF: Readonly<Record<"plan" | "verification", Preset>> = {
 };
 
 /** One of the two role-document panels, Checks and Plan. They differ only in the address they
- *  answer and the component that frames the document; the panel itself, the lazy-mount guard
- *  and the `ArtifactDocument` under it are one thing, written once.
+ *  answer and the component that frames the document; the panel itself and its lazy-mount
+ *  guard are one thing, written once.
  *
  *  The Checks preset gives no frame: its checks are nodes of the tree, which draws each one
  *  once (R15), and the document is here because the preset keeps it open - its toolbar carries
  *  the version, the diff and the approval (R16), and a row being edited takes its editor.
  *
- *  The document is drawn on its own stage (`document-stage.tsx`), and this panel is where the
- *  stage rests while no row of the tree is being edited in it, so the preset's toolbar and a
- *  row's caret both reach the one editor the page has for it.
+ *  The editor itself comes in as `children`, drawn for the document `drawn-documents.ts` says
+ *  this panel holds: the panel decides nothing about which documents are open, so it can never
+ *  disagree with the page about where a document's one editor is (`StagedDocument`).
  *
  *  It is a named panel and no `tabpanel`: the page has no tablist for one to belong to, and
  *  the name it carried was the id of a tab control nothing renders any more, which left the
@@ -34,12 +31,8 @@ export function RoleDocumentPanel({
   activated,
   active,
   artifact,
-  isClosed,
+  children,
   issueKey,
-  onToolbarChange,
-  onVersionChange,
-  showDiff,
-  stage,
   tab,
 }: {
   /** What frames the document under this address; without one the document is all the panel
@@ -51,36 +44,13 @@ export function RoleDocumentPanel({
   }) => ReactNode;
   activated: boolean;
   active: boolean;
+  /** The document this preset is about, which its frame reads; the editor for it, where the
+   *  page draws one, is `children`. */
   artifact: Artifact | undefined;
-  isClosed: boolean;
+  children?: ReactNode;
   issueKey: string;
-  /** The page's sink for this document's toolbar, by the document's own id, so the preset
-   *  whose document this is draws it (R16). */
-  onToolbarChange: (artifactId: string) => (toolbar: DocumentToolbar | undefined) => void;
-  onVersionChange: (artifact: Artifact, version: number | null) => void;
-  /** Which documents the reader asked to see the changes of, by artifact id. */
-  showDiff: ReadonlySet<string>;
-  /** Where this document's stage rests while no row holds it. */
-  stage: (node: HTMLElement | null) => void;
   tab: "verification" | "plan";
 }): ReactNode {
-  const document =
-    artifact === undefined ? null : (
-      <>
-        <div className="flex min-w-0 flex-col" ref={stage} />
-        <DocumentStage artifactId={artifact.id}>
-          <ArtifactDocument
-            artifact={artifact}
-            isClosed={isClosed}
-            onToolbarChange={onToolbarChange(artifact.id)}
-            owner={{ key: issueKey, kind: "issue" }}
-            onVersionChange={(version) => onVersionChange(artifact, version)}
-            showDiff={showDiff.has(artifact.id)}
-            version={undefined}
-          />
-        </DocumentStage>
-      </>
-    );
   return (
     <section
       aria-hidden={!active}
@@ -89,10 +59,10 @@ export function RoleDocumentPanel({
       id={`issue-${tab}-panel`}
     >
       {!activated ? null : Tab === undefined ? (
-        document
+        children
       ) : (
         <Tab artifact={artifact} issueKey={issueKey}>
-          {document}
+          {children}
         </Tab>
       )}
     </section>

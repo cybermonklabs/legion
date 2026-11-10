@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
 import {
@@ -13,25 +13,18 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import type { IssueDrafts } from "./useIssueDrafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
  * A property of the issue the identity block opens an editor for, one editor at a time: the
- * three the reader types rather than picks. Every other property is edited by the control that
- * draws it, so it needs no editor of its own.
+ * two the reader types rather than picks. Every other property is edited by the control that
+ * draws it, so it needs no editor of its own - the issues this one waits on are edited beside
+ * their own value in the panel (`BlockedByControl.tsx`), as the repository and the components
+ * are.
  */
-export type IssueField = "blocked_by" | "parent" | "route";
-
-/** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
- *  what a reader types into the blocked-by editor as the model's own list. */
-export function issueKeysIn(value: string): string[] {
-  const keys = value
-    .split(/[\s,]+/u)
-    .map((key) => key.trim().toUpperCase())
-    .filter((key) => key !== "");
-  return [...new Set(keys)];
-}
+export type IssueField = "parent" | "route";
 
 export function IssueFieldForms({
   field,
@@ -67,9 +60,6 @@ export function IssueFieldForms({
         saving={writes.updateIssue.isPending}
       />
     );
-  }
-  if (field === "blocked_by") {
-    return <BlockedByForm issue={issue} onClose={onClose} writes={writes} />;
   }
   return null;
 }
@@ -141,7 +131,7 @@ function RouteForm({
         {PROPERTY_LABELS.route}
       </label>
       <input
-        aria-label="Message route"
+        aria-label={CONTROL_LABELS.message_route}
         aria-describedby="issue-route-hint issue-route-help"
         className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
         disabled={isClosed}
@@ -241,63 +231,6 @@ function ParentForm({
       />
       <span className="sr-only" id="issue-parent-help">
         Parent issue key in {issue.project}; leave empty to clear the parent.
-      </span>
-    </form>
-  );
-}
-
-/** The issues this one waits on, which the children section reads on a child's own row. */
-function BlockedByForm({
-  issue,
-  onClose,
-  writes,
-}: {
-  issue: IssueDetails;
-  onClose: () => void;
-  writes: IssueHeaderWrites;
-}): ReactNode {
-  const input = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState((issue.blocked_by ?? []).join(" "));
-  useEffect(() => {
-    input.current?.focus();
-  }, []);
-  const isClosed = issue.closed_at !== null;
-  const save = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    writes.updateIssue.mutate({ blocked_by: issueKeysIn(draft) });
-    onClose();
-  };
-  return (
-    <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
-      <label
-        className={`text-sm font-medium ${textSecondaryOnSurface}`}
-        htmlFor="issue-blocked-by"
-        {...pageChrome}
-      >
-        {PROPERTY_LABELS.blocked_by}
-      </label>
-      <input
-        aria-describedby="issue-blocked-by-help"
-        className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-        disabled={isClosed}
-        id="issue-blocked-by"
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            onClose();
-          }
-        }}
-        placeholder={`${issue.project}-12 ${issue.project}-13`}
-        ref={input}
-        value={draft}
-      />
-      <FormActions
-        cancel={onClose}
-        saveLabel="Save blocked by"
-        saving={isClosed || writes.updateIssue.isPending}
-      />
-      <span className="sr-only" id="issue-blocked-by-help">
-        Issue keys in {issue.project}, separated by spaces; leave empty to clear them.
       </span>
     </form>
   );

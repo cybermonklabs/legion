@@ -23,7 +23,7 @@ import {
 } from "../../theme/classes";
 import { ConversationTab } from "../conversation/ConversationTab";
 import { conversationScrollport } from "../conversation/use-follow-latest";
-import { useFillMarginSlot } from "../margin/margin-slot";
+import { useFillMarginSlot, useMarginDrawsSlot } from "../margin/margin-slot";
 import { statusText } from "../project/board-model";
 import {
   buildIssuePath,
@@ -35,10 +35,10 @@ import {
 } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { ISSUE_FRAME, usePageFrame } from "../shell/page-frame";
-import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { narrowConversation } from "./conversation-states";
-import { DocumentStages, STAGE_IN_PANEL, useDocumentStage } from "./document-stage";
+import { DocumentStages } from "./document-stage";
+import { drawnDocuments, editedDocument } from "./drawn-documents";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueBody } from "./IssueBody";
 import { IssueHeader } from "./IssueHeader";
@@ -141,10 +141,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // The document a row of the tree is being edited in, so the page draws its one editor for
   // that row to take onto its own stage (`document-stage.tsx`).
   const [editing, setEditing] = useState<string | undefined>(undefined);
-  const specStage = useDocumentStage(primaryArtifact?.id, STAGE_IN_PANEL);
-  const verificationStage = useDocumentStage(verificationArtifact?.id, STAGE_IN_PANEL);
-  const planStage = useDocumentStage(planArtifact?.id, STAGE_IN_PANEL);
-  const selectedStage = useDocumentStage(selectedArtifact?.id, STAGE_IN_PANEL);
+
   // What this address opens: its preset, the node it names, the conversation's state, the
   // filter and the version it pins (`issue-address.ts`).
   const address = issueAddress(route, search, hash, isPrimaryArtifactRoute);
@@ -160,10 +157,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // beside it: the identity block, the body and the panel's properties are one page, however the
   // shell mounts them (`features/shell/page-frame.tsx`, `e2e/issue-page.ts`).
   usePageFrame(ISSUE_FRAME);
-  // Where the panel goes: the shell's margin at the width that has one, and the page's own
-  // column under the identity block below it, where the margin is a sheet and the properties
-  // would otherwise be behind it (R11, R12).
-  const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  // Where the panel goes: the shell's margin wherever it keeps a column for it, and the page's
+  // own column under the identity block wherever it does not - at the width the margin is a
+  // sheet, and while the reader has collapsed it to its rail. The margin answers that itself
+  // (`features/margin/margin-slot.tsx`), so the panel is drawn exactly once and the properties
+  // are read at every width and under either preference (R11, R12).
+  const marginDrawsPanel = useMarginDrawsSlot();
   const details = issue.data;
   const focusedNode = useFocusedNode();
   // Nothing has the focus until the tree lands, and a reader on no node is reading the issue,
@@ -191,17 +190,32 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     panelScroll.current[activeTab] = port === undefined ? window.scrollY : port.scrollTop;
   }, [activeTab]);
 
+  // Two of the four states are addresses of their own, and the page draws more at them than
+  // the panel does - `/activity` puts the issue's whole history in the page's column - so
+  // picking one of those is navigation, and it carries the `?q=` that narrows what the reader
+  // is reading. The other two name no address at all: they are held for the address the
+  // reader is on, which keeps their preset, their filter and the document they have open
+  // (R19; picking Questions used to send a reader of the Spec preset to the bare
+  // `/conversation`).
   const pickState = useCallback(
     (next: ConversationState) => {
-      const to = buildIssuePath({
-        key: route.key,
-        kind: next === "everything" ? "activity" : "conversation",
-      });
+      const kind =
+        next === "everything" ? "activity" : next === "words" ? ("conversation" as const) : null;
+      const to = kind === null ? pathname : buildIssuePath({ key: route.key, kind });
       setPicked({ at: to, state: next });
+      if (to === pathname) {
+        // Nothing navigates, so the list this state narrows is mounted here: a reader who has
+        // never opened the conversation would otherwise pick a state with nothing under it.
+        setActivatedTabs((open) => (open.conversation ? open : { ...open, conversation: true }));
+        return;
+      }
       recordScroll();
-      navigate(to);
+      const query = new URLSearchParams();
+      if (address.filter !== "") query.set("q", address.filter);
+      const rest = query.toString();
+      navigate(`${to}${rest === "" ? "" : `?${rest}`}`);
     },
-    [navigate, recordScroll, route.key]
+    [address.filter, navigate, pathname, recordScroll, route.key]
   );
   // The Conversation's first placement runs as a child layout effect, before the restore below
   // in the same commit, so a position recorded while the tab showed only its loading text is
@@ -271,14 +285,20 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // `/issues/<key>/collaborators`, the address the Collaborators tab answered, opens the
   // panel's list of everyone who worked the issue (R19); every other address leaves it shut.
   const opensCollaborators = route.kind === "collaborators";
+  // What the margin draws: this page's panel wherever the margin keeps a column for it, and
+  // the margin's own cards alone wherever the page is drawing that panel in its own column
+  // instead. Both are the same `IssueMarginPanel`, because the margin holds the open composer
+  // inside it and a wrapper that changed shape as the margin collapsed would remount it and
+  // throw away an unsent comment (`IssueMargin.tsx`'s `cardsOnly`).
   const panel = useCallback(
     (conversation: ReactNode) =>
       details === undefined ? (
         conversation
       ) : (
         <IssueMarginPanel
+          cardsOnly={!marginDrawsPanel}
           conversation={conversation}
-          conversationList={conversationList}
+          conversationList={marginDrawsPanel ? conversationList : undefined}
           conversationState={conversationState}
           focused={focused}
           isClosed={details.closed_at !== null}
@@ -287,13 +307,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           openCollaborators={opensCollaborators}
         />
       ),
-    [conversationList, conversationState, details, focused, opensCollaborators, pickState]
+    [
+      conversationList,
+      conversationState,
+      details,
+      focused,
+      marginDrawsPanel,
+      opensCollaborators,
+      pickState,
+    ]
   );
-  // Below the width the margin keeps a column at, the page's panel is drawn in its own column
-  // and the margin's sheet keeps only its own cards - which are still this page's, so they
-  // still draw no tooltips (`components/tooltips.tsx`).
-  const hush = useCallback((content: ReactNode) => <NoTooltips>{content}</NoTooltips>, []);
-  useFillMarginSlot(isCompactViewport ? hush : panel);
+  useFillMarginSlot(panel);
 
   // Every key the issue page binds, in its own scope (`useIssueKeymap.ts`). The priority write
   // is the page's one, shared with the identity block and the palette, so a refusal of any of
@@ -438,27 +462,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // the Spec preset is what the address opens. On every other preset the document is content
   // beside the tree, and the tree is what the address names (R19): an editor that focused the
   // item there would take the focus off the row the reader was sent to.
-  // The document a row is editing, where the page draws it nowhere else: one editor per
-  // document and never a second, so a row of a document no panel has open gets one here.
-  const drawnDocuments = new Set(
-    [
-      activatedTabs.spec && !(artifactRoute !== undefined && !isPrimaryArtifactRoute)
-        ? primaryArtifact.id
-        : undefined,
-      activatedTabs.verification ? verificationArtifact?.id : undefined,
-      activatedTabs.plan ? planArtifact?.id : undefined,
-      activatedTabs.artifacts &&
-      artifactRoute !== undefined &&
-      !isPrimaryArtifactRoute &&
-      selectedArtifact?.kind === "doc"
-        ? selectedArtifact.id
-        : undefined,
-    ].filter((id): id is string => id !== undefined)
-  );
-  const editedDocument =
-    editing === undefined || drawnDocuments.has(editing)
-      ? undefined
-      : (issue.data.artifacts ?? []).find((artifact) => artifact.id === editing);
+  //
+  // Which documents the panels below have open, and the one a row of the tree is being edited
+  // in where no panel has that document open: one answer, read here and by the panels
+  // themselves (`drawn-documents.ts`), so one document has one editor and never two.
+  const documents = drawnDocuments({
+    activated: activatedTabs,
+    otherDocument: artifactRoute !== undefined && !isPrimaryArtifactRoute,
+    plan: planArtifact,
+    selected: selectedArtifact,
+    spec: primaryArtifact,
+    verification: verificationArtifact,
+  });
+  const edited = editedDocument(documents, editing, issue.data.artifacts ?? []);
 
   return (
     // A flex column, so the identity block's fourth row can be drawn at its end on a phone
@@ -507,10 +523,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             ) : undefined
           }
         />
-        {/* Below the width the shell's margin keeps a column at, the panel is drawn here, under
-          the identity block, and the margin becomes the phone sheet that holds the
-          conversation: the properties are read at every width with nothing opened (R11, R12). */}
-        {isCompactViewport ? (
+        {/* Wherever the shell's margin draws no panel of its own - at the width it is a sheet,
+          and while the reader has collapsed it to its rail - the panel is drawn here, under
+          the identity block: the properties, the facts of the focused node and the
+          conversation are read at every width and under either preference with nothing
+          opened (R11, R12). */}
+        {marginDrawsPanel ? null : (
           <div className="mb-3">
             <IssueMarginPanel
               conversationList={conversationList}
@@ -522,7 +540,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
               openCollaborators={opensCollaborators}
             />
           </div>
-        ) : null}
+        )}
         <IssuePresetPanels
           activatedTabs={activatedTabs}
           activeTab={activeTab}
@@ -530,7 +548,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           askId={askId}
           commentId={commentId}
           diffs={diffs}
-          editedDocument={editedDocument}
+          documents={documents}
+          editedDocument={edited}
           highlightTerm={highlightTerm}
           isClosed={isClosed}
           isPrimaryArtifactRoute={isPrimaryArtifactRoute}
@@ -539,18 +558,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           onToolbarSink={toolbarSink}
           onVersionChange={selectDocumentVersion}
           planArtifact={planArtifact}
-          planStage={planStage}
-          primaryArtifact={primaryArtifact}
           route={route}
           selectedArtifact={selectedArtifact}
-          selectedStage={selectedStage}
           specOpensItem={address.preset === "spec"}
-          specStage={specStage}
           specVersion={specVersion}
           state={state.data}
           toolbars={toolbars}
           verificationArtifact={verificationArtifact}
-          verificationStage={verificationStage}
         />
       </section>
     </NoTooltips>

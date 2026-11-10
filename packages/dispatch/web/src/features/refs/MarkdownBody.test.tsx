@@ -15,6 +15,7 @@ import type {
   IssueReferenceSummaryDocument,
 } from "../../api/types";
 import { TextAskBlockCard } from "../doc/AskBlockCard";
+import { NODE_TYPE_NAMES } from "../issue/page-words";
 import { MarkdownBody } from "./MarkdownBody";
 import { TextAskCard } from "./markdown-cards";
 import { setParseDeadline, warmMarkdownRenderer } from "./markdown-engine";
@@ -507,7 +508,9 @@ test("a typed callout in a body draws its name, kind and title above its content
       expect(found).not.toBeNull();
       return found as HTMLElement;
     });
-    expect(view.container.querySelector("[data-proof-block-name]")?.textContent).toBe("callout");
+    expect(view.container.querySelector("[data-proof-block-name]")?.textContent).toBe(
+      NODE_TYPE_NAMES.callout
+    );
     expect(view.container.querySelector("[data-proof-block-badge]")?.textContent).toBe("warning");
     expect(view.container.querySelector("[data-proof-block-title]")?.textContent).toBe("Read this");
     expect(within(content).getByText("Body text.")).toBeDefined();

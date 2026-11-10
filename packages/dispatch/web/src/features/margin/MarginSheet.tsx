@@ -265,15 +265,16 @@ export function MarginSheet({
             whatever the margin shows over it; a send it has out, and that send's refusal, are the
             held-send store's, and survive anything. */}
         {/* Whatever page filled the margin's slot wraps all of this, so its panel is one panel
-            holding its own properties and this conversation (`margin-slot.tsx`). A margin
-            collapsed to its rail, or under a phone thread, draws the slot's fill not at all:
-            the panel is gone with the margin, while the composer below stays mounted and keeps
-            its draft. */}
+            holding its own properties and this conversation (`margin-slot.tsx`). The fill wraps
+            it while the margin is collapsed to its rail and under a phone thread too, and the
+            page draws only the margin's own cards there: the wrapper above the composer is one
+            shape in every state, so a collapse never remounts the composer and never throws
+            away an unsent comment with it. */}
         <div
           className={sheet.expanded ? "px-4 pb-4 xl:px-0 xl:pb-0" : "hidden xl:block"}
           hidden={covered}
         >
-          <FilledMarginSlot fill={covered ? undefined : slotFill}>
+          <FilledMarginSlot fill={slotFill}>
             {covered ? null : (
               <>
                 <div className={`flex items-center justify-between border-b ${borderDefault}`}>

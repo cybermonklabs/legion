@@ -6,6 +6,8 @@ import { userStateQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import { PROPERTY_LABELS } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import { stateForIssue } from "./pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 
@@ -19,10 +21,21 @@ export function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
   return input !== undefined && Object.keys(input).length === 1 && input.status !== undefined;
 }
 
+/** What the shell's indicator calls each field the identity block writes: the page's own name
+ *  for the property, never the schema's (dispatch://INFRA-1196 R21), so a write reads "Parent
+ *  of CORE-1 saved" and not "CORE-1: parent saved". */
+const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
+  parent: PROPERTY_LABELS.parent,
+  route: CONTROL_LABELS.message_route,
+  status: PROPERTY_LABELS.status,
+  title: PROPERTY_LABELS.title,
+};
+
 /** What the shell's indicator names one header write of `key`. */
 function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
-  const field = Object.keys(input)[0] ?? "field";
-  return input.status === undefined ? `${key}: ${field} saved` : `${key} set to ${input.status}`;
+  if (input.status !== undefined) return `${key} set to ${input.status}`;
+  const field = (Object.keys(input) as (keyof IssueUpdateInput)[])[0];
+  return field === undefined ? `${key} saved` : `${WRITTEN_FIELD_NAMES[field]} of ${key} saved`;
 }
 
 /**

@@ -22,9 +22,12 @@ import { isPinnedConversation } from "./pins";
  * questions alone, and what people and agents said.
  *
  * They are options of one listbox rather than tabs, because the panel is not a set of panes:
- * one state is picked, and the conversation the page draws is in that state. `/conversation`
- * and `/activity` are the addresses of two of them, so picking a state is navigation
- * (`IssuePage`'s `pickState`), and the address a reader arrives at says which one is selected.
+ * one state is picked, and the conversation the page draws is in that state. Two of them -
+ * everything and what people said - are addresses as well (`/activity`, `/conversation`), and
+ * the page draws more at those than the panel does, so picking one of those is navigation
+ * (`IssuePage`'s `pickState`) and the address a reader arrives at says which is selected. The
+ * other two name no address: picking one leaves the reader's address alone, and so their
+ * preset, their filter and the document they have open.
  */
 export function ConversationStates({
   onPick,

@@ -21,14 +21,30 @@ const MarginFillContext = createContext<MarginFill | undefined>(undefined);
  *  component rendered on its own - registers with nobody and draws no panel of its own. */
 const MarginFillRegistry = createContext<(fill: MarginFill | undefined) => void>(() => {});
 
-export function MarginSlotProvider({ children }: { children: ReactNode }): ReactNode {
+/** Whether the shell's margin has a column of its own at this width that draws what the page
+ *  put in the slot. False outside the provider, and false while the margin is collapsed to its
+ *  rail or is the phone sheet, so a page that draws a panel draws it itself rather than
+ *  handing it to a margin that is not there (dispatch://INFRA-1196 R11, R12). */
+const MarginDrawsSlotContext = createContext(false);
+
+export function MarginSlotProvider({
+  children,
+  drawsSlot = false,
+}: {
+  children: ReactNode;
+  /** Whether the margin is keeping a column for the page's panel right now. The shell answers
+   *  it, because the shell holds the reader's collapse preference and the width. */
+  drawsSlot?: boolean;
+}): ReactNode {
   const [fill, setFill] = useState<MarginFill | undefined>(undefined);
   // A fill is a function, and React reads a function handed to a setter as an updater, so a
   // registration always wraps it in one.
   const register = useCallback((next: MarginFill | undefined) => setFill(() => next), []);
   return (
     <MarginFillRegistry.Provider value={register}>
-      <MarginFillContext.Provider value={fill}>{children}</MarginFillContext.Provider>
+      <MarginDrawsSlotContext.Provider value={drawsSlot}>
+        <MarginFillContext.Provider value={fill}>{children}</MarginFillContext.Provider>
+      </MarginDrawsSlotContext.Provider>
     </MarginFillRegistry.Provider>
   );
 }
@@ -49,6 +65,13 @@ export function useFillMarginSlot(fill: MarginFill | undefined): void {
 /** What the page filling the slot draws, or `undefined` while no page fills it. */
 export function useMarginSlotFill(): MarginFill | undefined {
   return useContext(MarginFillContext);
+}
+
+/** Whether the margin draws the page's panel. A page draws it in its own column wherever this
+ *  is false, so every property is on the screen at every width and with every preference
+ *  (R11). */
+export function useMarginDrawsSlot(): boolean {
+  return useContext(MarginDrawsSlotContext);
 }
 
 /** The margin's own content, drawn inside whatever the page filling the slot wraps it in, and

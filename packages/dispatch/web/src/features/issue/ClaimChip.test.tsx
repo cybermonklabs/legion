@@ -13,6 +13,7 @@ import { NoTooltips } from "../../components/tooltips";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
+import { CONTROL_LABELS } from "./page-words";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
@@ -342,7 +343,9 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(stalled).toHaveTextContent("unresponsive since");
-    expect(within(stalled).getByTestId("issue-claim-takeable").textContent).toBe(", takeable now");
+    expect(within(stalled).getByTestId("issue-claim-takeable").textContent).toBe(
+      `, ${CONTROL_LABELS.takeable_now}`
+    );
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     const chip = screen.getByTestId("issue-claim");

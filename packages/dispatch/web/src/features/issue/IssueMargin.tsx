@@ -1,19 +1,17 @@
 import { type ReactNode, useEffect, useId, useState } from "react";
-import { Link } from "react-router-dom";
 import type { IssueDetails } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
 import {
   borderDefault,
-  linkHoverText,
-  linkText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
+import { BlockedByControl } from "./BlockedByControl";
 import { ConversationStates } from "./conversation-states";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import type { FocusedNode } from "./focused-node";
@@ -43,11 +41,13 @@ import { useMarginSections } from "./useMarginSections";
  * It is one panel, not two: the properties are not a second column beside the conversation, and
  * no property of the issue is drawn in both this and the identity block.
  *
- * At the width where the shell's margin becomes a sheet, the page draws this panel in its own
- * column instead, and the sheet keeps the conversation: the properties are read at every width
- * without opening anything (R11).
+ * Where the margin keeps no column of its own - at the width it is a sheet, and while the
+ * reader has collapsed it to its rail - the page draws this panel in its own column instead
+ * and the margin draws `cardsOnly`: the properties are read at every width and under either
+ * preference without opening anything (R11).
  */
 export function IssueMarginPanel({
+  cardsOnly = false,
   conversation,
   conversationList,
   conversationState,
@@ -57,6 +57,12 @@ export function IssueMarginPanel({
   onConversationState,
   openCollaborators = false,
 }: {
+  /** Draw the margin's own cards and nothing else, because the page is drawing this panel in
+   *  its own column. The wrapper is the same element in both states on purpose: the margin
+   *  holds the open composer inside it, and a wrapper that changed shape as the margin
+   *  collapsed would remount that composer and lose an unsent comment
+   *  (`features/margin/MarginSheet.tsx`). */
+  cardsOnly?: boolean;
   /** The margin's own content, where this panel sits inside the shell's margin. */
   conversation?: ReactNode;
   /** The conversation's one list, which the state controls above it drive. It reads at the
@@ -96,7 +102,10 @@ export function IssueMarginPanel({
     // (`components/tooltips.tsx`): the margin's own cards reach that reading through this
     // wrapper, because they are rendered inside it (`features/margin/margin-slot.tsx`).
     <NoTooltips>
-      <div className="flex min-w-0 flex-col gap-3" data-testid="issue-margin">
+      <div
+        className={cardsOnly ? "contents" : "flex min-w-0 flex-col gap-3"}
+        data-testid={cardsOnly ? undefined : "issue-margin"}
+      >
         {/* The margin's own cards first, and every section of the panel under them
             (`features/margin/margin-slot.tsx`): the issue's asks, comments, messages and
             decisions, in the margin's words and the authors' own, and not the page's declared
@@ -107,127 +116,120 @@ export function IssueMarginPanel({
         <div className="contents" {...authorText}>
           {conversation}
         </div>
-        <PropertySection name="development" sections={sections}>
-          <RepoControl
-            disabled={isClosed}
-            issueKey={issue.key}
-            project={issue.project}
-            repo={issue.repo}
-            resolvedRepo={issue.resolved_repo}
-          />
-          <IssueComponentsLine issue={issue} />
-          {(issue.blocked_by ?? []).length === 0 ? null : (
-            <Property label={PROPERTY_LABELS.blocked_by}>
-              {(issue.blocked_by ?? []).map((key) => (
-                <Link
-                  className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
-                  key={key}
-                  to={buildIssuePath({ key, kind: "issue" })}
-                  {...authorText}
-                >
-                  {key}
-                </Link>
-              ))}
-            </Property>
-          )}
-          {(issue.external_links ?? []).length === 0 ? null : (
-            <Property label={PROPERTY_LABELS.external_links}>
-              {(issue.external_links ?? []).map((link) => (
-                <GitHubLink key={link.url} link={link} />
-              ))}
-            </Property>
-          )}
-        </PropertySection>
-        <PropertySection name="people" sections={sections}>
-          {issue.created_by == null ? null : (
-            <Property label={PROPERTY_LABELS.opened_by}>
-              <span {...authorText}>
-                <AgentName actor={issue.created_by} inline />
-              </span>
-            </Property>
-          )}
-          <button
-            aria-expanded={subscribersOpen}
-            className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
-            onClick={() => setSubscribersOpen((open) => !open)}
-            type="button"
-            {...pageChrome}
-          >
-            <span>
-              {subscribers.counted
-                ? `${PROPERTY_LABELS.subscribers}:`
-                : PROPERTY_LABELS.subscribers}
-            </span>
-            {subscribers.counted ? <span {...authorText}>{subscribers.rows.length}</span> : null}
-          </button>
-          {subscribersOpen ? (
-            <SubscribedAgents
-              onUnsubscribe={(sessionId) => subscribers.unsubscribe.mutate(sessionId)}
-              ownerLabel={issue.key}
-              subscribers={subscribers.rows}
-            />
-          ) : null}
-          {subscribers.error ? (
-            <QueryError
-              error={subscribers.failure}
-              message="Subscribed agents unavailable — Envoy listener unreachable."
-              onRetry={subscribers.refetch}
-              retrying={subscribers.fetching}
-            />
-          ) : null}
-          {subscribers.unsubscribe.isError ? (
-            <QueryError
-              message="Could not unsubscribe this agent."
-              onRetry={() =>
-                subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")
-              }
-              retrying={subscribers.unsubscribe.isPending}
-            />
-          ) : null}
-          {/* Everyone who worked the issue, running or not, which the eight-tab page gave a tab
+        {cardsOnly ? null : (
+          <>
+            <PropertySection name="development" sections={sections}>
+              <RepoControl
+                disabled={isClosed}
+                issueKey={issue.key}
+                project={issue.project}
+                repo={issue.repo}
+                resolvedRepo={issue.resolved_repo}
+              />
+              <IssueComponentsLine issue={issue} />
+              <BlockedByControl issue={issue} />
+              {(issue.external_links ?? []).length === 0 ? null : (
+                <Property label={PROPERTY_LABELS.external_links}>
+                  {(issue.external_links ?? []).map((link) => (
+                    <GitHubLink key={link.url} link={link} />
+                  ))}
+                </Property>
+              )}
+            </PropertySection>
+            <PropertySection name="people" sections={sections}>
+              {issue.created_by == null ? null : (
+                <Property label={PROPERTY_LABELS.opened_by}>
+                  <span {...authorText}>
+                    <AgentName actor={issue.created_by} inline />
+                  </span>
+                </Property>
+              )}
+              <button
+                aria-expanded={subscribersOpen}
+                className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
+                onClick={() => setSubscribersOpen((open) => !open)}
+                type="button"
+                {...pageChrome}
+              >
+                <span>
+                  {subscribers.counted
+                    ? `${PROPERTY_LABELS.subscribers}:`
+                    : PROPERTY_LABELS.subscribers}
+                </span>
+                {subscribers.counted ? (
+                  <span {...authorText}>{subscribers.rows.length}</span>
+                ) : null}
+              </button>
+              {subscribersOpen ? (
+                <SubscribedAgents
+                  onUnsubscribe={(sessionId) => subscribers.unsubscribe.mutate(sessionId)}
+                  ownerLabel={issue.key}
+                  subscribers={subscribers.rows}
+                />
+              ) : null}
+              {subscribers.error ? (
+                <QueryError
+                  error={subscribers.failure}
+                  message="Subscribed agents unavailable — Envoy listener unreachable."
+                  onRetry={subscribers.refetch}
+                  retrying={subscribers.fetching}
+                />
+              ) : null}
+              {subscribers.unsubscribe.isError ? (
+                <QueryError
+                  message="Could not unsubscribe this agent."
+                  onRetry={() =>
+                    subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")
+                  }
+                  retrying={subscribers.unsubscribe.isPending}
+                />
+              ) : null}
+              {/* Everyone who worked the issue, running or not, which the eight-tab page gave a tab
               of its own. It is read only once a reader opens it, so the panel costs the page no
               request on an address that does not name it (R20). */}
-          <button
-            aria-expanded={collaboratorsOpen}
-            className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
-            onClick={() => setCollaboratorsOpen((open) => !open)}
-            type="button"
-            {...pageChrome}
-          >
-            <span>{PROPERTY_LABELS.collaborators}</span>
-          </button>
-          {collaboratorsOpen ? (
-            <div {...authorText}>
-              <IssueCollaboratorList issueKey={issue.key} />
-            </div>
-          ) : null}
-        </PropertySection>
-        <PropertySection name="references" sections={sections}>
-          <ReferencedByToggle
-            controls={referencesPanelId}
-            count={issue.referenced_by_count}
-            expanded={referencesOpen}
-            onToggle={() => setReferencesOpen((open) => !open)}
-          />
-          {referencesOpen ? (
-            <ReferencedBy
-              className="w-full"
-              reference={issueReference}
-              toggle={{ id: referencesPanelId }}
-            />
-          ) : null}
-        </PropertySection>
-        <FocusedNodeFacts node={focused} />
-        {/* Under the margin's own content, never above it, for the same reason the sections
+              <button
+                aria-expanded={collaboratorsOpen}
+                className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
+                onClick={() => setCollaboratorsOpen((open) => !open)}
+                type="button"
+                {...pageChrome}
+              >
+                <span>{PROPERTY_LABELS.collaborators}</span>
+              </button>
+              {collaboratorsOpen ? (
+                <div {...authorText}>
+                  <IssueCollaboratorList issueKey={issue.key} />
+                </div>
+              ) : null}
+            </PropertySection>
+            <PropertySection name="references" sections={sections}>
+              <ReferencedByToggle
+                controls={referencesPanelId}
+                count={issue.referenced_by_count}
+                expanded={referencesOpen}
+                onToggle={() => setReferencesOpen((open) => !open)}
+              />
+              {referencesOpen ? (
+                <ReferencedBy
+                  className="w-full"
+                  reference={issueReference}
+                  toggle={{ id: referencesPanelId }}
+                />
+              ) : null}
+            </PropertySection>
+            <FocusedNodeFacts node={focused} />
+            {/* Under the margin's own content, never above it, for the same reason the sections
           above are (the panel's head): a section drawn over the margin's cards moves the
           anchor their placement measures against. */}
-        <ConversationStates onPick={onConversationState} state={conversationState} />
-        {/* The issue's one conversation panel, under the state controls that drive it. It is
+            <ConversationStates onPick={onConversationState} state={conversationState} />
+            {/* The issue's one conversation panel, under the state controls that drive it. It is
             the box every spec and every link reaches the conversation by
             (`#issue-conversation-panel`), which is this panel wherever the shell mounts it. */}
-        <div className="flex min-w-0 flex-col" id="issue-conversation-panel" {...authorText}>
-          {conversationList}
-        </div>
+            <div className="flex min-w-0 flex-col" id="issue-conversation-panel" {...authorText}>
+              {conversationList}
+            </div>
+          </>
+        )}
       </div>
     </NoTooltips>
   );

@@ -135,8 +135,8 @@ export function IssueAddMenu({
     if ((details.blocked_by ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.blocked_by,
-        open: () => onOpenField("blocked_by"),
-        reachable: () => true,
+        open: press(`Add blocked by of ${details.key}`),
+        reachable: byName(`Add blocked by of ${details.key}`),
       });
     }
     if (details.repo === null) {

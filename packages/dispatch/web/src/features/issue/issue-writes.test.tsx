@@ -12,6 +12,7 @@ import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
+import { writesOf } from "../writes/write-store";
 import { IssuePage } from "./IssuePage";
 
 const issue: IssueDetails = {
@@ -1169,3 +1170,115 @@ test("a board move then a header status change land in press order after an outa
     restore();
   }
 }, 10_000);
+
+// The issues an issue waits on are written where their value is drawn, in the panel's
+// Development section (dispatch://INFRA-1196 R11), and a list Dispatch refuses - a key it does
+// not know, the issue itself, an issue in another project - is said there, over the list the
+// reader typed, so they mend it rather than retype it. It used to close at once and reach the
+// header as "Could not update this issue.", whose Retry sent the same refused list again.
+test("the blocked-by editor stays open on a refusal and says what Dispatch refused", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(
+      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+    )
+  );
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Add blocked by of CORE-1" }));
+    const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
+    await user.click(keys);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith(
+        "CORE-1",
+        { blocked_by: ["CORE-9"] },
+        keyedAttempt
+      )
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("blocked_by issue CORE-9 not found");
+    expect(
+      (screen.getByLabelText("Issues CORE-1 waits on") as HTMLInputElement).value,
+      "the refused list is no longer in the box for the reader to mend"
+    ).toBe("CORE-9");
+    expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+test("a blocked-by that is set can be changed and cleared from the panel", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-2"] });
+  const { unmount } = renderIssuePage();
+
+  try {
+    expect(await screen.findByRole("link", { name: "CORE-2" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Edit blocked by of CORE-1" }));
+    const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
+    expect(keys.value).toBe("CORE-2");
+
+    await user.clear(keys);
+    await user.paste("core-3");
+    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith(
+        "CORE-1",
+        { blocked_by: ["CORE-3"] },
+        keyedAttempt
+      )
+    );
+    // The editor closes on a landing, and the written list is what the panel draws.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+    expect(await screen.findByRole("link", { name: "CORE-3" })).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Edit blocked by of CORE-1" }));
+    await user.clear(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { blocked_by: [] }, keyedAttempt)
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R21: the indicator names the field in the page's own words. It read "CORE-1: route saved",
+// which is the schema's name for it, and "CORE-1: blocked_by saved" for the issues it waits on.
+test("the shell's indicator names the field a header write is saving", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const saving = deferred<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    const route = (await screen.findByLabelText("Message route")) as HTMLInputElement;
+    await user.click(route);
+    await user.paste("role:legion-controller-core");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+
+    await waitFor(() =>
+      expect(
+        writesOf(queryClient)
+          .rows()
+          .map((row) => row.label)
+      ).toEqual(["Message route of CORE-1 saved"])
+    );
+    saving.resolve(narrowIssue({ ...issue, route: "role:legion-controller-core" }));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toHaveLength(0));
+  } finally {
+    unmount();
+    restore();
+  }
+});

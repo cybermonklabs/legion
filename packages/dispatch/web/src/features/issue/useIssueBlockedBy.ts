@@ -1,0 +1,58 @@
+import { useQueryClient } from "@tanstack/react-query";
+
+import { apiErrorMessage, issuePatchRequest } from "../../api/client";
+import { mergeIssue } from "../../api/issue-cache";
+import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
+
+export interface BlockedByWrite {
+  /** Why Dispatch refused the last save, in its own words, until the next save starts. */
+  readonly error: string | undefined;
+  readonly pending: boolean;
+  /** Saves the issues this one waits on. `onSaved` runs on a landing and on nothing else, so
+   *  the editor stays open over a refusal with the reader's list still in it. */
+  readonly save: (keys: readonly string[]) => void;
+}
+
+/**
+ * The one way the panel writes the issues an issue waits on (`blocked_by`).
+ *
+ * A refused list is refused for a reason the reader can mend - "CORE-9 not found", "CORE-1
+ * cannot be blocked by itself", a blocker outside the project - so the write says what Dispatch
+ * refused and leaves the editor open with the typed list in it; there is no Retry, because
+ * sending the same refused list again would be refused again
+ * (`packages/dispatch/AGENTS.md`: a field's refusal belongs at its control).
+ */
+export function useIssueBlockedBy(issueKey: string, onSaved: () => void): BlockedByWrite {
+  const queryClient = useQueryClient();
+  const guard = useSubmitGuard();
+  // One write of the issue's line (`issue:<key>`), as every other field write is, so an older
+  // one still being tried never lands after a newer one.
+  const write = useKeyedWrite({
+    inline: true,
+    label: (keys: readonly string[]) =>
+      keys.length === 0 ? `${issueKey} waits on nothing` : `${issueKey} waits on ${keys.join(" ")}`,
+    target: () => `issue:${issueKey}`,
+    request: (keys: readonly string[]) => issuePatchRequest(issueKey, { blocked_by: [...keys] }),
+    onSettled: () => guard.release(),
+    onSuccess: (next) => {
+      if (next === null) {
+        // Landed with no answer to give: the issue is read again rather than guessed at.
+        void queryClient.invalidateQueries({ queryKey: ["issue", issueKey] });
+      } else {
+        mergeIssue(queryClient, next);
+      }
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      onSaved();
+    },
+  });
+  return {
+    error: write.isError
+      ? apiErrorMessage(write.error, `Could not save what ${issueKey} waits on.`)
+      : undefined,
+    pending: write.isPending,
+    save: (keys) => {
+      guard.guard(() => write.mutate(keys));
+    },
+  };
+}

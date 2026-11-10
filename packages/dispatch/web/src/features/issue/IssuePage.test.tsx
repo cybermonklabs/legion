@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -36,6 +36,7 @@ import type {
 } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { MarginSlotProvider } from "../margin/margin-slot";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
@@ -320,7 +321,11 @@ function renderIssuePage(
   seedText?: string,
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  })
+  }),
+  /** Whether the shell's margin is keeping a column for the page's panel. No margin is
+   *  mounted here, so the default is the state a collapsed margin and a phone both leave the
+   *  page in: the page draws its panel itself (`features/margin/margin-slot.tsx`). */
+  marginDrawsPanel = false
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
@@ -330,13 +335,15 @@ function renderIssuePage(
         <KeymapProvider>
           <DocumentRuntime.Provider value={runtime.runtime}>
             <MarginProvider>
-              <CurrentRoute />
-              {navigateTo === undefined ? null : (
-                <Link to={navigateTo}>Navigate to test route</Link>
-              )}
-              <Routes>
-                <Route path="/issues/:key/*" element={<IssuePage />} />
-              </Routes>
+              <MarginSlotProvider drawsSlot={marginDrawsPanel}>
+                <CurrentRoute />
+                {navigateTo === undefined ? null : (
+                  <Link to={navigateTo}>Navigate to test route</Link>
+                )}
+                <Routes>
+                  <Route path="/issues/:key/*" element={<IssuePage />} />
+                </Routes>
+              </MarginSlotProvider>
             </MarginProvider>
           </DocumentRuntime.Provider>
         </KeymapProvider>
@@ -346,6 +353,28 @@ function renderIssuePage(
   window.setTimeout(runtime.sync);
   return { ...view, runtime };
 }
+
+/** happy-dom answers every media query against its own 1024 px window, which is a width the
+ *  shell's margin is a sheet at. A test that wants the desktop layout asks for a wider one, as
+ *  `IssueTree.test.tsx` does. */
+function setViewport(width: number): void {
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: width <= Number(/max-width:\s*(\d+)/.exec(query)?.[1] ?? 0),
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+}
+
+const originalMatchMedia = window.matchMedia;
+afterEach(() => {
+  window.matchMedia = originalMatchMedia;
+});
 
 async function openSubscribedAgents(count: number) {
   const user = userEvent.setup();
@@ -2681,6 +2710,87 @@ test("IssuePage shows its not-found view for an id prefix that names nothing", a
     view.unmount();
     getComment.mockRestore();
     getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The panel is drawn wherever the shell's margin is not drawing it: at the width the margin is
+// a sheet, and - this row - from 1280 px up with the reader's margin collapsed to its rail.
+// Without it that reader loses every property in the panel, the conversation with them, and
+// `/conversation`, `/collaborators`, `t c` and `t o` reach nothing.
+test("IssuePage draws its panel in its own column wherever the margin draws none", async () => {
+  const restore = stubIssuePage({ ...issue, blocked_by: ["CORE-9"] });
+  setViewport(1280);
+  const view = renderIssuePage();
+
+  try {
+    const panel = await screen.findByTestId("issue-margin");
+    expect(within(panel).getByText("Opened by:")).toBeInTheDocument();
+    expect(within(panel).getByRole("link", { name: "CORE-9" })).toBeInTheDocument();
+    expect(within(panel).getByRole("listbox", { name: "Conversation" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("IssuePage leaves the panel to the margin where the margin keeps a column for it", async () => {
+  const restore = stubIssuePage(issue);
+  setViewport(1280);
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, undefined, true);
+
+  try {
+    await screen.findByTestId("issue-header");
+    expect(screen.queryByTestId("issue-margin")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Picking a state in the panel is a change of state and not a change of address: the preset the
+// reader is reading, the `?q=` that narrows it and the document it has open all stay.
+test("IssuePage keeps the preset and the filter when a conversation state is picked", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/spec?q=socket");
+
+  try {
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await expectPreset("Spec");
+    await user.click(within(states).getByRole("option", { name: "Questions" }));
+
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?q=socket");
+    await expectPreset("Spec");
+    expect(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Questions",
+      })
+    ).toHaveAttribute("aria-selected", "true");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// From the Tree preset's own addresses the state is still in the path, because those three
+// addresses are what carries it - and the filter goes with it.
+test("IssuePage carries the filter into the address a conversation state names", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1?q=socket");
+
+  try {
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await user.click(within(states).getByRole("option", { name: "Everything" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        "/issues/CORE-1/activity?q=socket"
+      )
+    );
+  } finally {
+    view.unmount();
     restore();
   }
 });

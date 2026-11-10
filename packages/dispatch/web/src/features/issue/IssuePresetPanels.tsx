@@ -2,18 +2,14 @@ import type { ReactNode } from "react";
 
 import type { Artifact, UserState } from "../../api/types";
 import { ActivityTab } from "../activity/ActivityTab";
-import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { PlanTab } from "../plan/PlanTab";
 import type { IssueRoute, IssueTab } from "../refs/routes";
-import { DocumentStage } from "./document-stage";
+import type { DrawnDocuments } from "./drawn-documents";
 import { RoleDocumentPanel } from "./RoleDocumentPanel";
 import { SpecRequirements } from "./SpecRequirements";
-
-/** Where a document's editor is mounted so a preset can take it onto its own stage
- *  (`document-stage.tsx`'s `useDocumentStage`). */
-type DocumentStageRef = (node: HTMLElement | null) => void;
+import { StagedDocument } from "./StagedDocument";
 
 /**
  * What each preset draws beside the tree (dispatch://INFRA-1196 R16): the spec, the
@@ -23,11 +19,12 @@ type DocumentStageRef = (node: HTMLElement | null) => void;
  * These are plain panels, not tabpanels: the presets are queries over one tree and the page has
  * no tablist of panels any more. A panel the reader has never opened stays unmounted, and one
  * they have opened keeps rendering while hidden, which is what keeps the spec's editor
- * connected across a preset change (`activated`).
+ * connected across a preset change (`activatedTabs`).
  *
  * It is a component of its own because the page's column is the identity block, the body and
- * this: the first two decide the page's shape, and this decides nothing - it draws the document
- * each address names, out of values `IssuePage` already holds.
+ * this: the first two decide the page's shape, and this decides nothing - which documents are
+ * drawn is `drawn-documents.ts`'s one answer, which the page reads too, so no panel here can
+ * come to disagree with the page's own editor for an edited row.
  */
 export function IssuePresetPanels({
   activatedTabs,
@@ -36,6 +33,7 @@ export function IssuePresetPanels({
   askId,
   commentId,
   diffs,
+  documents,
   editedDocument,
   highlightTerm,
   isClosed,
@@ -45,18 +43,13 @@ export function IssuePresetPanels({
   onToolbarSink,
   onVersionChange,
   planArtifact,
-  planStage,
-  primaryArtifact,
   route,
   selectedArtifact,
-  selectedStage,
   specOpensItem,
-  specStage,
   specVersion,
   state,
   toolbars,
   verificationArtifact,
-  verificationStage,
 }: {
   activatedTabs: Record<IssueTab, boolean>;
   activeTab: IssueTab;
@@ -65,6 +58,8 @@ export function IssuePresetPanels({
   commentId: string | undefined;
   /** Which documents are drawn against their previous version. */
   diffs: ReadonlySet<string>;
+  /** Which document each panel below draws (`drawn-documents.ts`). */
+  documents: DrawnDocuments;
   /** The document a row of the tree is being edited in, where no panel here draws it. */
   editedDocument: Artifact | undefined;
   highlightTerm: string | undefined;
@@ -74,75 +69,83 @@ export function IssuePresetPanels({
   onShowDiff: (artifactId: string, next: boolean) => void;
   onToolbarSink: (artifactId: string) => (next: DocumentToolbar | undefined) => void;
   onVersionChange: (artifact: Artifact, version: number | null) => void;
+  /** The plan the Plan preset frames, drawn whether or not the issue has one. */
   planArtifact: Artifact | undefined;
-  planStage: DocumentStageRef;
-  primaryArtifact: Artifact;
   route: IssueRoute;
+  /** The artifact an `/artifacts/<slug>` address names, document or blob, which that panel
+   *  draws the header and the details of. */
   selectedArtifact: Artifact | undefined;
-  selectedStage: DocumentStageRef;
   /** Whether the `?ask=`/`?comment=` an address carries is the spec's to open: only where the
    *  Spec preset is what the address opens, since on every other preset the tree is what the
    *  address names and an editor focusing the item would take the focus off its row (R19). */
   specOpensItem: boolean;
-  specStage: DocumentStageRef;
   specVersion: number | undefined;
   state: UserState | undefined;
   toolbars: ReadonlyMap<string, DocumentToolbar>;
   verificationArtifact: Artifact | undefined;
-  verificationStage: DocumentStageRef;
 }): ReactNode {
+  const { plan, selected, spec, verification } = documents;
   return (
     <>
       <div aria-hidden={activeTab !== "spec"} hidden={activeTab !== "spec"} id="issue-spec-panel">
-        {activatedTabs.spec && !(artifactRoute !== undefined && !isPrimaryArtifactRoute) ? (
+        {spec === undefined ? null : (
           <div className="space-y-4">
-            <div className="flex min-w-0 flex-col" ref={specStage} />
-            <DocumentStage artifactId={primaryArtifact.id}>
-              <ArtifactDocument
-                artifact={primaryArtifact}
-                askId={specOpensItem ? askId : undefined}
-                commentId={specOpensItem ? commentId : undefined}
-                highlightTerm={highlightTerm}
-                isClosed={isClosed}
-                onToolbarChange={onToolbarSink(primaryArtifact.id)}
-                owner={{ key: issueKey, kind: "issue" }}
-                onVersionChange={(version) => {
-                  onShowDiff(primaryArtifact.id, false);
-                  onVersionChange(primaryArtifact, version);
-                }}
-                showDiff={diffs.has(primaryArtifact.id)}
-                version={specVersion}
-              />
-            </DocumentStage>
+            <StagedDocument
+              artifact={spec}
+              askId={specOpensItem ? askId : undefined}
+              commentId={specOpensItem ? commentId : undefined}
+              highlightTerm={highlightTerm}
+              isClosed={isClosed}
+              issueKey={issueKey}
+              onToolbarChange={onToolbarSink(spec.id)}
+              onVersionChange={(version) => {
+                onShowDiff(spec.id, false);
+                onVersionChange(spec, version);
+              }}
+              showDiff={diffs.has(spec.id)}
+              version={specVersion}
+            />
             <SpecRequirements issueKey={issueKey} />
           </div>
-        ) : null}
+        )}
       </div>
       <RoleDocumentPanel
         activated={activatedTabs.verification}
         active={activeTab === "verification"}
         artifact={verificationArtifact}
-        isClosed={isClosed}
         issueKey={issueKey}
-        onToolbarChange={onToolbarSink}
-        onVersionChange={onVersionChange}
-        showDiff={diffs}
-        stage={verificationStage}
         tab="verification"
-      />
+      >
+        {verification === undefined ? null : (
+          <StagedDocument
+            artifact={verification}
+            isClosed={isClosed}
+            issueKey={issueKey}
+            onToolbarChange={onToolbarSink(verification.id)}
+            onVersionChange={(version) => onVersionChange(verification, version)}
+            showDiff={diffs.has(verification.id)}
+          />
+        )}
+      </RoleDocumentPanel>
       <RoleDocumentPanel
         Tab={PlanTab}
         activated={activatedTabs.plan}
         active={activeTab === "plan"}
         artifact={planArtifact}
-        isClosed={isClosed}
         issueKey={issueKey}
-        onToolbarChange={onToolbarSink}
-        onVersionChange={onVersionChange}
-        showDiff={diffs}
-        stage={planStage}
         tab="plan"
-      />
+      >
+        {plan === undefined ? null : (
+          <StagedDocument
+            artifact={plan}
+            isClosed={isClosed}
+            issueKey={issueKey}
+            onToolbarChange={onToolbarSink(plan.id)}
+            onVersionChange={(version) => onVersionChange(plan, version)}
+            showDiff={diffs.has(plan.id)}
+          />
+        )}
+      </RoleDocumentPanel>
       <ArtifactRoutePanel
         active={activeTab === "artifacts"}
         artifact={selectedArtifact}
@@ -155,43 +158,37 @@ export function IssuePresetPanels({
         showDiff={diffs.has(selectedArtifact?.id ?? "")}
         toolbar={toolbars.get(selectedArtifact?.id ?? "")}
       >
-        {selectedArtifact?.kind === "doc" ? (
-          <>
-            <div className="flex min-w-0 flex-col" ref={selectedStage} />
-            <DocumentStage artifactId={selectedArtifact.id}>
-              <ArtifactDocument
-                artifact={selectedArtifact}
-                askId={askId}
-                commentId={commentId}
-                highlightTerm={highlightTerm}
-                isClosed={isClosed}
-                onToolbarChange={onToolbarSink(selectedArtifact.id)}
-                owner={{ key: issueKey, kind: "issue" }}
-                onVersionChange={(version) => {
-                  onShowDiff(selectedArtifact.id, false);
-                  onVersionChange(selectedArtifact, version);
-                }}
-                showDiff={diffs.has(selectedArtifact.id)}
-                version={artifactRoute?.version}
-              />
-            </DocumentStage>
-          </>
-        ) : null}
+        {selected === undefined ? null : (
+          <StagedDocument
+            artifact={selected}
+            askId={askId}
+            commentId={commentId}
+            highlightTerm={highlightTerm}
+            isClosed={isClosed}
+            issueKey={issueKey}
+            onToolbarChange={onToolbarSink(selected.id)}
+            onVersionChange={(version) => {
+              onShowDiff(selected.id, false);
+              onVersionChange(selected, version);
+            }}
+            showDiff={diffs.has(selected.id)}
+            version={artifactRoute?.version}
+          />
+        )}
       </ArtifactRoutePanel>
       {/* The document a row of the tree is being edited in, where no panel above draws it:
-          one editor per document, so the row takes this one onto its own stage. */}
+          one editor per document, so the row takes this one onto its own stage. It rests
+          nowhere while no row holds it, because no panel of this page is showing it. */}
       {editedDocument === undefined ? null : (
-        <DocumentStage artifactId={editedDocument.id}>
-          <ArtifactDocument
-            artifact={editedDocument}
-            isClosed={isClosed}
-            onToolbarChange={onToolbarSink(editedDocument.id)}
-            owner={{ key: issueKey, kind: "issue" }}
-            onVersionChange={(version) => onVersionChange(editedDocument, version)}
-            showDiff={false}
-            version={undefined}
-          />
-        </DocumentStage>
+        <StagedDocument
+          artifact={editedDocument}
+          isClosed={isClosed}
+          issueKey={issueKey}
+          onToolbarChange={onToolbarSink(editedDocument.id)}
+          onVersionChange={(version) => onVersionChange(editedDocument, version)}
+          resting={false}
+          showDiff={false}
+        />
       )}
       <div
         aria-hidden={activeTab !== "activity"}

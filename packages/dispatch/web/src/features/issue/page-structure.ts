@@ -65,8 +65,8 @@ export const PROPERTY_LABELS = freeze({
   components: "Components",
   /** The issue's links out of Dispatch, such as a pull request. */
   external_links: "Links",
-  /** The heading of the panel's facts of what the focus is on (R12). */
-  focused_node: "What the focus is on",
+  /** The heading of the panel's facts of the node the reader's focus is on (R12). */
+  focused_node: "The node you are on",
   labels: "Labels",
   opened_by: "Opened by",
   parent: "Parent",
@@ -77,6 +77,9 @@ export const PROPERTY_LABELS = freeze({
   route: "Messages go to",
   status: "Status",
   subscribers: "Subscribers",
+  /** The issue's own title, which the identity block draws as itself; the name is what the
+   *  shell's indicator calls a write of it. */
+  title: "Title",
   /** Row three's waiting marker: whose turn it is on the open asks. */
   waiting_on_agents: "Waiting on agents",
   waiting_on_you: "Waiting on you",
@@ -100,6 +103,8 @@ export const MARGIN_SECTION_NAMES = freeze({
  * tooltip, so each of these is drawn as text beside the control it explains (R11).
  */
 export const HELP_LINES = freeze({
+  /** What the blocked-by editor takes, beside the box (`BlockedByControl.tsx`). */
+  blocked_by: "Issue keys, separated by spaces; an empty box clears them.",
   /** What the identity block says of a closed issue. */
   closed: "This issue is closed.",
   /** Why releasing is safe, beside the release control. */
