@@ -53,12 +53,12 @@ const STILL_PX = 1;
  * once the page has held still for a while: the diagram directly above the decision block at the
  * end of the larger document grew from 297 to 1,587 px, and the 300 ms a settle cost were 300 ms
  * with the target 1,290 px below where it belonged - long enough for a reader to see it
- * (`e2e/large-documents.e2e.ts`, "a link to the decision block at the end of the larger document
- * lands on that block"). Every move inside one frame is one correction, and the correction is
- * made in a frame of its own rather than inside the observer, so a reader who moves on in the
- * same turn as the growth is never pulled back. The focus itself does not animate
- * (`FOCUS_SCROLL`, `@legion/proof-editor`): over a document of 400,000 characters an animated
- * scroll was cut short and restarted by every correction, and the link never landed.
+ * (`e2e/large-documents-reader.e2e.ts`, "a link to the decision block at the end of the larger
+ * document lands on that block"). Every move inside one frame is one correction, and the
+ * correction is made in a frame of its own rather than inside the observer, so a reader who
+ * moves on in the same turn as the growth is never pulled back. The focus itself does not
+ * animate (`FOCUS_SCROLL`, `@legion/proof-editor`): over a document of 400,000 characters an
+ * animated scroll was cut short and restarted by every correction, and the link never landed.
  *
  * With nothing that can move the target - no diagram waiting, and a `drawn` whose height never
  * changes - it does not run again and the target is pulsed once. A caller with no drawn root to

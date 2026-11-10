@@ -33,9 +33,10 @@
 // build still to come (dispatch://INFRA-341, R11).
 //
 // Every number is the page's own `performance.now()`, which counts from the navigation that
-// created the document, so no Node-side round trip is in any of them. `large-documents.e2e.ts`
-// prints all five and asserts two of them against R11's targets - the editor's first visible
-// block and the longest main-thread task - and the line it prints names which two those are.
+// created the document, so no Node-side round trip is in any of them.
+// `large-documents-measured.e2e.ts` prints all five and asserts two of them against R11's
+// targets - the editor's first visible block and the longest main-thread task - and the line
+// it prints names which two those are.
 import { type Page, test } from "@playwright/test";
 
 declare global {

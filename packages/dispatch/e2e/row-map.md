@@ -264,7 +264,10 @@ such a row loses is feedback on the pull request itself.
 | `e2e/keyed-send.e2e.ts` | idempotency keys and one delivery proved against the server |
 | `e2e/keyed-writes.e2e.ts` | idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races |
 | `e2e/labels.e2e.ts` | label writes and a server-filtered list; writes labels, then reloads and measures |
-| `e2e/large-documents.e2e.ts` | its four rows read from the wall clock run one row at a time in the `chromium-alone` and `iphone-alone` projects and in no other; the rest read the document in its live editor and answer a decision the server records |
+| `e2e/large-documents-build.e2e.ts` | each row reads the document being built in its live editor, batch by batch, over the socket the server syncs it on |
+| `e2e/large-documents-first-screen.e2e.ts` | the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server |
+| `e2e/large-documents-measured.e2e.ts` | its four rows read from the wall clock run one row at a time in the `chromium-alone` and `iphone-alone` projects and in no other; the rest read a build the server's sync begins |
+| `e2e/large-documents-reader.e2e.ts` | the document is read in its live editor and the decisions in it are answered against the asks the server records |
 | `e2e/layout.e2e.ts` | its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |

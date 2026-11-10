@@ -152,8 +152,14 @@ export const realStackReasons: Record<string, string> = {
   "keyed-writes.e2e.ts": "idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
-  "large-documents.e2e.ts":
-    "its four rows read from the wall clock run one row at a time in the `chromium-alone` and `iphone-alone` projects and in no other; the rest read the document in its live editor and answer a decision the server records",
+  "large-documents-build.e2e.ts":
+    "each row reads the document being built in its live editor, batch by batch, over the socket the server syncs it on",
+  "large-documents-first-screen.e2e.ts":
+    "the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server",
+  "large-documents-measured.e2e.ts":
+    "its four rows read from the wall clock run one row at a time in the `chromium-alone` and `iphone-alone` projects and in no other; the rest read a build the server's sync begins",
+  "large-documents-reader.e2e.ts":
+    "the document is read in its live editor and the decisions in it are answered against the asks the server records",
   "layout.e2e.ts":
     "its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",

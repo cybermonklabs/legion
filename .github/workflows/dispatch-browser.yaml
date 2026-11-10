@@ -306,9 +306,9 @@ jobs:
     # pull-request lane's four projects run under `@pr`, 147 of them on the real stack. The
     # remaining 57 are the four `-alone` projects', which the alone job runs - 20, 17 and 17 of
     # the three engine legs and 3 of `iphone-alone`. The 20 is `chromium-alone`'s two clock
-    # specs plus the one desktop clock row of large-documents.e2e.ts; the 3 are `iphone-alone`'s
-    # phone clock rows. The visual job's 20 rows are in neither figure: it writes no blob report
-    # at all.
+    # specs plus the one desktop clock row of large-documents-measured.e2e.ts; the 3 are
+    # `iphone-alone`'s phone clock rows. The visual job's 20 rows are in neither figure: it
+    # writes no blob report at all.
     timeout-minutes: 13
     strategy:
       fail-fast: false
@@ -680,7 +680,7 @@ jobs:
     #   every other step summed                             74             72            82
     #
     # The `chromium-alone` figure is now short of a row: the desktop clock row of
-    # large-documents.e2e.ts reached that leg after that run.
+    # large-documents-measured.e2e.ts reached that leg after that run.
     #
     # `iphone-alone` has no reading of this job yet, because its three rows reached it from the
     # shard legs. What they cost there, contended four lanes wide, is run 42485503469: the
@@ -805,12 +805,13 @@ jobs:
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
         # legs run uploads or downloads anything. chromium-alone runs both clock specs
         # (`clockSpecs`: heavy-bodies and nested-directive, named at
-        # e2e/playwright.config.ts:315) and the one row of large-documents.e2e.ts read at a
-        # desktop width (`desktopClockRow`, :340), which that project takes with the `testMatch`
-        # and `grep` at :575-576; firefox-alone and webkit-alone run heavy-bodies alone (:584,
-        # :596); and iphone-alone runs the three rows of large-documents.e2e.ts that
-        # `phoneClockRows` names (:329) - the two measurements and the timer row. Each
-        # large-documents row seeds its document through the API and reads it. And
+        # e2e/playwright.config.ts:315) and the one row of large-documents-measured.e2e.ts read
+        # at a desktop width (`desktopClockRow`, :340), which that project takes with the
+        # `testMatch` and `grep` at :577-578; firefox-alone and webkit-alone run heavy-bodies
+        # alone (:586, :598); and iphone-alone runs the three rows of
+        # large-documents-measured.e2e.ts that `phoneClockRows` names (:329) - the two
+        # measurements and the timer row. Each large-documents row seeds its document through
+        # the API and reads it. And
         # e2e/run.ts:126-130 makes no lane bucket at one worker. A store serving nothing would be
         # charged to the very reading these rows exist for, which is why the `weed` the image
         # carries is started on the shard job's machines and not on these. A row that later

@@ -1,0 +1,537 @@
+// What a reader does with a large document whose editor is still being built, and the rest of
+// acceptance A7.
+//
+// Three of these rows are the editor a reader has before its last batch: its blocks are on the
+// screen and they take edits, which reach the Yjs document through a window onto the blocks
+// already built (`packages/proof-editor/src/progressive-build.ts`). A reader types in the first
+// block the batches reached, two people write into one document while it fills, and a decision
+// the server drew is answered through the shared ask card in the page's own draw, with no
+// editor on the page at all.
+//
+// The other three are the rest of acceptance A7, and each of them reads a build rather than a
+// clock: a link to the decision block at the end of a document lands on that block, a reader
+// answers that decision, and a comment body of twenty diagrams draws only the diagrams the
+// reader has reached. None of those three carries throttling: what they prove is what the page
+// does, not how long it takes.
+//
+// Which document a row seeds is in its title, and every one of them seeds the AHXV6-1-shaped
+// document of `large-documents.ts` or the document whose opening block is a decision, never the
+// larger document, whose build costs about five times as much: what these rows read is an
+// order, a place or a count, and 406,000 characters buy none of them anything.
+//
+// The numbers R11's targets are read from, and every row that needs a build to last, are in
+// `large-documents-measured.e2e.ts`; what stands on the reader's screen while the editor is
+// built is in `large-documents-build.e2e.ts`; the draw the server sends, and the reads and the
+// chrome the page holds until the first batch, are in `large-documents-first-screen.e2e.ts`.
+// What the four files share is `large-documents-rows.ts`.
+import { expect, type Locator, type Page, test } from "@playwright/test";
+
+import { createComment, createIssue, createProject, getArtifactText, listIssueAsks } from "./api";
+import {
+  connectedDot,
+  documentEditor,
+  documentTransport,
+  editorBeingBuilt,
+  placeCaret,
+  selectTextIn,
+} from "./editor";
+import {
+  commentDiagrams,
+  decisionBlockId,
+  decisionBlocks,
+  diagramComment,
+  diagramsIn,
+  documentDiagrams,
+  documentNames,
+  documentTitle,
+  openingDecisionBlockId,
+  openingDecisionDocument,
+  proseOpening,
+  sectionHeading,
+  smallDocument,
+} from "./large-documents";
+import { throttleTheCpu } from "./large-documents-page";
+import {
+  agent,
+  blocksBuilt,
+  type EditMade,
+  everythingOwedFinished,
+  framesOfTheBuild,
+  seedDocument,
+} from "./large-documents-rows";
+import { openCommentThread, settledScrollTop } from "./mermaid-helpers";
+import { resetDatabase } from "./seed";
+import { asUser } from "./users";
+
+test(`a link to the decision block at the end of ${documentNames.small} lands on that block @phone`, async ({
+  browser,
+}) => {
+  test.setTimeout(600_000);
+  const block = decisionBlockId(decisionBlocks);
+  // The AHXV6-1-shaped document: the last of the five decision blocks sits in the last section
+  // of either document, and where the page ends up is the same question over 81,000 characters
+  // as over 406,000.
+  const { path } = await seedDocument("specs-small.md", smallDocument);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`${path}#b-${block}`);
+    const linked = documentEditor(page).locator(`[data-block-id="${block}"]`);
+    // The landing is in two parts: the focus the editor runs as it binds, and the one it runs
+    // again once the diagrams around the target have drawn and moved it
+    // (`features/doc/refocus-when-settled.ts`). A block behind `contain-intrinsic-size` has a
+    // box before it has painted, so the first focus lands on an estimate; the block has to be in
+    // the viewport once the page has stopped moving, not only before it.
+    await expect(linked).toBeInViewport({ timeout: 240_000 });
+    await settledScrollTop(page);
+    await expect(linked).toBeInViewport();
+  } finally {
+    await alice.close();
+  }
+});
+
+// The three rows below are about the editor a reader has before its last batch: its blocks are
+// on the screen and they take edits, which reach the Yjs document through a window onto the
+// blocks already built (`packages/proof-editor/src/progressive-build.ts`, acceptance A7). The
+// first of them needs no editor at all - a decision the server drew is answered through the
+// shared ask card in the page's own draw - and the two after it throttle the renderer as the
+// measurement does, not to time anything but so the build lasts long enough for the page to
+// draw frames while it runs, which is where a reader's edits land.
+
+test("a reader answers a decision block the server drew, with the editor's socket held @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  const { issueKey, path } = await seedDocument("opening-decision.md", openingDecisionDocument);
+  // The ask the server indexed the block into, which the card in the draw is named for: the
+  // text engine's own decision shell carries no `data-dispatch-ask-block` - that attribute is
+  // the editor's node view's alone (`typed-block-drawing.ts`) - so the card is found by the
+  // ask's id, which is what every surface names it by.
+  const indexed = (await listIssueAsks(issueKey)).find(
+    (ask) => ask.block_id === openingDecisionBlockId
+  );
+  expect(indexed, "the server indexed no ask for the document's decision block").toBeDefined();
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // Held open-ended, so no sync ever reaches the page and no editor is ever built: what the
+    // reader answers is the page's own draw of the document's text.
+    await documentTransport(page, { holding: true });
+    await page.goto(path);
+
+    const drawn = page.locator('[aria-label="Document text"]');
+    const card = drawn.getByTestId(`ask-${indexed?.id}`);
+    await expect(card).toBeVisible({ timeout: 120_000 });
+    await expect(documentEditor(page)).toHaveCount(0);
+    await expect(editorBeingBuilt(page)).toHaveCount(0);
+
+    await card.getByRole("radio", { name: "The next window" }).check();
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+    await expect(drawn).toContainText("Answered by alice");
+    // Answered with no editor on the page at all, which is the whole of this row.
+    await expect(documentEditor(page)).toHaveCount(0);
+
+    // And the server holds it: the issue's ask for that block reads answered.
+    await expect
+      .poll(
+        async () =>
+          (await listIssueAsks(issueKey)).find((ask) => ask.block_id === openingDecisionBlockId)
+            ?.state,
+        {
+          intervals: [500],
+          message: "the answer never reached the server",
+          timeout: 60_000,
+        }
+      )
+      .toBe("answered");
+  } finally {
+    await alice.close();
+  }
+});
+
+/** One edit the reader makes in an editor whose build is still running: where to put the
+ *  selection, and what to do there. */
+interface ReaderEdit {
+  /** Where against `quote` the selection goes: over it, or collapsed at either end. */
+  readonly edge: "after" | "before" | "whole";
+  readonly kind: "backspace" | "enter" | "paste" | "type";
+  /** The text the selection is found by, among the text a caret can enter. */
+  readonly quote: string;
+  /** What a type inserts, or what a paste carries. */
+  readonly text?: string;
+}
+
+/**
+ * Has the page itself make `edits` in the editor, in one frame, as soon as the editor is live
+ * and holds every block they name. Install before the navigation; read what it made with
+ * `editsMade` once the build is over.
+ *
+ * The edits are made from a frame of the page rather than driven from here, because where in
+ * a build each one lands is what these rows are about and this side cannot say. A locator's
+ * click is a task among the page's own: it is served between batches now
+ * (`endOfTask` in `packages/proof-editor/src/progressive-build.ts`), but which batch it falls
+ * between is a round trip's business, and an edit that landed after the last batch would
+ * prove nothing. A frame is where a reader's keystroke lands anyway, and from a frame the row
+ * reads how much of the document the editor held as it made each one.
+ *
+ * Each edit takes the editor's own path, never a shortcut into its state: the selection is a
+ * DOM Range plus the `selectionchange` ProseMirror's DOMObserver reads, a type is
+ * `execCommand("insertText")`, whose DOM mutation that observer picks up, Enter and Backspace
+ * are `keydown` events its keymaps handle, and a paste is the `ClipboardEvent` its clipboard
+ * plugin handles, the same event `e2e/editor.ts`'s `paste` dispatches.
+ */
+async function readerEditsTheBuild(page: Page, edits: readonly ReaderEdit[]): Promise<void> {
+  await page.addInitScript((planned: readonly ReaderEdit[]) => {
+    const select = (editor: Element, edit: ReaderEdit): void => {
+      const runs: { node: Node; start: number; end: number }[] = [];
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      let text = "";
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if (node.parentElement?.isContentEditable !== true) continue;
+        const start = text.length;
+        text += node.textContent ?? "";
+        runs.push({ end: text.length, node, start });
+      }
+      const at = text.indexOf(edit.quote);
+      const first = runs.find((run) => run.start <= at && at < run.end);
+      const last = runs.find(
+        (run) => run.start < at + edit.quote.length && at + edit.quote.length <= run.end
+      );
+      if (at < 0 || first === undefined || last === undefined) {
+        throw new Error(`the editor holds no ${JSON.stringify(edit.quote)}`);
+      }
+      const startAt = { node: first.node, offset: at - first.start };
+      const endAt = { node: last.node, offset: at + edit.quote.length - last.start };
+      const from = edit.edge === "after" ? endAt : startAt;
+      const to = edit.edge === "before" ? startAt : endAt;
+      const range = document.createRange();
+      range.setStart(from.node, from.offset);
+      range.setEnd(to.node, to.offset);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    };
+    const made: EditMade[] = [];
+    window.__readerEdits = made;
+    const look = () => {
+      // One edit a frame, never four in one: an edit of this kind lands in the DOM, and
+      // ProseMirror reads it back off the DOM in its own time, so a second edit made before
+      // that read is placed against a document the editor has not caught up with yet.
+      const edit = planned[made.length];
+      if (edit === undefined) return;
+      const root = document.querySelector(".proof-editor[data-write-path='live']");
+      const editor = root?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
+      if (document.querySelector('[role="textbox"][aria-label="Document editor"]') !== null) return;
+      // Each edit waits for the block it names, which the batches reach in their own time; an
+      // edit before it in the list may have changed what the blocks after it read.
+      if (root === null || editor === null || !(editor.textContent ?? "").includes(edit.quote)) {
+        requestAnimationFrame(look);
+        return;
+      }
+      try {
+        editor.focus();
+        select(editor, edit);
+        const built = root.querySelectorAll("[data-block-id]").length;
+        if (edit.kind === "type") {
+          document.execCommand("insertText", false, edit.text);
+        } else if (edit.kind === "paste") {
+          const data = new DataTransfer();
+          data.setData("text/plain", edit.text ?? "");
+          editor.dispatchEvent(
+            new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data })
+          );
+        } else {
+          editor.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              bubbles: true,
+              cancelable: true,
+              key: edit.kind === "enter" ? "Enter" : "Backspace",
+            })
+          );
+        }
+        made.push({
+          after: root.querySelectorAll("[data-block-id]").length,
+          built,
+          what: edit.kind,
+        });
+      } catch (error) {
+        window.__readerEditsRefused = String(error);
+        return;
+      }
+      requestAnimationFrame(look);
+    };
+    requestAnimationFrame(look);
+  }, edits);
+}
+
+/** What the page made of the edits it was given, once the build is over. */
+async function editsMade(page: Page, planned: readonly ReaderEdit[]): Promise<EditMade[]> {
+  const refused = await page.evaluate(() => window.__readerEditsRefused);
+  expect(refused, "the reader's edit was refused by the editor it was made in").toBeUndefined();
+  const made = (await page.evaluate(() => window.__readerEdits)) ?? [];
+  expect(
+    made.map((edit) => edit.what),
+    "the reader's edits never ran: the editor was open before the page could make them"
+  ).toEqual(planned.map((edit) => edit.kind));
+  return made;
+}
+
+test(`typing in ${documentNames.small}'s first block while it is built reaches the document @phone`, async ({
+  browser,
+}) => {
+  test.setTimeout(900_000);
+  const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
+  const before = await getArtifactText(artifactId);
+  // What the editor ends up holding is read after the build, not from the server's index: the
+  // page counts every block of the editor at whatever depth, which is the same number the
+  // reader's edits were recorded against.
+  const title = documentTitle(documentDiagrams.small);
+  const typing: readonly ReaderEdit[] = [
+    { edge: "after", kind: "type", quote: title, text: " Pangolin." },
+  ];
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await throttleTheCpu(page);
+    await readerEditsTheBuild(page, typing);
+    const transport = await documentTransport(page, { holding: true });
+    await page.goto(path);
+    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
+      { timeout: 240_000 }
+    );
+
+    await transport.release();
+    await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
+    const whole = await blocksBuilt(page);
+    const made = await editsMade(page, typing);
+    expect(
+      made.map((edit) => edit.built < whole),
+      "the build was over before the word was typed, so this run says nothing about an edit " +
+        "that crosses one"
+    ).toEqual([true]);
+
+    // The server holds the word in the block it was typed in, with every other block of the
+    // document exactly as it was.
+    await everythingOwedFinished("the word typed into the build");
+    const after = await getArtifactText(artifactId);
+    expect(after.markdown).toBe(before.markdown.replace(`# ${title}`, `# ${title} Pangolin.`));
+  } finally {
+    await alice.close();
+  }
+});
+
+test(`two people write in ${documentNames.small} while its editor is built @phone`, async ({
+  browser,
+}) => {
+  test.setTimeout(900_000);
+  const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
+  // The editor's own finished count is read after the build (the typing row says why).
+  const title = documentTitle(documentDiagrams.small);
+  // A word inside a block, Enter to split one, Backspace to join two, and a paste that runs
+  // from one block into the next and lands three.
+  const reading: readonly ReaderEdit[] = [
+    { edge: "after", kind: "type", quote: proseOpening(4), text: " Beaver." },
+    { edge: "after", kind: "enter", quote: proseOpening(2) },
+    { edge: "before", kind: "backspace", quote: proseOpening(3) },
+    {
+      edge: "whole",
+      kind: "paste",
+      quote: `${sectionHeading(6)}${proseOpening(6)}`,
+      text: "Otter one\n\nOtter two\n\nOtter three",
+    },
+  ];
+
+  const alice = await asUser(browser, "alice");
+  const bob = await asUser(browser, "bob");
+  try {
+    // Bob has the document open and his caret in its first block before Alice's socket is let
+    // through, so the only thing left for him to do afterwards is press the keys.
+    const bobPage = await bob.newPage();
+    await bobPage.goto(path);
+    await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
+    await expect(connectedDot(bobPage)).toHaveText("connected");
+    await placeCaret(bobPage, "after", title);
+
+    const page = await alice.newPage();
+    await throttleTheCpu(page);
+    await framesOfTheBuild(page);
+    await readerEditsTheBuild(page, reading);
+    const transport = await documentTransport(page, { holding: true });
+    await page.goto(path);
+    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
+      { timeout: 240_000 }
+    );
+
+    // Bob writes from the moment Alice's socket is let through: a word in a block her batches
+    // have built, a block inserted inside that built run, and that block taken out of it again
+    // over the prose it was inserted above.
+    await transport.release();
+    await placeCaret(bobPage, "after", title);
+    await bobPage.keyboard.type(" Pangolin.");
+    await placeCaret(bobPage, "after", sectionHeading(0));
+    await bobPage.keyboard.press("Enter");
+    await bobPage.keyboard.type("Otter paragraph.");
+    await selectTextIn(bobPage, documentEditor(bobPage), `Otter paragraph.${proseOpening(0)}`);
+    await bobPage.keyboard.press("Backspace");
+
+    await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
+    const whole = await blocksBuilt(page);
+    // Alice's four edits, each made in a frame of her own build, with part of the document in
+    // the editor and the rest still to come.
+    const made = await editsMade(page, reading);
+    expect(
+      made.map((edit) => edit.built < whole),
+      "the build was over before every edit was made, so this run says nothing about the edits " +
+        "that cross one"
+    ).toEqual([true, true, true, true]);
+    // And each did what it is there to do, in the blocks the editor was holding at the time: a
+    // word changes no count, Enter makes a block, Backspace unmakes one, and three blocks
+    // pasted over a selection that runs from one into the next leave one more than there were.
+    expect(made.map((edit) => edit.after - edit.built)).toEqual([0, 1, -1, 1]);
+    // And Bob's writing crossed that build too: the page drew frames holding part of the
+    // document while he was writing.
+    const frames = await page.evaluate(() => window.__blocksBuilt ?? []);
+    expect(
+      frames.filter((held) => held > 0 && held < whole),
+      "no frame was drawn holding part of the document, so Bob's writing crossed no build"
+    ).not.toEqual([]);
+
+    // The binding has taken over, and the document the server holds carries every edit of both
+    // of them.
+    await everythingOwedFinished("the edits made during the build");
+    const { markdown } = await getArtifactText(artifactId);
+    // What the markdown is read as: the document's own blocks, which is what `\n\n` separates
+    // and what each of these edits made or unmade. A heading's own text is read inside it,
+    // since remark escapes the stop after a section's number (`## 4\. The block index`).
+    const blocks = markdown.split("\n\n");
+    // Bob's: the word in the title, and the block he added taken out again over the prose it
+    // stood above, which the one block left of the two no longer opens with.
+    expect(markdown).toContain(`# ${title} Pangolin.`);
+    expect(markdown).not.toContain("Otter paragraph.");
+    expect(markdown).not.toContain(proseOpening(0));
+    // Alice's: the word inside a block, Enter splitting one into two, Backspace joining a
+    // section's prose onto its heading, and a paste that ran from one block into the next and
+    // landed three.
+    expect(markdown).toContain(`${proseOpening(4)} Beaver.`);
+    expect(blocks.filter((block) => block.startsWith(proseOpening(2)))).toEqual([proseOpening(2)]);
+    expect(markdown).toContain(`The block index${proseOpening(3)}`);
+    expect(blocks).toContain("## Otter one");
+    expect(markdown).toContain("Otter two");
+    expect(markdown).toContain("Otter three");
+  } finally {
+    await bob.close();
+    await alice.close();
+  }
+});
+
+test(`a reader answers a decision block in ${documentNames.small} @phone`, async ({ browser }) => {
+  test.setTimeout(600_000);
+  const block = decisionBlockId(decisionBlocks);
+  const { path } = await seedDocument("specs-small.md", smallDocument);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`${path}#b-${block}`);
+    const decision = documentEditor(page).locator(`[data-dispatch-ask-block="${block}"]`);
+    // The block hosts the Inbox's own ask card once the server has indexed it.
+    const card = decision.locator("article[data-testid^=ask-]");
+    await expect(card).toBeVisible({ timeout: 240_000 });
+
+    await card.getByRole("radio", { name: "The next window" }).check();
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+    await expect(decision).toContainText("Answered by alice");
+    await expect(
+      decision.locator('ul[aria-label="Options"] li[data-selected="true"]')
+    ).toContainText("The next window");
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Each mermaid block of `body`, in document order: whether it has drawn (a non-empty shadow
+ *  root, `packages/proof-editor/src/mermaid-svg.ts`), whether the page asked for it at all (the
+ *  figure a drawing or a refusal leaves in place of the `pre`), and whether it is within one
+ *  viewport height of the viewport, which is the margin a diagram draws inside
+ *  (`MERMAID_DRAW_MARGIN`). */
+function diagramBlocks(
+  body: Locator
+): Promise<{ asked: boolean; drawn: boolean; near: boolean }[]> {
+  return body.evaluate((element) => {
+    const margin = window.innerHeight;
+    // One entry per source block: a drawn block keeps its `pre` inside the figure's disclosure,
+    // so the `pre`s are the blocks however many of them have drawn.
+    return Array.from(
+      element.querySelectorAll<HTMLPreElement>('pre[data-language="mermaid"]'),
+      (pre) => {
+        const figure = pre.closest("figure.dispatch-mermaid");
+        const box = (figure ?? pre).getBoundingClientRect();
+        const preview = figure?.querySelector(".dispatch-mermaid-preview");
+        return {
+          asked: figure !== null,
+          drawn: (preview?.shadowRoot?.childElementCount ?? 0) > 0,
+          near: box.top < window.innerHeight + margin && box.bottom > -margin,
+        };
+      }
+    );
+  });
+}
+
+test(`a comment body of ${commentDiagrams} diagrams draws only the diagrams near the viewport @phone`, async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(300_000);
+  await resetDatabase();
+  await createProject({ key: "BIG", name: "Big documents" });
+  const issue = await createIssue({ project: "BIG", title: "A body" }, agent);
+  const body = diagramComment(commentDiagrams);
+  expect(diagramsIn(body)).toBe(commentDiagrams);
+  const comment = await createComment(issue.key, { body }, agent);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const card = await openCommentThread(page, testInfo, comment.id, "Section 1 is about");
+
+    // A diagram that is never asked for can only be shown by waiting: the drawn count is read
+    // until it has stopped moving, so every block the margin reached has had its answer.
+    let drawnBefore = -1;
+    await expect
+      .poll(
+        async () => {
+          const drawnNow = (await diagramBlocks(card)).filter((block) => block.drawn).length;
+          const settled = drawnNow > 0 && drawnNow === drawnBefore;
+          drawnBefore = drawnNow;
+          return settled;
+        },
+        { intervals: [1_000], timeout: 120_000 }
+      )
+      .toBe(true);
+
+    const blocks = await diagramBlocks(card);
+    expect(blocks).toHaveLength(commentDiagrams);
+    // Every block the page asked for drew: a refusal would mean the renderer ran for it after
+    // all, which is the cost this rule exists to save.
+    expect(blocks.filter((block) => block.asked !== block.drawn)).toEqual([]);
+    // The reader has reached some of the diagrams and not the rest.
+    const drawn = blocks.filter((block) => block.drawn).length;
+    expect(drawn).toBeGreaterThan(0);
+    expect(drawn).toBeLessThan(commentDiagrams);
+    // Which ones: the margin is one stretch of the body around the reader, so the diagrams that
+    // drew are one run of neighbours - the top of the body on a phone, its end on a desktop,
+    // which opens the Conversation at its newest turn - and never a scattering.
+    const first = blocks.findIndex((block) => block.drawn);
+    expect(blocks.map((block) => block.drawn)).toEqual(
+      blocks.map((_, at) => at >= first && at < first + drawn)
+    );
+    // And nothing within one viewport height of the reader is left undrawn.
+    expect(blocks.filter((block) => block.near && !block.drawn)).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});

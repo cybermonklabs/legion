@@ -56,9 +56,9 @@ export function documentPreview(within: HTMLElement | null): HTMLElement | null 
  * place of the per-batch scan below and reverted: the scan costs 547 ms of a build over 986
  * drawn blocks against 13 ms over one holding a screenful, which is half a percent of either
  * build, and the index left a frame holding something other than the document's blocks
- * (`e2e/large-documents.e2e.ts`, "every block of a document is on the screen exactly once as
- * its editor is built"). The scan reads the draw as it now stands, which is what keeps that
- * count right whatever else has left it.
+ * (`e2e/large-documents-build.e2e.ts`, "every block of a document is on the screen exactly
+ * once as its editor is built"). The scan reads the draw as it now stands, which is what keeps
+ * that count right whatever else has left it.
  */
 export function takesTheBuiltBlocks(preview: HTMLElement): (built: readonly string[]) => void {
   return (built) => {

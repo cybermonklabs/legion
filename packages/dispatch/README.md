@@ -496,9 +496,9 @@ tab's lock.
 The four `-alone` projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
 (a card draws without holding the main thread for a second) and the one row of
-`e2e/large-documents.e2e.ts` read at a desktop width, `firefox-alone` and
+`e2e/large-documents-measured.e2e.ts` read at a desktop width, `firefox-alone` and
 `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, and `iphone-alone` runs
-the three rows of `e2e/large-documents.e2e.ts` the spec's targets are read from.
+the three rows of `e2e/large-documents-measured.e2e.ts` the spec's targets are read from.
 Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
