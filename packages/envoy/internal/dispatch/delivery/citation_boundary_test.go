@@ -69,6 +69,11 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "another host's fragment", body: "See https://example.test/r#github.com/acme/widgets/issues/7 here.", credit: false},
 		{name: "a percent-encoded slash before the host", body: "See https://example.test/a%2Fgithub.com/acme/widgets/issues/7 here.", credit: false},
 		{name: "a percent-encoded slash in upper case", body: "See HTTPS://EXAMPLE.TEST/A%2FGITHUB.COM/acme/widgets/issues/7 here.", credit: false},
+
+		// Two readings the architect settled rather than left to chance, each pinned so that a
+		// later reader who changes one sees a row go red and knows to ask.
+		{name: "a github.com URL written inside another host's query is still written", body: "See https://evil.test/r?u=https://github.com/acme/widgets/issues/7 here.", credit: true},
+		{name: "the DNS trailing dot is another host, as it is on main", body: "See https://github.com./acme/widgets/issues/7 here.", credit: false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			urls := citedIssues(repo, row.body)
