@@ -13,7 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import type { Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
