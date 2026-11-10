@@ -237,13 +237,10 @@ export function LegionSections({
             compare={source(compared.data)}
             headline={line(
               `${issues(report.splitting.filed.length)} filed`,
-              `${count(report.splitting.finished_roots)} roots finished`,
-              `${report.splitting.children_per_root.toFixed(1)} children per root`,
-              `median ${formatHours(report.splitting.median_hours_roots_with_children)} with children`,
-              `${formatHours(report.splitting.median_hours_roots_without_children)} without`
+              `${report.splitting.children_per_root.toFixed(1)} children per root`
             )}
             id="splitting"
-            info="Filed: the issues that Legion sessions created in the window. The medians are the work times of the roots that finished."
+            info={`Filed: the issues that Legion sessions created in the window. ${count(report.splitting.finished_roots)} roots finished: median work time ${formatHours(report.splitting.median_hours_roots_with_children)} with children, ${formatHours(report.splitting.median_hours_roots_without_children)} without.`}
             report={report}
             title="Splitting"
             trend={splittingDaySeries}
@@ -589,11 +586,14 @@ function PhaseBar({ breakdown }: { breakdown: LegionPhaseBreakdown }): ReactNode
           <li className="flex items-baseline gap-1.5" key={part.id}>
             <span
               aria-hidden
-              className={`inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm ${legionPhaseScale[part.id] ?? ""}`}
+              className={`inline-block h-2.5 w-2.5 shrink-0 self-start mt-0.5 rounded-sm sm:self-center sm:mt-0 ${legionPhaseScale[part.id] ?? ""}`}
             />
-            <span className={`min-w-0 truncate ${textSecondaryOnCanvas}`}>{part.label}</span>
-            <span className={`ml-auto shrink-0 tabular-nums ${textPrimaryOnCanvas}`}>
-              {formatHours(part.hours)}
+            {/* On a phone the hours go under the label, so the label is never cut. */}
+            <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-1.5">
+              <span className={`min-w-0 sm:truncate ${textSecondaryOnCanvas}`}>{part.label}</span>
+              <span className={`shrink-0 tabular-nums sm:ml-auto ${textPrimaryOnCanvas}`}>
+                {formatHours(part.hours)}
+              </span>
             </span>
             <span
               className={`hidden w-8 shrink-0 text-right tabular-nums sm:inline ${textMutedOnSurface}`}
