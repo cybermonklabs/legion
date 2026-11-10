@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  Dispatch's searches and its index passes read the indexes they have, and a search that outlives
+  its caller ends.
+  A meaning search is bounded by the server at 15 seconds inside its own transaction, so a caller
+  that has gone no longer leaves a backend and its temporary files running for an hour; the route
+  reports such a statement as the failure it is, and the related-item check reports it as the
+  timeout it already reported for its own deadline.
+  A project-scoped meaning search reads its own project's windows: `embeddings.project_key` is
+  written in the same statement as the row by every path that writes one, a partial
+  `(kind, project_key)` btree serves it, and the predicate sits inside each of the five candidate
+  arms, so a project holding 800 comment windows is answered with its own 800 rather than the few
+  that survived a candidate set of every project's nearest; the rows stored before the column are
+  labelled by a once-only background pass under a lease, one bounded index scan a batch, with its
+  start, its progress and its end in the server's log.
+  Meaning search's comment arm takes its candidate windows from the vector index before it joins,
+  instead of reading every comment window and sorting them through temporary files per call.
+  A document's scope reads its comments through the four indexes they have, one arm per predicate
+  unioned, where one `OR` of the same predicates left the planner no choice but to scan every
+  comment once per document.
+  The block index finds the items whose windows no longer stand for their blocks through a marker
+  and a partial index rather than re-deriving owedness over the whole state table, and its arm
+  lists an owner it holds at no block and windows it to none, so no owner keeps a marker the arm
+  would never list.
+  A search whose row carries no headline no longer panics the server.
