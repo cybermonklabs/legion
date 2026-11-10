@@ -93,7 +93,7 @@ function showTable(label: string): void {
   );
 }
 
-test("the chart draws its series as bars and names both controls", () => {
+test("the chart draws one plot per unit, with axes and a legend, and names both controls", () => {
   render(
     <Chart
       compare={{ onRange: mock(), range: null, series: undefined }}
@@ -103,8 +103,14 @@ test("the chart draws its series as bars and names both controls", () => {
     />
   );
 
-  expect(screen.getByRole("img", { name: "per-day median and p90" })).toBeDefined();
-  expect(screen.getByRole("img", { name: "per-day trend" })).toBeDefined();
+  expect(screen.getByRole("img", { name: "PR CI: Run time by day" })).toBeDefined();
+  const deploysPlot = screen.getByRole("img", { name: "PR CI: Deploys by day" });
+  // A value axis in the series' own numbers and a time axis of its days.
+  expect(deploysPlot.textContent).toContain("Sep 26");
+  expect(deploysPlot.textContent).toContain("deploys");
+  expect(
+    [...document.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
+  ).toEqual(["Run time median", "Run time p90", "Deploys"]);
   expect(screen.queryByRole("table")).toBeNull();
   const view = screen.getByRole("group", { name: "PR CI view" });
   expect(within(view).getByRole("button", { name: "Graph" }).getAttribute("aria-pressed")).toBe(
@@ -258,7 +264,12 @@ test("a compare draws both ranges, each under the days it covers", () => {
     "window: 2026-09-01 to 2026-09-28",
     "compare: Compare 2026-08-04 to 2026-08-31",
   ]);
-  expect(screen.getAllByRole("img", { name: "per-day trend" })).toHaveLength(2);
+  // One plot, the compare range's line dashed beside the window's and named with its range.
+  expect(screen.getAllByRole("img")).toHaveLength(1);
+  expect(document.querySelector('[data-chart-line="compare"]')).not.toBeNull();
+  expect(document.querySelector('[data-chart-legend="compare"]')?.textContent).toBe(
+    "Deploys, 2026-08-04 to 2026-08-31"
+  );
 });
 
 test("while the compare range's read is out its numbers are pending, not nothing measured", () => {
@@ -303,4 +314,19 @@ test("the reader names a compare range of their own, and an overlong one is refu
     from: "2026-01-01T00:00:00.000Z",
     to: "2026-01-29T00:00:00.000Z",
   });
+});
+
+test("a series with nothing in the range is left out and named once", () => {
+  const nothing: ChartSeries = {
+    ...deploys,
+    label: "In a turn",
+    points:
+      deploys.kind === "spark" ? deploys.points.map((point) => ({ ...point, value: null })) : [],
+  } as ChartSeries;
+  render(<Chart label="Time" range={WINDOW} series={[deploys, nothing]} />);
+
+  expect(document.querySelector('[data-chart-series="In a turn"]')).toBeNull();
+  expect(document.querySelector("[data-chart-empty]")?.textContent).toBe(
+    "Nothing in this range: In a turn."
+  );
 });

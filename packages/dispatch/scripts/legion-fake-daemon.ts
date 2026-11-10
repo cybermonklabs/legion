@@ -1,10 +1,12 @@
 /**
  * A fake Legion daemon that pushes change events to Dispatch's POST /api/v1/legion/events
- * (dispatch://INFRA-979 prototype). It replays a saved `GET /legion/v1/state` body: a boot
- * snapshot, then every few seconds it moves a few running issues one step through the running
- * phases (never to done, so the slots, phases and roles hold steady), starts and ends turns,
- * changes a checks verdict and reorders the queue, sending each batch in one POST, and a heartbeat
- * every 60 s. The state and the simulation are legion-fake-daemon-model.ts.
+ * (dispatch://INFRA-979 prototype). It replays a saved `GET /legion/v1/state` body as it is: a
+ * boot snapshot, then a heartbeat every 60 s, and nothing moves on its own, so the page reads the
+ * replayed daemon's slots, turns and phases. `--simulate <moves per minute>` (default 0) shows
+ * live updates on demand: it moves issues the replay shows running one step through the running
+ * phases (never to done), starts and ends their turns (never one on a root held for its
+ * children), changes a checks verdict and turns the queue, each batch in one POST. The state and
+ * the simulation are legion-fake-daemon-model.ts.
  *
  * It keeps every change event it made, as the daemon's outbox does. When Dispatch answers a
  * last_seq below its own, it resends its kept events from last_seq+1. It sends a full snapshot
@@ -15,12 +17,14 @@
  * which Dispatch relays a Settings-page change to: it applies the change and pushes the setting.
  *
  *   bun run packages/dispatch/scripts/legion-fake-daemon.ts --dispatch http://127.0.0.1:<port> \
- *     --token-file <f> --project INFRA --replay <state.json> [--interval 3] [--drop-every N] \
+ *     --token-file <f> --project INFRA --replay <state.json> [--interval 3] [--simulate 0] \
+ *     [--drop-every N] \
  *     [--keep N] [--heartbeat 60] [--listen <port>] [--session <uuid>] [--history-dsn <dsn>]
  *
  * --history-dsn reads each issue's phase entry time from a local Dispatch's imported history (its
- * last status change into the phase's status, or the handoff that starts the phase); a phase no
- * record places is sent with `at_unknown`, which the page shows as no time in phase.
+ * last status change into the phase's status, or the handoff that starts the phase), and each
+ * issue's parent, which tells --simulate a root that is held for its children; a phase no record
+ * places is sent with `at_unknown`, which the page shows as no time in phase.
  *
  * --drop-every N gives every Nth change event a seq but never sends it the first time, so the
  * gap repair is visible. --keep N keeps only the last N change events, so a gap older than them
@@ -44,6 +48,8 @@ const { values: args } = parseArgs({
     project: { type: "string" },
     replay: { type: "string" },
     interval: { type: "string", default: "3" },
+    // Simulated moves a minute: 0, the default, keeps the replayed state as it is.
+    simulate: { type: "string", default: "0" },
     "drop-every": { type: "string", default: "0" },
     keep: { type: "string", default: "100000" },
     heartbeat: { type: "string", default: "60" },
@@ -68,12 +74,23 @@ const intervalMs = Number(args.interval) * 1000;
 const heartbeatMs = Number(args.heartbeat) * 1000;
 const dropEvery = Number(args["drop-every"]);
 const keepLimit = Number(args.keep);
+const movesPerMinute = Number(args.simulate);
 
 const replay = (await Bun.file(replayPath).json()) as DaemonState;
 
-/** Each issue's phase entry time from the imported history, where --history-dsn names it. */
-async function entryTimesFromHistory(dsn: string): Promise<Map<string, string>> {
+/** Each issue's phase entry time, and each issue's parent, from the imported history where
+ *  --history-dsn names it. */
+async function fromHistory(
+  dsn: string
+): Promise<{ entryTimes: Map<string, string>; parents: Map<string, string> }> {
   const db = new SQL(dsn);
+  const parents = new Map<string, string>();
+  for (const row of (await db.unsafe(
+    `select key, parent_key from issues where project_key = $1 and parent_key is not null`,
+    [project]
+  )) as { key: string; parent_key: string }[]) {
+    parents.set(row.key, row.parent_key);
+  }
   const keys = Object.keys(replay.issues);
   const statuses = new Map<string, { at: string; status: string }[]>();
   for (const row of (await db.unsafe(
@@ -100,15 +117,18 @@ async function entryTimesFromHistory(dsn: string): Promise<Map<string, string>> 
       issue.phase === undefined ? [] : [[issue.key, issue.phase] as const]
     )
   );
-  return phaseEntryTimes(phases, statuses, handoffs);
+  return { entryTimes: phaseEntryTimes(phases, statuses, handoffs), parents };
 }
 
-const entryTimes = args["history-dsn"]
-  ? await entryTimesFromHistory(args["history-dsn"])
-  : new Map<string, string>();
-console.log(`phase entry times from the history: ${entryTimes.size} issues`);
+const { entryTimes, parents } = args["history-dsn"]
+  ? await fromHistory(args["history-dsn"])
+  : { entryTimes: new Map<string, string>(), parents: new Map<string, string>() };
+console.log(
+  `from the history: phase entry times of ${entryTimes.size} issues, parents of ${parents.size}`
+);
 const model = new FakeDaemonModel(replay, {
   entryTimes,
+  parents,
   dropEvery,
   keep: keepLimit,
   log: (line) => console.log(line),
@@ -211,14 +231,26 @@ if (args.listen) {
 console.log(
   `fake Legion daemon for ${project}: ${Object.keys(state.issues).length} issues, generation ${generation}`
 );
+console.log(
+  movesPerMinute > 0
+    ? `simulating ${movesPerMinute} moves a minute`
+    : "replaying the state as it is: no simulated moves (--simulate <moves per minute>)"
+);
 let lastHeartbeat = Date.now();
 let busy = false;
+/** The fraction of a move owed: --simulate's rate spread over the ticks. */
+let owed = 0;
 await deliver(false);
 setInterval(async () => {
   if (busy) return;
   busy = true;
   try {
-    if (!needSnapshot && resendFrom === null) model.simulate();
+    if (movesPerMinute > 0 && !needSnapshot && resendFrom === null) {
+      owed += (movesPerMinute * intervalMs) / 60_000;
+      const moves = Math.floor(owed);
+      owed -= moves;
+      if (moves > 0) model.simulate(moves);
+    }
     const heartbeat = Date.now() - lastHeartbeat >= heartbeatMs;
     if (heartbeat) lastHeartbeat = Date.now();
     await deliver(heartbeat);

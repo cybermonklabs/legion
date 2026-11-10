@@ -93,6 +93,13 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   if (hours < 24) return `${hours} h ${minutes % 60} m`;
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
+/** A Legion phase's label as the views write it: the board column's label, and "(retro)" after
+ *  Merging while the issue is in retro, whose turn is the implementer's, so a Merging issue with
+ *  the implementer in a turn reads as what it is. */
+export function legionPhaseLabel(label: string, phase: string): string {
+  return phase === "retro" ? `${label} (retro)` : label;
+}
+
 /** A card's slot in words: its own slot, its tree root's for a child (a slot belongs to the
  *  tree's root), or none. The board cards and the Legion tab write it this way, and the table's
  *  Slot column can (dispatch://INFRA-979). */

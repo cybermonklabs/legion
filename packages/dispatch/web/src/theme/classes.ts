@@ -226,19 +226,87 @@ for (const [status, background, foreground] of [
     pair(foreground, foreground),
     pair(background, background)
   );
-/** Legion workflow segments reuse the lifecycle scale and its contrast-checked pairs. */
-export const legionPhaseScale: Record<string, string> = {
-  queue: issueStatusScale.todo ?? "",
-  design: issueStatusScale.triage ?? "",
-  planning: issueStatusScale.backlog ?? "",
-  implementing: issueStatusScale.in_progress ?? "",
-  testing: issueStatusScale.testing ?? "",
-  reviewing: issueStatusScale.needs_review ?? "",
-  accepting: issueStatusScale.retro ?? "",
-  merging: issueStatusScale.done ?? "",
-  awaiting_person: issueStatusScale.icebox ?? "",
-  held: issueStatusScale.icebox ?? "",
-};
+/** One clearly different colour per Legion phase (dispatch://INFRA-979), each a contrast-checked
+ *  pair: the issues table, the status bar, the board and the Legion tab all draw a phase with it. */
+const LEGION_PHASES = [
+  [
+    "queue",
+    "bg-slate-300 text-slate-950 dark:bg-slate-300 dark:text-slate-950",
+    P.SLATE_300,
+    P.SLATE_950,
+  ],
+  [
+    "design",
+    "bg-violet-300 text-violet-950 dark:bg-violet-300 dark:text-violet-950",
+    P.VIOLET_300,
+    P.VIOLET_950,
+  ],
+  ["planning", "bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
+  [
+    "implementing",
+    "bg-indigo-700 text-white dark:bg-indigo-700 dark:text-white",
+    P.INDIGO_700,
+    P.WHITE,
+  ],
+  [
+    "testing",
+    "bg-teal-300 text-teal-950 dark:bg-teal-300 dark:text-teal-950",
+    P.TEAL_300,
+    P.TEAL_950,
+  ],
+  [
+    "reviewing",
+    "bg-amber-300 text-amber-950 dark:bg-amber-300 dark:text-amber-950",
+    P.AMBER_300,
+    P.AMBER_950,
+  ],
+  [
+    "accepting",
+    "bg-lime-300 text-lime-950 dark:bg-lime-300 dark:text-lime-950",
+    P.LIME_300,
+    P.LIME_950,
+  ],
+  [
+    "merging",
+    "bg-fuchsia-700 text-white dark:bg-fuchsia-700 dark:text-white",
+    P.FUCHSIA_700,
+    P.WHITE,
+  ],
+  [
+    "awaiting_person",
+    "bg-rose-300 text-rose-950 dark:bg-rose-300 dark:text-rose-950",
+    P.ROSE_300,
+    P.ROSE_950,
+  ],
+  [
+    "held",
+    "bg-stone-400 text-stone-950 dark:bg-stone-400 dark:text-stone-950",
+    P.STONE_400,
+    P.STONE_950,
+  ],
+  [
+    "waiting_on_children",
+    "bg-orange-200 text-orange-950 dark:bg-orange-200 dark:text-orange-950",
+    P.ORANGE_200,
+    P.ORANGE_950,
+  ],
+  [
+    "other",
+    "bg-slate-200 text-slate-900 dark:bg-slate-200 dark:text-slate-900",
+    P.SLATE_200,
+    P.SLATE_900,
+  ],
+] as const;
+export const legionPhaseScale: Record<string, string> = Object.fromEntries(
+  LEGION_PHASES.map(([phase, classes]) => [phase, classes])
+);
+for (const [phase, , background, foreground] of LEGION_PHASES) {
+  registerText(
+    `legion phase: ${phase}`,
+    pair(foreground, foreground),
+    pair(background, background)
+  );
+}
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";
@@ -796,18 +864,46 @@ export const switchThumbBg = "bg-white";
  * selects a window, fixed in both schemes and purely decorative. */
 export const brushBand = "border-sky-400/70 bg-sky-400/15";
 
-/** The delivery charts' bar fills: neutral where no target exists, met/missed against one, the
- *  faint p90 behind a median, the stub drawn on a day with nothing to measure, and the dashed
- *  target line. One token per role so the panel and the Pipeline page share one scale. */
-export const chartBar = {
-  neutral: "fill-sky-500 dark:fill-sky-400",
-  met: "fill-emerald-500 dark:fill-emerald-400",
-  missed: "fill-rose-500 dark:fill-rose-400",
-  neutralFaint: "fill-sky-200 dark:fill-sky-900",
-  metFaint: "fill-emerald-200 dark:fill-emerald-900",
-  missedFaint: "fill-rose-200 dark:fill-rose-900",
-  empty: "fill-slate-300 dark:fill-slate-600",
-  targetLine: "stroke-slate-500 dark:stroke-slate-300",
+/** A plotted series' line, its points and its legend swatch, in the order series take them;
+ *  decorative, since each series is named in the legend beside its swatch. */
+export const chartSeries = [
+  {
+    stroke: "stroke-sky-600 dark:stroke-sky-400",
+    fill: "fill-sky-600 dark:fill-sky-400",
+    swatch: "bg-sky-600 dark:bg-sky-400",
+  },
+  {
+    stroke: "stroke-amber-500 dark:stroke-amber-400",
+    fill: "fill-amber-500 dark:fill-amber-400",
+    swatch: "bg-amber-500 dark:bg-amber-400",
+  },
+  {
+    stroke: "stroke-emerald-600 dark:stroke-emerald-400",
+    fill: "fill-emerald-600 dark:fill-emerald-400",
+    swatch: "bg-emerald-600 dark:bg-emerald-400",
+  },
+  {
+    stroke: "stroke-violet-600 dark:stroke-violet-400",
+    fill: "fill-violet-600 dark:fill-violet-400",
+    swatch: "bg-violet-600 dark:bg-violet-400",
+  },
+  {
+    stroke: "stroke-rose-600 dark:stroke-rose-400",
+    fill: "fill-rose-600 dark:fill-rose-400",
+    swatch: "bg-rose-600 dark:bg-rose-400",
+  },
+  {
+    stroke: "stroke-teal-600 dark:stroke-teal-400",
+    fill: "fill-teal-600 dark:fill-teal-400",
+    swatch: "bg-teal-600 dark:bg-teal-400",
+  },
+] as const;
+
+/** A plot's axes: its tick labels and its grid lines. */
+export const chartAxis = {
+  text: "fill-slate-600 dark:fill-slate-300",
+  grid: "stroke-slate-200 dark:stroke-slate-700",
+  base: "stroke-slate-400 dark:stroke-slate-500",
 } as const;
 
 /** Distinct solid fills for the parts of one stacked bar (a worker type each), in order;

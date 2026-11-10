@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { LegionBoardCard } from "../../api/types";
-import { legionRolesText, legionSlotText } from "./issues-table-model";
+import { legionPhaseLabel, legionRolesText, legionSlotText } from "./issues-table-model";
 
 function card(overrides: Partial<LegionBoardCard>): LegionBoardCard {
   return {
@@ -33,4 +33,9 @@ test("no role in a turn reads as between turns", () => {
   expect(legionRolesText(card({ roles: ["implementer", "tester"] }))).toBe(
     "implementer, tester in a turn"
   );
+});
+
+test("merging reads 'Merging (retro)' while the issue is in retro, whose turn is the implementer's", () => {
+  expect(legionPhaseLabel("Merging", "retro")).toBe("Merging (retro)");
+  expect(legionPhaseLabel("Merging", "merging")).toBe("Merging");
 });

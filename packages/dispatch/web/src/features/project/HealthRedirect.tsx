@@ -1,5 +1,5 @@
-// `/delivery` and `/pipeline` land on the default project's issues page (dispatch://INFRA-979),
-// where LegionHealthPanel shows that project's Legion, CI and deploy numbers. The default project
+// `/delivery` and `/pipeline` land on the default project's Legion tab (dispatch://INFRA-979), its
+// issues page where it names no Legion daemon. The default project
 // is the one that maps the deployment's deploy repository, else the first project naming a Legion
 // daemon, else the first project.
 import { useQuery } from "@tanstack/react-query";
@@ -27,5 +27,11 @@ export function HealthRedirect(): ReactNode {
     mappings.data?.find((mapping) => mapping.repo.toLowerCase() === deployRepo)?.project ??
     legion.data?.[0]?.project ??
     projects.data?.[0]?.key;
-  return <Navigate replace to={project === undefined ? "/" : `/projects/${project}/issues`} />;
+  const legionTab = legion.data?.some((setting) => setting.project === project) ?? false;
+  return (
+    <Navigate
+      replace
+      to={project === undefined ? "/" : `/projects/${project}/${legionTab ? "legion" : "issues"}`}
+    />
+  );
 }

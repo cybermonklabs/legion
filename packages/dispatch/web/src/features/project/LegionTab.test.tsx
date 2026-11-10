@@ -61,7 +61,8 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
   };
 }
 
-/** Three slots: one working, one held for its child who is implementing, one idle; a waiting
+/** Four slots: one working, one held for its child who is implementing, one held with its
+ *  children idle, and an accepting root whose architect is in a turn; a waiting
  *  line of a ready root and one a dependency holds. */
 const BOARD: LegionBoardResponse = {
   columns: COLUMNS.map((column) => ({
@@ -73,7 +74,10 @@ const BOARD: LegionBoardResponse = {
             card("ACME-21", { tree: "ACME-2" }),
           ]
         : column.id === "accepting"
-          ? [card("ACME-2", { phase: "accepting", slot: 1, children: 1, phase_since: null })]
+          ? [
+              card("ACME-2", { phase: "accepting", slot: 1, children: 1, phase_since: null }),
+              card("ACME-6", { phase: "accepting", slot: 3, roles: ["architect"] }),
+            ]
           : column.id === "merging"
             ? [card("ACME-3", { phase: "awaiting_merge", slot: 2 })]
             : column.id === "queue"
@@ -90,7 +94,7 @@ const BOARD: LegionBoardResponse = {
     read_error: null,
     read_ok: true,
     slot_cap: 4,
-    slots_in_use: 3,
+    slots_in_use: 4,
     trees: 0,
   },
   project: "ACME",
@@ -178,7 +182,7 @@ function Location(): null {
   return null;
 }
 
-async function renderTab(issue?: string) {
+async function renderTab(issue?: string, timeline: typeof TIMELINE = TIMELINE) {
   spies.push(
     spyOn(api, "listLegionSettings").mockResolvedValue([
       {
@@ -191,7 +195,7 @@ async function renderTab(issue?: string) {
     spyOn(api, "getLegionMetrics").mockImplementation(() => new Promise(() => {})),
     spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "getDeliverySettings").mockResolvedValue(null),
-    spyOn(api, "getLegionIssueTimeline").mockResolvedValue(TIMELINE)
+    spyOn(api, "getLegionIssueTimeline").mockResolvedValue(timeline)
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -217,15 +221,26 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
     document.querySelector(`[data-legion-slot="${slot}"] [data-legion-slot-state]`)?.textContent;
   expect(state(0)).toBe("working");
   expect(state(1)).toBe("held for children only");
-  expect(state(2)).toBe("idle");
+  expect(state(2)).toBe("held, children idle");
+  // An architect in a turn makes the slot working, whatever the phase.
+  expect(state(3)).toBe("working");
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toContain(
-    "3 of 4 in use"
+    "4 of 4 slots in use"
   );
   // The phase is the issues table's own cell.
   expect(
     document.querySelector('[data-legion-slot="0"] [data-legion-phase="implementing"]')?.textContent
   ).toContain("Implementing");
-  expect(document.querySelector('[data-legion-slot="0"]')?.textContent).toContain("implementer");
+  // No roles column: a phase with no worker in a turn says so under it.
+  expect(
+    document.querySelector("[data-legion-slots] th")?.parentElement?.textContent
+  ).not.toContain("Roles in a turn");
+  expect(
+    document.querySelector('[data-legion-slot="0"] [data-legion-slot-between-turns]')
+  ).toBeNull();
+  expect(
+    document.querySelector('[data-legion-slot="2"] [data-legion-slot-between-turns]')?.textContent
+  ).toBe("· between turns");
 });
 
 test("the waiting line names each root ready or held by its dependency", async () => {
@@ -235,14 +250,15 @@ test("the waiting line names each root ready or held by its dependency", async (
   expect(line.textContent).toContain("held by ACME-1");
   expect(line.textContent).toContain("ready");
   expect(document.querySelector("[data-legion-waiting-summary]")?.textContent).toContain(
-    "2 waiting · 1 ready · 1 held by a dependency"
+    "2 roots waiting for a slot · 1 ready · 1 held by a dependency"
   );
 });
 
 test("an issue key opens that issue's timeline address", async () => {
   await renderTab();
 
-  fireEvent.click(screen.getByRole("button", { name: "ACME-3" }));
+  // The slots table and the narrow-page slot cards each draw the key.
+  fireEvent.click(screen.getAllByRole("button", { name: "ACME-3" })[0] as HTMLElement);
   await waitFor(() => expect(document.body.dataset.path).toBe("/projects/ACME/legion/ACME-3"));
 });
 
@@ -289,4 +305,52 @@ test("the CI column writes a short mark with the full verdict on hover", async (
   const ci = document.querySelector('[data-legion-slot="0"] [data-legion-slot-ci]');
   expect(ci?.textContent).toBe("✓");
   expect(ci?.getAttribute("title")).toBe("green");
+});
+
+test("a root's phase hatches the hours it waited on its children, and the key names each colour", async () => {
+  await renderTab("ACME-2", {
+    ...TIMELINE,
+    segments: [
+      {
+        bar: "implementer",
+        from: "2026-11-09T12:00:00Z",
+        hours: 2,
+        name: "waiting_on_children",
+        source: "observed",
+        to: "2026-11-09T14:00:00Z",
+      },
+    ],
+  });
+
+  const timeline = await screen.findByRole("region", { name: "ACME-2 timeline" });
+  await waitFor(() => expect(timeline.querySelector("[data-legion-hatched]")).not.toBeNull());
+  const phase = timeline.querySelector('[data-legion-lane="Phase"]') as HTMLElement;
+  expect(
+    [...phase.querySelectorAll("[data-legion-span]")].map(
+      (one) => one.getAttribute("title")?.split(":")[0]
+    )
+  ).toEqual(["Implementing", "implementing · waiting on children", "Implementing", "Reviewing"]);
+  expect(timeline.querySelector("[data-legion-timeline-key]")?.textContent).toContain(
+    "hatched: the root waiting on its children"
+  );
+});
+
+test("the waiting line shows how long each issue has waited, and the slots show ten at first", async () => {
+  await renderTab();
+
+  expect(document.querySelectorAll("[data-legion-waited]").length).toBeGreaterThan(0);
+  expect(screen.getByRole("region", { name: "Slots" }).textContent).toContain("✓ green");
+});
+
+test("a narrow page stacks each slot into a card with every field the table has", async () => {
+  await renderTab();
+
+  const card = document.querySelector('[data-legion-slot-card="1"]') as HTMLElement;
+  for (const field of ["Phase", "Children not started", "CI", "Slot use"]) {
+    expect(card.textContent).toContain(field);
+  }
+  expect(card.textContent).toContain("held for children only");
+  expect(screen.getByRole("region", { name: "Waiting line" }).textContent).toContain(
+    "In the order the daemon starts them"
+  );
 });
