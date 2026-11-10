@@ -62,11 +62,12 @@ import subprocess
 import sys
 import time
 
-# How often the sampler re-reads the machine. The steps it watches run for minutes, so a second
-# is often enough to catch the trough and fine enough to put a reading either side of every step
-# boundary. It costs one line of the series; the state file is written only when a reading is
-# worse than one already held, which most seconds are not.
-SAMPLE_SECONDS = 1.0
+# How often the sampler re-reads the machine, in whole seconds, and the step between one tick's
+# own second and the next. The steps it watches run for minutes, so a second is often enough to
+# catch the trough and fine enough to put a reading either side of every step boundary. It costs
+# one line of the series; the state file is written only when a reading is worse than one
+# already held, which most seconds are not.
+SAMPLE_SECONDS = 1
 
 # The sampler gives up after this long on its own, so a job that is cancelled between the two
 # steps - which leaves no `report` to stop it - leaves nothing running behind it either. The
@@ -372,7 +373,7 @@ def sample(path: str, state_path: str) -> int:
         # reader is asked to read as a machine that stopped answering, so a sampler that makes
         # one is making that mark itself. The margin is what keeps an early wake on the right
         # side of the second.
-        tick += 1
+        tick += SAMPLE_SECONDS
         time.sleep(max(0.0, tick + 0.05 - time.time()))
     return 0
 

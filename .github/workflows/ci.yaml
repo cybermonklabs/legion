@@ -2844,8 +2844,24 @@ jobs:
           # 2026-11-10T10:51Z is 326 s, so 600 s leaves room on either side and reads no retry
           # ladder's length, which a clock over the group did not. A window also names the
           # install that hung, which a clock over the group cannot.
+          # A mark this step cannot read as a number is refused before any arithmetic, the way
+          # `report` refuses a case whose mark holds no `started=`: a window read with no clock
+          # is exactly the window the clock exists to catch, so it may not pass quietly. Left to
+          # the arithmetic below, an empty mark reads as a large negative number, which is under
+          # the bound, and then stops the loop on the empty operand with the step exiting 0 and
+          # seven of the eight windows never read.
           previous=""
           slow=""
+          unreadable=""
+          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT"; do
+            case "${pair#*:}" in
+              '' | *[!0-9]*) unreadable="$unreadable ${pair%%:*}" ;;
+            esac
+          done
+          if [ -n "$unreadable" ]; then
+            echo "::error::the mark of the install with nowhere to go for$unreadable holds no whole number of seconds, so this step cannot tell how long that install took, and that reading is the one thing that tells an install the runner ended at its own timeout-minutes from an install that failed for the reason this control names; the mark is one echo into \$GITHUB_OUTPUT by the step before that install, so read this job's step record for it" >&2
+            exit 1
+          fi
           for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "this check:$(date +%s)"; do
             if [ -n "$previous" ]; then
               seconds=$(( ${pair#*:} - ${previous#*:} ))
