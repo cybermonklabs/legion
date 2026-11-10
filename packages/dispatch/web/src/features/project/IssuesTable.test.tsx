@@ -1063,6 +1063,51 @@ test.each([
   );
 });
 
+// The reader usually arrives ungrouped and picks the grouping from the toolbar, which the
+// table must answer as it answers a `?group=` link: TanStack asks for its sorted rows once and
+// keeps that answer for the table's life, so the ordering has to read the grouping of the day.
+test.each([
+  // Ungrouped, the rows are the reader's sort: Queue puts the two queued rows first, and
+  // Created leaves rows of one timestamp as they came.
+  ["the default Queue sort", "", ["CORE-2", "CORE-4", "CORE-1", "CORE-3"]],
+  ["Created ascending", "?sort=created", ["CORE-1", "CORE-2", "CORE-3", "CORE-4"]],
+])("a grouping picked from the toolbar orders its headings under %s", async (_name, search, ungrouped) => {
+  const user = userEvent.setup();
+  table(
+    [
+      issue("CORE-1", { labels: ["legion"], priority: 0, rank: "a", status: "needs_review" }),
+      issue("CORE-2", { labels: ["legion"], priority: 1, rank: "b", status: "todo" }),
+      issue("CORE-3", { labels: ["legion"], priority: 3, rank: "c", status: "in_progress" }),
+      issue("CORE-4", { labels: ["legion"], priority: 2, rank: "d", status: "todo" }),
+    ],
+    search
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const groupBy = screen.getByRole("combobox", { name: "Group by" });
+  await user.selectOptions(groupBy, "priority");
+  await waitFor(() =>
+    expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
+  );
+  await user.selectOptions(groupBy, "status");
+  await waitFor(() =>
+    expect(
+      headings().map((text) =>
+        ["Todo", "In progress", "Needs review"].find((name) => text.includes(name))
+      )
+    ).toEqual(["Todo", "In progress", "Needs review"])
+  );
+  // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
+  await user.selectOptions(groupBy, "");
+  await waitFor(() => expect(headings()).toEqual([]));
+  await waitFor(() =>
+    expect(
+      [...document.querySelectorAll("[data-issue-row]")].map((row) =>
+        row.getAttribute("data-issue-row")
+      )
+    ).toEqual(ungrouped)
+  );
+});
+
 // Start all its queued issues next is Start next over an epic's queued children: it moves them
 // and says so, rather than leaving the reader to guess whether anything happened.
 test("Start all its queued issues next moves the epic's queued children and reports it", async () => {

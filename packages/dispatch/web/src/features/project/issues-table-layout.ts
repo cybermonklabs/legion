@@ -10,10 +10,6 @@ import {
 } from "./issues-table-model";
 import { readLayout, writeLayout } from "./issues-table-storage";
 
-/** What stands under the box before the page has been laid out: the gap, the pager and the
- *  section's bottom padding. */
-const FALLBACK_BELOW_BOX = 212;
-
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
  * in the window. The widths, order and visibility are the reader's, saved per project; the box
@@ -84,6 +80,7 @@ export function useTableLayout(project: string) {
     const box = scrollRef.current;
     if (!box) return;
     const bounds = box.getBoundingClientRect();
+    setBoxWidth(bounds.width);
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
     const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
     const rowsHeight = firstRows.reduce(
@@ -95,21 +92,17 @@ export function useTableLayout(project: string) {
     // pager's last pixel is now. Measured against the pager's own place rather than the page's
     // height — which on a page shorter than the window is the window, leaving the box only
     // able to shrink — so the box grows as well as shrinks, whatever stands above it.
-    const pager = pagerRef.current?.getBoundingClientRect();
-    const padding = (element: Element | null | undefined) =>
-      element === null || element === undefined
-        ? 0
-        : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
+    const pager = pagerRef.current;
+    if (!pager) return;
+    const padding = (element: Element | null) =>
+      element === null ? 0 : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
     const slack =
-      pager === undefined
-        ? window.innerHeight - (bounds.top + window.scrollY) - FALLBACK_BELOW_BOX - bounds.height
-        : window.innerHeight -
-          padding(box.parentElement) -
-          padding(box.closest("main")) -
-          pager.bottom;
+      window.innerHeight -
+      padding(box.parentElement) -
+      padding(box.closest("main")) -
+      pager.getBoundingClientRect().bottom;
     const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
-    setBoxWidth(bounds.width);
   }, []);
   useLayoutEffect(() => {
     measure();

@@ -84,6 +84,17 @@ export function AnchoredPanel({
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // Escape belongs to whatever the reader is in. This panel takes it only while the press
+      // comes from inside the panel or from its anchor; a press in the command bar opened over
+      // the panel, or in any other layer, travels on to whoever owns that layer. The listener
+      // is still at the document's capture phase, so a panel inside a dialog closes itself and
+      // leaves the dialog open.
+      const target = event.target;
+      const mine =
+        target instanceof Node &&
+        (panelRef.current?.contains(target) === true ||
+          anchorRef.current?.contains(target) === true);
+      if (!mine) return;
       event.preventDefault();
       event.stopPropagation();
       anchorRef.current?.focus();

@@ -9,6 +9,7 @@ import {
   getPaginationRowModel,
   getSortedRowModel,
   type Row,
+  type RowModel,
   type RowSelectionState,
   type Table,
   useReactTable,
@@ -61,6 +62,36 @@ const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
 const ACTION_WIDTH = 104;
+
+/**
+ * The sorted rows, with the group headings put back in their column's order.
+ *
+ * TanStack groups first and sorts afterwards, and that sort carries the group rows with it: by
+ * the sum of a numeric column, or by the first leaf's value. A group's place is its column's,
+ * so the headings are re-ordered once the sort has run, leaving the rows inside each group in
+ * the reader's sort. One function serves a table for its whole life — TanStack asks for this
+ * model once and keeps it — so the grouping is read from the table's state at every call
+ * rather than captured, and the answer is held until the sorted rows or the grouping change,
+ * because the expanding and paging steps after it rebuild whenever this returns a new object.
+ */
+const sortedByGroup = (instance: Table<Item>) => {
+  const sorted = getSortedRowModel<Item>()(instance);
+  let last: { from: RowModel<Item>; grouping: string; model: RowModel<Item> } | undefined;
+  return () => {
+    const model = sorted();
+    const grouped = instance.getState().grouping[0];
+    if (grouped === undefined) return model;
+    if (last?.from === model && last.grouping === grouped) return last.model;
+    const heading = (row: Row<Item>) =>
+      row.getIsGrouped() ? String(row.groupingValue ?? "") : groupValue(grouped, row.original);
+    const ordered = {
+      ...model,
+      rows: [...model.rows].sort((a, b) => compareGroups(grouped, heading(a), heading(b))),
+    };
+    last = { from: model, grouping: grouped, model: ordered };
+    return ordered;
+  };
+};
 
 export function IssuesTable({ project }: { project: string }): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
@@ -117,28 +148,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, search, userState.data]);
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640);
-
-  // TanStack groups first and sorts afterwards, and that sort reorders the group rows by
-  // whatever the reader sorted the issues by — the sum of a numeric column, or the first leaf's
-  // value. A group's place is its column's, so the headings go back into the registry's order
-  // once the sort has run; the rows inside each group keep the reader's sort.
-  const sortedByGroup = useMemo(() => {
-    const sorted = getSortedRowModel<Item>();
-    const grouped = grouping[0];
-    if (grouped === undefined) return sorted;
-    return (instance: Table<Item>) => {
-      const rows = sorted(instance);
-      return () => {
-        const model = rows();
-        const heading = (row: Row<Item>) =>
-          row.getIsGrouped() ? String(row.groupingValue ?? "") : groupValue(grouped, row.original);
-        return {
-          ...model,
-          rows: [...model.rows].sort((a, b) => compareGroups(grouped, heading(a), heading(b))),
-        };
-      };
-    };
-  }, [grouping]);
 
   const table = useReactTable({
     data: items,
