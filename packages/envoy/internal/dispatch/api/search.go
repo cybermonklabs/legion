@@ -868,6 +868,16 @@ totals as (
 // the ordering stays the index's to serve - and joins comments, issues, artifacts and projects
 // above that limit, for the row's own fields alone.
 //
+// That join is a filter as well as a read: `join comments` drops a window whose comment row is
+// gone, and above the limit it drops it after the window has taken a place in the candidate set,
+// where main's arm drops it inside the ordered select. So 1,001 windows of comments that no longer
+// exist, nearer than a project's three comments, would answer that project with none of them,
+// where main answers all three (measured on such a corpus, INFRA-988). It loses no row today
+// because no path deletes a comment row: no route deletes a comment, and nothing outside the
+// tests runs `delete from comments`. A change that adds comment deletion (dispatch://INFRA-1523)
+// must delete the comment's windows in the same transaction, or move this join back inside the
+// limit.
+//
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
 // (windowItemUUID), which carries no statistics, so the planner misreads it: measured on the

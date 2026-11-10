@@ -1174,8 +1174,12 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 // Which filters move, and so which this test covers. Of everything the comment arm applies, the
 // floor (searchMeaningFloor) and the per-item window dedup (`distinct on`) run above the
 // candidate limit in main's arm too, and the project predicate runs inside it in both (on the
-// row's own column here, on the owner there). The three of searchRowFilters are the whole of
-// what moved, so there is a case here for each of them, unscoped and scoped.
+// row's own column here, on the owner there). Of what filters a candidate, the three of
+// searchRowFilters are what moved and what a request can name, so there is a case here for each
+// of them, unscoped and scoped. One more filter moved and no request names it: the inner join to
+// comments, which drops a window whose comment row is gone and runs above the limit here where
+// main runs it inside. It costs no row today, because no path deletes a comment row
+// (searchMeaningCommentArm says what would change that), so no test here covers it.
 //
 // The fixture is the crowd test's above with one filter's other side on every row of the crowd:
 // searchWindowCandidates+1 windows, one more than the arm takes and every one of them nearer to
