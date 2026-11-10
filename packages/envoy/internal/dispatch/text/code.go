@@ -57,9 +57,13 @@ const (
 //     none, four columns under a paragraph being that paragraph's own text. It runs through the
 //     indented lines that follow, blank lines between them included, and ends at the last of
 //     them.
-//   - A code span, as CommonMark reads one: a run of N backticks is closed by the next run of
-//     exactly N, and a run nothing closes is literal text. Spans are read in the text the blocks
-//     leave, so a backtick inside a fenced block opens nothing and no span reaches across a block.
+//   - A code span, as CommonMark reads one: a run of N backticks opens one and the next run of
+//     exactly N closes it, the search ending where the paragraph does, at a blank line, so a run
+//     nothing closes there is literal text. A backslash takes the backtick after it as a literal
+//     character, which opens no span, while a run that closes one is read as written, escaped or
+//     not, which is where CommonMark puts the escape too. Spans are read in the text the
+//     blocks leave, so a backtick inside a fenced block opens nothing and no span reaches across
+//     a block.
 //
 // The containers it reads are a block quote, nested in another or not, and a list item of a `-`,
 // `+`, `*` or numbered marker, whose content column is where the item's own text starts - a
@@ -84,13 +88,10 @@ const (
 //     one straddling a container's own content column is taken whole by that container, so a tab
 //     after a list marker is the item's indentation rather than indented code inside it: code
 //     read as prose again.
-//   - A backslash before a backtick. CommonMark reads an escaped backtick as a literal
-//     character that opens and closes nothing; here it opens a span, as it does in the
-//     dashboard's own codeSpans
-//     (`packages/dispatch/web/src/features/refs/markdown-fragment.ts`).
-//   - A paragraph's end inside a code span. CommonMark ends a span's search at the blank line
-//     that ends the paragraph; here a span runs to its closing run however many lines away it is,
-//     again as codeSpans does.
+//   - A paragraph that ends at something other than a blank line: a `>` alone inside a block
+//     quote, a list item's marker interrupting one. A span's search ends at a line blank of
+//     everything, so one opened in such a paragraph can be closed by a run past the paragraph's
+//     end.
 func codeRanges(body string) []codeRange {
 	blocks := codeBlocks(body)
 	if len(blocks) == 0 {
@@ -385,49 +386,72 @@ func indentTo(body string, at, end, col, want int) (int, int) {
 }
 
 // codeSpans is the code spans of text, each range shifted by base, which is where text starts in
-// the body it was cut from. It reads the rule the dashboard's codeSpans reads: the run of
-// backticks at a span's start is closed by the next run of exactly that length, a longer run
-// being no closer, and a run with no closer is literal text that the next character is read on
-// from.
+// the body it was cut from. A span is read inside the paragraph that holds it: the search for
+// its closing run ends at the blank line that ends the paragraph, as CommonMark ends it, so an
+// unmatched backtick mutes nothing after that line. The dashboard's codeSpans reads the same
+// rule (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
 func codeSpans(text string, base int) []codeRange {
 	var spans []codeRange
-	for offset := 0; offset < len(text); {
-		if text[offset] != '`' {
-			offset++
+	paragraph := 0
+	for at := 0; at < len(text); {
+		end, next := lineBounds(text, at)
+		if isBlank(text, at, end) {
+			spans = appendParagraphSpans(spans, text, paragraph, at, base)
+			paragraph = next
+		}
+		at = next
+	}
+	return appendParagraphSpans(spans, text, paragraph, len(text), base)
+}
+
+// appendParagraphSpans appends the code spans of [from, to), a stretch of text no blank line
+// breaks, each range shifted by base: the run of backticks at a span's start is closed by the
+// next run of exactly that length, a longer run being no closer, and a run with no closer is
+// literal text that the next character is read on from. A backslash takes the character after
+// it, so an escaped backtick opens no span; a run that closes one is read as written, as
+// CommonMark reads a closer.
+func appendParagraphSpans(spans []codeRange, text string, from, to, base int) []codeRange {
+	for at := from; at < to; {
+		if text[at] == '\\' {
+			at += 2
 			continue
 		}
-		opener := backtickRunEnd(text, offset)
-		width := opener - offset
-		closer := nextBacktickRun(text, opener, width)
+		if text[at] != '`' {
+			at++
+			continue
+		}
+		opener := backtickRunEnd(text, at, to)
+		width := opener - at
+		closer := nextBacktickRun(text, opener, to, width)
 		if closer < 0 {
-			offset = opener
+			at = opener
 			continue
 		}
-		spans = append(spans, codeRange{start: base + offset, end: base + closer + width})
-		offset = closer + width
+		spans = append(spans, codeRange{start: base + at, end: base + closer + width})
+		at = closer + width
 	}
 	return spans
 }
 
-// backtickRunEnd is the end of the run of backticks starting at offset.
-func backtickRunEnd(text string, offset int) int {
-	for offset < len(text) && text[offset] == '`' {
+// backtickRunEnd is the end of the run of backticks starting at offset, within [offset, to).
+func backtickRunEnd(text string, offset, to int) int {
+	for offset < to && text[offset] == '`' {
 		offset++
 	}
 	return offset
 }
 
-// nextBacktickRun is where the first run of exactly width backticks at or after from starts, or
-// -1 when there is none: a run of any other length closes no span of that width, so the search
-// carries on past it.
-func nextBacktickRun(text string, from, width int) int {
-	for at := from; at < len(text); {
-		found := strings.IndexByte(text[at:], '`')
+// nextBacktickRun is where the first run of exactly width backticks at or after from starts,
+// within [from, to), or -1 when there is none: a run of any other length closes no span of that
+// width, so the search carries on past it.
+func nextBacktickRun(text string, from, to, width int) int {
+	for at := from; at < to; {
+		found := strings.IndexByte(text[at:to], '`')
 		if found < 0 {
 			return -1
 		}
 		start := at + found
-		at = backtickRunEnd(text, start)
+		at = backtickRunEnd(text, start, to)
 		if at-start == width {
 			return start
 		}

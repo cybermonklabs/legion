@@ -83,6 +83,11 @@ export type DispatchReferenceRoute =
   | AgentArtifactRoute
   | ComponentRoute
   | PartyRoute;
+/** A reference that opens a page of this dashboard: every kind but a person, whom nothing
+ *  shows (R5). It is what `buildReferencePath` takes, so a sink holding a reference a person
+ *  typed has to answer for that kind itself - drawing its words where a link would be - rather
+ *  than writing a path that names no page. */
+export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "person" }>;
 /**
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
@@ -781,7 +786,7 @@ export function sessionOfAddress(address: string): string | undefined {
 export function documentRoute(
   artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   version?: number
-): DispatchReferenceRoute {
+): PagedReferenceRoute {
   if (isAgentArtifact(artifact)) {
     return version === undefined
       ? { kind: "agent-artifact", session: artifact.session_id, slug: artifact.slug }
@@ -869,7 +874,7 @@ export function itemRoute(
   kind: "ask" | "comment",
   item: { id: string; issue_key: string | null },
   document: { project: string; slug: string } | undefined
-): DispatchReferenceRoute | undefined {
+): PagedReferenceRoute | undefined {
   if (item.issue_key !== null) {
     return { id: item.id, key: item.issue_key, kind };
   }
@@ -950,11 +955,13 @@ export function shortForm(route: DispatchReferenceRoute): string {
  * is no link of this dashboard's. It is the one thing written into an `href` built from a
  * reference a person typed (`RefLink`'s two writers, `features/doc/picture-view`).
  *
- * A path qualifies on two conditions, because either alone lets a link off the site: it begins
- * with exactly one slash, so `//evil.example/x`, `javascript:` and `data:` are out, and it
+ * A path qualifies on three conditions, because any one alone lets a link off the site: it
+ * begins with exactly one slash, so `//evil.example/x`, `javascript:` and `data:` are out; it
  * still names the site it is resolved against once the URL parser has read it, so
  * `/\evil.example/x`, which a leading-slash check passes and every browser sends to
- * evil.example, is out too.
+ * evil.example, is out too; and what the parser read still begins with exactly one slash,
+ * since reading the dot segments out of `/.//evil.example/x`, `/a/..//evil.example` or
+ * `/%2e//evil.example` puts back the two the first condition refused.
  *
  * What it answers is built from the parsed URL's own parts rather than handed back as it came,
  * so the string written into the attribute carries no scheme and no host whatever the path
@@ -980,9 +987,14 @@ export function appHref(path: string): string | undefined {
   } catch {
     return undefined;
   }
-  return url.origin === SAME_SITE_PROBE_ORIGIN
-    ? `${url.pathname}${url.search}${url.hash}`
-    : undefined;
+  if (url.origin !== SAME_SITE_PROBE_ORIGIN) {
+    return undefined;
+  }
+  const href = `${url.pathname}${url.search}${url.hash}`;
+  // Reading the dot segments out puts back the `//` the check above refused: `/.//evil.com/x`
+  // parses to the path `//evil.com/x`, which a browser resolving this attribute sends to
+  // evil.com. The answer is held to the same two slashes the input was.
+  return href.startsWith("//") ? undefined : href;
 }
 
 /** The base `appHref` reads a path against: a syntactically valid origin that is no real site,
@@ -994,7 +1006,8 @@ const SAME_SITE_PROBE_ORIGIN = "https://same-site.invalid";
  *  The composition every sink of a typed reference makes - `RefLink`'s two writers and
  *  `features/doc/picture-view` - named once here, beside the gate it is made of. */
 export function referenceHref(route: DispatchReferenceRoute): string | undefined {
-  return appHref(buildReferencePath(route));
+  // A person has no page, so there is no path to gate: the sink draws the words instead.
+  return route.kind === "person" ? undefined : appHref(buildReferencePath(route));
 }
 
 /** The SPA path a reference navigates to, whichever side of the issue/project split it is on. A
@@ -1006,8 +1019,10 @@ export function referenceHref(route: DispatchReferenceRoute): string | undefined
  *  fragment: that page's `#b-` names a block of the document. An issue's spec keeps its versions
  *  under its own slug, which a spec route does not carry: `specSlug` names it once the issue's
  *  summary is read (`useReferencePath`), and until then a pinned block of the spec opens the live
- *  spec at the block. */
-export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: string): string {
+ *  spec at the block. A person is no caller of this: nothing shows one, so a person's reference
+ *  opens no page, and leaving that kind out (`PagedReferenceRoute`) is what makes each sink
+ *  that can hold one say for itself what it draws instead (R5). */
+export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string): string {
   switch (route.kind) {
     case "agent-artifact": {
       const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
@@ -1021,10 +1036,6 @@ export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: str
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
-    // Nothing shows a person, so there is no page to open: the empty path is the answer a
-    // caller acts on, drawing the reference as words rather than as a link.
-    case "person":
-      return "";
   }
   const path = isProjectRoute(route) ? buildProjectPath(route) : buildIssuePath(route);
   const target = "block" in route ? route.block : undefined;

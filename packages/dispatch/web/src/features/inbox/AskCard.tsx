@@ -422,11 +422,11 @@ export function AskCard({
   const answerField = (
     <>
       <MentionField
+        askAnswer={true}
         body={answerText}
         className="font-normal"
         disabled={isSubmitting}
         fieldRef={answerFieldRef}
-        handle="data-ask-answer"
         issueKey={displayedAsk.issue_key ?? undefined}
         label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         labelHidden={!reasonRequired}

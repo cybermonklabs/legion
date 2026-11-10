@@ -28,7 +28,7 @@ import {
   prefetchReference,
   useBlockDocument,
   useReferenceData,
-  useReferencePath,
+  useReferenceHref,
 } from "./reference-target";
 import {
   buildDispatchReference,
@@ -574,7 +574,7 @@ const ANCHOR_GAP_PX = 6;
 
 function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   const element = useRef<HTMLDivElement>(null);
-  const path = useReferencePath(target.route);
+  const href = useReferenceHref(target.route);
   // Re-measured on every render: the card grows when its data arrives, and its size decides
   // whether it fits below the anchor. Fixed positioning against the anchor's viewport rect is
   // the boring choice that works in Chromium and iPhone Safari alike — the native Popover API
@@ -610,11 +610,16 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
     >
       {/* The card is one link to the target it previews, so nothing drawn inside it is a link
           of its own: that would be a second tab stop inside a tooltip, and a click that
-          followed two links at once. */}
+          followed two links at once. A target with no page of this dashboard - a person, whom
+          nothing shows (R5) - is previewed with no link at all. */}
       <ReferenceHostIs host="control">
-        <Link className="block" tabIndex={-1} to={path}>
+        {href === undefined ? (
           <PreviewContent route={target.route} />
-        </Link>
+        ) : (
+          <Link className="block" tabIndex={-1} to={href}>
+            <PreviewContent route={target.route} />
+          </Link>
+        )}
       </ReferenceHostIs>
     </div>
   );

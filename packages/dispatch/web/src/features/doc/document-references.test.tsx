@@ -259,11 +259,21 @@ test("the live editor is told to draw the title for a link whose text is its own
 
 function CurrentRoute(): ReactNode {
   const location = useLocation();
-  return <div data-testid="current-route">{location.pathname}</div>;
+  return (
+    <>
+      <div data-testid="current-route">{location.pathname}</div>
+      {/* The whole of where the reader is: a click that navigates to the empty path keeps none
+          of the version and the block they were reading. */}
+      <div data-testid="current-location">
+        {`${location.pathname}${location.search}${location.hash}`}
+      </div>
+    </>
+  );
 }
 
-/** The past version of the document, rendered as the document page renders it. */
-function renderVersion(markdown: string = TEXT) {
+/** The past version of the document, rendered as the document page renders it, with the reader
+ *  standing at `at`. */
+function renderVersion(markdown: string = TEXT, at = "/") {
   const fake = fakeDocumentRuntime();
   const queryClient = seededQueryClient();
   queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
@@ -275,7 +285,7 @@ function renderVersion(markdown: string = TEXT) {
     summary: null,
   });
   const view = render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={queryClient}>
         <DocumentRuntime.Provider value={fake.runtime}>
           <CurrentRoute />
@@ -361,6 +371,34 @@ test("a click on a reference in a past version opens what it names", async () =>
 
     await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-2");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Nothing shows a person (R5), so a click on the mention of one is the link's own and opens
+// nothing: the reader stays on the version and the block they were reading, where the empty
+// path this used to navigate to took them off both.
+test("a click on a person in a document opens nothing and keeps the reader's place", async () => {
+  const user = userEvent.setup();
+  const at = "/projects/CORE/documents/design?v=2#b-one";
+  const { editors, view } = renderVersion(TEXT, at);
+
+  try {
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const root = editors[0]?.root;
+    if (root === undefined) throw new Error("editor root missing");
+    // A person's mention as the document stores and draws it: a link whose words are their
+    // name, its `dispatch://` target sanitized out of the href and carried beside it.
+    act(() => {
+      root.innerHTML =
+        '<p><a data-dispatch-href="dispatch://person/alice@example.com" href="">alice@example.com</a></p>';
+    });
+    const anchor = root.querySelector("a");
+    if (anchor === null) throw new Error("anchor missing");
+
+    await user.click(anchor);
+    expect(within(view.container).getByTestId("current-location").textContent).toBe(at);
   } finally {
     view.unmount();
   }

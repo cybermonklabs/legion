@@ -17,7 +17,12 @@ import type {
   SearchResult,
 } from "../../api/types";
 import { RefPickerList } from "./RefPickerList";
-import { applyInsertion, REF_PICKER_INSTRUCTION, REF_PICKER_WORDS } from "./ref-picker";
+import {
+  applyInsertion,
+  REF_PICKER_INSTRUCTION,
+  REF_PICKER_WORDS,
+  type RefPickerInsertion,
+} from "./ref-picker";
 import { useRefPicker } from "./useRefPicker";
 
 const now = Date.now();
@@ -152,7 +157,7 @@ afterEach(() => {
 function Host({ issueKey }: { issueKey?: string }): ReactNode {
   const [draft, setDraft] = useState({ caret: 0, text: "" });
   const picker = useRefPicker({ caret: draft.caret, issueKey, text: draft.text });
-  const write = (insertion: { end: number; start: number; text: string }) => {
+  const write = (insertion: RefPickerInsertion) => {
     const next = applyInsertion(draft.text, insertion);
     setDraft(next);
   };

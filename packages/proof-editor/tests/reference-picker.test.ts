@@ -111,7 +111,9 @@ test("a pick is one dispatched transaction, and the stored markdown then holds t
 
     const dispatches = countDispatches(view);
     // The row the host's picker took: its address, in place of the trigger the reader typed.
-    expect(handle.insertReference({ end: 15, start: 13, text: "dispatch://CORE-1" })).toBe(true);
+    expect(
+      handle.insertReference({ end: 15, start: 13, text: "dispatch://CORE-1", trigger: "[[" })
+    ).toBe(true);
     expect(dispatches()).toBe(1);
 
     expect(handle.getMarkdown().trim()).toBe("See the spec dispatch://CORE-1");
@@ -132,17 +134,79 @@ test("an insertion the caret's text no longer fits is refused, and nothing is di
     const dispatches = countDispatches(view);
     // Offsets past the text the editor last reported: the reader deleted what the row stood
     // over while the list was open.
-    expect(handle.insertReference({ end: 40, start: 38, text: "dispatch://CORE-1" })).toBe(false);
-    expect(handle.insertReference({ end: 2, start: 5, text: "dispatch://CORE-1" })).toBe(false);
+    expect(
+      handle.insertReference({ end: 40, start: 38, text: "dispatch://CORE-1", trigger: "[[" })
+    ).toBe(false);
+    expect(
+      handle.insertReference({ end: 2, start: 5, text: "dispatch://CORE-1", trigger: "[[" })
+    ).toBe(false);
     expect(dispatches()).toBe(0);
 
     // A selection is not a caret: a pick has no stretch of one block's text to replace. The
     // selection itself is a transaction, so the count starts again after it.
     select(view, 5, 8);
     const afterSelect = dispatches();
-    expect(handle.insertReference({ end: 5, start: 4, text: "dispatch://CORE-1" })).toBe(false);
+    expect(
+      handle.insertReference({ end: 5, start: 4, text: "dispatch://CORE-1", trigger: "[[" })
+    ).toBe(false);
     expect(dispatches()).toBe(afterSelect);
     expect(handle.getMarkdown()).toBe(stored);
+  });
+});
+
+// A document other writers share can move under an open list: a collaborator's edit landing
+// between the caret report and the pick leaves the offsets naming somebody else's words.
+test("a pick whose stretch is no longer its own trigger is refused", async () => {
+  const host = hostPicker();
+  await withMarksEditor("See the spec", ({ handle, view }) => {
+    handle.setReferencePicker(host.picker);
+    setFocus(view, true);
+    select(view, 13);
+    view.dispatch(view.state.tr.insertText(" [[", 13));
+
+    // A collaborator's word written ahead of the trigger: the offsets the host answers with
+    // still fit the block's text, and the text under them is now somebody else's.
+    view.dispatch(view.state.tr.insertText("Now ", 1));
+    expect(host.carets.at(-1)?.text).toBe("Now See the spec [[");
+    const stored = handle.getMarkdown();
+
+    const dispatches = countDispatches(view);
+    expect(
+      handle.insertReference({ end: 15, start: 13, text: "dispatch://CORE-1", trigger: "[[" })
+    ).toBe(false);
+    expect(dispatches()).toBe(0);
+    expect(handle.getMarkdown()).toBe(stored);
+  });
+});
+
+// What the document's host answers for a party row (`DocumentRefPicker`): the words it shows
+// and the address it names, which is a link mark here and `[words](address)` in the stored
+// Markdown - the same mention every other writing box stores (R4). Written as plain text, that
+// Markdown would be stored escaped, and every reader of the document would see `[Planner](`.
+test("a pick naming an address is stored as the link that names it", async () => {
+  const host = hostPicker();
+  await withMarksEditor("Ask now", ({ handle, view }) => {
+    handle.setReferencePicker(host.picker);
+    setFocus(view, true);
+    select(view, 5);
+    view.dispatch(view.state.tr.insertText("@plan ", 5));
+
+    const dispatches = countDispatches(view);
+    expect(
+      handle.insertReference({
+        end: 9,
+        href: "dispatch://agent/abc",
+        start: 4,
+        text: "Planner",
+        trigger: "@",
+      })
+    ).toBe(true);
+    expect(dispatches()).toBe(1);
+    expect(handle.getMarkdown().trim()).toBe("Ask [Planner](dispatch://agent/abc) now");
+
+    // The reader types on after the mention, not inside it: the link mark is left behind.
+    view.dispatch(view.state.tr.insertText("!", view.state.selection.head));
+    expect(handle.getMarkdown().trim()).toBe("Ask [Planner](dispatch://agent/abc)! now");
   });
 });
 

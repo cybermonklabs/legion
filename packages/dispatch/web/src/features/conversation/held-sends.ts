@@ -13,6 +13,7 @@ import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
+import { partyMention } from "../refs/party-references";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
 import {
@@ -57,11 +58,15 @@ export interface ComposerSend {
  *  none, and the server matches its blocks by their text. */
 type KeptEdit = string | { readonly carried?: CarriedBlockIds; readonly id: string };
 
-/** A composer's send as it is kept across a reload: an edit by what it saves, not how. */
+/** A composer's send as it is kept across a reload: an edit by what it saves, not how, and each
+ *  draft as the shape an older record may still hold (`KeptDraft`). */
 interface KeptComposerSend {
-  readonly draft: HeldDraft;
+  readonly draft: { readonly ask: SentRequest["ask"]; readonly draft: KeptDraft };
   readonly mutationKey: readonly string[];
-  readonly request: Omit<SentRequest, "edit"> & { readonly edit: KeptEdit | null };
+  readonly request: Omit<SentRequest, "draft" | "edit"> & {
+    readonly draft: KeptDraft;
+    readonly edit: KeptEdit | null;
+  };
 }
 
 /**
@@ -140,14 +145,39 @@ const keptAsk = shape.record({
   urgency: shape.oneOf(...ASK_URGENCIES),
 });
 
-/** A kept draft: its text and a suggestion's replacement. Who it addresses is in that text
- *  (R4), so nothing of the kind is kept beside it; a record the build before this one kept
- *  holds a `mentions` array as well, which this shape does not read, so that draft comes back
- *  with its words and its parties are read from them. */
+/** A mention as the build before this one kept it beside the draft: where its cosmetic words
+ *  stand in the body, the delivery address they stood for, and those words. */
+interface KeptMention {
+  readonly end: number;
+  readonly start: number;
+  readonly target: string;
+  readonly text: string;
+}
+
+/** A kept draft: its text, a suggestion's replacement, and the mentions a record the build
+ *  before this one kept holds beside them. */
+interface KeptDraft extends SentDraft {
+  readonly mentions?: readonly KeptMention[];
+}
+
+/** A kept draft read back. Who it addresses is in its text (R4), so this build keeps nothing of
+ *  the kind beside it; the older record's `mentions` are read all the same, because its body
+ *  holds only the cosmetic `@Planner` its composer drew and the targets stood in that array, so
+ *  dropping them would resend the draft to nobody with nothing said about it. */
 const keptDraft = shape.record({
   body: shape.string,
+  mentions: shape.optional(
+    shape.array(
+      shape.record({
+        end: shape.number,
+        start: shape.number,
+        target: shape.string,
+        text: shape.string,
+      })
+    )
+  ),
   replacement: shape.string,
-}) satisfies Shape<SentDraft>;
+}) satisfies Shape<KeptDraft>;
 
 const keptDelivery = shape.oneOf(...DELIVERY_CAPABILITIES);
 
@@ -269,6 +299,31 @@ function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
     : { carried: edit.carried, id: edit.id, save: saveCommentEdit };
 }
 
+/** A kept draft as its composer takes it up again. A record the build before this one kept
+ *  holds a `mentions` array and a body carrying only the cosmetic `@Name` that build drew, so
+ *  each of those is written back as the party link that names it (R4): the draft then reads as
+ *  who it addresses and resends to them, where dropping the array would have delivered it to
+ *  nobody with nothing said about it. A span is rewritten only while it still reads as the
+ *  `@Name` that build accepted - the rule that build read its own mentions by
+ *  (`survivingMentions`) - and the spans are written from the last to the first, so each is
+ *  still the one its offsets named. A target that names no party keeps its words. */
+function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
+  if (mentions === undefined) {
+    return { body, replacement };
+  }
+  const written = [...mentions]
+    .sort((one, other) => other.start - one.start)
+    .reduce((text, mention) => {
+      const words = `@${mention.text}`;
+      if (text.slice(mention.start, mention.end) !== words) {
+        return text;
+      }
+      const link = partyMention(mention.target, mention.text) ?? words;
+      return `${text.slice(0, mention.start)}${link}${text.slice(mention.end)}`;
+    }, body);
+  return { body: written, replacement };
+}
+
 /**
  * A composer's send, one write of the store per press (`Writes`), kept across a reload with its
  * name, its request and its draft. A send to one session is ordered on that session
@@ -293,10 +348,14 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   kept: keptComposerSend,
   landed: (client, write) => refreshAfter(client, write.detail.request),
   name: "composer",
-  restore: ({ draft, mutationKey, request: { edit, ...request } }) => ({
-    draft,
+  restore: ({ draft, mutationKey, request: { draft: sent, edit, ...request } }) => ({
+    draft: { ask: draft.ask, draft: restoredDraft(draft.draft) },
     mutationKey,
-    request: { ...request, edit: edit === null ? undefined : restoredEdit(edit) },
+    request: {
+      ...request,
+      draft: restoredDraft(sent),
+      edit: edit === null ? undefined : restoredEdit(edit),
+    },
   }),
   resume: ({ request }, wire) =>
     wire === null ? sendAttempt(request) : (bounds) => api.send(wire, bounds),

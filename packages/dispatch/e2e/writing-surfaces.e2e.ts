@@ -32,6 +32,7 @@ import {
   type BoxWorld,
   coveredBoxes,
   DOOR_ROWS,
+  expectDeliveryClaim,
   expectHint,
   expectIssueRows,
   keyboardOnly,
@@ -71,15 +72,22 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-/** The box's hint and the people it lists, which are what its own row of the list decides. */
+/** The box's hint, the people it lists and what it says it does with a picked party, which are
+ *  what its own row of the list decides. `drawn` is the write whose row the box hands the
+ *  shared field, which is `write` itself but for a field that serves two writes the reader
+ *  chooses between after typing: the ask card's one box hands the field its `ask-answer` row
+ *  and offers Answer and Ask back under it, so its `ask-back` row's own claim is not one any
+ *  state of that field draws. */
 async function expectRow(
   page: Page,
   field: Locator,
   box: DispatchWritingBox,
-  write: DispatchWriting
+  write: DispatchWriting,
+  drawn: DispatchWriting = write
 ): Promise<void> {
   await expectHint(page, field, box, write);
   await expectIssueRows(field, dispatchWritingBox(box, write).issueRows);
+  await expectDeliveryClaim(field, box, drawn);
 }
 
 /** How one box is reached and driven. `seed` runs before the browser opens. */
@@ -208,9 +216,12 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expect(field).toBeVisible();
       await walkBox(field, world);
       // One box, two writes: the reader chooses there whether it answers or asks back, so both
-      // rows of the list carry the one line it shows.
+      // rows of the list carry the one line it shows. The field itself is handed the
+      // `ask-answer` row (`AskCard.tsx`, `writing={dispatchWritingBox("ask-answer",
+      // "ask-answer")}`), so that row's claim is the one its party list draws, and the hint,
+      // which both rows share, is what tells the reader that asking back does deliver.
       await expectRow(page, field, "ask-answer", "ask-answer");
-      await expectRow(page, field, "ask-answer", "ask-back");
+      await expectRow(page, field, "ask-answer", "ask-back", "ask-answer");
     },
   },
   "ask-option-description": {
@@ -359,6 +370,24 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
         .toContain(written);
       // The other reader has it, drawn by the name of what it names.
       await expect(documentEditor(other)).toContainText(`Ship after ${world.target} Zephyr`);
+
+      // A party picked with `@` is stored as the link that names it, not as the characters of
+      // one: a document is read far outside this dashboard - `dispatch read`, an export, the Go
+      // renderer - and only the link carries the party's name there (R4). The earlier shape
+      // wrote the markdown as text, so the stored document held `\[Zephyr bot]\(dispatch://…)`
+      // and every reader saw the brackets.
+      await page.keyboard.press("Control+End");
+      await page.keyboard.press("Enter");
+      await page.keyboard.type(`Ask @${QUERY}`);
+      await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
+      await page.keyboard.press("Enter");
+      const mention = `Ask [${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
+      await expect
+        .poll(async () => (await getArtifactText(world.spec)).markdown, { timeout: 30_000 })
+        .toContain(mention);
+      // And the other reader sees the party's name, with no bracket of the address it carries.
+      await expect(documentEditor(other)).toContainText(`Ask ${SESSION.title}`);
+      await expect(documentEditor(other)).not.toContainText("](dispatch://agent/");
       await other.close();
     },
   },

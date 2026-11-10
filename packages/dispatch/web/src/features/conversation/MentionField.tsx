@@ -66,11 +66,11 @@ export interface MentionFieldHandle {
  * the host's, as it always was.
  */
 export function MentionField({
+  askAnswer = false,
   body,
   className,
   disabled = false,
   fieldRef,
-  handle,
   hintClassName,
   inline = false,
   issueKey,
@@ -87,6 +87,11 @@ export function MentionField({
   rows = 1,
   writing,
 }: {
+  /** Whether this box is an ask's answer box, which writes `data-ask-answer` on the textarea:
+   *  the one handle a host outside the draft reaches the box by, since the Inbox's answer keys
+   *  find the selected ask's box by that attribute and move the focus into it
+   *  (`features/inbox/Inbox.tsx`). */
+  readonly askAnswer?: boolean;
   readonly body: string;
   /** What this host's layout asks of the box itself, after the field's own classes: a height
    *  the host holds it to, or the text size its surface writes in. */
@@ -97,10 +102,6 @@ export function MentionField({
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
-  /** A bare `data-` attribute written on the textarea itself, the one handle a host outside the
-   *  draft reaches the box by: the Inbox's answer keys find the selected ask's answer box by
-   *  `data-ask-answer` and move the focus into it (`features/inbox/Inbox.tsx`). */
-  readonly handle?: string;
   /** What this host's layout asks of the line under the box, in place of the field's own
    *  classes. A host whose box sits in a layout of its own places that line as it places the
    *  label; a panel held to a share of a phone's screen (the Agents broadcast composer) makes
@@ -289,7 +290,7 @@ export function MentionField({
           ref={bodyFieldRef}
           rows={rows}
           value={body}
-          {...(handle === undefined ? {} : { [handle]: "" })}
+          {...(askAnswer ? { "data-ask-answer": "" } : {})}
         />
       </label>
       {parties.length === 0 ? null : (

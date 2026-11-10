@@ -84,12 +84,26 @@ func partyTarget(ref text.Ref) (string, bool) {
 	return "", false
 }
 
+// checkMentionRoute refuses a target of no known form - one model.ParseRoute does not read as a
+// delivery route - with the code and the reason the `mentions` array has always answered such a
+// target with. Both readers are held to it (R4), because the grammar a body writes a party in is
+// the wider one: text.IsSessionID takes every session id the Agents page shows, `.` and `:`
+// among them, where a session route is `session:[A-Za-z0-9_-]+`, so a body can write an agent
+// address no route reaches. A role reference cannot: text reads a role token by ParseRoute's own
+// `[a-z0-9-]+`.
+func checkMentionRoute(target string) error {
+	if _, err := model.ParseRoute(target); err != nil {
+		return errorf(http.StatusBadRequest, "MENTION_INPUT", "mention target must be role:<name> or session:<id>")
+	}
+	return nil
+}
+
 // commentPartiesOf is the party set of one comment: the targets the request's `mentions` array
 // carries, as it wrote them, and then the parties its body names (R4), read with the shared
 // reader. A party both name, and one the body names twice, is one party: the repeat is dropped
-// here, before any rule reads the set. The array's own two rules are applied as it is read,
-// since they are about what the caller sent rather than about who is named: a target of no
-// known form, and a target the array repeats.
+// here, before any rule reads the set. A target of a form no delivery route takes refuses the
+// write wherever it is written (checkMentionRoute); the array's own repeat rule is applied as it
+// is read, since it is about what the caller sent rather than about who is named.
 //
 // A party reference a code context holds names nobody (text.Located.InCode): a body that writes
 // one inside a fenced block, an indented block or a code span is showing the address rather than
@@ -101,8 +115,8 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 	parties := commentParties{targets: make([]string, 0, len(input.Mentions)+len(body))}
 	seen := make(map[string]struct{}, len(input.Mentions)+len(body))
 	for _, mention := range input.Mentions {
-		if _, err := model.ParseRoute(mention.Target); err != nil {
-			return commentParties{}, errorf(http.StatusBadRequest, "MENTION_INPUT", "mention target must be role:<name> or session:<id>")
+		if err := checkMentionRoute(mention.Target); err != nil {
+			return commentParties{}, err
 		}
 		if _, duplicate := seen[mention.Target]; duplicate {
 			return commentParties{}, errorf(http.StatusBadRequest, "MENTION_INPUT", "mentions must not repeat a target")
@@ -111,16 +125,17 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		parties.targets = append(parties.targets, mention.Target)
 	}
 	for _, located := range body {
-		if located.InCode {
+		if located.InCode || !located.IsParty() {
 			continue
 		}
-		if located.Kind == "person" {
+		target, delivers := partyTarget(located.Ref)
+		if !delivers {
+			// The one party no route reaches is a person, who reads the record (R5).
 			parties.person = true
 			continue
 		}
-		target, ok := partyTarget(located.Ref)
-		if !ok {
-			continue
+		if err := checkMentionRoute(target); err != nil {
+			return commentParties{}, err
 		}
 		if _, repeated := seen[target]; repeated {
 			continue
@@ -685,13 +700,6 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// No database, no comment: the refusal this route has always made before it reads anything
-	// (readyPool), kept though the read below no longer asks the database for anything, so a
-	// server without one still answers 503 rather than a 400 about the mentions.
-	if _, err := s.readyPool(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

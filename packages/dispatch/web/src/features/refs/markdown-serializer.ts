@@ -3,7 +3,7 @@ import { DOMSerializer, type Schema } from "prosemirror-model";
 
 import type { BlockSchema } from "../../api/types";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
-import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
+import { buildDispatchReference, pictureReference, referenceHref } from "./routes";
 
 /**
  * The half of the Markdown engine written against ProseMirror's own classes, behind the same
@@ -43,7 +43,11 @@ function pictureSerializer(schema: Schema): DOMSerializer {
           return image(node);
         }
         const { named, route } = picture;
-        if (named === undefined) {
+        // The gate every sink of a typed reference goes through (`appHref`): a picture whose
+        // reference names no artifact, and one whose route opens no page of this dashboard,
+        // keeps the address its author wrote rather than a path that opens nothing.
+        const href = named === undefined ? undefined : referenceHref(route);
+        if (href === undefined) {
           return ["a", { href: picture.source }];
         }
         return [
@@ -51,7 +55,7 @@ function pictureSerializer(schema: Schema): DOMSerializer {
           {
             "data-dispatch-picture": buildDispatchReference(route),
             "data-picture-caption": picture.caption,
-            href: buildReferencePath(route),
+            href,
           },
         ];
       },

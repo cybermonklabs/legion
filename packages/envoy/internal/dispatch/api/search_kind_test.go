@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -249,24 +248,6 @@ func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
 	}
 }
 
-// A set leaving out every indexed kind matches no row at all, so runSearch answers it with an
-// empty page and reads nothing: a server holding no store proves the read, since any read of its
-// nil pool would panic here.
-func TestSearchOverNoIndexedKindAnswersEmptyWithNoRead(t *testing.T) {
-	request := searchParameters{text: "astrolabe", kinds: searchNoKind, limit: searchDefaultLimit, offset: 3}
-	response, err := directServer(Deps{}).runSearch(context.Background(), request)
-	if err != nil {
-		t.Fatalf("search over no kind: %v", err)
-	}
-	if response.Results == nil || len(response.Results) != 0 {
-		t.Fatalf("results = %#v, want a non-nil empty slice", response.Results)
-	}
-	if response.Total != 0 || response.Reachable != 0 || response.Limit != searchDefaultLimit || response.Offset != 3 {
-		t.Fatalf("total=%d reachable=%d limit=%d offset=%d, want 0, 0, %d and 3",
-			response.Total, response.Reachable, response.Limit, response.Offset, searchDefaultLimit)
-	}
-}
-
 // The kind filter is literal SQL built from searchIndexedKinds alone - the kinds left out, named
 // positively, which searchKindsCTE negates - and it binds nothing: the related-item check's
 // derived statements number their own parameters on from search's, and a bound parameter here
@@ -316,6 +297,9 @@ func TestSearchKindFilterIsLiteralSQLThatBindsNothing(t *testing.T) {
 		!strings.Contains(statements.meaning, "kind in ('issue', 'document', 'comment', 'message')") {
 		t.Fatal("neither statement carries the kinds it leaves out as literal SQL")
 	}
+	// The set that leaves nothing out runs the two statements as they stand: statements() builds
+	// every set the same way, and an empty exclusion makes those bytes, so a search naming no
+	// kind runs the text the pool has always prepared.
 	if searchKinds(0).statements().keyword != searchQuery ||
 		searchKinds(0).statements().meaning != searchQueryMeaning {
 		t.Fatal("every kind runs other text than searchQuery and searchQueryMeaning")

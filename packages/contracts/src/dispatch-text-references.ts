@@ -1,3 +1,5 @@
+import { CODE_CONTEXT } from "./dispatch-text-references-code";
+
 /** The questions the `#id` rows below belong to, each block id to its ask's reference. */
 const QUESTIONS = {
   q2: "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333",
@@ -46,7 +48,8 @@ export interface DispatchTextReferenceRow {
   grammar?: true;
 }
 
-/** The rows written out, which are every row but the code twins `IN_CODE` builds below. */
+/** The rows written out, which are every row but the code-context ones (`CODE_CONTEXT`) and the
+ *  code twins `IN_CODE` builds below. */
 const WRITTEN: readonly DispatchTextReferenceRow[] = [
   { body: "Tied to dispatch://CORE-1 here.", refs: ["dispatch://CORE-1"] },
   { body: "Tied to **dispatch://CORE-1** here.", refs: ["dispatch://CORE-1"] },
@@ -233,104 +236,6 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     refs: [],
   },
   { body: "No party: dispatch://agent, dispatch://role and dispatch://person here.", refs: [] },
-  // A party reference a code context holds is read and indexed as every other is, linked by no
-  // renderer, and delivered to nobody: the three contexts are an indented code block, a fenced
-  // one and a code span, and a body may hold both a party in code and a party outside it, which
-  // only the second of them names. The code spans the parties alone sit in are the twins
-  // `IN_CODE` builds below; these are the bodies no twin writes.
-  {
-    body: "Pasted from the handbook:\n\n    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n",
-    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
-    links: [],
-    inCode: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
-  },
-  {
-    body: "Ask [the reviewer](dispatch://role/reviewer) to run:\n\n```sh\ndispatch send-to-agent dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n```\n",
-    refs: ["dispatch://role/reviewer", "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
-    links: ["dispatch://role/reviewer"],
-    inCode: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
-  },
-  {
-    body: "Run `dispatch message --to dispatch://role/reviewer` before the deploy.",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  // Where a code context begins and ends is read through the containers a body holds, so a
-  // party written under a bullet or inside a quote is read as a reader of the record sees it:
-  // the indentation an ordinary nested item carries is that item's text, and a fence or an
-  // indented block written inside a quote or an item is code there.
-  {
-    body: "- step one\n    - ask dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "1. step one\n\n    more about dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-  },
-  // A marker followed by three spaces indents its item's own content four columns, which is
-  // where that item's text starts and not where code inside it opens; five spaces leave the
-  // item one of them and the rest to an indented block inside it.
-  {
-    body: "-   See this:\n\n    dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "-     dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  // A line carrying none of the containers it stands in continues the paragraph above it and
-  // holds them open, so the line after the blank one is still the item's own text.
-  {
-    body: "1.  step one\nlazy line\n\n    more about dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "> ```\n> dispatch://role/reviewer\n> ```\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "> > ```\n> > dispatch://role/reviewer\n> > ```\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "> See this:\n>\n>     dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "- Run this:\n\n  ```\n  dispatch://role/reviewer\n  ```\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  {
-    body: "- Ask:\n\n  > ```\n  > dispatch://role/reviewer\n  > ```\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
-  // A fence is closed by the line that leaves the containers it opened in, so the paragraph
-  // after the quote is prose and the party it names is delivered to.
-  {
-    body: "> ```\n> text\n\ndispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-  },
-  // A thematic break opens no list item and no paragraph, so the indented line under it opens a
-  // code block as CommonMark opens one there.
-  {
-    body: "***\n    dispatch://role/reviewer\n",
-    refs: ["dispatch://role/reviewer"],
-    links: [],
-    inCode: ["dispatch://role/reviewer"],
-  },
   // A component of a project's architecture, the one node a project owns beside its documents.
   {
     body: "Owned by dispatch://CORE/component/dispatch-server here.",
@@ -1080,9 +985,12 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  * worded link's address is the ordinary mention and is delivered to. Each of the three is read
  * inside the containers the body holds, as CommonMark reads it: a fence or an indented block
  * written in a block quote or a list item is code there, and the indentation an ordinary nested
- * item carries is that item's own text.
+ * item carries is that item's own text. Those rows, and the edges of each of the three rules,
+ * are `CODE_CONTEXT` (`dispatch-text-references-code.ts`): the two deciders of where code
+ * begins and ends are held to them, and to nothing either language keeps on its own.
  */
 export const DISPATCH_TEXT_REFERENCES: readonly DispatchTextReferenceRow[] = [
   ...WRITTEN,
+  ...CODE_CONTEXT,
   ...IN_CODE.map(([written, body]) => inCodeRow(written, body)),
 ];

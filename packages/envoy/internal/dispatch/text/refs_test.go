@@ -751,3 +751,30 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 		}
 	}
 }
+
+// A party names a reader of the record rather than a record: the three kinds a reference names
+// one by answer IsParty and no other kind does. It is what keeps the graph from keying a node
+// for a party (refs.TargetOf) and what a comment reads its delivering parties by
+// (api.commentPartiesOf), so a fourth party kind is one edit here.
+func TestIsPartyNamesTheThreePartyKinds(t *testing.T) {
+	const server = "https://dispatch.example"
+	for reference, party := range map[string]bool{
+		"dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551":                   true,
+		"dispatch://role/reviewer":                                                true,
+		"dispatch://person/alice@example.com":                                     true,
+		"dispatch://CORE-1":                                                       false,
+		"dispatch://CORE-1/spec":                                                  false,
+		"dispatch://CORE/component/web":                                           false,
+		"dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png": false,
+		"https://example.com/handbook":                                            false,
+	} {
+		found := Extract(reference, server)
+		if len(found) != 1 {
+			t.Fatalf("%s is %d references, want one", reference, len(found))
+		}
+		if found[0].IsParty() != party {
+			t.Errorf("%s is kind %q and IsParty is %v, want %v",
+				reference, found[0].Kind, found[0].IsParty(), party)
+		}
+	}
+}

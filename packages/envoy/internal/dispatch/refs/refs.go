@@ -220,8 +220,7 @@ func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
 // that predates item blocks skips a kind it does not know (resolveNodes), where it would count a
 // block row and resolve it through document_blocks.
 func TargetOf(ref text.Ref) (Target, bool) {
-	switch ref.Kind {
-	case "url", "session", "role", "person":
+	if ref.Kind == "url" || ref.IsParty() {
 		return Target{}, false
 	}
 	kind := ref.Kind

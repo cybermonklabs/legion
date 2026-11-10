@@ -1,14 +1,31 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import type { EditorReferencePicker, ReferencePickerCaret } from "@legion/proof-editor";
+import type {
+  EditorReferencePicker,
+  ReferenceInsertion,
+  ReferencePickerCaret,
+} from "@legion/proof-editor";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { textMutedOnCanvas } from "../../theme/classes";
 import { RefPickerList } from "../refs/RefPickerList";
+import type { RefPickerInsertion } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { EditorHandle } from "./editor";
 
 /** How far under the caret the list hangs, so it clears the line being typed. */
 const LIST_GAP_PX = 4;
+
+/** A pick as the document takes it: a party's mention is the words it shows with the address
+ *  it names, which the editor writes as a link mark, and every other pick is the bare address
+ *  as text. The Markdown a `<textarea>` host writes for a mention (`insertion.text`) would be
+ *  stored here as the escaped characters of that Markdown, which every reader of the document
+ *  would then read as `[Planner](` and an address rather than as a mention (R4). */
+function documentInsertion(insertion: RefPickerInsertion): ReferenceInsertion {
+  const { end, link, start, text, trigger } = insertion;
+  return link === undefined
+    ? { end, start, text, trigger }
+    : { end, href: link.href, start, text: link.words, trigger };
+}
 
 /**
  * The reference picker in a document's body: the same picker every other box has
@@ -61,7 +78,9 @@ export function DocumentRefPicker({
       pressKey: (key) => {
         const result = pickerNow.current.pressKey(key);
         if (result.action === "ignored") return false;
-        if (result.action === "took") editorNow.current?.insertReference(result.insertion);
+        if (result.action === "took") {
+          editorNow.current?.insertReference(documentInsertion(result.insertion));
+        }
         return true;
       },
     }),
@@ -88,7 +107,7 @@ export function DocumentRefPicker({
           style={{ left: `${caret.left}px`, top: `${caret.bottom + LIST_GAP_PX}px` }}
         >
           <RefPickerList
-            onTake={(insertion) => editor?.insertReference(insertion)}
+            onTake={(insertion) => editor?.insertReference(documentInsertion(insertion))}
             picker={picker}
           />
         </div>

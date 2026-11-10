@@ -3108,7 +3108,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/search/results?q=&project=&number_project=&status=&author=&updated_since=&keywords_only=&kind=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   The same search as `GET /api/v1/search`: the same handler, the same answer and the same refusals.
-  It declares all ten members, so every generated client offers the six here and nowhere else, and a client sends a search carrying `number_project`, `status`, `author`, `updated_since`, `keywords_only` or `kind` here, because a build released before those six answers this path `404 NOT_FOUND no route for GET /api/v1/search/results`, where it answers the other path with the member dropped ([Search](#search)).
+  It declares all ten members, so every generated client offers the six here and nowhere else, and a client sends a search carrying `number_project`, `status`, `author`, `updated_since` or `keywords_only` here, because a build released before those five answers this path `404 NOT_FOUND no route for GET /api/v1/search/results`, where it answers the other path with the member dropped ([Search](#search)).
+  `kind` is younger than this path, so a build that serves the path but was released before `kind` answers both paths with `kind` dropped, which is every kind's rows where one kind's were asked for: a client that must know the rows are narrowed reads each result's own `kind`.
   `number_project` is the project of the page the search was made from, which a query that is a bare issue number is read in ([Search](#search));
   it narrows nothing, so a search from a project or issue page answers every project's rows.
   `keywords_only=true` runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured, and its answer is not stamped `degraded`, because nothing is unavailable: the caller asked for the words alone.

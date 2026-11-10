@@ -1,9 +1,8 @@
 import { type ReactNode, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
-import { useReferencePath, useReferenceTarget } from "./reference-target";
+import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import {
-  appHref,
   buildDispatchReference,
   type DispatchReferenceRoute,
   nodeRouteFromHref,
@@ -57,7 +56,7 @@ export interface ReferenceLinking {
  * shows no document text, so it reads none. A thumbnail the browser cannot draw (a pinned
  * version the server does not serve) is dropped, leaving the title alone, so a stale or
  * hand-written reference never shows a broken-image glyph. When the element it renders into is
- * a link, its href follows `useReferencePath`, which a pinned block of a spec resolves only
+ * a link, its href follows `useReferenceHref`, which a pinned block of a spec resolves only
  * once its issue's summary is read. */
 export function RefLink({
   addressed,
@@ -74,16 +73,14 @@ export function RefLink({
   text: string;
 }): ReactNode {
   const { picture, title } = useReferenceTarget(route, { text: false });
-  const path = useReferencePath(route);
+  // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
+  // path the gate refuses - leaves the words standing where a link would be.
+  const href = useReferenceHref(route);
   useLayoutEffect(() => {
-    // Only this dashboard's own path becomes a link, and only as `appHref` writes it: a path
-    // that is no link of this dashboard's leaves the words standing, as a reference that
-    // resolves to no page at all does.
-    const href = appHref(path);
     if (anchor instanceof HTMLAnchorElement && href !== undefined) {
       anchor.setAttribute("href", href);
     }
-  }, [anchor, path]);
+  }, [anchor, href]);
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();

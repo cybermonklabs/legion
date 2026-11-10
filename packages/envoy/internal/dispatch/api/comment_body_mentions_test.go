@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A mention is a reference (INFRA-1702 R4): the parties a comment names are the ones its body
@@ -218,6 +221,11 @@ func TestCommentPartySetRefusals(t *testing.T) {
 			"mention target must be role:",
 		},
 		{
+			"a body target of a form no delivery route takes",
+			map[string]any{"body": "[x](dispatch://agent/a.b) please look."},
+			"mention target must be role:",
+		},
+		{
 			"an array that repeats one of its own targets",
 			map[string]any{
 				"body":     "[planner](dispatch://agent/s1)",
@@ -234,6 +242,59 @@ func TestCommentPartySetRefusals(t *testing.T) {
 				t.Fatalf("%s: status=%d body=%s", tc.name, response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+// A target of a form the server does not take is refused wherever it is written (R4). The body's
+// grammar is the wider one - text.IsSessionID takes every session id the Agents page shows, `.`
+// among them, where a session route is `session:[A-Za-z0-9_-]+` - so `dispatch://agent/a.b` in a
+// body is answered the 400 MENTION_INPUT the array has always answered `session:a.b` with, and
+// nothing is written or sent. In a code context it names nobody, so there is nothing to refuse.
+func TestCommentBodyTargetOfNoRouteFormIsRefused(t *testing.T) {
+	listener, sends := partyListener(t)
+	defer listener.Close()
+	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Body target form", "before")
+
+	array := postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body":     "Please look.",
+		"mentions": []map[string]any{{"target": "session:a.b"}},
+	})
+	body := postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": "[x](dispatch://agent/a.b) please look.",
+	})
+	for name, response := range map[string]*httptest.ResponseRecorder{"array": array, "body": body} {
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), `"code":"MENTION_INPUT"`) ||
+			!strings.Contains(response.Body.String(), "mention target must be role:") {
+			t.Fatalf("the %s target session:a.b: status=%d body=%s",
+				name, response.Code, response.Body.String())
+		}
+	}
+
+	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": "The address is `dispatch://agent/a.b`, which names nobody.",
+	}))
+	if len(created.Mentions) != 0 {
+		t.Fatalf("a target of no route form in code = %#v, want no mention", created.Mentions)
+	}
+	if len(sends()) != 0 {
+		t.Fatalf("sends = %#v, want none", sends())
+	}
+}
+
+// A role reference always names a route the server takes: text reads a role token by the charset
+// model.ParseRoute reads `role:<token>` by, so the two readers agree and no role address can earn
+// the refusal an agent address of the wider grammar earns (partyTarget writes `role:` and the id).
+func TestCommentBodyRoleTokensAreTheRouteRoleTokens(t *testing.T) {
+	for _, token := range []string{"reviewer", "rev-2", "r", "9", "Reviewer", "sre_oncall", "rev.2", ""} {
+		found := text.Extract("Waiting on dispatch://role/"+token+" today.", "")
+		named := len(found) == 1 && found[0].Kind == "role" && found[0].ID == token
+		_, err := model.ParseRoute("role:" + token)
+		if named != (err == nil) {
+			t.Errorf("role token %q: the grammar names a role %v, ParseRoute takes the route %v",
+				token, named, err == nil)
+		}
 	}
 }
 

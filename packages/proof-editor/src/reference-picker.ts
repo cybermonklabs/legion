@@ -17,13 +17,17 @@ import { $prose } from "@milkdown/kit/utils";
  * editor reports the caret's own text block up to the caret (`ReferencePickerCaret`), the host
  * reads its trigger and its query from those characters exactly as a `<textarea>` host reads
  * them from its value, and a pick comes back as the replacement text and the stretch of that
- * same text it replaces (`ReferenceInsertion`). So the host needs no knowledge of ProseMirror,
- * and a stale offset is refused here rather than writing over whatever has since moved under it.
+ * same text it replaces, with the trigger that stretch starts with (`ReferenceInsertion`). So
+ * the host needs no knowledge of ProseMirror, and a pick the document has moved under - a
+ * stale offset, or a stretch holding something other than the reader's own trigger - is
+ * refused here rather than written over whatever has since moved there.
  *
  * The write is one transaction, built before anything is dispatched, as `./typed-block-commands`
  * builds its commands: that is what carries the pick to every other reader of the document
  * through collaboration and puts the reference in the stored text. A DOM write or a text replace
- * outside a transaction would do neither.
+ * outside a transaction would do neither. A pick naming an address writes the schema's link
+ * mark over its words, so the stored Markdown is the link the host asked for and not the
+ * escaped characters its Markdown would be stored as if it were written as plain text.
  */
 
 /** Stands in for an inline node that is not text - an image, a hard break - so one character of
@@ -62,6 +66,16 @@ export interface ReferenceInsertion {
   readonly text: string;
   readonly start: number;
   readonly end: number;
+  /** The characters the host's picker opened on - `@`, `#`, `[[` - which the stretch it names
+   *  still has to start with. The offsets alone do not say that: in a shared document a
+   *  collaborator's edit landing between the caret report and the pick moves other text under
+   *  them, and writing over that text is what this refuses. */
+  readonly trigger: string;
+  /** Where the written words link to, for a pick that is a link rather than plain text: a
+   *  party's mention, whose words are its name. The write carries the schema's link mark over
+   *  `text`, so the document stores the link - `[words](href)` in its Markdown - rather than
+   *  the escaped characters plain text holding the same Markdown would be stored as. */
+  readonly href?: string;
 }
 
 interface ReferencePickerState {
@@ -96,23 +110,35 @@ function caretText(state: EditorState): CaretText | undefined {
   };
 }
 
-/** The transaction a pick makes, or undefined when the offsets no longer name a stretch of the
- *  caret's own text: the reader typed, or the document moved under the row they clicked. */
+/** The transaction a pick makes, or undefined when the pick no longer names the stretch of the
+ *  caret's own text its trigger opened on: the reader typed, or the document moved under the
+ *  row they clicked. */
 function insertionTransaction(
   state: EditorState,
   insertion: ReferenceInsertion
 ): Transaction | undefined {
   const caret = caretText(state);
   if (caret === undefined) return undefined;
-  const { end, start, text } = insertion;
+  const { end, href, start, text, trigger } = insertion;
   if (!Number.isInteger(start) || !Number.isInteger(end)) return undefined;
   if (start < 0 || start > end || end > caret.text.length) return undefined;
+  // The stretch still has to be the trigger the picker opened on: offsets that fit say only
+  // that the text is long enough, not that it is the reader's own `@` or `[[`.
+  if (!caret.text.slice(start, end).startsWith(trigger)) return undefined;
   const from = caret.start + start;
   const to = caret.start + end;
+  // The marks standing where the pick is written, which the written words inherit: the link
+  // below goes over them, and the reader types on after the mention rather than inside it.
+  const marks = state.doc.resolve(from).marks();
+  const link = href === undefined ? undefined : state.schema.marks.link?.create({ href });
   const transaction = state.tr.insertText(text, from, to);
   // Where the caret lands is the write's own doing: the reader types on after the reference.
   const after = from + text.length;
-  return transaction.setSelection(TextSelection.create(transaction.doc, after));
+  if (link !== undefined) transaction.addMark(from, after, link);
+  transaction.setSelection(TextSelection.create(transaction.doc, after));
+  // `setSelection` drops the stored marks, so a mention's link mark is left behind here rather
+  // than carried into what the reader types next.
+  return link === undefined ? transaction : transaction.setStoredMarks(marks);
 }
 
 /**

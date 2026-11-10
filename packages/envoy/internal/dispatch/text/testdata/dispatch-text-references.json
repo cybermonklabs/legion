@@ -259,139 +259,6 @@
     "refs": []
   },
   {
-    "body": "Pasted from the handbook:\n\n    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n",
-    "refs": [
-      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
-    ]
-  },
-  {
-    "body": "Ask [the reviewer](dispatch://role/reviewer) to run:\n\n```sh\ndispatch send-to-agent dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n```\n",
-    "refs": [
-      "dispatch://role/reviewer",
-      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
-    ],
-    "links": [
-      "dispatch://role/reviewer"
-    ],
-    "inCode": [
-      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
-    ]
-  },
-  {
-    "body": "Run `dispatch message --to dispatch://role/reviewer` before the deploy.",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "- step one\n    - ask dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "1. step one\n\n    more about dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "-   See this:\n\n    dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "-     dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "1.  step one\nlazy line\n\n    more about dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "> ```\n> dispatch://role/reviewer\n> ```\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "> > ```\n> > dispatch://role/reviewer\n> > ```\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "> See this:\n>\n>     dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "- Run this:\n\n  ```\n  dispatch://role/reviewer\n  ```\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "- Ask:\n\n  > ```\n  > dispatch://role/reviewer\n  > ```\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "> ```\n> text\n\ndispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
-    "body": "***\n    dispatch://role/reviewer\n",
-    "refs": [
-      "dispatch://role/reviewer"
-    ],
-    "links": [],
-    "inCode": [
-      "dispatch://role/reviewer"
-    ]
-  },
-  {
     "body": "Owned by dispatch://CORE/component/dispatch-server here.",
     "refs": [
       "dispatch://CORE/component/dispatch-server"
@@ -1458,6 +1325,365 @@
     },
     "refs": [
       "dispatch://CORE-1/spec#b-5da04f24"
+    ]
+  },
+  {
+    "body": "Pasted from the handbook:\n\n    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Ask [the reviewer](dispatch://role/reviewer) to run:\n\n```sh\ndispatch send-to-agent dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n```\n",
+    "refs": [
+      "dispatch://role/reviewer",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ],
+    "links": [
+      "dispatch://role/reviewer"
+    ],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Run `dispatch message --to dispatch://role/reviewer` before the deploy.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- step one\n    - ask dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1. step one\n\n    more about dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "-   See this:\n\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "-     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1.  step one\nlazy line\n\n    more about dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> ```\n> dispatch://role/reviewer\n> ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> > ```\n> > dispatch://role/reviewer\n> > ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> See this:\n>\n>     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Run this:\n\n  ```\n  dispatch://role/reviewer\n  ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Ask:\n\n  > ```\n  > dispatch://role/reviewer\n  > ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> ```\n> text\n\ndispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "***\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "```\ndispatch://CORE-1\n```",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```sh\ndispatch://CORE-1\n```",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "~~~\ndispatch://CORE-1\n~~~",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\ndispatch://CORE-1\n`````",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "````\n``\ndispatch://CORE-1\n````",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "   ```\ndispatch://CORE-1\n   ```",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\nx\n```\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "~~~`sh\ndispatch://CORE-1\n~~~",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```a`b\ndispatch://CORE-1\n```",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n\tdispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n    x\n\n    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n    x\n\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `dispatch://CORE-1` now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run ``dispatch://CORE-1`` now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `` dispatch://CORE-1 ``` ``",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `dispatch://CORE-1 now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "`a` dispatch://CORE-1 `b`",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `one\ndispatch://CORE-1` now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\n`\n```\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See dispatch://CORE-1 now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Rename the `foo field.\n\n[Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) please check `bar` too.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Type \\` for a backtick, ask dispatch://role/reviewer, then run `dispatch status`.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Run `grep \\` here` then ask dispatch://role/reviewer.",
+    "refs": [
+      "dispatch://role/reviewer"
     ]
   },
   {

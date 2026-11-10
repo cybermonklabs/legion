@@ -193,10 +193,14 @@ export function matchesQuery(row: RefPickerRow, query: string): boolean {
   );
 }
 
-/** The door a trigger opened, where its first character sits in the text the host read, and what
- *  the reader has typed after it. */
+/** The door a trigger opened, the characters that opened it, where its first character sits in
+ *  the text the host read, and what the reader has typed after it. */
 export interface RefPickerTrigger {
   readonly door: RefPickerDoor;
+  /** The door's own characters, as the reader typed them: `@`, `#` or `[[`. A host whose
+   *  document can move under an open list refuses a pick whose stretch no longer starts with
+   *  them (`@legion/proof-editor`'s `insertReference`). */
+  readonly chars: string;
   readonly start: number;
   /** Never holds a space: a space typed before a row is taken closes the picker. */
   readonly query: string;
@@ -222,7 +226,7 @@ export function readTrigger(before: string): RefPickerTrigger | undefined {
     if (start < 0 || (found !== undefined && start < found.start)) continue;
     if (!atWordBoundary(before, start)) continue;
     const query = before.slice(start + chars.length);
-    if (!/\s/u.test(query)) found = { door, query, start };
+    if (!/\s/u.test(query)) found = { chars, door, query, start };
   }
   return found;
 }
@@ -234,6 +238,15 @@ export interface RefPickerInsertion {
   readonly text: string;
   readonly start: number;
   readonly end: number;
+  /** The characters the picker opened on, which `[start, end)` begins with: a host whose
+   *  document other writers share hands them on, so a stretch that has moved under the open
+   *  list is refused rather than written over (`RefPickerTrigger.chars`). */
+  readonly trigger: string;
+  /** A party's pick, for a host that writes marks rather than Markdown: the words the mention
+   *  shows and the address it names (R4). `text` is that same mention written as Markdown,
+   *  which is what a `<textarea>` host writes; a ProseMirror host writes these two instead, a
+   *  link mark over the words, since plain text holding that Markdown is stored escaped. */
+  readonly link?: { readonly href: string; readonly words: string };
 }
 
 /** A link's words cannot hold a bare bracket; a session title can. */
@@ -261,7 +274,15 @@ export function insertionFor(
   trigger: RefPickerTrigger,
   caret: number
 ): RefPickerInsertion {
-  return { end: caret, start: trigger.start, text: insertionText(row) };
+  const insertion = {
+    end: caret,
+    start: trigger.start,
+    text: insertionText(row),
+    trigger: trigger.chars,
+  };
+  return isPartyKind(row.kind)
+    ? { ...insertion, link: { href: row.reference, words: row.label } }
+    : insertion;
 }
 
 /** `insertion` applied to a plain string, with the caret that follows it: what a `<textarea>`

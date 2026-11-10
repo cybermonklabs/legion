@@ -80,11 +80,11 @@ test("each group is headed by its kind's own name", () => {
 });
 
 test("a trigger opens only at a word boundary", () => {
-  expect(readTrigger("@")).toEqual({ door: "parties", query: "", start: 0 });
-  expect(readTrigger("see @pl")).toEqual({ door: "parties", query: "pl", start: 4 });
-  expect(readTrigger("(#CO")).toEqual({ door: "issues", query: "CO", start: 1 });
-  expect(readTrigger("a line\n#")).toEqual({ door: "issues", query: "", start: 7 });
-  expect(readTrigger("see [[go")).toEqual({ door: "all", query: "go", start: 4 });
+  expect(readTrigger("@")).toEqual({ chars: "@", door: "parties", query: "", start: 0 });
+  expect(readTrigger("see @pl")).toEqual({ chars: "@", door: "parties", query: "pl", start: 4 });
+  expect(readTrigger("(#CO")).toEqual({ chars: "#", door: "issues", query: "CO", start: 1 });
+  expect(readTrigger("a line\n#")).toEqual({ chars: "#", door: "issues", query: "", start: 7 });
+  expect(readTrigger("see [[go")).toEqual({ chars: "[[", door: "all", query: "go", start: 4 });
 
   // Mid-word: an email's `@`, an anchor's `#`, and a `[[` glued to a word open nothing.
   expect(readTrigger("alice@theorem.dev")).toBeUndefined();
@@ -97,7 +97,12 @@ test("a space typed after a trigger closes it, which leaves a heading a heading"
   expect(readTrigger("# Heading")).toBeUndefined();
   expect(readTrigger("@planner now")).toBeUndefined();
   // The latest trigger still standing is the one that is open.
-  expect(readTrigger("# Heading with @pl")).toEqual({ door: "parties", query: "pl", start: 15 });
+  expect(readTrigger("# Heading with @pl")).toEqual({
+    chars: "@",
+    door: "parties",
+    query: "pl",
+    start: 15,
+  });
 });
 
 test("the browser-side filter matches a row's words, its detail and its address", () => {
@@ -145,9 +150,39 @@ test("an insertion replaces the trigger through the caret and keeps the text aft
   if (trigger === undefined) throw new Error("the trigger reads nothing");
   const insertion = insertionFor(row("issue", "Fix", "dispatch://CORE-1"), trigger, caret);
 
-  expect(insertion).toEqual({ end: 7, start: 4, text: "dispatch://CORE-1" });
+  expect(insertion).toEqual({
+    end: 7,
+    start: 4,
+    text: "dispatch://CORE-1",
+    trigger: "#",
+  });
   expect(applyInsertion(text, insertion)).toEqual({
     caret: "see dispatch://CORE-1".length,
     text: "see dispatch://CORE-1 and the rest",
   });
+});
+
+// A host that writes marks rather than Markdown takes the mention apart (the document body's
+// `DocumentRefPicker`): the words it shows and the address it names, which is the same mention
+// `text` writes as Markdown.
+test("a party's insertion carries its words and its address, and no other pick does", () => {
+  const text = "ask @pl";
+  const trigger = readTrigger(text);
+  if (trigger === undefined) throw new Error("the trigger reads nothing");
+
+  const party = insertionFor(
+    row("agent", "Planner", "dispatch://agent/planner-session"),
+    trigger,
+    text.length
+  );
+  expect(party).toEqual({
+    end: 7,
+    link: { href: "dispatch://agent/planner-session", words: "Planner" },
+    start: 4,
+    text: "[Planner](dispatch://agent/planner-session)",
+    trigger: "@",
+  });
+
+  const issue = insertionFor(row("issue", "Fix", "dispatch://CORE-1"), trigger, text.length);
+  expect(issue.link).toBeUndefined();
 });

@@ -274,6 +274,32 @@ async function expectCaretPick(field: Locator, world: BoxWorld): Promise<void> {
   await field.fill("");
 }
 
+/** What a box says it does with a picked party, which is its row's own `delivers`: a box that
+ *  delivers lists the party under the field, and one that does not lists nobody. The claim is
+ *  driven rather than read, because a row that promises a delivery no reader of the write makes
+ *  is exactly what misleads the writer: the suggestion Replacement box said a picked party was
+ *  told while neither reader of a comment reads `suggestion.replace_with`. */
+export async function expectDeliveryClaim(
+  field: Locator,
+  box: DispatchWritingBox,
+  write: DispatchWriting
+): Promise<void> {
+  const page = field.page();
+  await keyboardOnly(field);
+  await field.fill("");
+  await field.pressSequentially(`@${QUERY}`);
+  const list = refPicker(page);
+  await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
+  await field.press("Enter");
+  const targets = page.getByRole("list", { name: "Mention targets" });
+  if (dispatchWritingBox(box, write).delivers) {
+    await expect(targets).toHaveText(`session:${SESSION.session_id}`);
+  } else {
+    await expect(targets).toHaveCount(0);
+  }
+  await field.fill("");
+}
+
 /** Everything the box itself is held to, which is every claim but the hint: the three doors,
  *  their rows and order, the words of the state with no rows, and the pick at the caret. */
 export async function walkBox(field: Locator, world: BoxWorld): Promise<void> {

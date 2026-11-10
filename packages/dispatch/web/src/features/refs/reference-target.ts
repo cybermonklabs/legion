@@ -29,12 +29,14 @@ import type {
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
+  appHref,
   buildDispatchReference,
   buildReferencePath,
   type DispatchReferenceRoute,
   type IssueRoute,
   type ReferencedArtifact,
   referencedArtifact,
+  referenceHref,
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
 import { prefixReference, routeWithWholeIds, type TextSource } from "./text-references";
@@ -710,28 +712,34 @@ export function needsSpecSlug(
   return route.kind === "spec" && route.block?.pin !== undefined;
 }
 
-/** The SPA path a reference opens (`buildReferencePath`). A block of an issue's spec pinned to a
- *  version opens that version under the spec's own slug, so its path reads the issue's summary
- *  (the query an issue reference's title and the block's card already share); until it is read
- *  it is the live spec at the block. No other reference's path reads anything. */
-export function useReferencePath(route: DispatchReferenceRoute): string;
-export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined;
-export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined {
+/** The `href` a reference opens inside this dashboard (`referenceHref`), or undefined for one
+ *  that opens no page of it - a person, whom nothing shows (R5), and any path the gate refuses.
+ *  A block of an issue's spec pinned to a version opens that version under the spec's own slug,
+ *  so its path reads the issue's summary (the query an issue reference's title and the block's
+ *  card already share); until it is read it is the live spec at the block. No other reference's
+ *  path reads anything. */
+export function useReferenceHref(route: DispatchReferenceRoute | undefined): string | undefined {
   const specKey = route !== undefined && needsSpecSlug(route) ? route.key : undefined;
   const issue = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
-  return route === undefined ? undefined : buildReferencePath(route, summarySpec(issue.data)?.slug);
+  if (route === undefined || route.kind === "person") {
+    return undefined;
+  }
+  return appHref(buildReferencePath(route, summarySpec(issue.data)?.slug));
 }
 
-/** `useReferencePath`'s answer for a click outside a render: it waits for the issue summary a
+/** `useReferenceHref`'s answer for a click outside a render: it waits for the issue summary a
  *  pinned block of a spec needs, and opens the live spec at the block when the summary cannot be
- *  read, as the hook's path does before it is. */
-export async function fetchReferencePath(
+ *  read, as the hook's href does before it is. */
+export async function fetchReferenceHref(
   queryClient: QueryClient,
   route: DispatchReferenceRoute
-): Promise<string> {
+): Promise<string | undefined> {
+  if (route.kind === "person") {
+    return undefined;
+  }
   if (!needsSpecSlug(route)) {
-    return buildReferencePath(route);
+    return referenceHref(route);
   }
   const issue = await queryClient.fetchQuery(issueSummaryQuery(route.key)).catch(() => undefined);
-  return buildReferencePath(route, summarySpec(issue)?.slug);
+  return appHref(buildReferencePath(route, summarySpec(issue)?.slug));
 }

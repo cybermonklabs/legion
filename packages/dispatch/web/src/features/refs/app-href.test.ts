@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { appHref, buildReferencePath } from "./routes";
+import { appHref, buildReferencePath, referenceHref } from "./routes";
 
 // The one gate between a reference a person typed and an `href` a browser follows
 // (`RefLink.tsx`'s two writers and `features/doc/picture-view.ts`). Each row below is a string a
@@ -25,6 +25,11 @@ test.each([
   ["nothing", "", undefined],
   ["a reference rather than a path", "dispatch://CORE-1", undefined],
   ["typed markup", '<img src=x onerror="alert(1)">', undefined],
+  // Reading the dot segments out of these puts back the two slashes the leading-slash check
+  // refused, and the result is the protocol-relative URL above by another spelling.
+  ["a dot segment hiding two slashes", "/.//evil.example/x", undefined],
+  ["a parent segment hiding two slashes", "/a/..//evil.example", undefined],
+  ["an encoded dot segment hiding two slashes", "/%2e//evil.example", undefined],
 ])("%s: %p becomes %p", (_name, path, href) => {
   expect(appHref(path)).toBe(href);
 });
@@ -35,12 +40,14 @@ test("an encoded segment is written back as it came", () => {
   expect(appHref("/issues/CORE-1/comment/c%3B1")).toBe("/issues/CORE-1/comment/c%3B1");
 });
 
-// A person has no page, so `buildReferencePath` answers the empty path and the gate refuses it:
-// the words the author wrote stand where a link would be.
+// A person has no page, so there is no path to gate: `buildReferencePath` does not take one
+// (`PagedReferenceRoute`) and the composition answers nothing, which is what leaves the words
+// the author wrote standing where a link would be.
 test("a person's reference is no link", () => {
   const person = { kind: "person" as const, login: "alice@example.com" };
-  expect(buildReferencePath(person)).toBe("");
-  expect(appHref(buildReferencePath(person))).toBeUndefined();
+  expect(referenceHref(person)).toBeUndefined();
+  // @ts-expect-error a person opens no page, so the builder refuses the kind.
+  buildReferencePath(person);
 });
 
 // Every other kind this change adds opens a page of this dashboard, so each passes the gate.

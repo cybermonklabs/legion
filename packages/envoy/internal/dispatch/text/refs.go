@@ -330,6 +330,15 @@ func parseDispatch(value string) (Ref, bool) {
 	return Ref{}, false
 }
 
+// IsParty reports whether the reference names a party rather than a record: an agent's session,
+// a role or a person, the three kinds parseDispatch reads out of `agent/<session id>`,
+// `role/<token>` and `person/<login>`. A party is a reader, so the graph keys no node for one
+// (refs.TargetOf) and a comment's delivering parties are read out of these alone
+// (api.commentPartiesOf). Its twin on the web is isPartyRoute in `party-references.ts`.
+func (r Ref) IsParty() bool {
+	return r.Kind == "session" || r.Kind == "role" || r.Kind == "person"
+}
+
 // parseAgentArtifact reads what an agent's session owns, `artifact/<slug>` with an optional
 // `@v` version, the one thing an agent's conversation owns. The session is its caller's, which
 // read it out of the reference and held it to IsSessionID.

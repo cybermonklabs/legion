@@ -379,11 +379,11 @@ test("a send kept with its edit as a bare comment id still restores", async () =
   }
 });
 
-// A record the build before this one wrote keeps a `mentions` array beside the draft's text.
-// Nothing reads one now - a mention is a reference, so the draft's parties are in its words -
-// and the shape this build reads by does not name the field, so such a record still loads and
-// still holds the words the reader wrote.
-test("a send kept with the old build's mentions array still restores its draft", async () => {
+// A record the build before this one wrote keeps a `mentions` array beside a body holding only
+// the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
+// written back into the body as the party link naming it: the draft reads as who it addresses
+// and resends to them, where dropping the array would deliver it to nobody.
+test("a send kept with the old build's mentions restores them as the links that name them", async () => {
   const tab = keptTab();
   const createComment = spyOn(api, "createComment").mockReturnValue(
     Promise.withResolvers<Comment>().promise
@@ -391,7 +391,7 @@ test("a send kept with the old build's mentions array still restores its draft",
   const key: MutationKey = ["conversation", "CORE-1"];
   const seeded: SentRequest = {
     ...request,
-    draft: { body: "[Planner](dispatch://agent/planner-session) please look.", replacement: "" },
+    draft: { body: "@Planner please look, @Gone.", replacement: "" },
     sendKey: "send-old",
   };
   try {
@@ -402,7 +402,12 @@ test("a send kept with the old build's mentions array still restores its draft",
     };
     const withMentions = (draft: object) => ({
       ...draft,
-      mentions: [{ end: 8, start: 0, target: "session:planner-session", text: "Planner" }],
+      mentions: [
+        { end: 8, start: 0, target: "session:planner-session", text: "Planner" },
+        // A span the reader has since edited is their prose, and a target naming no party is
+        // mentioned by nothing: both keep the words the body holds.
+        { end: 27, start: 22, target: "session:gone", text: "Away" },
+      ],
     });
     tab.storage.setItem(
       "dispatch.write:send-old",
@@ -420,8 +425,9 @@ test("a send kept with the old build's mentions array still restores its draft",
     const { held: after, writes } = heldOf(tab);
     writes.resume("alice");
     await settle();
-    expect(after.get(key)?.request.draft.body).toBe(seeded.draft.body);
-    expect(after.get(key)?.draft.draft.body).toBe(seeded.draft.body);
+    const restored = "[Planner](dispatch://agent/planner-session) please look, @Gone.";
+    expect(after.get(key)?.request.draft.body).toBe(restored);
+    expect(after.get(key)?.draft.draft.body).toBe(restored);
   } finally {
     createComment.mockRestore();
     tab.close();

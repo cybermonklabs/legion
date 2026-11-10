@@ -501,8 +501,9 @@ var searchIndexedKinds = [...]string{"issue", "document", "comment", "ask", "mes
 // when that kind is not ranked, counted or paged. It names the kinds left out rather than the
 // kinds asked for so that its zero value is every kind - what a searchParameters built without
 // one searches, which is the query this route ran before it took the parameter and what every
-// other caller of the run functions means. searchNoKind, every bit set, names no kind the index
-// holds, so no row of it can match and runSearch answers it without reading the pool.
+// other caller of the run functions means. searchNoKind, every bit set, is the whole vocabulary
+// a parsed set is taken out of and the largest set searchStatementsByKinds holds a pair for; no
+// request names it, since a request naming a kind at all takes that kind's bit back out.
 type searchKinds uint8
 
 const searchNoKind = searchKinds(1<<len(searchIndexedKinds) - 1)
@@ -566,17 +567,13 @@ type searchStatements struct {
 
 var searchStatementsByKinds [int(searchNoKind) + 1]searchStatements
 
-// statements answers the pair this set runs, building it on the first ask.
+// statements answers the pair this set runs, building it on the first ask. The set that leaves
+// nothing out builds searchQuery and searchQueryMeaning themselves: its exclusion is empty, and
+// searchKindsCTE writes the arms as they stand for an empty one, so the bytes the pool prepares
+// for a search naming no kind are the bytes the tests read by name.
 func (k searchKinds) statements() *searchStatements {
 	pair := &searchStatementsByKinds[k]
 	pair.once.Do(func() {
-		if k == 0 {
-			// The two statements as they stand, which every search ran before the route took a
-			// kind: one text each, so what the tests read by name and what the pool prepares are
-			// the same bytes.
-			pair.keyword, pair.meaning = searchQuery, searchQueryMeaning
-			return
-		}
 		exclude := k.exclusion()
 		pair.keyword = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, exclude)
 		pair.meaning = searchQOpener(12) +
@@ -944,10 +941,9 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 }
 
 // runSearch is the search handler's own entry point. parameters.kinds are the kinds it leaves
-// out of the ranking, the count and the page (none for a request naming no kind); a set leaving
-// out every kind the index holds can match no row at all, so it is answered here, before the
-// pool is read for anything. The keys a query names are resolved next
-// and the numnode check runs behind them, both before anything else - including before the one
+// out of the ranking, the count and the page (none for a request naming no kind). The keys a
+// query names are resolved first and the numnode check runs behind them, both before anything
+// else - including before the one
 // model-service call this function ever makes - so a stopword-only or operator-only query never
 // pays for an embedding it would throw away. A query that names an issue by key answers that
 // issue even when it holds no lexeme any item matches, so numnode cannot refuse it and its round
@@ -972,10 +968,6 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // The query's embedding is taken once and both runs share it, so a broadened search still costs
 // one model-service call.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
-	if parameters.kinds == searchNoKind {
-		return model.SearchResponse{Results: []model.SearchResult{}, Limit: parameters.limit,
-			Offset: parameters.offset}, nil
-	}
 	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
 		return model.SearchResponse{}, err

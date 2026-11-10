@@ -4,7 +4,7 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import type { AgentStreamCommand } from "@legion/contracts";
+import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -237,8 +237,9 @@ test("a picked agent is written as the link that names it, and the hint says who
   const user = userEvent.setup();
   const input = renderThread();
 
+  // The words the list owns, read as the box reads them: a change of them is made in one place.
   expect(screen.getByTestId("agent-message-hint").textContent).toBe(
-    "Type @ for an agent, a role or a person, # for an issue, [[ for anything else. Nobody you pick is told."
+    dispatchWritingBox("agent-live-composer", "agent-message").hint
   );
 
   await type(user, input, "@plan");

@@ -327,12 +327,17 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     write: "agent-message",
   },
   // The replacement text of a suggestion, beside the reason for it: both go in the one comment.
+  // A party picked here is a reference like any other and is drawn by name, and nobody is told
+  // of it: the delivery a comment makes is read from its body alone, by the browser
+  // (`draftParties`) and by the server (`commentPartiesOf` over `text.ExtractAt(input.Body)`),
+  // and neither reads `suggestion.replace_with`. So this box says so rather than promising a
+  // delivery no reader of the write would ever make.
   {
     box: "suggestion-replacement",
     covered: true,
-    delivers: true,
+    delivers: false,
     files: ["packages/dispatch/web/src/features/conversation/MentionComposer.tsx"],
-    hint: DISPATCH_WRITING_HINT_DELIVERED,
+    hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: true,
     reach: "Replacement",
     write: "suggestion",

@@ -27,9 +27,13 @@
  *     none, four columns under a paragraph being that paragraph's own text. It runs through the
  *     indented lines that follow, blank lines between them included, and ends at the last of
  *     them.
- *   - A code span, as CommonMark reads one: a run of N backticks is closed by the next run of
- *     exactly N, and a run nothing closes is literal text. Spans are read in the text the blocks
- *     leave, so a backtick inside a fenced block opens nothing and no span reaches across a block.
+ *   - A code span, as CommonMark reads one: a run of N backticks opens one and the next run of
+ *     exactly N closes it, the search ending where the paragraph does, at a blank line, so a run
+ *     nothing closes there is literal text. A backslash takes the backtick after it as a literal
+ *     character, which opens no span, while a run that closes one is read as written
+ *     (`` `a\` `` closes), which is where CommonMark puts the escape too. Spans are read in the
+ *     text the blocks leave, so a backtick inside a fenced block opens nothing and no span
+ *     reaches across a block.
  *
  * The containers it reads are a block quote, nested in another or not, and a list item of a `-`,
  * `+`, `*` or numbered marker, whose content column is where the item's own text starts - a
@@ -54,10 +58,10 @@
  *     one straddling a container's own content column is taken whole by that container, so a tab
  *     after a list marker is the item's indentation rather than indented code inside it: code
  *     read as prose again.
- *   - A backslash before a backtick. CommonMark reads an escaped backtick as a literal character
- *     that opens and closes nothing; here it opens a span.
- *   - A paragraph's end inside a code span. CommonMark ends a span's search at the blank line
- *     that ends the paragraph; here a span runs to its closing run however many lines away it is.
+ *   - A paragraph that ends at something other than a blank line: a `>` alone inside a block
+ *     quote, a list item's marker interrupting one. A span's search ends at a line blank of
+ *     everything, so one opened in such a paragraph can be closed by a run past the paragraph's
+ *     end.
  *
  * `codeSpans` is also the one reading of where a code span begins on this side: the snippet
  * cutter reads it from here (`markdown-fragment.ts`) rather than keeping a second copy of the
@@ -90,6 +94,7 @@ interface Scan {
 }
 
 const BACKTICK = 0x60;
+const BACKSLASH = 0x5c;
 const TILDE = 0x7e;
 const SPACE = 0x20;
 const TAB = 0x09;
@@ -545,33 +550,57 @@ function nextBacktickRun(text: string, from: number, to: number, width: number):
   return -1;
 }
 
-/** The code spans of `[from, to)` appended to `found`, in order: the run of backticks at a span's
- *  start is closed by the next run of exactly that length, a longer run being no closer, and a
- *  run with no closer is literal text that the next character is read on from. */
-function appendCodeSpans(text: string, from: number, to: number, found: CodeRange[]): void {
+/** The code spans of `[from, to)`, a stretch of `text` no blank line breaks, appended to
+ *  `found`, in order: the run of backticks at a span's start is closed by the next run of
+ *  exactly that length, a longer run being no closer, and a run with no closer is literal text
+ *  that the next character is read on from. A backslash takes the character after it, so an
+ *  escaped backtick opens no span; a run that closes one is read as written, as CommonMark
+ *  reads a closer. */
+function appendParagraphSpans(text: string, from: number, to: number, found: CodeRange[]): void {
   for (let at = from; at < to; ) {
-    const open = text.indexOf("`", at);
-    if (open < 0 || open >= to) {
-      return;
+    const character = text.charCodeAt(at);
+    if (character === BACKSLASH) {
+      at += 2;
+      continue;
     }
-    const opener = runEnd(text, open, to, BACKTICK);
-    const width = opener - open;
+    if (character !== BACKTICK) {
+      at += 1;
+      continue;
+    }
+    const opener = runEnd(text, at, to, BACKTICK);
+    const width = opener - at;
     const closer = nextBacktickRun(text, opener, to, width);
     if (closer < 0) {
       at = opener;
       continue;
     }
-    found.push({ end: closer + width, start: open });
+    found.push({ end: closer + width, start: at });
     at = closer + width;
   }
 }
 
-/** The code spans of `text`, or of `[from, to)` where a caller names a stretch of it, in order.
- *  The offsets are the text's own, so a caller reading a stretch of a body gets the spans where
- *  that body holds them. */
-export function codeSpans(text: string, from = 0, to = text.length): CodeRange[] {
+/** The code spans of `[from, to)` appended to `found`, in order, each read inside the paragraph
+ *  that holds it: the search for a span's closing run ends at the blank line that ends the
+ *  paragraph, as CommonMark ends it, so an unmatched backtick mutes nothing after that line. */
+function appendCodeSpans(text: string, from: number, to: number, found: CodeRange[]): void {
+  let paragraph = from;
+  for (let at = from; at < to; ) {
+    const end = lineEnd(text, at);
+    const next = nextLine(text, end);
+    if (isBlank(text, at, end)) {
+      appendParagraphSpans(text, paragraph, at, found);
+      paragraph = next;
+    }
+    at = next;
+  }
+  appendParagraphSpans(text, paragraph, to, found);
+}
+
+/** The code spans of `text`, in order: the one reading of where a span begins on this side,
+ *  which the snippet cutter reads too (`markdown-fragment.ts`). */
+export function codeSpans(text: string): CodeRange[] {
   const spans: CodeRange[] = [];
-  appendCodeSpans(text, from, to, spans);
+  appendCodeSpans(text, 0, text.length, spans);
   return spans;
 }
 

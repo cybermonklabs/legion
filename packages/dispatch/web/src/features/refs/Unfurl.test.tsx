@@ -583,3 +583,28 @@ test("Unfurl renders a GitHub issue's body formatted, on one run of text, with n
     view.unmount();
   }
 });
+
+// A card is a link to what its reference opens, and nothing shows a person (R5): a body that
+// is one person's mention shows no card, where before it drew one whose href was the empty
+// path, so a click on it reloaded the page.
+test("a body that is only a person's mention shows no card", async () => {
+  const view = renderUnfurl("dispatch://person/alice@example.com");
+  try {
+    await waitFor(() => expect(view.container.querySelector("a")).toBeNull());
+    expect(view.container.textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reference a code context holds is the author's own text and is linked nowhere, so it is no
+// card either: an indented line is a code block, whatever it holds.
+test("a reference inside code shows no card", async () => {
+  const view = renderUnfurl("    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551");
+  try {
+    await waitFor(() => expect(view.container.querySelector("a")).toBeNull());
+    expect(view.container.textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});

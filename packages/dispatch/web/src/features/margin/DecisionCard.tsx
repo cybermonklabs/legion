@@ -13,7 +13,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { buildReferencePath, parseDispatchReference } from "../refs/routes";
+import { parseDispatchReference, referenceHref } from "../refs/routes";
 import { regionOrigin } from "./ThreadList";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
@@ -33,6 +33,9 @@ export function DecisionCard({
 }): ReactNode {
   const { decision } = item;
   const route = parseDispatchReference(decision.ref);
+  // A decision names the record it was made in; one naming no page of this dashboard - a
+  // person (R5) - leaves the heading as plain words.
+  const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
   return (
     <article
@@ -65,10 +68,10 @@ export function DecisionCard({
         ) : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
-        {route === undefined ? (
+        {href === undefined ? (
           decision.heading
         ) : (
-          <Link className={`${linkText} ${linkHoverText}`} to={buildReferencePath(route)}>
+          <Link className={`${linkText} ${linkHoverText}`} to={href}>
             {decision.heading}
           </Link>
         )}

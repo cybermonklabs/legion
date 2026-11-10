@@ -70,42 +70,6 @@ test.each(
   ).toEqual([...(row.inCode ?? [])]);
 });
 
-// The three contexts and their edges, each body writing one reference: the rows the server's own
-// test walks (`TestExtractMarksTheReferencesACodeContextHolds` in
-// `packages/envoy/internal/dispatch/text/code_test.go`), which are the edges of the rule itself
-// rather than of the grammar, and which no row of the shared table writes.
-test.each([
-  ["a fenced block", "```\ndispatch://CORE-1\n```", true],
-  ["a fenced block with an info string", "```sh\ndispatch://CORE-1\n```", true],
-  ["a fence of tildes", "~~~\ndispatch://CORE-1\n~~~", true],
-  ["a fence closed by a longer run", "```\ndispatch://CORE-1\n`````", true],
-  ["a fence the shorter run does not close", "````\n``\ndispatch://CORE-1\n````", true],
-  ["a fence nothing closes", "```\ndispatch://CORE-1", true],
-  ["a fence indented three spaces", "   ```\ndispatch://CORE-1\n   ```", true],
-  ["after a fence that closed", "```\nx\n```\ndispatch://CORE-1", false],
-  ["a tilde fence an info string holds a backtick in", "~~~`sh\ndispatch://CORE-1\n~~~", true],
-  ["a backtick fence an info string holds a backtick in", "```a`b\ndispatch://CORE-1\n```", false],
-  ["an indented block after a blank line", "See:\n\n    dispatch://CORE-1\n", true],
-  ["an indented block at the start of the body", "    dispatch://CORE-1\n", true],
-  ["an indented block opened by a tab", "See:\n\n\tdispatch://CORE-1\n", true],
-  ["a blank line inside an indented block", "See:\n\n    x\n\n    dispatch://CORE-1\n", true],
-  ["four spaces continuing a paragraph", "See:\n    dispatch://CORE-1\n", false],
-  ["a line after an indented block", "See:\n\n    x\n\ndispatch://CORE-1", false],
-  ["a code span", "Run `dispatch://CORE-1` now.", true],
-  ["a span of two backticks", "Run ``dispatch://CORE-1`` now.", true],
-  ["a longer run closing no shorter span", "Run `` dispatch://CORE-1 ``` ``", true],
-  ["a backtick run nothing closes", "Run `dispatch://CORE-1 now.", false],
-  ["between two spans", "`a` dispatch://CORE-1 `b`", false],
-  ["a span across a line", "Run `one\ndispatch://CORE-1` now.", true],
-  ["a backtick inside a fenced block", "```\n`\n```\ndispatch://CORE-1", false],
-  ["no code at all", "See dispatch://CORE-1 now.", false],
-] as const)("%s holds its reference in code: %p", (_name, body, inCode) => {
-  const { references } = readTextReferences(body, { origin });
-
-  expect(references.map((found) => found.reference)).toEqual(["dispatch://CORE-1"]);
-  expect(references[0].inCode).toBe(inCode);
-});
-
 // A body that writes the same reference inside code and outside it marks each occurrence on its
 // own, which is what keeps the party that body names a delivering one (`draftParties`).
 test("each occurrence of a reference is marked where it stands", () => {

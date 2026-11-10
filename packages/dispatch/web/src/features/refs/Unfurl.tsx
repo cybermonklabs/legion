@@ -13,8 +13,8 @@ import {
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ReferenceHostIs } from "./reference-host";
 import { referenceSpans, trimReference } from "./reference-spans";
-import { useReferencePath, useReferenceTarget } from "./reference-target";
-import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
+import { useReferenceHref, useReferenceTarget } from "./reference-target";
+import { buildDispatchReference, type DispatchReferenceRoute, referenceHref } from "./routes";
 import {
   readTextReferences,
   type TextReading,
@@ -84,14 +84,14 @@ interface ReferenceCards {
 
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   const { title, description } = useReferenceTarget(card.route, { text: true });
-  const path = useReferencePath(card.route);
+  const href = useReferenceHref(card.route);
 
   // The card is the one link: everything drawn inside it reads as a link and is none.
   return (
     <ReferenceHostIs host="control">
       <a
         className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
-        href={path}
+        href={href}
       >
         <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
         {description === undefined ? null : (
@@ -238,11 +238,13 @@ function referencesOnly(body: string, words: readonly ReferenceWord[]): boolean 
 
 /**
  * The cards `body` shows, or `undefined` for a body that shows none: it is nothing but
- * references (`referencesOnly`) and every one of them names something, which is `references`,
- * the reading made once the queries answered. A key whose issue does not exist, a `#id` no
- * question of the body's document declares, and an id prefix nothing resolved are each a word
- * that names nothing, and one of them is the whole body showing no card - until it resolves,
- * and for good where it never does.
+ * references (`referencesOnly`) and every one of them names a page of this dashboard, which is
+ * `references`, the reading made once the queries answered. A key whose issue does not exist, a
+ * `#id` no question of the body's document declares, and an id prefix nothing resolved are each
+ * a word that names nothing, and one of them is the whole body showing no card - until it
+ * resolves, and for good where it never does. So are the two a card could only lie about: a
+ * reference a code context holds, which is the author's own text and no link anywhere
+ * (`TextReference.inCode`), and one with no page to open - a person, whom nothing shows (R5).
  */
 function referenceCards(
   body: string,
@@ -264,7 +266,13 @@ function referenceCards(
       continue;
     }
     const found = word.reference;
-    if (found === undefined || found.unresolved || found.route === undefined) {
+    if (found === undefined || found.unresolved || found.route === undefined || found.inCode) {
+      return undefined;
+    }
+    // The gate every href of a typed reference goes through, asked here so the body shows no
+    // card it could not link: the card's own href is the same reading, with the issue summary
+    // a pinned block of a spec waits on (`useReferenceHref`).
+    if (referenceHref(found.route) === undefined) {
       return undefined;
     }
     const reference = buildDispatchReference(found.route);
