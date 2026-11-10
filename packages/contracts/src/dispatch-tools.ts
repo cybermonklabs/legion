@@ -460,11 +460,14 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  */
 export const SEARCH_KIND_DEPTH = 100;
 
-/** One value of `GET /api/v1/search`'s repeated `kind` parameter, read off the route table
- *  itself rather than written out a second time: the parameter is optional, so both the
- *  parameter object and `kind` are unwrapped before the array's element is taken. */
+/** One value of the repeated `kind` parameter, read off the route table itself rather than
+ *  written out a second time: the parameter is optional, so both the parameter object and
+ *  `kind` are unwrapped before the array's element is taken. It is read from
+ *  `GET /api/v1/search/results`, the route that declares every member the handler reads;
+ *  `GET /api/v1/search` reads `kind` too and declares it nowhere, as it does the other five a
+ *  build released before them does not serve (`SEARCH_MEMBERS_EVERY_BUILD_READS`). */
 type SearchKindParameter = NonNullable<
-  NonNullable<paths["/api/v1/search"]["get"]["parameters"]["query"]>["kind"]
+  NonNullable<paths["/api/v1/search/results"]["get"]["parameters"]["query"]>["kind"]
 >[number];
 
 /**
