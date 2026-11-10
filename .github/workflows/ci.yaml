@@ -2040,6 +2040,8 @@ jobs:
               - '.github/actions/install-uv/**'
               - '.github/actions/install-pulumi/**'
               - '.github/actions/install-docker-plugin/**'
+              # TEMPORARY, with the two steps that call it: dispatch://INFRA-2605's measurement.
+              - '.github/actions/step-bound-probe/**'
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
               - '.github/workflows/ci.yaml'
@@ -2386,6 +2388,16 @@ jobs:
   # after it `pending`, and the job ends before its own `timeout-minutes` would have fired.
   # Three wrong causes were offered for that one job before anyone ran that command
   # (dispatch://INFRA-2605). `docs/testing.md` says the same for any job of this repository.
+  #
+  # BEFORE YOU PUT A BOUND ON A STEP OF THIS JOB: A BOUND BELONGS ONLY WHERE FIRING IT IS LOUD.
+  # A step the runner ends at its `timeout-minutes` leaves the same `outcome` behind it as a
+  # step that failed on its own, and GitHub gives a later step nothing that tells the two apart.
+  # So on a step with no `continue-on-error` a bound is loud: it fails the job. On one of the
+  # eight `continue-on-error` installs below, whose control passes a step whose `outcome` is
+  # `failure`, a bound is silent: a hang would satisfy that control and leave the job green,
+  # where the job's own ceiling would have cancelled it and failed ci-ok. That is why the
+  # control reads the clock as well, and why a new bound on a step some later assertion accepts
+  # the failure of needs the same treatment or none at all (dispatch://INFRA-2605).
   tool-fallback:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -2445,6 +2457,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # TEMPORARY, and deleted in this same pull request: the measurement dispatch://INFRA-2605
+      # owes. The rule above says a bound on a `continue-on-error` step is silent because the
+      # runner leaves the same `outcome` behind as an ordinary failure. That sentence rests on
+      # a value nobody here has read: this pull request's earlier probe showed the composite
+      # action's own inner step at `outcome=failure`, which is not the caller's
+      # `steps.<id>.outcome`. These two steps read the caller's. The action sleeps 180 s against
+      # the minute declared here, and `continue-on-error` is what keeps the reading from failing
+      # the job.
+      - id: bound-probe
+        name: Measure what a continue-on-error step reports when its bound ends it
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: ./.github/actions/step-bound-probe
+
+      - name: Read what the runner reported for the step it ended
+        env:
+          PROBE_OUTCOME: ${{ steps.bound-probe.outcome }}
+          PROBE_CONCLUSION: ${{ steps.bound-probe.conclusion }}
+        run: |
+          set -euo pipefail
+          echo "the runner ended that step at its bound, and a later step reads it as outcome='$PROBE_OUTCOME' conclusion='$PROBE_CONCLUSION'"
+          echo "the step record's own wall time and the log's 'The action has timed out.' are the other two readings of the same step"
 
       # The merge base, for the negative control below: a second tree of this same repository,
       # whose seven installs that control drives with nowhere left to go. The comment on those
@@ -2642,6 +2677,19 @@ jobs:
       # drive the control by themselves, so a later reader who deletes the merge base's seven
       # steps is deleting that caller too and should move the rule's exercise rather than lose
       # it.
+
+      # When the eight steps below started. The control step after them reads it, because a
+      # bound that fires on one of them is otherwise silent: each carries `continue-on-error`
+      # and the control accepts a step whose `outcome` is `failure`, which is exactly what the
+      # runner leaves behind when it ends a step at its bound. The clock is the one signal that
+      # tells the two apart, since GitHub gives a later step nothing that says an earlier one
+      # was cut.
+      # $GITHUB_OUTPUT rather than $GITHUB_ENV: a step of a job that writes $GITHUB_ENV or
+      # $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for the whole job.
+      - id: nowhere-start
+        name: Mark when the eight installs with nowhere to go began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - id: base-crane
         continue-on-error: true
         timeout-minutes: 11
@@ -2733,7 +2781,13 @@ jobs:
           http_proxy: http://127.0.0.1:1
           https_proxy: http://127.0.0.1:1
 
-      - name: Check all eight installs with nowhere to go failed
+      # A bound belongs only where firing it is loud, and on these eight it is not: each carries
+      # `continue-on-error`, and the test below accepts a step whose `outcome` is `failure`,
+      # which is what the runner leaves when it ends a step at its bound. So this step reads the
+      # clock as well. Without it an install that hung would satisfy its own control and leave
+      # the job green, where before those bounds the same hang held the job to its own ceiling,
+      # which cancels it and fails ci-ok, so somebody looked.
+      - name: Check all eight installs with nowhere to go failed, and failed in their own time
         env:
           CRANE: ${{ steps.base-crane.outcome }}
           CHANGIE: ${{ steps.base-changie.outcome }}
@@ -2743,6 +2797,7 @@ jobs:
           UV: ${{ steps.base-uv.outcome }}
           PULUMI_DOCKER: ${{ steps.nowhere-pulumi-docker.outcome }}
           PULUMI_CLI: ${{ steps.base-pulumi.outcome }}
+          NOWHERE_START: ${{ steps.nowhere-start.outputs.at }}
         run: |
           set -euo pipefail
           echo "a merge base from before this change reads none of the CI_TOOLS_* seams, so each of these installs has the one source it always had: the release asset this fault holds for crane, changie, jj, bun, elan and uv, and get.pulumi.com, which this job does not fault, behind the dead proxy the pulumi step carries for that reason"
@@ -2754,6 +2809,18 @@ jobs:
           done
           if [ -n "$wrong" ]; then
             echo "::error::the install with nowhere to go for$wrong served bytes with its primary behind the fault or behind a dead proxy and its second source pointed at a dead port, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the passes below would then say nothing about the second source" >&2
+            exit 1
+          fi
+          # The eight together, measured over the 56 green runs of this job's current layout
+          # between 2026-11-09T19:38Z and 2026-11-10T10:51Z: their per-step maxima add to
+          # 1121 s, and end to end, which is what this clock reads, the greatest was 1106 s and
+          # the median 975 s. One step held to its 660-second bound costs at least
+          # 1121 - 255 + 660 = 1526 s, the 255 being the greatest the docker plugin reached.
+          # 1400 s sits 278 s above the greatest sum and 126 s below the smallest a hang gives.
+          elapsed=$(( $(date +%s) - NOWHERE_START ))
+          echo "  the eight took ${elapsed}s together, against 1106 s the greatest ever measured and 1400 s the bound of this check"
+          if [ "$elapsed" -gt 1400 ]; then
+            echo "::error::the eight installs with nowhere to go took ${elapsed}s, past the 1400 s this check allows, so at least one of them did not fail for the reason this control names: a step the runner ends at its own timeout-minutes leaves outcome=failure behind it, which the test above accepts, and the wall time is the only thing that tells a hang from a refusal; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to 11 minutes, and its log for 'The action has timed out.'" >&2
             exit 1
           fi
 
