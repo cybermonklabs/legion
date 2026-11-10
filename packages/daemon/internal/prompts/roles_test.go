@@ -390,15 +390,17 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules and dispatch://INFRA-924's fifth, each pinned by
-// the sentence that carries it. A pin fails when a later edit deletes the rule; it does not show
-// that an agent follows it, which each issue's session runs measure. Each of the first four
-// sentences sits in the core its role composes, so the rule reaches that role and no other: the
-// simplify pass and the class search are the implementer's, the procedure and can-fail rules the
-// tester's, the open-decision rule the planner's, and the planner's WAITING line is phase
-// mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose names
-// core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of that
-// rule in the prompt tree, which a later core would copy from.
+// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
+// dispatch://INFRA-1303's sixth, each pinned by the sentence that carries it. A pin fails when a
+// later edit deletes the rule; it does not show that an agent follows it, which each issue's
+// session runs measure. Each of the first four sentences sits in the core its role composes, so
+// the rule reaches that role and no other: the simplify pass and the class search are the
+// implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
+// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
+// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
+// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
+// would copy from. R6 sits in the tester's core, the part that tells a phase worker what to do
+// about CI.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
@@ -423,6 +425,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
+		// R6: the role that holds the phase re-runs a red at the head once, after it writes the
+		// failure down, so a red the change did not cause costs the tree no extra lap
+		// (dispatch://INFRA-1303). The whole rule is in the worker skill's red-at-the-head page,
+		// which this mode-neutral part may not name.
+		{"core/tester.md", "The role that holds the issue's phase re-runs a red at the head of the pull request that the change did not cause"},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
