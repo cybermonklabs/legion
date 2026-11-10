@@ -10,9 +10,13 @@
  *  What it refuses, per entry: a path that matches no route of
  *  `packages/contracts/schemas/dispatch-openapi.json`, a method that route does not take, a
  *  status that operation does not declare, a JSON body that fails that status's schema, and a
- *  200 that answers a stored text without the display tree the contract declares beside it.
+ *  200 that answers a stored text without the display tree the contract declares beside it, or
+ *  with a tree that holds nothing to draw. An event carries its trees in a map of its own, keyed
+ *  by the path of the text each was read from rather than in a property beside that text, so a
+ *  200 that answers a list of events is read a second way: every text an event's payload holds
+ *  is demanded under the path that map keys it by.
  *
- *  That last one is what keeps the stubbed rows reading Go's tree. The dashboard asks for the
+ *  Those last ones are what keep the stubbed rows reading Go's tree. The dashboard asks for the
  *  trees on every request it makes, and draws one wherever it is given one; where it is given
  *  none it parses the markdown itself, which is the fallback a rolling deploy needs and which
  *  every row recorded against a server that sends no tree would silently be proving instead.
@@ -35,6 +39,7 @@ import type { Har } from "../stub/recording";
 import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
 
 interface OpenApiDocument {
+  components?: { schemas?: Record<string, unknown> };
   paths: Record<string, Record<string, OpenApiOperation | undefined> | undefined>;
 }
 
@@ -103,72 +108,155 @@ function schemaPointer(root: string, route: string, method: string, code: string
   );
 }
 
-/** Every stored text the server answers a display tree beside, named by the text's own field:
- *  a property whose name is another property's with `_tree` on the end, in the schema that
- *  declares both. Read out of the document rather than written down here, so a text that gains
- *  a tree is covered by the commit that declares it and never by a list a reader has to keep. */
-function storedTextsWithTrees(node: unknown, found: Set<string>): Set<string> {
-  if (node === null || typeof node !== "object") return found;
-  if (Array.isArray(node)) {
-    for (const held of node) storedTextsWithTrees(held, found);
-    return found;
-  }
-  if ("properties" in node) {
-    const properties = node.properties;
-    if (properties !== null && typeof properties === "object") {
-      for (const name of Object.keys(properties)) {
-        if (name.endsWith("_tree") && Object.hasOwn(properties, name.slice(0, -"_tree".length))) {
-          found.add(name.slice(0, -"_tree".length));
-        }
-      }
-    }
-  }
-  for (const held of Object.values(node)) storedTextsWithTrees(held, found);
-  return found;
+/** One stored text the document declares a display tree beside: the schema that declares the
+ *  pair, and the text's own field. The two together name the tree a body has to answer, and a
+ *  field name alone does not: half a dozen schemas declare a `text`, and a tree taken off one
+ *  of them leaves the name standing in the others. */
+interface TreePair {
+  schema: string;
+  field: string;
 }
 
-const storedTexts = storedTextsWithTrees(document, new Set<string>());
-
-/** The document again, with one demand added at every schema that declares such a pair: a body
- *  that answers the text must answer its tree beside it. A text the server stored as nothing has
- *  no tree to read and the server sends none, so the demand is made of a non-empty string alone,
- *  and a field that is absent or null demands nothing.
+/** The document again, with one demand added at every schema that declares such a pair - a
+ *  property whose name is another property's with `_tree` on the end: a body that answers the
+ *  text must answer its tree beside it, and that tree must hold content. A text the server
+ *  stored as nothing has no tree to read and the server sends none, so the demand is made of a
+ *  non-empty string alone, and a field that is absent or null demands nothing. The content is
+ *  demanded because the contract's tree schema takes `{"type":"doc"}`, the empty document a row
+ *  draws as nothing: a tree that holds no node answers a text that holds one with nothing, which
+ *  is the row reading its own parse under another name.
+ *
+ *  Every pair demanded is appended to `demanded`, named by the node that declared it, which for
+ *  every pair this contract holds today is a schema of `components.schemas`. The canary below
+ *  asserts that list, so what the rows validate against and what a reader is told they cover are
+ *  the one derivation and cannot drift apart.
  *
  *  The demand is an `allOf` branch and never a rewritten `required`, so everything else the
  *  schema says is left as the generator wrote it and every `$ref` still resolves: ajv reads this
  *  document as it reads the first, under the pointer the first is read by. */
-function demandingTrees(node: unknown): unknown {
+function demandingTrees(node: unknown, name: string, demanded: TreePair[]): unknown {
   if (node === null || typeof node !== "object") return node;
-  if (Array.isArray(node)) return node.map(demandingTrees);
+  if (Array.isArray(node)) return node.map((held) => demandingTrees(held, name, demanded));
   const copied: Record<string, unknown> = {};
-  for (const [key, held] of Object.entries(node)) copied[key] = demandingTrees(held);
+  for (const [key, held] of Object.entries(node)) copied[key] = demandingTrees(held, key, demanded);
   const properties = copied.properties;
   if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
     return copied;
   }
-  const demanded = Object.keys(properties)
-    .filter((name) => Object.hasOwn(properties, `${name}_tree`))
-    .map((name) => ({
-      if: { properties: { [name]: { type: "string", minLength: 1 } }, required: [name] },
+  const demands: unknown[] = [];
+  for (const field of Object.keys(properties)) {
+    if (!Object.hasOwn(properties, `${field}_tree`)) continue;
+    demanded.push({ schema: name, field });
+    demands.push({
+      if: { properties: { [field]: { type: "string", minLength: 1 } }, required: [field] },
       // `then` here is JSON Schema's own keyword beside `if`, and this object is handed to ajv
       // rather than awaited: the rule guards against an object a `await` would mistake for a
       // promise, which nothing here does.
       // biome-ignore lint/suspicious/noThenProperty: the JSON Schema keyword, never a thenable
-      then: { required: [`${name}_tree`] },
-    }));
-  if (demanded.length === 0) return copied;
+      then: {
+        properties: {
+          [`${field}_tree`]: {
+            properties: { content: { type: "array", minItems: 1 } },
+            required: ["content"],
+          },
+        },
+        required: [`${field}_tree`],
+      },
+    });
+  }
+  if (demands.length === 0) return copied;
   const held = Array.isArray(copied.allOf) ? copied.allOf : [];
-  return { ...copied, allOf: [...held, ...demanded] };
+  return { ...copied, allOf: [...held, ...demands] };
 }
 
+/** Every pair the walk above demanded a tree of, filled as it builds the document below. */
+const demandedPairs: TreePair[] = [];
+
 // `demandingTrees` walks every node of the document and so answers `unknown`; the document it
-// was given is an object, so its clone is one.
-const demandedDocument = demandingTrees(document) as Record<string, unknown>;
+// was given is an object, so its clone is one. The root itself stands under no name and declares
+// no property, so the empty name it is walked with is recorded against nothing.
+const demandedDocument = demandingTrees(document, "", demandedPairs) as Record<string, unknown>;
 const withTrees = new Ajv2020({ allErrors: false, strict: false, validateFormats: false });
 withTrees.addSchema({ $id: "trees", ...demandedDocument });
 
 const ajv = new Ajv2020({ allErrors: false, strict: false, validateFormats: false });
 ajv.addSchema({ $id: "dispatch", ...document });
+
+/** Every member of a payload that can hold a stored text: the field of every pair the document
+ *  declares. An event's trees stand in a map of their own, so the demand above reaches none of
+ *  them and the rule below reads an event's payload with these names instead.
+ *
+ *  The server reads a payload only for the fields the event's own type can hold - a body for the
+ *  comment, message and suggestion families, an ask's own texts for the ask family, and nothing
+ *  at all for any other type (`packages/envoy/internal/dispatch/api/event_trees.go`'s
+ *  `eventPayloadTexts`). A recording is read for every field instead, because a payload that
+ *  gains a text the server answers no tree for is the drift this is here to refuse. Run over the
+ *  132 recordings committed today, that wider reading demands a tree in six places - the body of
+ *  a `comment.created`, a `message.created` and a `message.answered`, and an `ask.opened`'s
+ *  question and its two option labels - and every one of them is answered, so it is kept as it
+ *  stands rather than narrowed to the families that file names. */
+const storedTextFields = new Set(demandedPairs.map(({ field }) => field));
+
+/** Whether this schema is an event's: one that declares a `payload` beside the `trees` map
+ *  holding the display tree of every text that payload carries (model.Event's `Trees`). */
+function carriesEventTrees(schema: unknown): boolean {
+  if (schema === null || typeof schema !== "object" || !("properties" in schema)) return false;
+  const properties = schema.properties;
+  if (properties === null || typeof properties !== "object") return false;
+  return Object.hasOwn(properties, "payload") && Object.hasOwn(properties, "trees");
+}
+
+/** The `$ref` of every such schema, so a response that answers a list of events is found by what
+ *  the document declares and not by the routes that answer one today. */
+const eventRefs = new Set(
+  Object.entries(document.components?.schemas ?? {})
+    .filter(([, schema]) => carriesEventTrees(schema))
+    .map(([name]) => `#/components/schemas/${name}`)
+);
+
+/** Whether this response schema answers a list of events. The three routes that answer one - an
+ *  issue's feed, an artifact's and the project log - each declare it as an array of `$ref`s into
+ *  `components`, which is how the generator writes a slice of a named type. */
+function isEventList(schema: unknown): boolean {
+  if (schema === null || typeof schema !== "object" || !("items" in schema)) return false;
+  const items = schema.items;
+  if (items === null || typeof items !== "object" || !("$ref" in items)) return false;
+  return typeof items.$ref === "string" && eventRefs.has(items.$ref);
+}
+
+/** One event of such a list, as far as the rule below reads it. */
+interface RecordedEvent {
+  id: number;
+  type: string;
+  payload: unknown;
+  trees?: Record<string, unknown>;
+}
+
+/** Every stored text an event's payload holds, by the path its tree is keyed under: the field's
+ *  own path rooted at the envelope, which is what the server keys the map by - `payload.body` for
+ *  a comment's, `payload.options.0.label` for an ask option's. */
+function eventTextPaths(node: unknown, at: string, found: string[]): string[] {
+  if (node === null || typeof node !== "object") return found;
+  if (Array.isArray(node)) {
+    for (const [index, held] of node.entries()) eventTextPaths(held, `${at}.${index}`, found);
+    return found;
+  }
+  for (const [key, held] of Object.entries(node)) {
+    if (storedTextFields.has(key) && typeof held === "string" && held !== "") {
+      found.push(`${at}.${key}`);
+    }
+    eventTextPaths(held, `${at}.${key}`, found);
+  }
+  return found;
+}
+
+/** Whether a display tree holds anything a row can draw: a `content` with a node in it. The
+ *  empty document is what a text of no length reads as, and a row handed one for a text that has
+ *  length draws nothing where its spec says it draws what the server read. */
+function holdsContent(tree: unknown): boolean {
+  if (tree === null || typeof tree !== "object" || !("content" in tree)) return false;
+  return Array.isArray(tree.content) && tree.content.length > 0;
+}
 
 describe("every committed recording answers what the generated contract declares", () => {
   // An empty recordings directory is the state of this tree before the first family moved, and a
@@ -231,20 +319,42 @@ describe("every committed recording answers what the generated contract declares
 
 describe("every committed recording answers the display tree of every stored text", () => {
   // The demand above is only as wide as the pairs the document declares, and a derivation that
-  // found none would make every row below pass over every recording. These are the texts this
-  // contract answers a tree beside today; a commit that adds one adds it here, and a commit that
+  // found none would make every row below pass over every recording. These are the pairs it
+  // demanded, each named by the schema that declares the text and the text's own field, read
+  // out of the walk itself rather than derived a second way so that what the rows validate
+  // against is what this list says. A commit that adds a tree adds its pair here, and one that
   // takes a tree away has to say so here rather than leave the rows guarding nothing.
   test("the contract declares which stored texts carry a tree", () => {
-    expect([...storedTexts].sort()).toEqual([
-      "body",
-      "description",
-      "label",
-      "markdown",
-      "prose",
-      "question",
-      "reason",
-      "snippet",
-      "text",
+    expect(demandedPairs.map(({ schema, field }) => `${schema}.${field}`).sort()).toEqual([
+      "AcceptSuggestionResponse.body",
+      "ArchitectureComponentRead.prose",
+      "ArtifactApprovalWithTrees.reason",
+      "ArtifactReviewRead.reason",
+      "ArtifactText.markdown",
+      "ArtifactVersionText.markdown",
+      "AskAnswerWithTrees.text",
+      "AskEditPreviousWithTrees.question",
+      "AskOptionWithTrees.description",
+      "AskOptionWithTrees.label",
+      "AskResolutionWithTrees.reason",
+      "AskWithTrees.question",
+      "BlockPinRead.text",
+      "BroadcastCreated.body",
+      "BroadcastRead.body",
+      "BroadcastSummary.body",
+      "CommentWithTrees.body",
+      "CommentWriteResponse.body",
+      "Decision.text",
+      "GraphNodeRead.text",
+      "InboxRow.question",
+      "IssueAskRow.question",
+      "IssueOpenAsk.question",
+      "MessageReplyResult.body",
+      "MessageWithTrees.body",
+      "MyAnswerReply.body",
+      "MyAnswerRow.question",
+      "ReplyBlockWithTrees.text",
+      "SearchResult.snippet",
     ]);
   });
 
@@ -262,9 +372,10 @@ describe("every committed recording answers the display tree of every stored tex
         const method = entry.request.method.toLowerCase();
         const declared = document.paths[route]?.[method]?.responses ?? {};
         const code = declared["200"] === undefined ? "default" : "200";
+        const schema = declared[code]?.content?.["application/json"]?.schema;
         const body = entry.response.content.text;
         if (
-          declared[code]?.content?.["application/json"]?.schema === undefined ||
+          schema === undefined ||
           body === undefined ||
           body.trim() === "" ||
           !(entry.response.content.mimeType ?? "").includes("json")
@@ -274,11 +385,24 @@ describe("every committed recording answers the display tree of every stored tex
         const validate = withTrees.getSchema(schemaPointer("trees", route, method, code));
         if (validate === undefined) continue;
         const where = `${entry.request.method} ${new URL(entry.request.url).pathname} in ${file}`;
+        const answered: unknown = JSON.parse(body);
         expect(
-          validate(JSON.parse(body)),
-          `${where}: a stored text is answered without its display tree, so the row that reads ` +
-            `it reads the browser's own parse - ${withTrees.errorsText(validate.errors)}`
+          validate(answered),
+          `${where}: a stored text is answered without a display tree that draws it, so the row ` +
+            `that reads it reads the browser's own parse - ${withTrees.errorsText(validate.errors)}`
         ).toBe(true);
+        if (!isEventList(schema)) continue;
+        // The list answered the schema above, so each of its entries holds the members an event
+        // declares; what it answers beside them is whatever the recorded server sent.
+        for (const event of answered as RecordedEvent[]) {
+          for (const at of eventTextPaths(event.payload, "payload", [])) {
+            expect(
+              holdsContent(event.trees?.[at]),
+              `${where}: event ${event.id} (${event.type}) answers ${at} without a display tree ` +
+                `to draw, so the row that reads it reads the browser's own parse`
+            ).toBe(true);
+          }
+        }
       }
     });
   }

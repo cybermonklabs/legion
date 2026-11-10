@@ -344,6 +344,10 @@ test("no page that draws stored text parses markdown in either browser engine", 
   await countParses(alice);
   try {
     const pages = surfaces(seeded);
+    // Every surface is walked, not merely the ones still in the list: a row that stops reaching
+    // its page, or a surface dropped from `surfaces`, leaves the comparison below green over
+    // what remains, so the count the claim rests on is pinned here and moves only deliberately.
+    expect(pages).toHaveLength(14);
     const counted = [];
     for (const surface of pages) counted.push(await parsesOf(alice, surface));
     // One comparison over all fourteen, so a page that parses is named beside the thirteen that
