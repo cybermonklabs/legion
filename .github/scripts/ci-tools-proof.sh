@@ -58,8 +58,10 @@
 #       It takes no argument, as `stage` does, and it refuses the job where no curl is on PATH
 #       for the stand-in to run.
 #       It logs one line per fetch to $RUNNER_TEMP/ci-tools-proof/curl.log — the seconds it
-#       took, the decision, the host and curl's exit — and never an argument and never a URL,
-#       because .github/scripts/ci-tools.sh hands curl its credentials as arguments.
+#       took, the decision, the host, curl's exit and the name CI_TOOLS_PROOF_FULL_LADDER
+#       carries — and of the arguments only the host of the request, never the rest of its URL
+#       and never another argument, because .github/scripts/ci-tools.sh hands curl its
+#       credentials as arguments.
 #       It exists because this job spent 1952 s of its 1994 s inside retry ladders the proof
 #       does not read: a case here is a refusal this rig arranged, and a refusal arranged is a
 #       ladder nobody reads (dispatch://INFRA-2621). One case keeps the ladder, and
@@ -778,14 +780,10 @@ stage() {
 # The four values this rig decides are written in at the top of it for the same reason: the
 # stand-in takes the hosts and the address from this one file, and nobody writes a second copy
 # of them by hand.
-# The file is one redirection of three pieces: the head of the script, those four values, and
-# the body.
-# The values go through `%q`, which writes each of them as one word the stand-in reads back as
-# it stands, whatever it holds: a value carrying a space, a quote, a dollar or a backtick would
-# otherwise be expanded as this rig writes it or leave the written script broken.
-# Both heredocs are quoted, so the body needs no escape at all and reads as the plain shell it
-# is. One escape missed in an unquoted heredoc expands a value of this rig silently as the file
-# is written, and `set -u` catches none of it.
+# The four values go through `%q`, so each reads back as the one word it is, whatever it holds;
+# written between double quotes instead, a value carrying a dollar or a backtick would be
+# expanded each time the stand-in runs. Both heredocs are quoted, so the body is plain shell
+# with no escape in it.
 write_stand_in() {
   local real_curl=$1
   {
@@ -814,12 +812,12 @@ SH
 # The request is the first argument that starts with http:// or https://, and its authority is
 # the text up to the first /, ? or #, with any user@ before that removed.
 # The cut at ? and # is made beside the cut at /, because a URL that carries a query or a
-# fragment and no path at all ends its authority at that ? or #, and the query of such a URL
-# would otherwise stand in the host field of the line below. No URL and no part of one reaches
-# that log.
-# Nothing else of the arguments is read, and no argument reaches the log: this helper is handed
-# credentials as arguments — -u for a ghcr token, an Authorization header for a blob — and
-# .github/scripts/ci-tools.sh passes them that way exactly so that they reach no log line.
+# fragment and no path at all ends its authority at that ? or #, and its query would otherwise
+# stand in the host field of the line below.
+# Of the arguments, only the host of that URL reaches the log: never its path, query, fragment
+# or user, and no other argument. This helper is handed credentials as arguments — -u for a
+# ghcr token, an Authorization header for a blob — and .github/scripts/ci-tools.sh passes them
+# that way exactly so that they reach no log line.
 url=""
 for argument in "$@"; do
   case $argument in
