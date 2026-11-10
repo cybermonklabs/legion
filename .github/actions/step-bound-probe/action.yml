@@ -1,0 +1,18 @@
+name: Measure whether a step bound reaches a composite action
+description: >-
+  Sleeps for longer than the bound of the step that calls it, so the job record says whether the
+  runner holds a `uses:` step of a composite action to its own `timeout-minutes`.
+
+  This action is temporary. It is the measurement task T5 of dispatch://INFRA-2605 asks for, and
+  it is deleted in that same pull request once the reading has decided where the bound of the
+  faulted install steps goes. Nothing else calls it.
+runs:
+  using: composite
+  steps:
+    - name: Sleep past the bound the caller declares
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "step-bound-probe: sleeping 180 s against the caller's timeout-minutes: 1"
+        sleep 180
+        echo "step-bound-probe: slept the whole 180 s, so no bound of the caller ended this step"
