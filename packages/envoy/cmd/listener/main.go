@@ -1249,6 +1249,14 @@ func main() {
 	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
 	// delivery, which a listener of an earlier release serves too, rather than ending the start.
 	delivery := connectSessionDelivery(cfg.NATSURLs, logger)
+	// The threshold the server removes an idle session consumer after is derived from this
+	// deployment's own windows and set before any consumer call is made, so every consumer this
+	// listener creates carries one that stands above its own sweep's worst bound: the session's
+	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
+	// records for longer than the default windows would otherwise have the server remove a
+	// consumer the listener's own delete had not reached, and with it the only record of where
+	// that session's delivery stopped (sessionDelivery.setInactiveThreshold).
+	delivery.setInactiveThreshold(sessions, sessionReapInterval, sessionConsumerSweepInterval)
 	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
 	// this task holds its machine's durable binding (below). Without its reply inbox no frame could
 	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.
@@ -1392,11 +1400,14 @@ func main() {
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
 	// holds. The deregistration route deletes the consumer of a registration it removed, and a
 	// session whose pane closed or whose box went deregisters nothing: this is the bound under
-	// which such a consumer goes, one pass after the session registry answers gone. It is also
-	// what retires the consumers a hub already holds from before the sweep existed. A pass that
-	// found a cold or stale copy of the session bucket would read the whole fleet as gone, so it
-	// runs only on the task holding this machine's durable binding and only over a copy that is
-	// ready, servable and needs no read (startSessionConsumerSweep, session_consumer_sweep.go).
+	// which such a consumer goes, one pass after the session's record leaves the envoy_sessions
+	// bucket - the reaper's first pass past the gone horizon, or the bucket's maximum age,
+	// whichever comes first - since a pass deletes only on a bucket that answers for the session
+	// no longer. It is also what retires the consumers a hub already holds from before the sweep
+	// existed. A pass that found a cold or stale copy of the session bucket would read the whole
+	// fleet as gone, so it runs only on the task holding this machine's durable binding and only
+	// over a copy that is ready, servable and needs no read (startSessionConsumerSweep,
+	// session_consumer_sweep.go).
 	kvLoopsDone = append(kvLoopsDone, startSessionConsumerSweep(kvLoopsCtx, &sessionConsumerSweep{
 		delivery: delivery,
 		sessions: sessions,
@@ -1494,6 +1505,32 @@ func main() {
 	})
 }
 
+// startSweep runs pass every interval, and once as the listener starts, which is the loop every
+// backstop sweep of the listener runs: the kept role lanes' (startKeptRoleSweep) and the session
+// consumers' (startSessionConsumerSweep). It runs under the context the listener's other KV
+// loops run under and returns a channel closed once its goroutine has returned, as they do
+// (store.Registry.StartReaper), so the shutdown ends it and waits for a pass in flight
+// (listenerLoops.kvLoopsDone). A pass that is still running when ctx ends is not cut short by
+// this loop: each pass watches ctx itself and the shutdown waits for it, so a sweep ends
+// between two of its own calls rather than inside one.
+func startSweep(ctx context.Context, interval time.Duration, pass func(context.Context)) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			pass(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return done
+}
+
 // listenerLoops are the background loops main starts once the durable binds: stop ends them,
 // monitorDone is closed once the self-health monitor has returned, and each of kvLoopsDone once
 // one of the loops that list a KV bucket (the reapers and the interest marker collector) has. A
@@ -1545,6 +1582,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}
+	// A deregistration answers before its session consumer is deleted and leaves that delete
+	// running behind it (sessionDelivery.deleteAfterAnswer), so the stop waits for those still
+	// in flight once the server has stopped serving: a delete cut off here would leave its
+	// consumer for the sweep, and one started after the drain below would reach a closed
+	// connection.
+	parts.delivery.awaitDeletes(shutdownCtx)
 	// The session-consumer connection carries the consumer calls registrations make, which the HTTP
 	// server has stopped serving, and the relays' acks, which its drain lets reach the server,
 	// within what is left of the HTTP stop's budget.

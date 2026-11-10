@@ -52,7 +52,7 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 	awaitAcked(t, rig.consumers, sessionID, wrote)
 
 	rig.deregister(t, sessionID, "")
-	rig.requireNoConsumer(t, sessionID)
+	rig.awaitNoConsumer(t, sessionID)
 	var away []contracts.Envelope
 	for range 2 {
 		item, _ := rig.storeEvent(t, agent)
@@ -120,6 +120,9 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 	standIn.none(t, 200*time.Millisecond)
 
 	rig.deregister(t, sessionID, "")
+	// The delete runs after the answer, and this row is about what the registration below finds
+	// once it has run: the consumer gone and its floor on the resume lane.
+	rig.awaitNoConsumer(t, sessionID)
 	away, awaySeq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
 	rig.subscribe(t, consumerResumeRegistration(sessionID, "epoch-2", rig.streamID(t), first.Delivery.ConsumerStart-1))
 
@@ -155,7 +158,7 @@ func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing
 	standIn.none(t, 200*time.Millisecond)
 
 	rig.deregister(t, sessionID, "")
-	rig.requireNoConsumer(t, sessionID)
+	rig.awaitNoConsumer(t, sessionID)
 	onTopic, topicSeq := rig.storeEvent(t, followed)
 	toSession, sessionSeq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
 

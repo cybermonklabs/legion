@@ -15,27 +15,9 @@ import (
 // come. A handover runs in a goroutine of this process, so a listener restarted or replaced
 // mid-handover ends it, and nothing starts another: a keep happens only while a role has no live
 // holder, and a live holder claims no second time. Every interval, and once as the listener
-// starts, this hands over every lane left that way (sweepKeptRoleLanes).
-//
-// It runs under the context the listener's other KV loops run under and returns a channel closed
-// once its goroutine has returned, as they do (store.Registry.StartReaper), so the shutdown ends
-// it and waits for a pass in flight.
+// starts, this hands over every lane left that way (sweepKeptRoleLanes, startSweep).
 func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval time.Duration) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			sweepKeptRoleLanes(ctx, cfg)
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	return done
+	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg) })
 }
 
 // sweepKeptRoleLanes hands over every role the stream holds a kept copy on and a session claims.

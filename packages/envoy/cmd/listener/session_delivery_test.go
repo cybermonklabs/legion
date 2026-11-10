@@ -644,6 +644,19 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 	if lines := strings.Count(rig.harness.logs.String(), "sessions stay on core delivery until the grant carries them"); lines != 1 {
 		t.Fatalf("the missing grant was logged %d times, want once:\n%s", lines, rig.harness.logs.String())
 	}
+	// Every other path that meets the refusal belongs to the same episode: a consumer delete,
+	// the deregistration's and the sweep's, writes no line of its own while the backoff stands
+	// (sessionDelivery.deleteConsumer), where one per delete is what a hub whose user may not
+	// manage session consumers at all would otherwise carry.
+	if rig.deps.consumers.deleteConsumer(context.Background(), rig.harness.sessions, "ses_ungranted_gone", nil) {
+		t.Fatal("the delete of ses_ungranted_gone's consumer reported the consumer gone; this user may make no session consumer call at all")
+	}
+	if lines := strings.Count(rig.harness.logs.String(), "sessions stay on core delivery until the grant carries them"); lines != 1 {
+		t.Fatalf("the missing grant was logged %d times once a delete had met it too, want once:\n%s", lines, rig.harness.logs.String())
+	}
+	if lines := strings.Count(rig.harness.logs.String(), "session consumer delete failed"); lines != 0 {
+		t.Fatalf("the delete wrote %d failure lines of its own, want none: the episode's one warning is the whole of it\n%s", lines, rig.harness.logs.String())
+	}
 	if entry := rig.entry(t, "ses_ungranted"); entry.Delivery != "" {
 		t.Fatalf("session entry %+v, want no consumer delivery", entry)
 	}
@@ -660,5 +673,51 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 	requireNoException(t, exceptions, "the core-path session's message")
 	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 1`) {
 		t.Fatalf("delivery metrics %s, want the stored copy skipped", body)
+	}
+}
+
+// The threshold the server removes an idle session consumer after is the deployment's own, not
+// the compiled floor: the listener derives it from the windows its own session registry runs
+// with and sets it before it creates any consumer. On a deployment whose session bucket keeps a
+// record far longer than its gone horizon, that record's life is what the sweep waits on, so
+// the threshold must stand above the bucket's age plus a reaper pass and a sweep pass - a
+// consumer the server removed first would take with it the only record of where that session's
+// delivery stopped. Every consumer the listener creates from then on carries the value.
+//
+// That the arithmetic above the three windows is right is bus.InactiveThresholdFor's own row
+// (internal/bus); what this row is about is the listener handing it its own windows.
+func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
+	const (
+		// A bucket that keeps a record for well past the horizon, as a deployment that raised
+		// ENVOY_SESSION_MAX_AGE has.
+		bucketAge     = 2 * time.Hour
+		horizon       = time.Minute
+		reapInterval  = 5 * time.Minute
+		sweepInterval = 5 * time.Minute
+	)
+	rig := newSessionConsumerRig(t,
+		session.WithSessionTTL(bucketAge),
+		session.WithSessionLiveWindow(horizon),
+		session.WithSessionGoneHorizon(horizon),
+	)
+	if ttl := rig.harness.sessions.TTL(); ttl != bucketAge {
+		t.Fatalf("the rig's session bucket keeps a record for %s, want %s: this row needs an age above its gone horizon", ttl, bucketAge)
+	}
+
+	threshold := rig.deps.consumers.setInactiveThreshold(rig.harness.sessions, reapInterval, sweepInterval)
+
+	if bound := bucketAge + reapInterval + sweepInterval; threshold <= bound {
+		t.Fatalf("the inactive threshold is %s, want it above this deployment's sweep bound %s: a record kept %s, the reaper's pass %s, the sweep's pass %s",
+			threshold, bound, bucketAge, reapInterval, sweepInterval)
+	}
+	const sessionID = "ses_inactive_threshold"
+	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
+		"delivery":{"consumer":true,"epoch":"e"}}`)
+	info, err := rig.consumers.Info(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the consumer of %s: %v", sessionID, err)
+	}
+	if info.Config.InactiveThreshold != threshold {
+		t.Fatalf("the consumer of %s carries an inactive threshold of %s, want the %s the listener set", sessionID, info.Config.InactiveThreshold, threshold)
 	}
 }

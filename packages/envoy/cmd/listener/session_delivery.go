@@ -136,11 +136,22 @@ type sessionDelivery struct {
 	// delete or create leaves that floor pending, and the next call that finds the consumer missing,
 	// a registration's create or the relay's retry, creates it there
 	// (bus.SessionConsumers.RestartAtFloor), so in this process no restart loses the session's
-	// position. The lock and the pending start are this listener's alone: a second
+	// position. A registration's hold runs on past its consumer call, until the session's entry
+	// is written (register, deleteConsumer), so a delete of this listener's can read the bucket
+	// neither before that write nor after the entry it reads was replaced. The lock and the
+	// pending start are this listener's alone: a second
 	// listener (a rolling deploy's other task, or the one a session re-registers through) can still
 	// create the consumer in that window at the session's resume point or the stream's end, or run
-	// its own restart's calls between this one's.
+	// its own restart's calls between this one's, and across two tasks the delete's own read of
+	// the bucket narrows that window rather than closing it.
 	locks sessionLocks
+	// deleteMu guards the two fields below. deletes counts the consumer deletes running off a
+	// deregistration's goroutine (deleteAfterAnswer), and deletesOff is set once the shutdown
+	// has stopped starting them (awaitDeletes): the deletes run on the connection the shutdown
+	// drains, so one started after that drain would reach a closed connection.
+	deleteMu   sync.Mutex
+	deletes    sync.WaitGroup
+	deletesOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
@@ -198,6 +209,74 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 }
 
+// awaitDeletes stops starting consumer deletes off a handler's goroutine and waits, within ctx,
+// for those already running (deleteAfterAnswer). The shutdown calls it once the HTTP server has
+// stopped and before it drains the session-consumer connection those deletes run on, so a
+// deregistration that answered a moment before the stop still frees its session's slot of the
+// stream's consumer cap. A delete still running when ctx ends is left where it is and said so:
+// the connection's drain ends it, and the sweep deletes the consumer it did not.
+func (m *sessionDelivery) awaitDeletes(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	m.deleteMu.Lock()
+	m.deletesOff = true
+	m.deleteMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.deletes.Wait()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		m.logger.Warn("a session consumer delete was still running at shutdown; the sweep deletes that consumer")
+	}
+}
+
+// sessionWindows is what the inactive threshold is derived from (session.SessionRegistry): the
+// windows every reader judges a session record's age by, and the maximum age the session bucket
+// itself keeps that record for.
+type sessionWindows interface {
+	// Windows is the live window and the gone horizon the registry judges a record's age by.
+	Windows() (live, horizon time.Duration)
+	// TTL is the maximum age the session bucket keeps a record for.
+	TTL() time.Duration
+}
+
+// setInactiveThreshold derives the threshold the server removes an idle session consumer after
+// from this deployment's own windows and sets it on the connection, so every consumer created or
+// updated from here on carries it (bus.SessionConsumers.SetInactiveThreshold, bus.InactiveThresholdFor).
+// It must stand above the sweep's worst bound - the session's record leaves the bucket, the
+// sweep's next pass deletes the consumer - because a consumer the server removes first takes the
+// session's position with it: the resume floor is recorded by the listener's own delete and by
+// nothing else, so a session whose consumer the server removed is created again at the stream's
+// end and loses every message stored while it was away.
+//
+// The record's life is the longer of the gone horizon and the bucket's maximum age, since either
+// can be what drops the record: the reaper deletes it a pass after the horizon, and the bucket
+// itself drops it at that age. The value and the three windows it came from are logged once at
+// start, so an operator can read why their deployment carries the threshold it does.
+//
+// It is set at start, before any consumer call is made, which is what makes the write safe
+// against every later read of it. A listener whose session-consumer connection did not open
+// creates no consumer and sets nothing, answering zero.
+func (m *sessionDelivery) setInactiveThreshold(sessions sessionWindows, reapInterval, sweepInterval time.Duration) time.Duration {
+	if m == nil || m.consumers == nil {
+		return 0
+	}
+	_, goneHorizon := sessions.Windows()
+	recordLife := max(goneHorizon, sessions.TTL())
+	threshold := bus.InactiveThresholdFor(recordLife, reapInterval, sweepInterval)
+	m.consumers.SetInactiveThreshold(threshold)
+	m.logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
+		slog.String("inactive_threshold", threshold.String()),
+		slog.String("record_life", recordLife.String()),
+		slog.String("reap_interval", reapInterval.String()),
+		slog.String("sweep_interval", sweepInterval.String()))
+	return threshold
+}
+
 // register gives a registration the delivery it asks for, once its topics are stored in registry.
 // A registration that carried delivery with consumer set gets the session's consumer, created
 // when the stream holds none and otherwise updated to the current filter, before the registration
@@ -209,27 +288,33 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 // session meanwhile (a registration, a follow) writes its own filter under that lock first, and
 // this one must not put the older set back over it. A registration that asks for nothing stays on
 // the core path: it takes its messages off its own NATS subscription.
-func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, registry *store.Registry) sessionDeliveryOutcome {
+//
+// A registration answered consumer keeps the session's lock: the unlock it answers with is the
+// caller's to call once the session's entry is written (api.go), so no delete of this listener's
+// can read the bucket between the consumer call and that write and find no registration there.
+// Every other answer took no lock and answers a release that does nothing (noUnlock), the core
+// path having no consumer to order anything against.
+func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, registry *store.Registry) (sessionDeliveryOutcome, func()) {
 	if body.Delivery == nil {
-		return sessionDeliveryOutcome{}
+		return sessionDeliveryOutcome{}, noUnlock
 	}
 	if !body.Delivery.Consumer {
-		return coreDeliveryOutcome(deliveryReasonNotRequested)
+		return coreDeliveryOutcome(deliveryReasonNotRequested), noUnlock
 	}
 	if _, ok := bus.SessionConsumerName(body.SessionID); !ok {
-		return coreDeliveryOutcome(deliveryReasonInvalidSessionID)
+		return coreDeliveryOutcome(deliveryReasonInvalidSessionID), noUnlock
 	}
 	if m == nil || m.consumers == nil {
-		return coreDeliveryOutcome(deliveryReasonConsumerError)
+		return coreDeliveryOutcome(deliveryReasonConsumerError), noUnlock
 	}
 	if m.grantRefused() {
-		return coreDeliveryOutcome(deliveryReasonNoGrant)
+		return coreDeliveryOutcome(deliveryReasonNoGrant), noUnlock
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {
-		return m.refused(body.SessionID, err)
+		return m.refused(body.SessionID, err), noUnlock
 	}
 	var startSeq uint64
 	epoch := body.Delivery.Epoch
@@ -240,15 +325,20 @@ func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, regi
 	topics, err := storedInterestTopics(ctx, registry, body.SessionID)
 	if err != nil {
 		unlock()
-		return m.refused(body.SessionID, err)
+		return m.refused(body.SessionID, err), noUnlock
 	}
 	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(body.SessionID, topics), startSeq)
-	unlock()
 	if err != nil {
-		return m.refused(body.SessionID, err)
+		unlock()
+		return m.refused(body.SessionID, err), noUnlock
 	}
 	m.granted()
 	gap := start.Gap
+	// The release is idempotent (sync.OnceFunc), so the caller defers it against a path that
+	// leaves without reaching its own release - a panic, or a return written later - and still
+	// releases the lock where it means to, once its entry is written. A session lock held by
+	// nobody would stop every later call for that session, this listener's relay restarts
+	// among them.
 	return sessionDeliveryOutcome{
 		answer: &deliveryAnswer{
 			Mode:          deliveryModeConsumer,
@@ -259,32 +349,60 @@ func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, regi
 		},
 		epoch: epoch,
 		heard: m.mark(),
-	}
+	}, sync.OnceFunc(unlock)
 }
+
+// noUnlock is the release a caller gets from a call that took no session lock, so that caller
+// releases what it was given without asking which call it made.
+func noUnlock() {}
 
 // coreDeliveryOutcome is the outcome of a registration left on the core path for reason.
 func coreDeliveryOutcome(reason string) sessionDeliveryOutcome {
 	return sessionDeliveryOutcome{answer: &deliveryAnswer{Mode: deliveryModeCore, Reason: reason}}
 }
 
-// refused is the core outcome of a consumer call for sessionID that failed with err. A refusal for
-// want of a grant starts the no-grant backoff (noGrantBackoff), or extends the episode running.
+// refused is the core outcome of a consumer call for sessionID that failed with err. A refusal
+// for want of a grant leaves the registration on the core path with that reason and starts the
+// no-grant episode (grantRefusal).
 func (m *sessionDelivery) refused(sessionID string, err error) sessionDeliveryOutcome {
-	if consumerGrantRefused(err) {
-		m.grantMu.Lock()
-		m.noGrantUntil = m.now().Add(noGrantBackoff)
-		first := !m.noGrantLogged
-		m.noGrantLogged = true
-		m.grantMu.Unlock()
-		if first {
-			m.logger.Warn("the NATS user may not manage session consumers; sessions stay on core delivery until the grant carries them",
-				slog.String("session_id", sessionID), slog.String("error", err.Error()), slog.String("probe_again_in", noGrantBackoff.String()))
-		}
+	if m.grantRefusal("create or update a session consumer", sessionID, err) {
 		return coreDeliveryOutcome(deliveryReasonNoGrant)
 	}
 	m.logger.Warn("session consumer call failed; the session stays on core delivery",
 		slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	return coreDeliveryOutcome(deliveryReasonConsumerError)
+}
+
+// grantRefusal reports whether err is the server's refusal of a consumer call for want of a
+// grant, and when it is, starts the backoff that episode runs under (noGrantBackoff) or extends
+// the one running, and logs the episode's one warning. doing names the call that met the
+// refusal and sessionID the session it was for, "" for a call that is for all of them. Every
+// path that calls the server asks here - a registration's create or update, a deregistration's
+// or the sweep's delete, the sweep's own list - so a listener whose NATS user may not manage
+// session consumers at all, Dispatch's and every host's, costs one line and one probe per
+// episode rather than one of each per call.
+func (m *sessionDelivery) grantRefusal(doing, sessionID string, err error) bool {
+	if !consumerGrantRefused(err) {
+		return false
+	}
+	m.grantMu.Lock()
+	m.noGrantUntil = m.now().Add(noGrantBackoff)
+	first := !m.noGrantLogged
+	m.noGrantLogged = true
+	m.grantMu.Unlock()
+	if !first {
+		return true
+	}
+	attrs := []slog.Attr{
+		slog.String("doing", doing),
+		slog.String("error", err.Error()),
+		slog.String("probe_again_in", noGrantBackoff.String()),
+	}
+	if sessionID != "" {
+		attrs = append(attrs, slog.String("session_id", sessionID))
+	}
+	m.logger.Warn("the NATS user may not manage session consumers; sessions stay on core delivery until the grant carries them, and a consumer already on the stream waits out the server's inactive threshold", attrs...)
+	return true
 }
 
 // consumerGrantRefused reports whether err is the server's refusal of a consumer call for want of a
@@ -342,35 +460,114 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 	}
 }
 
-// deleteConsumer removes sessionID's consumer (bus.SessionConsumers.Delete) once the session's
-// registration is gone, so the consumer holds a slot of the stream's consumer cap no longer
-// rather than waiting out the server's inactivity threshold
-// (bus.SessionConsumerInactiveThreshold). listed is the consumer's info when the caller already
-// holds it, as the sweep does from the one consumer list its pass reads, and nil for a caller
-// that has the delete read it. A failure is logged, not returned: the deregistration that asked
-// for it answers the same either way, and the listener's sweep and that threshold each reach
-// the consumer again.
+// sessionRecords is the read of the session bucket itself that a consumer delete makes before
+// it removes anything (session.SessionRegistry.Refresh). The copy of the bucket this listener
+// keeps trails it, and a delete acts on a session having no registration at all, so it asks the
+// bucket rather than the copy.
+type sessionRecords interface {
+	// Refresh reads the session's record from the bucket itself, answering nats.ErrKeyNotFound
+	// when the bucket holds none.
+	Refresh(ctx context.Context, sessionID string) (session.SessionEntry, error)
+}
+
+// deleteAfterAnswer deletes sessionID's consumer (deleteConsumer) off the goroutine that asked
+// for it, so a deregistration answers its caller first: a handler holds its written response
+// until it returns, and this work waits on the session's lock with no bound of its own and then
+// makes up to four calls of its own, which together can outlast the attempt the client gave the
+// request (LISTENER_CALL_TIMEOUT_MS, 5 s) after a KV delete that may already have spent
+// sendRequestBudget. ctx is the caller's context with its cancellation dropped
+// (context.WithoutCancel), since the registration is gone whatever the caller does next.
 //
-// The session's lock orders the delete against this listener's own consumer calls for the
-// session and against nothing else: a registration's create or filter update, an unsubscribe's
-// update, and a relay restart, which the lock keeps whole (locks). A restart already past its
-// wanted check on another goroutine finds the consumer missing with no pending start, the delete
-// having dropped it, and ends in bus.ErrSessionConsumerNotFound, which pauses its relay rather
-// than creating anything. A second listener task — a rolling deploy's other task, or the one a
-// heartbeat races to — can still create the consumer in that window, and the listener's periodic
-// sweep, not this lock, is what reaches that consumer.
-func (m *sessionDelivery) deleteConsumer(ctx context.Context, sessionID string, listed *jetstream.ConsumerInfo) {
+// The shutdown waits for every delete started here before it drains the connection they run on
+// (awaitDeletes). One that is not started because the listener is stopping is logged rather
+// than lost silently: the sweep deletes the consumer of every session the registry judges gone,
+// and it is the backstop for this one.
+func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, sessions sessionRecords, sessionID string) {
 	if m == nil || m.consumers == nil {
 		return
+	}
+	m.deleteMu.Lock()
+	if m.deletesOff {
+		m.deleteMu.Unlock()
+		m.logger.Warn("session consumer delete not started: the listener is stopping; the sweep deletes that consumer",
+			slog.String("session_id", sessionID))
+		return
+	}
+	m.deletes.Add(1)
+	m.deleteMu.Unlock()
+	go func() {
+		defer m.deletes.Done()
+		m.deleteConsumer(ctx, sessions, sessionID, nil)
+	}()
+}
+
+// deleteConsumer removes sessionID's consumer (bus.SessionConsumers.Delete) once the session's
+// registration is gone, so the consumer holds a slot of the stream's consumer cap no longer
+// rather than waiting out the server's inactivity threshold (setInactiveThreshold). listed is
+// the consumer's info when the caller already holds it, as the sweep does from the one consumer
+// list its pass reads, and nil for a caller that has the delete read it. It reports whether the
+// consumer is gone, which is what the sweep counts; a failure is logged, not returned, since
+// the deregistration that asked for it answers the same either way, and the listener's sweep
+// and that threshold each reach the consumer again.
+//
+// Under the session's lock the bucket is read again (sessions), and only nats.ErrKeyNotFound -
+// no record for the session at all - lets the delete through. A record that stands keeps the
+// consumer: the registration behind it is live and that consumer is what delivers to it. A read
+// that did not answer keeps it too, for the sweep's next pass. That read is what orders this
+// delete against a registration of this listener's: the subscribe path holds the same lock from
+// its consumer call through the write of its entry (register, api.go), so a registration in
+// flight is either not started here, or finished and in the bucket by the time this reads it.
+// Without both halves a clean stop answered session.EntryDeleted on the entry a relaunch
+// replaced would take the live relaunch's consumer, and its relay would pause on
+// bus.ErrSessionConsumerNotFound until the session registered again.
+//
+// Against anything outside this process the lock settles nothing, and the bucket read is what
+// narrows the rest: a second listener task - a rolling deploy's other task, or the one a
+// heartbeat races to - can register the session and create the consumer again between this read
+// and this delete, and the listener's periodic sweep, not this lock, is what reaches that
+// consumer. Inside the process the lock orders the delete against this listener's own consumer
+// calls for the session: a registration's create or filter update, an unsubscribe's update, and
+// a relay restart, which the lock keeps whole (locks). A restart already past its wanted check
+// on another goroutine finds the consumer missing with no pending start, the delete having
+// dropped it, and ends in bus.ErrSessionConsumerNotFound, which pauses its relay rather than
+// creating anything.
+//
+// A listener whose NATS user may not manage session consumers deletes nothing while its refusal
+// episode stands (grantRefused): the delete would be refused, and the episode's one warning has
+// been logged already.
+func (m *sessionDelivery) deleteConsumer(ctx context.Context, sessions sessionRecords, sessionID string, listed *jetstream.ConsumerInfo) bool {
+	if m == nil || m.consumers == nil || m.grantRefused() {
+		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	unlock := m.locks.lock(sessionID)
-	err := m.consumers.Delete(ctx, sessionID, listed)
-	unlock()
-	if err != nil {
-		m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	defer unlock()
+	switch _, err := sessions.Refresh(ctx, sessionID); {
+	case errors.Is(err, nats.ErrKeyNotFound):
+	case err != nil:
+		m.logger.LogEvent(slog.LevelDebug, "session consumer kept: the session's record could not be read",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return false
+	default:
+		m.logger.LogEvent(slog.LevelDebug, "session consumer kept: the session bucket holds a registration for it",
+			slog.String("session_id", sessionID))
+		return false
 	}
+	var err error
+	if listed != nil {
+		err = m.consumers.DeleteListed(ctx, sessionID, listed)
+	} else {
+		err = m.consumers.Delete(ctx, sessionID)
+	}
+	if err != nil {
+		if !m.grantRefusal("delete a session consumer", sessionID, err) {
+			m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		}
+		return false
+	}
+	m.granted()
+	return true
 }
 
 // storedInterestTopics is the topics of sessionID's stored interest row, read within ctx: none when

@@ -1,18 +1,16 @@
 // The sweep of the stream's session consumers: the loop that runs every interval and once as the
 // listener starts, and the pass it makes, which deletes the consumer of every session the session
 // registry judges gone. It is the bound behind the deregistration's own delete
-// (sessionDelivery.deleteConsumer, api.go), which reaches only a registration this listener
+// (sessionDelivery.deleteAfterAnswer, api.go), which reaches only a registration this listener
 // removed.
 
 package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -20,10 +18,13 @@ import (
 // defaultSessionConsumerSweepInterval is how often the sweep runs when
 // ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL names no other period. It is the bound this sweep
 // promises: a session that ended without deregistering holds its slot of the stream's consumer
-// cap until one pass after the registry would answer gone, where the server's own inactivity
-// threshold (bus.SessionConsumerInactiveThreshold) is hours away. Five minutes is the cadence
-// the listener's other backstop loops run at, and a pass costs one consumer list on a fleet
-// whose sessions are all live.
+// cap until one pass after its record leaves the envoy_sessions bucket - the session reaper's
+// first pass past the gone horizon, or the bucket's own maximum age, whichever comes first -
+// since a pass deletes only where the bucket answers nats.ErrKeyNotFound. The server's own
+// inactive threshold is derived to stand above that bound and backs it up
+// (sessionDelivery.setInactiveThreshold). Five minutes is the cadence the listener's other
+// backstop loops run at, and a pass costs one consumer list on a fleet whose sessions are all
+// live.
 const defaultSessionConsumerSweepInterval = 5 * time.Minute
 
 // sessionConsumerSweepCap is how many consumers one pass deletes. A hub that has been running
@@ -37,12 +38,13 @@ const defaultSessionConsumerSweepInterval = 5 * time.Minute
 const sessionConsumerSweepCap = 256
 
 // sweptSessions is what the sweep asks of the session registry (session.SessionRegistry): the
-// state the fleet's record puts a session in, a read of the bucket itself to confirm it, and
-// whether this listener's copy of that record may be read at all. It is an interface because a
-// copy whose cache is not ready is the one state a test cannot put a real registry into: a
-// registry's readiness is released once and never taken back (kvwatch.Watcher.Ready), and that
-// state is where the pass must delete nothing.
+// state the fleet's record puts a session in, whether this listener's copy of that record may
+// be read at all, and the read of the bucket itself the delete makes under the session's lock
+// (sessionRecords). It is an interface because a copy whose cache is not ready is the one state
+// a test cannot put a real registry into: a registry's readiness is released once and never
+// taken back (kvwatch.Watcher.Ready), and that state is where the pass must delete nothing.
 type sweptSessions interface {
+	sessionRecords
 	// CacheReady reports whether the copy's first read of the session bucket has completed.
 	CacheReady() bool
 	// Servable reports whether the copy may be served at all, nil when it may.
@@ -51,9 +53,6 @@ type sweptSessions interface {
 	NeedsRead() bool
 	// Lookup is the session's record and the state that record puts it in.
 	Lookup(sessionID string) (session.SessionEntry, session.State)
-	// Refresh reads the session's record from the bucket itself, answering nats.ErrKeyNotFound
-	// when the bucket holds none.
-	Refresh(ctx context.Context, sessionID string) (session.SessionEntry, error)
 }
 
 // sessionConsumerSweep deletes the consumers of sessions that have ended. A session that
@@ -74,39 +73,27 @@ type sessionConsumerSweep struct {
 	logger *logging.Logger
 }
 
-// startSessionConsumerSweep runs a pass every interval, and one as the listener starts. It runs
-// under the context the listener's other KV loops run under and returns a channel closed once its
-// goroutine has returned, as they do (store.Registry.StartReaper), so the shutdown ends it and
-// waits for a pass in flight.
+// startSessionConsumerSweep runs a pass every interval, and one as the listener starts
+// (startSweep), under the context the listener's other KV loops run under.
 func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep, interval time.Duration) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			sweep.pass(ctx)
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	return done
+	return startSweep(ctx, interval, sweep.pass)
 }
 
-// pass deletes the consumer of every session the registry judges gone, at most
+// pass deletes the consumer of every session the registry judges gone, trying at most
 // sessionConsumerSweepCap of them. It reads every session consumer the stream holds in one call
 // (bus.SessionConsumers.ListSessionConsumers), so a fleet whose sessions are all live costs one
 // list and a cache read per consumer, with no round trip of its own for any of them.
 //
 // A session the registry answers live or unresponsive is left alone: an unresponsive session is
 // not a dead one, its messages are stored for it, and its consumer is what delivers them when it
-// answers again. A session the registry answers gone is confirmed against the bucket itself
-// before anything is deleted (session.SessionRegistry.Refresh), where only nats.ErrKeyNotFound
-// confirms it: a read that did not answer, and a record the bucket does hold, each leave that
-// consumer standing for the next pass.
+// answers again. A session the registry answers gone is handed to the delete, which confirms
+// that judgement against the bucket itself under the session's lock and deletes only where the
+// bucket answers nats.ErrKeyNotFound (sessionDelivery.deleteConsumer): a read that did not
+// answer, and a record the bucket does hold, each leave that consumer standing for the next
+// pass. The pass makes no such read of its own - it did, before this delete took the lock, and
+// the two asked the bucket the same question - so a swept consumer costs one bucket read rather
+// than two, and only the read under the lock, which no registration of this listener's can
+// land behind, decides anything.
 //
 // The pass deletes the consumer of a session this listener never owned, and that is the normal
 // case: a session's consumer outlives the listener that created it, so the consumers of a box
@@ -119,10 +106,15 @@ func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep,
 // messages. The session registry is the fleet's record rather than one listener's view, which is
 // how the session reaper already treats it (internal/session/reaper.go).
 //
+// A listener whose NATS user may not manage session consumers passes over the whole sweep while
+// its refusal episode stands (sessionDelivery.grantRefused), its one warning having been logged
+// already: the list and every delete would be refused, and on Dispatch's user and every host
+// user they would be refused every pass forever.
+//
 // One line a pass names what it found, and a pass that lists no consumer at all writes none: a
 // box whose listener holds no session costs no log line every interval.
 func (s *sessionConsumerSweep) pass(ctx context.Context) {
-	if !s.trusted() {
+	if !s.trusted() || s.delivery.grantRefused() {
 		return
 	}
 	started := time.Now()
@@ -130,7 +122,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	listed, err := s.delivery.consumers.ListSessionConsumers(listCtx)
 	cancel()
 	if err != nil {
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && !s.delivery.grantRefusal("list the session consumers", "", err) {
 			s.logger.LogEvent(slog.LevelWarn, "session consumer sweep could not list the session consumers",
 				slog.String("error", err.Error()))
 		}
@@ -139,7 +131,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	if len(listed) == 0 {
 		return
 	}
-	gone, deleted := 0, 0
+	gone, tried, deleted := 0, 0, 0
 	for sessionID, info := range listed {
 		if ctx.Err() != nil {
 			return
@@ -148,19 +140,22 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 			continue
 		}
 		gone++
-		if deleted >= sessionConsumerSweepCap || !s.confirmGone(ctx, sessionID) {
+		if tried >= sessionConsumerSweepCap {
 			continue
 		}
+		tried++
 		// The info the list already answered is handed to the delete, which records the
-		// consumer's floor from it rather than reading the consumer again: a session this pass
-		// confirmed gone has nobody left to move that floor.
-		s.delivery.deleteConsumer(ctx, sessionID, info)
-		deleted++
+		// consumer's floor from it rather than reading the consumer again: a session the
+		// delete confirms gone has nobody left to move that floor.
+		if s.delivery.deleteConsumer(ctx, s.sessions, sessionID, info) {
+			deleted++
+		}
 	}
-	// deleted counts the consumers the pass asked the server to delete; a delete that failed
-	// writes a line of its own (sessionDelivery.deleteConsumer) and its consumer is reached again
-	// next pass. gone above deleted is the backlog this pass left: the sessions its cap held
-	// back, and those the bucket would not confirm.
+	// gone counts the consumers whose session this listener's copy of the bucket reads gone, and
+	// deleted those the delete then removed. gone above deleted is the backlog this pass left:
+	// the sessions its cap held back, those whose record the bucket still holds or would not
+	// answer for, and those whose delete failed, which writes a line of its own
+	// (sessionDelivery.deleteConsumer). Each is reached again next pass.
 	s.logger.Info("session consumer sweep pass",
 		slog.Int("listed", len(listed)),
 		slog.Int("gone", gone),
@@ -188,26 +183,4 @@ func (s *sessionConsumerSweep) trusted() bool {
 		return false
 	}
 	return s.sessions.Servable() == nil
-}
-
-// confirmGone reports whether the session bucket itself holds no record for sessionID, the one
-// reading on which a consumer is deleted. The copy the pass judged the session by trails the
-// bucket, so a session another listener registered a moment ago, or one this listener has not
-// re-read since its connection came back, can be in the bucket and not in the copy. Only
-// nats.ErrKeyNotFound confirms the judgement; a read that did not answer leaves the consumer for
-// the next pass, with one line at debug, as does a record the bucket does hold, which is a
-// session the copy has not caught up with and says nothing worth a line.
-func (s *sessionConsumerSweep) confirmGone(ctx context.Context, sessionID string) bool {
-	readCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
-	_, err := s.sessions.Refresh(readCtx, sessionID)
-	if errors.Is(err, nats.ErrKeyNotFound) {
-		return true
-	}
-	if err != nil && ctx.Err() == nil {
-		s.logger.LogEvent(slog.LevelDebug, "session consumer sweep could not read a gone session's record; its consumer waits for the next pass",
-			slog.String("session_id", sessionID),
-			slog.String("error", err.Error()))
-	}
-	return false
 }
