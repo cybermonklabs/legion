@@ -182,6 +182,34 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 
 // putClaim writes a claim through whichever executor the caller has: the pool, or a transaction
 // that carries the delivery write that goes with it.
+//
+// The write that records a retirement stamps the claim with retired_at_write_mark, a number
+// from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
+// and the state are one write, so no claim is ever read as retired at a moment the store does
+// not hold. It is taken from SQL rather than from the claim in memory, on the transition into
+// retired alone — the inserted state on the insert, `excluded.state = 'retired' and claims.state
+// <> 'retired'` on the update — so a second write of a claim that is already retired leaves the
+// stop's own moment untouched. What reads it is admit's stopOutlivedStart, against the write
+// mark of a start row the issue owes: outbox rows take their numbers from that same sequence,
+// through the column's own default on every insert and explicitly in
+// record.Store.ReplaceOwedStart's rewrite of a start (and ReplaceOutboxPayload's of a
+// ready_merge row), so one sequence numbers both sides.
+//
+// An upsert of a claim already in the table evaluates its insert's case too, since the row to
+// insert is built before the conflict is found, so a write of a retired claim takes a number
+// the update then discards. Only the branch that writes the column decides the mark, and a
+// number nobody reads costs nothing: the sequence orders writes and counts nothing.
+//
+// What the mark guarantees is an order over writes, not over what a reader can see. A sequence
+// hands its numbers out in the order the statements ask for them and never hands one out twice,
+// whatever order the transactions that asked then commit in or whether they commit at all. So a
+// write made after this retirement committed took its number after this one and is above the
+// mark; a write already committed when this retirement ran took its number before it and is
+// below; and a write still in flight when it ran took its number just before or just after,
+// with nothing ordering the two, so its row is read on whichever side it landed. A claim an
+// earlier release retired carries the column's default, 0, which is below every number the
+// sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
+// column existed (20261109191929_outbox_write_mark).
 func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -214,9 +242,11 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		plugin_contract, plugin_relaunch_for, delivered_rows,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
-		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged)
+		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
+		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
+		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		session = excluded.session, session_file = excluded.session_file,
@@ -226,6 +256,10 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		prompt_retires = excluded.prompt_retires, boot_token_hash = excluded.boot_token_hash,
 		capability_hash = excluded.capability_hash, uncertain_streak = excluded.uncertain_streak,
 		last_start_row = excluded.last_start_row,
+		-- The number outbox_write_mark_seq hands this write, taken on the transition into
+		-- retired and left alone by every other write (this function's doc).
+		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
+			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
 		serving_generation = excluded.serving_generation,
 		serving_assignment = excluded.serving_assignment,
 		agent_secrets_enrollment = excluded.agent_secrets_enrollment,
@@ -428,18 +462,27 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
 
-// putDelivery writes a delivery through whichever executor the caller has: the transaction
-// PutDelivery opens, or the one that carries the claim the delivery is confirmed against. The rows
-// the task names go with it: a delivery still unconfirmed holds them, under this claim and this
-// delivery id, taking each from the start row that claimed it and from whatever id the claim's
-// previous delivery held it under; the write that records the confirmation tells them. Both are in
-// the caller's transaction, so no row is ever held by a delivery the store does not hold, and no
-// confirmation commits without telling what it confirmed.
-func putDelivery(ctx context.Context, db execer, token claim.Token, d supervise.Delivery) error {
+// putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
+// the one that carries the claim the delivery is confirmed against. It takes a transaction
+// because it reads the row it is about to replace and holds that reading until it has written
+// (kept_decisions.go's putBackARetakenConfirmation), which no autocommit statement can do. The
+// rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
+// this delivery id, taking each from the start row that claimed it and from whatever id the
+// claim's previous delivery held it under; the write that records the confirmation tells them.
+// All of it is in the caller's transaction, so no row is ever held by a delivery the store does
+// not hold, and no confirmation commits without telling what it confirmed.
+func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
-	_, err := db.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
+	kept := keptDecisions(d.Kept)
+	unconfirmed := d.ConfirmedAt.IsZero()
+	if unconfirmed {
+		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, assignment, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, out_of_memory, send_failures, last_send_failure_at, last_send_error,
 		kept_decisions, provider_error_retries, provider_error_note)
@@ -458,16 +501,16 @@ func putDelivery(ctx context.Context, db execer, token claim.Token, d supervise.
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Assignment,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
-		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, keptDecisions(d.Kept),
+		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
 		d.ProviderErrorRetries, d.ProviderErrorNote,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
 	}
-	if d.ConfirmedAt.IsZero() {
-		return holdKeptDecisions(ctx, db, token, d.ID, keptDecisions(d.Kept))
+	if unconfirmed {
+		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
 	}
-	return tellKeptDecisions(ctx, db, token, d.ID)
+	return tellKeptDecisions(ctx, tx, token, d.ID)
 }
 
 // PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation

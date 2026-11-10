@@ -35,8 +35,10 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation, by default the six roles' former
-// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation — the third init container a
+// `skills_repository` adds carries it too, which TestASkillsRepositoryAddsTheSkillsInitContainer
+// proves — by default the six roles' former sum: 3 CPU and 19Gi, each requested in full, and an
+// 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}

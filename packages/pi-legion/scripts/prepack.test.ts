@@ -47,7 +47,6 @@ describe("omp.skills / prepack manifest contract", () => {
 
     test("are exactly this plugin's partition: the skills a Legion pane's prompts load", () => {
       expect(readdirSync(staged).sort()).toEqual([
-        "leading-a-work-stream",
         "legion-architect",
         "legion-controller",
         "legion-oracle",

@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
@@ -506,7 +506,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	if !live {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
-	conn.Issue = issueKeyInReason(reason)
+	conn.Issue = record.IssueKeyInReason(reason)
 	held, err := placeholdersOf(ctx, m.Store.Pool, conn.GrantID)
 	if err != nil {
 		return AirlockConnection{}, err
@@ -531,20 +531,6 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		return AirlockConnection{}, ErrAirlockNoNames
 	}
 	return conn, nil
-}
-
-// issueKeyPattern is a Dispatch issue key: a project key — an uppercase letter and then uppercase
-// letters or digits, as contracts.ProjectKeyPattern spells it — a hyphen, and the issue's number.
-// The word boundaries keep a key out of the middle of a longer word, so a reason that names no
-// key cannot be read as naming one.
-var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
-
-// issueKeyInReason is the first Dispatch issue key in a request's own signed reason, and "" when
-// it names none. The proxy puts it in the line it logs for each request it carries a secret on,
-// so an operator reading that line can open the issue the session said it was working on.
-// Nothing outside this package calls it, and its own test is in this package.
-func issueKeyInReason(reason string) string {
-	return issueKeyPattern.FindString(reason)
 }
 
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
