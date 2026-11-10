@@ -205,3 +205,31 @@ func encodeAttributes(attributes map[string]any) ([]byte, error) {
 	}
 	return json.Marshal(attributes)
 }
+
+// Caused moves the cause onto the nodes a writer stated before its event existed. A request
+// writes a node before the row whose foreign key names it, and its event is appended after
+// both, so the node is written with the sentinel and learns its cause here. It is one statement
+// over the addresses the writer holds, not a second node write: writing those rows again would
+// double the cost of every pass for one column, and the upsert's own guard would refuse it
+// anyway, since nothing else about the node moved. Only a node still at the sentinel takes the
+// event, so a node an earlier version already caused keeps the cause it had.
+func Caused(ctx context.Context, tx pgx.Tx, nodes []Node, event int64) error {
+	if len(nodes) == 0 || event == NoEvent {
+		return nil
+	}
+	kinds := make([]string, len(nodes))
+	ids := make([]string, len(nodes))
+	for index, node := range nodes {
+		kinds[index], ids[index] = node.Kind, node.ID
+	}
+	_, err := tx.Exec(ctx, `
+		update graph_nodes set source_event = $1
+		from unnest($2::text[], $3::text[]) as named(kind, id)
+		where graph_nodes.kind = named.kind and graph_nodes.id = named.id
+		  and graph_nodes.source_event = 0
+	`, event, kinds, ids)
+	if err != nil {
+		return fmt.Errorf("record what caused the graph nodes: %w", err)
+	}
+	return nil
+}

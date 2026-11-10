@@ -83,10 +83,12 @@ func (w BlockIndexWrite) Caused(ctx context.Context, tx pgx.Tx, event int64) err
 	if len(w.Nodes) == 0 && len(w.Tuples) == 0 {
 		return nil
 	}
-	nodes := make([]graphstore.Node, len(w.Nodes))
-	for index, node := range w.Nodes {
-		node.SourceEvent = event
-		nodes[index] = node
+	// The nodes are not written again: graphstore.Caused moves the event onto the rows the pass
+	// already wrote, in one statement over their addresses. Writing them again would pay a
+	// second node write per block for one column, and the upsert's own guard would refuse it,
+	// since nothing else about the node moved.
+	if err := graphstore.Caused(ctx, tx, w.Nodes, event); err != nil {
+		return err
 	}
 	tuples := make([]graphstore.Tuple, len(w.Tuples))
 	for index, stated := range w.Tuples {
@@ -97,7 +99,7 @@ func (w BlockIndexWrite) Caused(ctx context.Context, tx pgx.Tx, event int64) err
 		}
 		tuples[index] = tuple
 	}
-	return graphstore.Write(ctx, tx, nodes, tuples)
+	return graphstore.Write(ctx, tx, nil, tuples)
 }
 
 // blockNodeAddress is a block's address in the store, which document_blocks.node_id and
@@ -261,9 +263,24 @@ func IndexBlocks(
 		textIDs, texts = append(textIDs, id), append(texts, nil)
 	}
 
-	write := BlockIndexWrite{Nodes: make([]graphstore.Node, 0, len(nodes)+len(deleted))}
-	for index := range nodes {
+	// The nodes this pass states are the blocks whose document_blocks row it writes - the new,
+	// the changed and the restored - and the ids the version dropped, and no other. That is
+	// exactly the set R16's foreign key needs a node for, and it is what makes the write cost
+	// what the edit changed rather than what the document holds: a version that moves one word
+	// of a two-thousand-block document states two node rows, not four thousand. A block whose
+	// text this version left alone already has its node from the version that first indexed
+	// it, and its placement, which may still have moved, is a tuple reconcileBlockParents
+	// states against that node.
+	changed := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		changed[id] = struct{}{}
+	}
+	write := BlockIndexWrite{Nodes: make([]graphstore.Node, 0, len(ids)+len(deleted))}
+	for index, block := range nodes {
 		if !fits[index] {
+			continue
+		}
+		if _, moved := changed[block.ID]; !moved {
 			continue
 		}
 		write.Nodes = append(write.Nodes, blockNode(addresses[index], writer, versionAt, graphstore.StateLive))
