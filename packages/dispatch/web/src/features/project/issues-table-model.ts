@@ -137,8 +137,18 @@ export function ageOf(iso: string): string {
 
 /** The value a row with no Legion phase files under, in the Phase, Slot, Roles and CI filters. */
 export const NO_PHASE = "No Legion phase";
-/** The board's columns, in the order the board sends them, with the words a reader sees. One
- *  list for the Phase column, its filter and its group headings. */
+/** Every state an issue of a Legion project can be in, in the order the work runs: the
+ *  Dispatch statuses an issue passes before Legion takes it, the daemon's phases while Legion
+ *  works it, and the statuses that close it. One list, used by the bar above the table, the
+ *  Phase column's filter and its group headings, so the three never disagree.
+ *
+ *  `Testing` is one segment for both: the Legion phase and the Dispatch status of the same
+ *  name are the same moment of the work. `In progress` and `Needs review` hold no Legion
+ *  issue — one that Legion works stands in a phase, and a Legion issue with no card of its own
+ *  counts under the phase its status stands for.
+ *
+ *  `Held`, `Waiting on children` and any other phase a later daemon adds stand beside
+ *  `Waiting on a person`: each is an issue that waits rather than one being worked. */
 export const LEGION_PHASE_LABELS: Readonly<Record<string, string>> = {
   queue: "Queue",
   design: "Design",
@@ -150,9 +160,38 @@ export const LEGION_PHASE_LABELS: Readonly<Record<string, string>> = {
   merging: "Merging",
   awaiting_person: "Waiting on a person",
   held: "Held",
+  waiting_on_children: "Waiting on children",
+  other: "Other",
 };
+/** The segments in lifecycle order, each `phase:<id>` or `status:<id>`; a segment both a phase
+ *  and a status file under is named once, by its phase. */
+export const LIFECYCLE_ORDER: readonly string[] = [
+  "status:triage",
+  "status:icebox",
+  "status:backlog",
+  "status:todo",
+  "phase:queue",
+  "status:in_progress",
+  "phase:design",
+  "phase:planning",
+  "phase:implementing",
+  "phase:testing",
+  "status:needs_review",
+  "phase:reviewing",
+  "phase:accepting",
+  "phase:merging",
+  "phase:awaiting_person",
+  "phase:held",
+  "phase:waiting_on_children",
+  "phase:other",
+  "status:retro",
+  "status:done",
+];
+/** The Phase column's own order: the phases of the lifecycle, then the rows with no phase. */
 export const LEGION_PHASE_ORDER: readonly string[] = [
-  ...Object.keys(LEGION_PHASE_LABELS),
+  ...LIFECYCLE_ORDER.flatMap((entry) =>
+    entry.startsWith("phase:") ? [entry.slice("phase:".length)] : []
+  ),
   NO_PHASE,
 ];
 export const legionPhaseText = (value: string) => LEGION_PHASE_LABELS[value] ?? value;
@@ -700,35 +739,74 @@ export function reorder(current: readonly string[], dragged: string, before: str
   return next;
 }
 
-/** One segment of the bar above the table: a Legion phase, or a Dispatch status. */
+/** One segment of the bar above the table: a stretch of the lifecycle, named by the Legion
+ *  phase or the Dispatch status its issues stand in, with what a press on it filters by. */
 export interface IssueStateCount {
   id: string;
   label: string;
   column: "phase" | "status";
   count: number;
+  /** What a press puts in the table's filters: the picks of each column it narrows to. */
+  picks: { phase?: readonly string[]; status?: readonly string[] };
 }
-/** A phase takes precedence over Dispatch status; an issue is counted in one segment only. */
-export function countIssueStates(items: readonly Item[]): IssueStateCount[] {
-  const counts = new Map<string, IssueStateCount & { order: number }>();
-  for (const item of items) {
-    const phase = item.legion;
-    const column = phase ? "phase" : "status";
-    const id = phase?.id ?? item.issue.status;
-    const key = `${column}:${id}`;
-    const entry = counts.get(key);
-    if (entry) entry.count++;
-    else
-      counts.set(key, {
-        id,
-        column,
-        label: phase?.label ?? statusText(id),
-        count: 1,
-        order: phase?.order ?? 1000 + issueStatuses.indexOf(id as IssueStatus),
-      });
+
+/** Which segment an issue stands in: its Legion phase where the board holds it, else its
+ *  Dispatch status — and, for a Legion issue the board does not hold, the phase its status
+ *  stands for, because an issue Legion works is never under In progress or Needs review. */
+function segmentOf(item: Item): string {
+  if (item.legion !== undefined) {
+    const id = item.legion.id;
+    return LIFECYCLE_ORDER.includes(`phase:${id}`) ? `phase:${id}` : "phase:other";
   }
-  return [...counts.values()]
-    .sort((a, b) => a.order - b.order)
-    .map(({ order: _order, ...rest }) => rest);
+  const status = item.issue.status;
+  if (isLegionManaged(item.issue)) {
+    if (status === "in_progress") return "phase:implementing";
+    if (status === "needs_review") return "phase:reviewing";
+    if (status === "todo") return "phase:queue";
+  }
+  // The phase and the status of the same name are one moment of the work, so one segment.
+  return status === "testing" ? "phase:testing" : `status:${status}`;
+}
+const isLegionManaged = (issue: Pick<IssueSummary, "labels">) => hasLabel(issue, "legion");
+
+/**
+ * The bar's segments, in the order the work runs (`LIFECYCLE_ORDER`), each issue counted once.
+ * An empty segment is left out, so the bar shows the project as it is rather than the whole
+ * lifecycle every time.
+ */
+export function countIssueStates(items: readonly Item[]): IssueStateCount[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const segment = segmentOf(item);
+    counts.set(segment, (counts.get(segment) ?? 0) + 1);
+  }
+  return LIFECYCLE_ORDER.flatMap<IssueStateCount>((segment) => {
+    const count = counts.get(segment);
+    if (count === undefined) return [];
+    const [column, id] = segment.split(":") as ["phase" | "status", string];
+    if (column === "status")
+      return [
+        {
+          column,
+          count,
+          id,
+          label: statusText(id),
+          // A status segment is the issues Legion does not hold: its phase is none.
+          picks: { phase: [NO_PHASE], status: [id] },
+        },
+      ];
+    const label = LEGION_PHASE_LABELS[id] ?? id;
+    return [
+      {
+        column,
+        count,
+        id,
+        label,
+        // Testing is both: the phase, and the status of an issue no daemon holds.
+        picks: id === "testing" ? { phase: [id, NO_PHASE], status: ["testing"] } : { phase: [id] },
+      },
+    ];
+  });
 }
 
 /** The issues behind a number the reader clicked on the Legion tab, as the URL holds them:

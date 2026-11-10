@@ -309,9 +309,13 @@ export function IssueTableStatus({
         className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
         role={hasLegion ? "group" : undefined}
       >
-        {stateCounts.map(({ id, label, column, count }) => {
-          const picks = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
-          const on = picks.length === 0 || picks.includes(id);
+        {stateCounts.map(({ id, label, column, count, picks }) => {
+          const current = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
+          const on = current.length === 0 || current.includes(id);
+          const wanted = hasLegion ? picks : { status: picks.status ?? [id] };
+          // Pressed again, the segment lets every state through rather than narrowing further.
+          const showsThisAlone =
+            current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
           const scale: Readonly<Record<string, string>> =
             column === "phase" ? legionPhaseScale : issueStatusScale;
           return (
@@ -321,15 +325,15 @@ export function IssueTableStatus({
               onClick={() =>
                 table.setColumnFilters((filters) => {
                   const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
-                  if (picks.length === 1 && picks[0] === id) return next;
+                  if (showsThisAlone) return next;
                   return [
                     ...next,
-                    { id: column, value: [id] },
-                    // A Dispatch status picked on a Legion project means the issues the board
-                    // does not hold: a Legion issue reads under its phase, never its status.
-                    ...(hasLegion && column === "status"
-                      ? [{ id: "phase", value: [NO_PHASE] }]
-                      : []),
+                    ...(wanted.phase === undefined
+                      ? []
+                      : [{ id: "phase", value: [...wanted.phase] }]),
+                    ...(wanted.status === undefined
+                      ? []
+                      : [{ id: "status", value: [...wanted.status] }]),
                   ];
                 })
               }

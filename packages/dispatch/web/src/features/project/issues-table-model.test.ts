@@ -415,12 +415,72 @@ test("the bar counts each issue once, under its Legion phase or its Dispatch sta
     undefined,
     legionBoard
   );
-  expect(countIssueStates(rows)).toEqual([
-    { id: "queue", label: "Queue", column: "phase", count: 2 },
-    { id: "planning", label: "Planning", column: "phase", count: 1 },
-    { id: "implementing", label: "Implementing", column: "phase", count: 1 },
-    { id: "todo", label: "Todo", column: "status", count: 1 },
+  expect(rows.length).toBe(5);
+  const counted = countIssueStates(rows);
+  expect(counted.map(({ column, count, id }) => [`${column}:${id}`, count])).toEqual([
+    ["status:todo", 1],
+    ["phase:queue", 2],
+    ["phase:planning", 1],
+    ["phase:implementing", 1],
   ]);
+  expect(counted.reduce((total, segment) => total + segment.count, 0)).toBe(rows.length);
+});
+
+test("the bar reads in lifecycle order: Queue before the phases, Triage never after them", () => {
+  const board: LegionBoardResponse = {
+    ...legionBoard,
+    columns: [
+      { cards: [card("CORE-6", "admitted")], id: "queue", label: "Queue" },
+      { cards: [card("CORE-7", "reviewing")], id: "reviewing", label: "Reviewing" },
+      { cards: [card("CORE-8", "held")], id: "held", label: "Held" },
+    ],
+  };
+  const rows = buildItems(
+    [
+      issue("CORE-1", { status: "triage" }),
+      issue("CORE-2", { status: "done" }),
+      issue("CORE-3", { status: "in_progress" }),
+      issue("CORE-4", { status: "testing" }),
+      issue("CORE-6", { status: "todo" }),
+      issue("CORE-7", { status: "needs_review" }),
+      issue("CORE-8", { status: "in_progress" }),
+    ],
+    (actor) => actor.id,
+    [],
+    undefined,
+    board
+  );
+  expect(countIssueStates(rows).map(({ column, id }) => `${column}:${id}`)).toEqual([
+    "status:triage",
+    "phase:queue",
+    "status:in_progress",
+    "phase:testing",
+    "phase:reviewing",
+    "phase:held",
+    "status:done",
+  ]);
+});
+
+test("an issue Legion works is never under In progress or Needs review", () => {
+  const rows = buildItems(
+    [
+      issue("CORE-1", { labels: ["legion"], status: "in_progress" }),
+      issue("CORE-2", { labels: ["legion"], status: "needs_review" }),
+      issue("CORE-3", { status: "in_progress" }),
+    ],
+    (actor) => actor.id,
+    [],
+    undefined,
+    // A configured project whose board has not answered: no card holds any of the three.
+    null
+  );
+  expect(countIssueStates(rows).map(({ column, count, id }) => [`${column}:${id}`, count])).toEqual(
+    [
+      ["status:in_progress", 1],
+      ["phase:implementing", 1],
+      ["phase:reviewing", 1],
+    ]
+  );
 });
 
 test("time in phase preserves elapsed units and unknown or future entry times", () => {
