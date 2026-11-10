@@ -43,7 +43,7 @@ name: CodeQL
 # and a second merge-group workflow can take that suite.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, t41-zerobase]
   push:
     branches: [main]
   schedule:
