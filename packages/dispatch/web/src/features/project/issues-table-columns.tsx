@@ -444,7 +444,10 @@ export function LegionPhaseCell({ phase }: { phase: NonNullable<Item["legion"]> 
         data-legion-fact="phase-time"
         title={phase.card.phase_since ?? "Phase entry time unknown"}
       >
-        {formatPhaseTime(phase.card.phase_since, Date.now())} in phase
+        {/* No entry time known is "—", never a time counted from when Dispatch heard of it. */}
+        {phase.card.phase_since === null
+          ? "—"
+          : `${formatPhaseTime(phase.card.phase_since, Date.now())} in phase`}
       </span>
       {phase.card.blocked_by.length > 0 ? (
         <span className="text-xs" data-legion-fact="blocked-by">

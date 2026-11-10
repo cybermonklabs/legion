@@ -206,6 +206,7 @@ function card(key: string, phase: string): LegionBoardCard {
     phase,
     phase_since: "2026-09-10T00:00:00Z",
     slot: null,
+    tree_slot: null,
     roles: [],
     checks_verdict: null,
     blocked_by: [],

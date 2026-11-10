@@ -157,6 +157,13 @@ export interface ChartProps {
    *  row's own name): a host that filters its issues by the issues behind a number passes it,
    *  and the table's names and numbers become buttons. */
   readonly onSelect?: (row: string, column: string | null) => void;
+  /** What the table view holds where it is not the graph's numbers: a graph drawn per day over
+   *  a table of one row per issue. `compare` is the compare range's table series. */
+  readonly table?: {
+    readonly series: readonly ChartSeries[];
+    readonly rows: ChartRows;
+    readonly compare: readonly ChartSeries[] | undefined;
+  };
 }
 
 /** What a day with nothing measured reads as: never a zero. */
@@ -705,6 +712,7 @@ export function Chart({
   range,
   rows = UTC_DAYS,
   series,
+  table,
 }: ChartProps): ReactNode {
   const [mode, setMode] = useState<ChartMode>("graph");
   const against: Comparison | null =
@@ -717,11 +725,15 @@ export function Chart({
         <Graph against={against} range={range} rows={rows} series={series} />
       ) : (
         <NumberTable
-          against={against}
+          against={
+            against === null || table === undefined
+              ? against
+              : { range: against.range, series: table.compare }
+          }
           label={label}
-          naming={rows}
+          naming={table?.rows ?? rows}
           onSelect={onSelect}
-          series={series}
+          series={table?.series ?? series}
         />
       )}
       <div className="flex flex-wrap items-center gap-1.5">

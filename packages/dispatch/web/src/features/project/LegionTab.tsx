@@ -22,7 +22,7 @@ import {
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
 import { LegionPhaseCell } from "./issues-table-columns";
-import { legionPhases } from "./issues-table-model";
+import { legionPhases, legionRolesText } from "./issues-table-model";
 import { LegionHealthPanel } from "./LegionHealthPanel";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
 
@@ -196,7 +196,7 @@ function Slots({
               <th className="px-1 py-1 font-normal">Phase</th>
               <th className="px-1 py-1 font-normal">Roles in a turn</th>
               <th className="px-1 py-1 font-normal">Children not started</th>
-              <th className="px-1 py-1 font-normal">CI</th>
+              <th className="min-w-16 px-1 py-1 font-normal">CI</th>
               <th className="px-1 py-1 font-normal">Slot use</th>
             </tr>
           </thead>
@@ -228,11 +228,15 @@ function Slots({
                   <td className="px-1 py-1">
                     {phase === undefined ? null : <LegionPhaseCell phase={phase} />}
                   </td>
-                  <td className="px-1 py-1">
-                    {card.roles.length === 0 ? "Nobody" : card.roles.join(", ")}
-                  </td>
+                  <td className="px-1 py-1">{legionRolesText(card)}</td>
                   <td className="px-1 py-1">{card.children}</td>
-                  <td className="px-1 py-1">{card.checks_verdict ?? "—"}</td>
+                  <td
+                    className="px-1 py-1 whitespace-nowrap"
+                    data-legion-slot-ci
+                    title={card.checks_verdict ?? "No CI verdict"}
+                  >
+                    {card.checks_verdict ?? "—"}
+                  </td>
                   <td className="px-1 py-1" data-legion-slot-state={state(card)}>
                     {state(card)}
                   </td>

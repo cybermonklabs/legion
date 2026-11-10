@@ -285,6 +285,7 @@ export function LegionHealthPanel({
     ) : (
       <LegionCard
         compare={source(comparedMetrics.data)}
+        key={shown}
         metric={shown}
         onOpenIssue={onOpenIssue}
         onSelectIssues={onSelectIssues}

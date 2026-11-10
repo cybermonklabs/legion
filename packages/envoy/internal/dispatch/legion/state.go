@@ -138,6 +138,10 @@ const (
 	// project's daemon, not to an issue, and the settings control on the Legion view reads them.
 	FieldSettings       = "settings"
 	FieldSettingSources = "setting_sources"
+	// FieldPhaseEntryUnknown marks a phase observation whose time is not when the issue entered
+	// the phase (a daemon that cannot say, such as the prototype's replaying fake): true at the
+	// phase row's own time, null once a phase arrives with a known time.
+	FieldPhaseEntryUnknown = "phase_entry_unknown"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.
 	ClaimFieldPrefix = "claim."

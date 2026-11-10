@@ -33,6 +33,61 @@ export interface PushEvent {
   kind: string;
   issue?: string;
   value: unknown;
+  /** A phase whose `at` is not when the issue entered it: no record holds that time. */
+  at_unknown?: boolean;
+}
+
+/** The Dispatch status each daemon phase writes, for reading an entry time off the status
+ *  history; a phase no status names (awaiting a person, held) has none. */
+const PHASE_STATUS: Readonly<Record<string, string>> = {
+  admitted: "todo",
+  planning: "in_progress",
+  implementing: "in_progress",
+  testing: "testing",
+  reviewing: "needs_review",
+  accepting: "needs_review",
+  retro: "retro",
+  merging: "retro",
+  awaiting_merge: "retro",
+  done: "done",
+};
+
+/** The handoff that ends the phase before, for the two phases that share a status with the one
+ *  before them: implementing starts at the plan's handoff, accepting at the review's. */
+const PHASE_HANDOFF: Readonly<Record<string, string>> = {
+  implementing: "plan",
+  accepting: "review",
+};
+
+/** Each issue's entry time into the phase it holds, from Dispatch's own records: its last status
+ *  change into the status that phase writes, or for implementing and accepting the last handoff
+ *  after it that starts them. An issue no record places in its phase has none. */
+export function phaseEntryTimes(
+  phases: ReadonlyMap<string, string>,
+  statuses: ReadonlyMap<string, readonly { at: string; status: string }[]>,
+  handoffs: ReadonlyMap<string, readonly { at: string; phase: string }[]>
+): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const [key, phase] of phases) {
+    const status = PHASE_STATUS[phase];
+    if (status === undefined) continue;
+    const marks = statuses.get(key) ?? [];
+    let entered: string | undefined;
+    marks.forEach((mark, index) => {
+      if (mark.status === status && marks[index - 1]?.status !== status) entered = mark.at;
+    });
+    if (entered === undefined) continue;
+    const word = PHASE_HANDOFF[phase];
+    if (word !== undefined) {
+      const after = (handoffs.get(key) ?? []).filter(
+        (handoff) => handoff.phase === word && handoff.at >= (entered ?? "")
+      );
+      const last = after.at(-1);
+      if (last !== undefined) entered = last.at;
+    }
+    entries.set(key, entered);
+  }
+  return entries;
 }
 
 /** The running phases in workflow order, and the role in a turn in each. */
@@ -95,6 +150,8 @@ export class FakeDaemonModel {
       now?: () => Date;
       random?: () => number;
       log?: (line: string) => void;
+      /** Each issue's entry time into the phase the replay gives it (phaseEntryTimes). */
+      entryTimes?: ReadonlyMap<string, string>;
     } = {}
   ) {
     this.state = state;
@@ -105,6 +162,7 @@ export class FakeDaemonModel {
     this.random = options.random ?? Math.random;
     this.log = options.log ?? (() => {});
     this.bootAt = this.now().toISOString();
+    for (const [key, at] of options.entryTimes ?? []) this.changedAt.set(`phase|${key}|`, at);
     for (const issue of Object.values(state.issues)) {
       if (issue.slot?.admittedAt) this.changedAt.set(`slot|${issue.key}|`, issue.slot.admittedAt);
       const waited = issue.waitingOn?.answeredAt ?? issue.waitingOn?.since;
@@ -150,8 +208,9 @@ export class FakeDaemonModel {
     const events: PushEvent[] = [];
     const add = (kind: string, value: unknown, issue?: string, sub = "") => {
       this.seq += 1;
-      const at = this.changedAt.get(`${kind}|${issue ?? ""}|${sub}`) ?? this.bootAt;
-      const event: PushEvent = { seq: this.seq, at, kind, value };
+      const known = this.changedAt.get(`${kind}|${issue ?? ""}|${sub}`);
+      const event: PushEvent = { seq: this.seq, at: known ?? this.bootAt, kind, value };
+      if (kind === "phase" && known === undefined) event.at_unknown = true;
       if (issue !== undefined) event.issue = issue;
       events.push(event);
     };

@@ -106,3 +106,60 @@ func TestASnapshotKeepsEveryIssuesPhaseSlotAndRoles(t *testing.T) {
 	legionPush(t, handler, map[string]any{"project": "INFRA", "generation": "g2", "snapshot": true, "events": snapshot()})
 	check("after a restart's snapshot onto older state")
 }
+
+// TestAPhaseWhoseEntryTimeIsUnknownHasNoTimeInPhase: a daemon that sends a phase with
+// at_unknown (the prototype's fake, for an issue whose entry time no record holds) leaves the
+// card's phase_since null, which the page shows as "—" rather than a time counted from the
+// event; the next phase it sends with a known time gives the card that time.
+func TestAPhaseWhoseEntryTimeIsUnknownHasNoTimeInPhase(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	key := seedLegionIssue(t, database, "INFRA", 1, "An issue", "a", nil, "")
+	boot := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	legionPush(t, handler, map[string]any{"project": "INFRA", "generation": "g1", "snapshot": true, "events": []map[string]any{
+		{"seq": 1, "at": boot, "kind": "phase", "issue": key, "value": "implementing", "at_unknown": true},
+	}})
+	if card := legionCard(t, legionBoardOf(t, handler, "INFRA"), key); card.Phase != "implementing" || card.PhaseSince != nil {
+		t.Fatalf("after an unknown entry: phase %q since %v; want implementing since nothing", card.Phase, card.PhaseSince)
+	}
+	moved := boot.Add(30 * time.Minute)
+	legionPush(t, handler, map[string]any{"project": "INFRA", "generation": "g1", "events": []map[string]any{
+		{"seq": 2, "at": moved, "kind": "phase", "issue": key, "value": "testing"},
+	}})
+	card := legionCard(t, legionBoardOf(t, handler, "INFRA"), key)
+	if card.Phase != "testing" || card.PhaseSince == nil || !card.PhaseSince.Equal(moved) {
+		t.Fatalf("after a known move: phase %q since %v; want testing since %s", card.Phase, card.PhaseSince, moved)
+	}
+}
+
+// TestAChildsCardCarriesItsTreesSlot: a slot belongs to the tree's root, so a child holds none of
+// its own; its card names the root's slot as tree_slot, and the root's card and an issue in a tree
+// whose root holds no slot carry none.
+func TestAChildsCardCarriesItsTreesSlot(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	root := seedLegionIssue(t, database, "INFRA", 1, "A root", "a", nil, "")
+	child := seedLegionIssue(t, database, "INFRA", 2, "Its child", "b", nil, root)
+	lone := seedLegionIssue(t, database, "INFRA", 3, "A root with no slot", "c", nil, "")
+	loneChild := seedLegionIssue(t, database, "INFRA", 4, "Its child", "d", nil, lone)
+	at := time.Now().UTC().Add(-time.Hour)
+	legionPush(t, handler, map[string]any{"project": "INFRA", "generation": "g1", "snapshot": true, "events": []map[string]any{
+		{"seq": 1, "at": at, "kind": "phase", "issue": root, "value": "accepting"},
+		{"seq": 2, "at": at, "kind": "slot", "issue": root, "value": 7},
+		{"seq": 3, "at": at, "kind": "phase", "issue": child, "value": "implementing"},
+		{"seq": 4, "at": at, "kind": "phase", "issue": lone, "value": "planning"},
+		{"seq": 5, "at": at, "kind": "phase", "issue": loneChild, "value": "implementing"},
+	}})
+	board := legionBoardOf(t, handler, "INFRA")
+	if card := legionCard(t, board, child); card.Slot != nil || card.TreeSlot == nil || *card.TreeSlot != 7 || card.Tree != root {
+		t.Errorf("the child's card: slot %v, tree_slot %v, tree %s; want none, 7 and %s", card.Slot, card.TreeSlot, card.Tree, root)
+	}
+	if card := legionCard(t, board, root); card.TreeSlot != nil {
+		t.Errorf("the root's card carries tree_slot %v, want none: its slot is its own", *card.TreeSlot)
+	}
+	if card := legionCard(t, board, loneChild); card.TreeSlot != nil {
+		t.Errorf("a child of a root with no slot carries tree_slot %v, want none", *card.TreeSlot)
+	}
+}

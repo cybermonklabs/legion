@@ -526,3 +526,19 @@ test("the panel collapses and shows nothing while closed", async () => {
   expect(document.querySelectorAll("[data-health-tile]")).toHaveLength(0);
   expect(screen.getByRole("button", { expanded: false, name: /ACME health/ })).toBeDefined();
 });
+
+test("the work-time and rework graphs draw a trend per day, and their tables one row per issue", async () => {
+  await renderPanel([setting("ACME")], () => report());
+
+  await openCard("work_time");
+  const legends = () =>
+    [...card("work_time").querySelectorAll("[data-chart-legend]")].map((one) => one.textContent);
+  expect(legends()).toEqual(["Median work time", "p90 work time"]);
+  const table = await openTable("Work time to merge");
+  expect(table.textContent).toContain("ACME-6");
+  expect(table.textContent).toContain("ACME-7");
+  fireEvent.click(document.querySelector('[data-health-tile="rework"]') as HTMLElement);
+  expect(
+    [...card("rework").querySelectorAll("[data-chart-legend]")].map((one) => one.textContent)
+  ).toEqual(["Median review rounds", "Sent back"]);
+});

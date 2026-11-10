@@ -147,12 +147,16 @@ type legionBoardColumn struct {
 // phase the card shows. BlockedBy names the issues a blocker link holds it on, and Children counts
 // the issues of its tree that its tree has not started, which are on no card of their own.
 type legionBoardCard struct {
-	Key           string           `json:"key"`
-	Title         string           `json:"title"`
-	Priority      *int             `json:"priority"`
-	Phase         string           `json:"phase"`
-	PhaseSince    *time.Time       `json:"phase_since"`
-	Slot          *int             `json:"slot"`
+	Key        string     `json:"key"`
+	Title      string     `json:"title"`
+	Priority   *int       `json:"priority"`
+	Phase      string     `json:"phase"`
+	PhaseSince *time.Time `json:"phase_since"`
+	Slot       *int       `json:"slot"`
+	// TreeSlot is the slot of the issue's tree root, for an issue that holds none of its own: a
+	// slot belongs to the tree's root, and a child works under it. Null for a root, an issue
+	// holding its own slot, and a tree whose root holds none.
+	TreeSlot      *int             `json:"tree_slot"`
 	Roles         []string         `json:"roles"`
 	ChecksVerdict *string          `json:"checks_verdict"`
 	BlockedBy     []string         `json:"blocked_by"`
@@ -242,7 +246,10 @@ type legionBoardIssue struct {
 	// when the issue entered that phase (a row is written only where the value moved).
 	phase      string
 	phaseSince time.Time
-	slot       *int
+	// entryUnknownAt is when the daemon last sent a phase whose entry time it did not know; a
+	// phase row of that same time has no time in phase.
+	entryUnknownAt time.Time
+	slot           *int
 	// tree is the daemon's own `tree` for the issue, empty where it named none.
 	tree          string
 	waitingOn     *legionBoardWait
@@ -371,6 +378,10 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 	switch {
 	case field == legion.FieldPhase:
 		issue.phase, issue.phaseSince = legion.JSONString(value), at
+	case field == legion.FieldPhaseEntryUnknown:
+		if string(value) == "true" {
+			issue.entryUnknownAt = at
+		}
 	case field == legion.FieldTree:
 		issue.tree = legion.JSONString(value)
 	case field == legion.FieldSlot:
@@ -687,13 +698,19 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 		Slot: issue.slot, Roles: issue.roles, BlockedBy: blockedBy, WaitingOn: issue.waitingOn,
 		Tree: p.treeRoot(issue.key), Children: children,
 	}
+	if card.Slot == nil && card.Tree != issue.key {
+		if root := p.issues[card.Tree]; root != nil && root.slot != nil {
+			slot := *root.slot
+			card.TreeSlot = &slot
+		}
+	}
 	if card.Roles == nil {
 		card.Roles = []string{}
 	}
 	if card.BlockedBy == nil {
 		card.BlockedBy = []string{}
 	}
-	if !issue.phaseSince.IsZero() {
+	if !issue.phaseSince.IsZero() && !issue.phaseSince.Equal(issue.entryUnknownAt) {
 		since := issue.phaseSince.UTC()
 		card.PhaseSince = &since
 	}

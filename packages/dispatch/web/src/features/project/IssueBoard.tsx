@@ -86,7 +86,7 @@ import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
 import { LegionPhaseCell } from "./issues-table-columns";
-import { type Item, legionPhases } from "./issues-table-model";
+import { type Item, legionPhases, legionRolesText, legionSlotText } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -137,14 +137,8 @@ function CardLegion({ issueKey }: { issueKey: string }): ReactNode {
       data-board-legion={issueKey}
     >
       <LegionPhaseCell phase={phase} />
-      <span data-legion-fact="slot">
-        {phase.card.slot === null ? "No slot" : `Slot ${phase.card.slot}`}
-      </span>
-      <span data-legion-fact="roles">
-        {phase.card.roles.length === 0
-          ? "Nobody in a turn"
-          : `${phase.card.roles.join(", ")} in a turn`}
-      </span>
+      <span data-legion-fact="slot">{legionSlotText(phase.card)}</span>
+      <span data-legion-fact="roles">{legionRolesText(phase.card)}</span>
     </div>
   );
 }

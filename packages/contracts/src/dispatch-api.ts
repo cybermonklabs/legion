@@ -4941,6 +4941,10 @@ export interface LegionBoardCard {
   readonly phase: string;
   readonly phase_since: string | null;
   readonly slot: number | null;
+  /** The slot of the issue's tree root, for an issue holding none of its own: a slot belongs to
+   *  the tree's root, and a child works under it. Null for a root, an issue with its own slot,
+   *  and a tree whose root holds none. */
+  readonly tree_slot: number | null;
   readonly roles: readonly string[];
   readonly checks_verdict: string | null;
   readonly blocked_by: readonly string[];
