@@ -1,5 +1,7 @@
 // Package testnats serves daemon tests one JetStream server per test binary, started on first use
-// and removed by Main. Each test gets it empty and to itself.
+// and removed by Main. Each test gets it empty and to itself, and a test that leaves a client
+// connected to it fails at its own cleanup rather than the next test (leakcheck.go). A test takes
+// its own client from Connect, which names it after the test and closes it when the test ends.
 //
 // One container per package, not per test: testcontainers keeps its Ryuk reaper only while a
 // container of the process is connected, and a reaper left idle past its timeout removes itself,
@@ -14,7 +16,9 @@
 // nothing; one set without the other fails the test, since a half-named server is a mistake rather
 // than a reason to fall back to Docker. The reset holds the server for one test of one test binary
 // at a time, and waits for every client connection to it to end, so the server is the tests' alone
-// and the packages using it run one after another (go test -p 1).
+// and the packages using it run one after another (go test -p 1). The leak check at the end of
+// each test depends on that rule too: with one binary on the server, every connection it holds is
+// this binary's, so one that appeared while a test held the server is that test's own.
 package testnats
 
 import (
