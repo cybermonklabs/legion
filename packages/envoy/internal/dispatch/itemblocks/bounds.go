@@ -5,6 +5,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // CapExceeded is one block of a body over contracts.DispatchBlockUnits. Field is the field the
@@ -38,15 +39,45 @@ func (e *CountExceeded) Error() string {
 		e.Field, e.Blocks-e.Limit, e.Limit, e.Blocks, e.Limit)
 }
 
-// Check answers the first bound body passes, or nil when it passes none: a *CountExceeded when the
+// DecisionBlock is a body holding a decision block: an `ask` node, which the reader draws a
+// decision card for and which nobody can answer where it stands, since only a document's own
+// decision block and an ask carry an answer. Field is the field the body arrived in, Position the
+// place, counted from 1, of the top-level block holding the decision block, and Type that block's
+// Proof node type, which is the decision block's own type only where it stands at the top. The
+// refusal's wording lives in Error() and nowhere else, as CapExceeded's does.
+type DecisionBlock struct {
+	Field    string
+	Position int
+	Type     string
+}
+
+func (e *DecisionBlock) Error() string {
+	return fmt.Sprintf("%s block %d (%s) holds a decision block, which nobody can answer where it stands: "+
+		"ask the question in the issue's own document, as a decision block there, or open an ask with "+
+		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+		e.Field, e.Position, e.Type)
+}
+
+// Check answers the first rule body breaks, or nil when it breaks none: a *CountExceeded when the
 // body holds more than contracts.DispatchItemBlocks blocks, else a *CapExceeded naming the first
-// block over contracts.DispatchBlockUnits. The count is checked first, so a body built to break
-// the indexer is refused for how many blocks it holds rather than for one long block.
+// block over contracts.DispatchBlockUnits, else a *DecisionBlock naming the first top-level block
+// that holds a decision block. The count is checked first, so a body built to break the indexer is
+// refused for how many blocks it holds rather than for one long block, and both bounds are checked
+// before the decision block, so a body that also breaks a bound keeps the bound's refusal, its
+// wording and its code.
 //
 // The blocks are Split's, the body as its author wrote it, never the canonical rendering: a table
 // the renderer pads and a list it escapes are measured as written, which is what is stored.
+//
+// The decision block is read from the parse tree, not from the blocks: the parser opens a typed
+// directive inside a quote, a list item and a callout, and the reader draws a card for an `ask`
+// node at any depth. A body the parser refused has no tree and so no decision block: it is stored
+// as written, and the reader draws its lines as text rather than as a card. Where the parser read
+// the body but its block starts could not be placed, the blocks are the blank-line fallback's
+// while the tree is the parser's, so the position named here is the tree's own top-level index,
+// which the fallback's count can differ from.
 func Check(field, body string) error {
-	blocks := Split(body)
+	blocks, doc := split(body)
 	if len(blocks) > contracts.DispatchItemBlocks {
 		return &CountExceeded{Field: field, Blocks: len(blocks), Limit: contracts.DispatchItemBlocks}
 	}
@@ -59,6 +90,16 @@ func Check(field, body string) error {
 				Units:    units,
 				Limit:    contracts.DispatchBlockUnits,
 			}
+		}
+	}
+	if doc == nil {
+		return nil
+	}
+	for index, child := range doc.Children {
+		holdsAsk := false
+		pmdoc.WalkAskBlocks(child, func(string) { holdsAsk = true })
+		if holdsAsk {
+			return &DecisionBlock{Field: field, Position: index + 1, Type: child.Type}
 		}
 	}
 	return nil
