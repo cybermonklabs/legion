@@ -103,6 +103,16 @@ function RouteSettler(): ReactNode {
   );
 }
 
+/** The reader going back: the browser's Back button, or anything that calls `navigate(-1)`. */
+function RouteReturner(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
 function renderPalette(
   onClose = () => {},
   page = "/"
@@ -1085,6 +1095,40 @@ test("leaves the palette open when the route settles itself with a replace", asy
     );
     expect(closed).toBe(0);
     expect(screen.getByRole("combobox", { name: "Search" })).not.toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+  }
+});
+
+// A pop is the reader leaving the page the bar was opened over, as a push is, so it closes the
+// bar; only a `replace` is the address correcting itself under a reader who has not moved
+// (dispatch://INFRA-2452).
+test("closes the palette when the reader goes back", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/LEGION", "/issues/LEGION-9"]} initialIndex={1}>
+      <QueryClientProvider client={queryClient}>
+        <CurrentRoute />
+        <RouteReturner />
+        <SearchPalette
+          onClose={() => {
+            closed += 1;
+          }}
+          open
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/projects/LEGION")
+    );
+    expect(closed).toBe(1);
   } finally {
     view.unmount();
     queryClient.clear();

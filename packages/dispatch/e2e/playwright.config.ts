@@ -581,6 +581,33 @@ export default defineConfig({
   expect: { timeout: expectTimeout },
   use: {
     ...devices["Desktop Chrome"],
+    // The per-action deadline, and the one timeout Playwright leaves at 0 by default - no
+    // deadline at all, so an action whose target has gone runs until the row's budget ends and is
+    // reported at whatever line the row's `finally` holds rather than at the call that hung. A
+    // 60 ms product race cost 120 s twice that way, at `await context.close()`
+    // (dispatch://INFRA-2452). It bounds one action - a click, a fill, a press - and not a row:
+    // an `expect` carries `expect.timeout` above, a whole row the `timeout` above, and a
+    // navigation its own `navigationTimeout`, which is set apart from this one and stays 0
+    // (node_modules/.bun/playwright@1.64.1/node_modules/playwright-core/lib/
+    // coreBundle.js:64256-64257). It is the context's default timeout as well (`actionTimeout ||
+    // 0`, node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:360), so a
+    // `waitForResponse` or `waitForFunction` that names no timeout of its own takes it too. The
+    // longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answers the
+    // 18 s server hold of keyed-send.e2e.ts:411, well inside this.
+    //
+    // Derived from the population `testTimeout` measures, not asserted: over those 320,101
+    // passing results of 201 ci.yaml runs the slowest WHOLE row is 29,856 ms, so no single action
+    // in any of them reached 30 s. An action a governed row can afford at all is under that row's
+    // 60 s, since the row pays for everything else it does out of the same budget. That leaves
+    // the band between, and 45 s sits in it: above every passing result the window measured, and
+    // below the budget that would otherwise swallow the failure.
+    //
+    // The same limit applies as there, rather than being papered over: the population is censored
+    // at Playwright's old 30 s default, where 27 governed results were killed (19 in
+    // pictures.e2e.ts, 6 in deep-links.e2e.ts, 2 in keyed-writes.e2e.ts), so the tail above 30 s
+    // is unknown and a governed row's single action between 30 s and 45 s has been measured by
+    // nobody. Move it only on a measurement of the same shape.
+    actionTimeout: 45_000,
     baseURL: baseUrl,
     headless: true,
     // One value for both runs. `retain-on-first-failure` records the first attempt and keeps it
