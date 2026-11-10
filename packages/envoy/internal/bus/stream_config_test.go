@@ -950,11 +950,8 @@ func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
 			t.Fatalf("the listener's lane %q is not the prefix every topic of it begins with", lane)
 		}
 		for _, topic := range []string{lane + ">", lane + "a-topic", lane + "a.deeper.topic", lane + "*"} {
-			if ListenerOwnLaneOf(topic) == "" {
-				t.Errorf("ListenerOwnLaneOf(%q) = \"\", want the listener's own lane %q it lies under", topic, lane)
-			}
 			if got := ListenerOwnLaneOf(topic); got != lane {
-				t.Errorf("ListenerOwnLaneOf(%q) = %q, want the lane %q it lies under", topic, got, lane)
+				t.Errorf("ListenerOwnLaneOf(%q) = %q, want the listener's own lane %q it lies under", topic, got, lane)
 			}
 		}
 	}
@@ -968,9 +965,6 @@ func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
 	} {
 		if lane := ListenerOwnLaneOf(topic); lane != "" {
 			t.Errorf("ListenerOwnLaneOf(%q) = %q, want \"\": no lane of the listener's holds every subject it matches", topic, lane)
-		}
-		if got := ListenerOwnLaneOf(topic); got != "" {
-			t.Errorf("ListenerOwnLaneOf(%q) = %q, want no lane: no lane of the listener's holds every subject it matches", topic, got)
 		}
 	}
 }
