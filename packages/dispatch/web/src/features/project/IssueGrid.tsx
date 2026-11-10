@@ -15,7 +15,13 @@ import { type ReactNode, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { userStateQuery } from "../../api/queries";
 import { InfoHint } from "../../components/InfoHint";
-import { borderDefault, linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
+import {
+  borderDefault,
+  linkHoverText,
+  linkText,
+  textMutedOnCanvas,
+  textSecondaryOnCanvas,
+} from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { buildIssuePath } from "../refs/routes";
 import { COLUMN_LABELS, useIssueTableColumns } from "./issues-table-columns";
@@ -255,13 +261,16 @@ export function IssueGrid<Row extends { key: string }>({
                     </Link>
                   </span>
                   {narrow ? (
-                    <Link
-                      className={`line-clamp-2 min-w-0 break-words ${linkText} ${linkHoverText}`}
+                    // Not a link: below 1280 px every anchor is a 44 px box that lays itself
+                    // out as a flex row (styles.css), which a two-line clamp cannot survive.
+                    // The key above it is the link, and the whole row opens from the keyboard.
+                    <span
+                      className={`line-clamp-2 min-w-0 break-words ${textSecondaryOnCanvas}`}
                       data-grid-key-title
-                      to={href}
+                      title={row.original.issue.title}
                     >
                       {row.original.issue.title}
-                    </Link>
+                    </span>
                   ) : null}
                 </span>
               );
