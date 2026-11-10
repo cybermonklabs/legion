@@ -1294,7 +1294,7 @@ A migration that needs another bound sets its own `SET LOCAL lock_timeout`, whic
 The secrets broker's runner applies every migration in one transaction, so it does not try again:
 rolling one attempt back would roll back the migrations before it too.
 
-The notes below describe migrations through `0148`.
+The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.
 
 Migrations `0056`–`0062` make search indexing linear.
@@ -1964,8 +1964,8 @@ A new table, as above; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
 It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
-This release reads and writes it nowhere: `20261107234701_branch_commits` below holds that answer now, keyed by the branch as well and seeded by a merge with its own merge commit on the base branch, and this table is left exactly as it is because the release before this one still reads and writes it.
-Dropping it is a contracting migration of a later release (dispatch://INFRA-1700).
+`20261107234701_branch_commits` below took that answer over, keyed by the branch as well and seeded by a merge with its own merge commit on the base branch, and `20261110004829_drop_default_branch_commits` drops this table.
+A build from before `20261107234701`'s release still serves on the schema that drop leaves, but its results read finds no cache: every `after_merge` and `default_branch` check reads GitHub on each results read, and logs `dispatch: read a commit's default-branch answer` and `dispatch: record a commit's default-branch answer` at WARN.
 A new table, as above; its census answers `0`.
 
 Migration `20261107234701_branch_commits` creates `branch_commits`, what Dispatch's GitHub App answered about one commit of one branch of one repository: whether that branch carries it.
@@ -1974,9 +1974,9 @@ Its primary key is `(repo, branch, sha)` — the repository, the branch as GitHu
 A yes is kept for good, since a rewrite of a branch does not undo that the work reached it, and a no is re-read after five minutes, on every branch alike, since a commit merges later.
 Recording a merged pull request writes one row of its own: the merge commit is on its base branch, which GitHub's merge proves and nothing can prove later (`delivery.UpsertPullRequestHead`): in a repository that deletes a branch when its pull request merges and merges by squash, no later compare read can show that commit on the base, and the default branch holds a squash of it instead.
 Merges recorded before this release get no such row and nothing backfills them, the merge commit being carried only by the merge event, and neither do merges a process of the release before this one records while the release rolls, since that build writes no `branch_commits` row; on 2026-11-08 no issue that merged into another base holds an `after_merge` result, so that set is empty.
-It is a new table and not a `branch` column on `default_branch_commits`, whose primary key is `(repo, sha)`, because a Dispatch release rolls: the release before this one runs `insert ... on conflict (repo, sha) do update` against this schema, and widening that key would leave that statement targeting no unique constraint, so every such write would fail, while that build's single-row read could answer another branch's yes as the default branch's.
-So this release reads and writes `default_branch_commits` nowhere and leaves it exactly as it is.
-The table starts empty, with no backfill: a `default_branch_commits` row names no branch, and the default branch it was asked about may since have been renamed, so no backfill could be faithful and every answer is earned again with one GitHub read.
+It is a new table and not a `branch` column on `default_branch_commits`, whose primary key was `(repo, sha)`, because a Dispatch release rolls: the release before this one ran `insert ... on conflict (repo, sha) do update` against that schema, and widening that key would have left that statement targeting no unique constraint, so every such write would have failed, while that build's single-row read could have answered another branch's yes as the default branch's.
+So the release that added this table wrote nothing to `default_branch_commits` and left it as it was.
+The table starts empty, with no backfill: a `default_branch_commits` row named no branch, and the default branch it was asked about may since have been renamed, so no backfill could be faithful and every answer is earned again with one GitHub read.
 A new table, as above; its census answers `0`.
 
 Migrations `20261105093500_user_threads_dismissed_at` through `20261105093507_user_agent_thread_dismissed_clear` are the Inbox's dismissal: a thread stays in a person's Inbox, read or not, until they dismiss it.
@@ -2362,6 +2362,10 @@ Three filters narrow every leg of a search beside `project`, each in the arm its
 `author` is the actor that wrote the item the row names, matched on its id (a person's login or a session's id), an issue's and a document's being their creator;
 and `updated_since` (RFC 3339) is when the item itself was last written, not when anything on its issue moved, since an issue's `updated_at` moves whenever anything on it does.
 The answer carries the filters it applied (`filters`), as it carries how it read the words.
+
+A search carrying `number_project`, `status`, `author`, `updated_since` or `keywords_only` is sent to `GET /api/v1/search/results`, which answers exactly what `GET /api/v1/search` answers and is served by the same handler.
+It has a path of its own because a build released before those members answers it `404 no route`, where it answers `GET /api/v1/search` with the members dropped: unnarrowed rows under the filters a person chose, which is the wrong answer rather than a refusal, and the two builds of a rolling release serve at once.
+`GET /api/v1/search` still reads all nine, so a page served by an earlier release that sends a filter there is still answered narrowed; what moved is the declared contract, and so every generated client, which offers the five on the results route alone.
 
 Search covers issue titles, the latest settled document text, comments, asks (questions, option labels and descriptions, free-text answers and the options an answer chose), and messages.
 An issue's own vector carries its key and its title at weight `A`, as `0088` left them, and the markdown of the latest version of its primary document at weight `C` (`20261105145242`), so an issue whose title holds none of its spec's words is still found by them, and below every issue whose key or title holds them:
@@ -3130,7 +3134,7 @@ Each item below names a path with its method and identity, then its purpose.
   `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
   A refilling list never makes a route `no_holder`.
 
-- `/api/v1/search?q=&project=&number_project=&keywords_only=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/search?q=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   Full-text search over issue titles, latest document text, comments, asks, and messages;
   every match ranked on one list across the kinds by one score (above), with `<mark>` snippets and SPA `href`s.
@@ -3144,12 +3148,20 @@ Each item below names a path with its method and identity, then its purpose.
   An under-two-character query returns `400 INVALID_QUERY`;
   a stop-word-only query returns `200` with no results;
   `400 CAP_EXCEEDED` over 1,000 characters (`contracts.SearchQueryMax`, UTF-16 units after trimming), since the query rides in the URL;
-  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project), and `400 INVALID_NUMBER_PROJECT` for a `number_project` that is not one; `400 INVALID_LIMIT`; `400 INVALID_OFFSET`; `400 INVALID_KEYWORDS_ONLY` for a `keywords_only` that is neither `true` nor `false`.
+  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project); `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.
+  This route declares `q`, `project`, `limit` and `offset` alone.
+  `number_project`, `status`, `author`, `updated_since` and `keywords_only` are declared on `GET /api/v1/search/results` below, and a client sends a search carrying one of them there.
+  It still reads all nine, refusing each of those five under its own code (`400 INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`), so a page served by an earlier release that sends one here is still answered narrowed ([Search](#search)).
+  Keyword search finds a text whose search vector would pass Postgres's limit on one vector by the words in its opening part only ([Search](#search)).
+
+- `/api/v1/search/results?q=&project=&number_project=&status=&author=&updated_since=&keywords_only=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The same search as `GET /api/v1/search`: the same handler, the same answer and the same refusals.
+  It declares all nine members, so every generated client offers the five here and nowhere else, and a client sends a search carrying `number_project`, `status`, `author`, `updated_since` or `keywords_only` here, because a build released before those five answers this path `404 NOT_FOUND no route for GET /api/v1/search/results`, where it answers the other path with the member dropped ([Search](#search)).
   `number_project` is the project of the page the search was made from, which a query that is a bare issue number is read in ([Search](#search));
   it narrows nothing, so a search from a project or issue page answers every project's rows.
   `keywords_only=true` runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured, and its answer is not stamped `degraded`, because nothing is unavailable: the caller asked for the words alone.
   The command bar sends it on every keystroke, so a person typing waits on no model call; a request that leaves it out searches as it always did, by meaning too wherever an embedder is configured.
-  Keyword search finds a text whose search vector would pass Postgres's limit on one vector by the words in its opening part only ([Search](#search)).
 
 - `/api/v1/search/coverage` (GET; cookie, trusted header, or bearer)
 

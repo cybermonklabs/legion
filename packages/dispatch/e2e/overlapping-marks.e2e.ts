@@ -37,7 +37,8 @@ test.beforeEach(async () => {
 // than cutting it to "quick ".
 // SLOW(>=2s): two browser contexts, three composer round trips and the typed paragraph whose
 // settlement writes the version that refreshes both anchors - the refresh is the property.
-test("two readers' comments can cover the same text, and neither cuts the other's anchor", async ({
+// @pr: A two-context race: two readers' comments cover the same text, and the version's anchor refresh must cut neither.
+test("two readers' comments can cover the same text, and neither cuts the other's anchor @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

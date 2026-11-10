@@ -85,7 +85,8 @@ async function expectInstant(locator: Locator, want: number, what: string) {
     .toBe(want);
 }
 
-test("an unresponsive holder keeps its claim: the issue page says unresponsive since its last heartbeat and names when it becomes takeable, and a second agent is refused", async ({
+// @pr: A claim the server settles: an unresponsive holder keeps it, the page says since when and until when, and a second agent's claim is refused.
+test("an unresponsive holder keeps its claim: the issue page says unresponsive since its last heartbeat and names when it becomes takeable, and a second agent is refused @pr", async ({
   browser,
 }) => {
   const { issueKey, token } = await seedClaim("Worked by a stalled session");

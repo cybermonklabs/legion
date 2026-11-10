@@ -526,7 +526,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 - `web/src/main.tsx` installs React Router and the shared Query client, a `DispatchQueryClient` (`api/query-client.ts`): its `refetchQueries`, and through it every `invalidateQueries` and `resetQueries`, never cancels a running request; a query already fetching is fetched once more when that fetch settles, so no read ever has two requests in flight, and a mutation's invalidation during a fetch still ends on the answer composed after its write. Every mutation's own `invalidateQueries` call keeps its shape. A failed read is retried twice unless the failure is definitive (`isRetryableQueryError` in `api/client.ts`: a 401, among others), each retry after `queryRetryDelay` (`api/query-client.ts`): a refusal carrying `Retry-After` in seconds (`ApiError.retryAfterMs`; Dispatch sends it with a 503 refusing excess load) waits that long, at most 30 s (`RETRY_AFTER_CEILING_MS`), plus a random share of it again, so tabs refused together do not all come back in the same instant and the whole wait stays under a minute however long a proxy's `Retry-After` is, and any other failure waits 500 ms.
 - `web/src/features/search/` owns the bar, the one list a reader reaches from anywhere; the rail `Search` control that opens it is a `RailButton` (below). `Ctrl/Cmd+K`, `/`, `g p` and that control open the same bar: each is a global keymap binding in `app.tsx` that sets one `barOpen`, and none of them is a palette row (a row that reopens the bar the reader is in helps nobody). `Ctrl/Cmd+K` is `inEditable`, so it opens from inside a document's editor; `/` is not, so a slash typed into a document stays a slash, and the Agents page shadows `/` with its own filter box. The bar registers its own `Ctrl/Cmd+K` close in the `dialog` scope while open. Its dialog is mounted only while it is open, so each open starts on its first row, with an empty box and the rows, the chip and the writing cursor of the page it opened over, and a closed bar holds no search of its own. Above the box sits the chip saying what the bar will act on (`features/search/bar-scope.ts`, `data-testid="search-scope"`, `role="status"`): `Acting on CORE-1` on an issue page, `Acting on Design notes` on a project document (its name from the page's own `["artifact-ref", …]` read, its slug until that answers), `Acting on CORE-1 and CORE-2` with issues selected on the issue list (`setSelectedIssues`, which `features/project/IssueList.tsx` writes while it is mounted and clears as it goes; three keys are named and the rest counted, `and 2 more`), `Acting on the project CORE` where the page names nothing narrower, and no chip at all on a page belonging to no project. `Tab` narrows it to the block the writing cursor was in (`scopeAtCursor`, read on the render that opens the bar, before `useDialog` takes the focus a frame later, from the `[data-block-id]` the cursor stands in; elsewhere Tab still steps through the bar's controls) and `Backspace` widens it to the project, on an empty box alone, so a box with words in it rubs out a letter as every other field does. `barTargets` (`bar-scope.ts`) is what reads that level: it answers what each offer acts on - the block at block level alone, no issue at project level, the project at every level - so the handoff row is listed only while the chip names an issue or a block of it, it names that block in the message it sends, and a new issue is filed in the chip's project. The chip is not the project filter chip: it sits above the box, says `Acting on …` and has no Remove control, while a filter chip sits below the box, reads `Project INFRA` and is removed by itself. With an empty box the list holds the person's recent items (`Recent`, `features/search/recents.ts`) above this page's actions; with words in it, the recents give way to the hits and the projects whose key or name those words hold (`Projects`, which Enter opens). The action rows are `appKeymap.actions()`, taken on the render that opens the bar (the registry bullet below says why), so the rail control and every key offer the same rows for the same page and focus; with an empty query they all render under `Actions`, above the `Type at least 2 characters` message, and a query filters them by label. An action whose label the query starts stays under `Actions`, above the hits; one that holds the query further in (`issue` in `Close issue`, `status` in `Move card to the next status`) moves to `More actions`, below the hits, so a search and Enter opens a hit rather than running an action that only shares a word with it. Recent items, actions, projects and hits are one list of `role="option"` rows, so the arrows, Enter and `aria-activedescendant` cover them all, and an action row shows the keys that also run it (a palette-only action has none). The highlight is the row the reader sees highlighted, held by its id rather than a position: hits that arrive below the actions after the reader has arrowed, or a refetch that re-ranks them, leave it on that row; a new query returns it to the head, and so does its row leaving the list, the head then keeping it when the row comes back. The head is the first row unless the list holds only `More actions`: then nothing is highlighted and Enter runs nothing until the reader arrows, Down to the first row and Up to the last. While the query's search is still out, the arrows walk only the rows above where its hits will go, and with none they do nothing, so a key pressed before the answer cannot land on a `More actions` row that the hits then arrive above. A refresh that fails keeps the hits the query already has, and `Search failed.` shows only when it has none; a projects read that failed says `Could not load projects.` under a query, since projects are rows of this list too. The dialog is a column no taller than the screen below it, in which only the list scrolls; the list keeps one row's height, so a short window cuts the key hints and then the message rather than the row, and it scrolls the highlighted row into view whenever the highlight moves or the list's own height changes. It groups hits by their issue or standalone project-document owner; document-owned hits use the document name and `/projects/:key/documents/:slug` route, adding an ask or comment query parameter for discussion hits. It renders server snippets exclusively through `snippetSegments`, never `innerHTML`; document routes pass `?q=` through the document surface to mark and scroll to its first matching rendered text node. It queries between 2 and `SEARCH_QUERY_MAX` (`@legion/contracts/dispatch-tools`, 1,000) characters of trimmed text, the server's own bounds, and names the limit in place of a request past it.
 - The bar's recent items are the person's own and live in the browser alone: Dispatch has no server store for them, and the keystroke that opens the bar makes no request, which is what lets the list paint at once. `features/search/recents.ts` records the issue or project document of every route the shell lands on (`useRecordRecents`, mounted in `app.tsx`, reading the page's own `["issue", …]` and `["artifact-ref", …]` queries, so it adds no request and fills in the title or name as they answer), keeps the newest `RECENT_LIMIT` (8) of them, newest first and one row per path, and reads them back from `localStorage` under `userPreferenceStorageKey(login, "search.recents")`, the key shape every browser-only value uses, so they are private to the signed-in identity and a reload keeps them.
-- The palette lists one page of hits, `GET /api/v1/search`'s first 20 in the server's fused order (`packages/envoy/cmd/dispatch/README.md`, "Search"), grouped under each owner in the order of its first hit. When the query matches more than the page holds, the message slot under the list says `Showing the best <n> of <total> matches`, so a partial list never reads as complete. An ask hit whose result carries `ask` adds a status line under its excerpt (`AskHitStatus` in `features/search/AskHitStatus.tsx`, which the create dialog's related items show too): a badge (`Open`, `Answered`, `Closed, no answer` or `Closed after an answer`), who closed it and when, and its latest answer - who gave it, when, the options chosen and the start of its text clamped to three lines. The clamp is CSS only and an option's text is its accessible name, so the text is first cut to `ANSWER_PREVIEW_CHARS` characters (beside `AskHitStatus`) at a word, balanced and closed with an ellipsis (`markdownHead` in `features/refs/markdown-fragment.ts`), and a screen reader never reads a whole long answer as the row's name; the closer is named through `AskResolutionLine agent="static"`, since a link inside the option would be a second control in one listbox row, and a hit from a Dispatch that predates the field shows no line.
+- The palette lists one page of hits, the first 20 of the search's fused order (`packages/envoy/cmd/dispatch/README.md`, "Search"), grouped under each owner in the order of its first hit. Which of the two search routes a tier asks is `everyBuildReadsSearch`'s to decide, from the members that request carries. The keystroke tier always carries `keywords_only`, so it always asks `GET /api/v1/search/results`; the pause tier asks it whenever a chip or the page's own project carries `status`, `author`, `updated_since` or `number_project`, and asks `GET /api/v1/search` on a page that names no project with no chip set, which is what `search-tier-route.test.tsx` holds. A request carrying one of those five asks for a path a Dispatch released before them refuses rather than one it answers with the member dropped. When the query matches more than the page holds, the message slot under the list says `Showing the best <n> of <total> matches`, so a partial list never reads as complete. An ask hit whose result carries `ask` adds a status line under its excerpt (`AskHitStatus` in `features/search/AskHitStatus.tsx`, which the create dialog's related items show too): a badge (`Open`, `Answered`, `Closed, no answer` or `Closed after an answer`), who closed it and when, and its latest answer - who gave it, when, the options chosen and the start of its text clamped to three lines. The clamp is CSS only and an option's text is its accessible name, so the text is first cut to `ANSWER_PREVIEW_CHARS` characters (beside `AskHitStatus`) at a word, balanced and closed with an ellipsis (`markdownHead` in `features/refs/markdown-fragment.ts`), and a screen reader never reads a whole long answer as the row's name; the closer is named through `AskResolutionLine agent="static"`, since a link inside the option would be a second control in one listbox row, and a hit from a Dispatch that predates the field shows no line.
 - Between the box and the hits the bar says what it is doing with the words and what it is narrowing by (`features/search/SearchFilterBar.tsx`, `SearchOperators.tsx`, `search-filters.ts`). The three operator forms the route reads are listed as the reader types - `"two words"` the phrase, `this OR that` either word, `-word` hits without that word - and each is marked `in use` while the answer's own `query.operators` names it (`data-operator`, `data-in-use`), which is read from the answer rather than parsed a second time in the browser, so the bar and the search never disagree about what was written. Four narrowings are chips the reader adds: a project, an issue status, an author (typed, not picked: an author is a person's login or a session id and no list holds both, and the box is taken on Enter or on leaving it) and the day since which the item was last written. Each rides the route's own parameter (`project`, `status`, `author`, `updated_since`, the day as the instant its midnight began where the reader is) and each is part of the key the answer is kept under, so a chip added or dropped is another search and not another reading of this one. A chip reads back in the words the reader chose - `Project INFRA`, `Status Needs review`, `Author alice`, `Updated since 1 November` (the Activity tab's own day format, with the year only for another year) - never as a query string, and the chip itself is the control that removes it (`Remove Project INFRA`), which brings its picker back. A search from a project or an issue page narrows by nothing, as a search from anywhere does: the page's project (`routeProjectOf`) rides under `number_project`, the route's own parameter for the project a bare issue number is read in, which narrows nothing and sets no chip, so that page's issue still leads its number while the rest of the page is every project's. A reader who wants that project alone adds its chip. The pickers are plain buttons under a trigger rather than a `<select>` or a listbox: this dialog's `option` rows are its hits, and a second set of options would join the rows the arrows walk and the count a reader is given. Where the answer carries `degraded` the bar says `Searching words only: meaning search is not running, so a hit that uses other words may be missing.` (`data-testid="search-degraded"`, `role="status"`) above the hits, which it still shows. `e2e/going-key-forms.e2e.ts` and `e2e/going-operators.e2e.ts` are the browser rows for the key forms and for the operators and chips, and `e2e/going-bar.e2e.ts` for the one bar: the keys that open it on every page, the chip the page seeds and `Tab`/`Backspace` move, the issue list's selection, and the recent items an empty box lists beside the page's actions.
 - `web/src/features/shell/RailButton.tsx` is the rail's control for a keyboard binding: a label, then the binding's keys in a `<kbd>`, with the top margin passed by the call site. `app.tsx`'s `NavigationContents` renders it twice, beside the keymap the hints stand for: `Search` (`⌘K` / `Ctrl K`), which opens the bar, and under it `New issue`, which opens the same `CreateIssueDialog` the global `c` binding opens (`app.tsx` owns the one `createOpen` state both set), showing `c` as `?` and the palette show that binding and `aria-keyshortcuts="C"`, so a person who has not learned the shortcut can still file an issue. Each click calls `onClose`, which closes the compact navigation sheet, before it opens its dialog.
 - `web/src/features/issue/RelatedItems.tsx` is the new-issue dialog's related-item section, between its Spec field and its refusal: `RELATED_DEBOUNCE_MS` (400 ms, `features/issue/related-timing.ts`, a module importing nothing so the Playwright specs read the value the dialog runs on) after the title rests, it asks `GET /api/v1/projects/{key}/related` (`api.relatedItems`, the no-write check, which records nothing) with the title alone and lists what it found, each item a link in a new tab named by its owner alone, so the draft survives the click and a screen reader's link list names the item. Nothing is asked below two trimmed characters or with no project chosen. The query is keyed on the debounced title, so react-query aborts a check a newer title superseded, and what is shown is gated on that debounced title still being the one in the box: an answer that lands under an older title leaves `Checking for related items…` on screen rather than answering a title the reader has left. Which of the three forms an answer holds is `@legion/contracts`' `relatedCheckFormOf`, the one the CLI's lines read too (`packages/envoy-client/src/related-check.ts`); each surface only words that union, so a check that never ran (`No related-item check was made: …`) cannot be read as one that searched and found nothing on one surface and not the other. A past decision is named under the form, who answered it inside the same list item. The query asks fresh for every settled title (`staleTime: 0`, `gcTime: 0`): nothing invalidates its key, so under the app's defaults a title checked a moment ago would be answered from before the issue someone filed since. The section is a polite live region but `aria-busy` while a check is out, so a screen reader hears the answer alone rather than `Checking for related items…` at every pause in someone's typing; and because the section grows with what the check finds, the dialog's own form caps its height at the window and scrolls (`max-h-[100dvh] overflow-y-auto`, `xl:max-h-[calc(100dvh-6rem)]` for the wrapper's padding), or on a phone its Create row and the possible duplicate's **Create anyway** paint past the bottom edge with nothing to scroll. `e2e/create-issue-related.e2e.ts` drives in a real browser what only a browser shows: the found form and its found-nothing control, the fresh check after an issue is filed between two checks of one title, the debounce, the display gate with its `aria-busy`, and the scroll. The not-made form, the past decision, the failed check with Retry, and the two-character and no-project floors are `RelatedItems.test.tsx`'s.
@@ -2491,6 +2491,140 @@ than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that pr
 over real time - that no request happens within a second - needs no such project: contention
 cannot make that claim false. A project whose dependency has a failing row does not run at all,
 so a red run leaves these rows unrun rather than measured beside a retry.
+
+## The stubbed layer
+
+Most rows of this suite need a real engine and not a real server: ProseMirror and Milkdown,
+Mermaid in a worker, `contenteditable`, the highlight API, forced colours, the phone. Such a row
+runs in the `stub` and `stub-phone` projects, in a real browser, against a recording of the API:
+a static file server over the build under test serves the document and its assets
+(`e2e/stub/static-server.ts`), every `/api/v1/**` and `/auth/whoami` answer is replayed from a
+HAR committed under `e2e/__recordings__/`, `/ws/live` answers from the contract fixtures, and the
+run holds no Go server, no Postgres, no fake listener, no sign-in and no database reset at all.
+`bun run e2e:stub` is that run, and it needs none of the harness.
+
+What a stubbed row may assert is what the browser does with a fixed answer: a layout, a width, a
+computed colour, focus and roving, a chord, an address, an accessibility scan, the markdown or
+directive the page draws from what the API returned, and a rule the page applies itself, which
+such a row proves by asserting that no request was made. What only a real-stack row may assert
+is anything the server decides. Four shapes, and a row of any of them stays where it is:
+
+- it reads something the server computes, enforces, refuses or ranks — a validation, a claim, an
+  admission, a settlement, a permission, an idempotency key, a search result's own ranking;
+- it **writes and then reads its own write**: a recording answers a refetch with the state
+  recorded before the write, so the row passes while proving nothing. This is the exclusion a
+  reader of "no coverage is lost" would miss, and it is mechanical rather than semantic: a row
+  that posts, patches or deletes and then asserts on a refetch, a reload, a second page or
+  another context belongs on the real stack whatever it asserts;
+- it needs a frame the server sends: a delivery arriving, an agent's turn streaming, or the live
+  document, whose Yjs socket no recording replays and whose editor an in-memory Hocuspocus does
+  not hold (measured on this issue: the editor reaches `connected` and takes the first keystroke
+  and no more);
+- it reads a clock the server keeps moving. A recording freezes `last_seen`, so a row whose
+  claim depends on how long ago something happened rots: ten minutes after a re-recording the
+  Agents page folds every seeded session under `Inactive (N)` (`isInactive`,
+  `web/src/features/agents/AgentsPage.tsx`). That is why no row of `agents.e2e.ts`,
+  `keyboard-agents.e2e.ts` or `keyboard-agents-pin.e2e.ts` is here.
+
+A row moves by moving its file, never by an annotation: 150 spec files reset the database in a
+`beforeEach` and most of them sign in and seed through the API, so a stubbed row left among them
+would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps every
+assertion it had and its title but for the ` @pr` the lane axis adds, and the file it left keeps
+its own rows and hooks. A row that the real-stack projects ran at two widths keeps both here
+too: `stub` runs every stubbed row as `chromium` runs every row of the suite, `stub-phone` greps
+the `@phone` tag as `iphone` does, and a row that is a phone row alone says so itself with the
+`test.skip` its author wrote, read against this project's name. Such a file
+declares its `test` with `stubbed(seed)` (`e2e/stub/stub-test.ts`): `seed` is the API seeding the
+rows need, which runs in record mode alone, and what it returns is written beside the recording
+as a scene file and handed back to each row as `scene`, so no row ever names an id the server
+minted. The fixture's `page` is already signed in, because the recording answers `/auth/whoami`.
+
+A recording is made with `bun run e2e:stub:record`, which runs the same rows against the real
+harness and writes each row's HAR and scene under
+`e2e/__recordings__/<project>/<family>/<row>.har`. The project names the directory because a
+row whose claim holds at both widths runs in both stubbed projects, and one file for the two
+would be written twice by two workers at once and replayed in whichever shape won
+(`e2e/stub/recordings.ts`).
+It is normalised as it is written (`e2e/stub/recording.ts`): the volatile transport erased, the
+entries in an order two recordings agree on, every URL on a placeholder origin, and every
+credential gone — the `dsession` cookie among them, since these files are committed to a public
+repository and a recording that still carries one is refused rather than cleaned at review time.
+The bodies are kept exactly as the server wrote them, so the page renders what it would have
+rendered; the masking that lets two recordings be compared is a second pass that is written
+nowhere.
+
+Two guards keep a recording from drifting out of step with the server unseen, and neither is
+optional. `e2e/__tests__/stub-recordings.test.ts` runs on every pull request that touches this
+package and holds every committed recording to
+`packages/contracts/schemas/dispatch-openapi.json`: the route, the method, the status and the
+body against that status's schema, so a response shape that changes fails on the commit that
+changes it. The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs daily,
+re-records every stubbed row against the real harness into a directory of its own and fails
+naming each route that no longer answers as its recording holds. It compares the **status of
+each route** and nothing else - no body's values and no body's shape - because two recordings
+of one row never agree on an id, a counter, a time, an empty list or a nullable field, and
+masking enough of that to be green would mask what the job exists to watch (`statusDrift`,
+`e2e/stub/recording.ts`). So four guards divide the work, each watching what the others
+cannot: the generated contract holds client and server to one shape at compile time, the
+contract test holds every recorded body to that shape on each pull request, this holds the
+status of each route, and the rows that stayed on the real stack hold the server's behaviour.
+The job uploads the re-recorded set, and applying it is a replacement of
+`e2e/__recordings__` by that artifact rather than a copy over it: a copy would leave behind
+every recording the job named as written by no row any more.
+It finds those too - which it could not while it re-recorded over the committed set - and a
+pull request refuses one before a nightly meets it, in two halves, because no one reading can
+see them all. `bun e2e/tools/row-map.ts` reads the listing: it refuses a recording no listed
+row owns, and a row the listing marks `skipped` owns none, which is every row skipped where it
+is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip`, or a describe-level
+`test.skip(true)` or `test.fixme()` - none of which runs a test-scoped fixture at all. The
+replay refuses what a listing cannot read: a row that skips itself inside its body, and one
+that passed and set no `scene` (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+Neither half sees a describe-level modifier whose condition is a function of a worker fixture,
+such as `test.skip(({ isMobile }) => !isMobile)`: the listing marks its rows `passed`, and
+Playwright decides it before any test-scoped fixture runs. So a stubbed row skips itself
+inside its own body, as every one of them does, and whoever skips a row any other way deletes
+its recordings in the same change.
+Read the recording step before you apply the artifact: the comparison runs even where that
+step failed, and a failed row leaves one of two things. One that threw while seeding wrote
+nothing, so it is named as a recording no row writes while its committed copy is sound; one
+that threw in its body wrote its `.har` all the same, holding whatever it reached before it
+failed. Fix the row and record again rather than replacing the directory, which would delete
+the first and commit the second.
+
+The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
+pull-request lane runs `--grep=(^|\s)@pr(\s|$)` over `chromium`, `iphone`, `stub` and
+`stub-phone`, which is `tagged("pr")`'s own pattern, anchored so `@prototype` is not `@pr`; the full
+lane, which the merge queue and the nightly run, runs every project and no grep. So a tagged row
+answers a pull request and an untagged one gates `main` at the merge queue, and nothing is
+deleted either way. Every stubbed row carries the tag, which
+`e2e/__tests__/pull-request-lane.test.ts` enforces along with the lane's budget: at most 330
+rows, at most 150 of them outside the stubbed projects. A real-stack row carries it only when a
+pull request needs to see its failure first, with a `// @pr: ` line above it saying why. **A new
+row defaults to neither**: write it where its claim belongs, and tag it only if the lane has room
+and the pull request needs it.
+
+`e2e/row-map.md` holds the rows that moved, each with the reason a recording can answer it, and
+every file whose rows stayed, each with the server behaviour those rows depend on.
+`bun e2e/tools/row-map.ts --write` writes it and `e2e/__tests__/row-map.test.ts` fails when the
+committed file and a fresh generation differ. It carries no count and names no `@pr` row,
+deliberately: both are read from a listing of the whole suite, so a map that held them would be
+red on every pull request of every tree that adds or removes a row here. A **new spec file**
+still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the
+generation refuses to write a map without one - and refuses a reason there for a file the
+listing does not name.
+
+What the map says of a moved row is that the move touched no line of what it asserts, and that
+sentence is the whole of what a reviewer reads for it, so a row where it is false must say so
+instead. `e2e/stub/moved-row-notes.ts` holds those rows, keyed by the spec file and the title
+joined by ` › `, with the note the map writes in that sentence's place; it owns the sentence
+too, so one file holds both halves. The usual cause is a forward merge: `main` changes a row
+this layer has already moved and the change cannot be copied across as it stands, because the
+stubbed row runs against a recording and a scene its file shares. Whether a row needs a note is
+a person's reading - nothing in a merged tree holds the row's assertions before the move, since
+the real-stack copy is the one this change deleted. What the generation does hold is the other
+direction: a note for a row the listing does not name fails it, and
+`e2e/__tests__/row-map.test.ts` fails a map that carries the unchanged sentence for a row with
+a note.
 
 ## Accessibility and visual review
 

@@ -418,7 +418,8 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
 
 // LEGION-446. The browser drops a same-tick double press itself, so the repeat here is the one a
 // proxy or a flaky connection makes: the same request, the same key, the same human.
-test("a second identical send of one composition is answered the original broadcast, so every agent hears it once", async ({
+// @pr: An idempotent repeat: the same composition sent twice is answered the original broadcast, so every agent hears it once.
+test("a second identical send of one composition is answered the original broadcast, so every agent hears it once @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");

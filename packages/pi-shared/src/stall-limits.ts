@@ -100,7 +100,8 @@ export function defaultCallBoundMs(role: string | undefined): number {
 
 /** One variable's value: the default when it is unset, and the default with one `warn` naming the
  * variable when it is not an integer of `least` or more. The refusal cooldown's own two variables
- * are read through it too (`src/fallback-cooldown.ts`), so one wording warns about either. */
+ * are read through it too (`src/fallback-cooldown.ts`), as is the claim boot's first-turn bound
+ * (`src/claim-first-turn-bound.ts`), so one wording warns about any of them. */
 export function integerSetting(
   env: Record<string, string | undefined>,
   log: StallLimitsLog,

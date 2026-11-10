@@ -506,7 +506,8 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
   await context.close();
 });
 
-test("an unconfigured Delivery page sets itself up from its form and then shows the timeline", async ({
+// @pr: Live delivery: the Delivery page from nothing - the setup form saved against the GitHub App's own read, then the timeline it draws.
+test("an unconfigured Delivery page sets itself up from its form and then shows the timeline @pr", async ({
   browser,
 }, testInfo) => {
   // The save proves the GitHub App can read the deploy repository (the installation with
