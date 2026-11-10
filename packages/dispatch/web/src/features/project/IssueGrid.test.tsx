@@ -307,7 +307,7 @@ test("fit=rows draws every row of the page with no box to scroll inside", async 
   expect(box?.className).not.toContain("overflow-auto");
 });
 
-test("a phone keeps the primary columns and reads the title under the key", async () => {
+test("a phone keeps the primary columns and gives the title a line of its own", async () => {
   harness([issue("CORE-1", { title: "The pager reads the rows it shows" })]);
   const view = draw(
     <IssueGrid<Row>
@@ -321,15 +321,16 @@ test("a phone keeps the primary columns and reads the title under the key", asyn
     390
   );
   const grid = await screen.findByRole("table", { name: "Finished issues" });
-  // The primary column stays; Title has no column of its own.
+  // The primary column stays beside the key; Title has no column of its own.
   expect(within(grid).getByRole("columnheader", { name: /Hours/ })).toBeDefined();
   expect(within(grid).queryByRole("columnheader", { name: /Title/ })).toBeNull();
-  // The title is in the Key cell, and the key is written in full.
-  const keyCell = view.container
-    .querySelector("[data-grid-key-title]")
-    ?.closest("td") as HTMLElement;
-  expect(within(keyCell).getByText("CORE-1")).toBeDefined();
-  expect(within(keyCell).getByText("The pager reads the rows it shows")).toBeDefined();
+  // The key's own row holds the key and the primary; the title's row follows it.
+  const keyRow = view.container.querySelector("[data-issue-row=CORE-1]") as HTMLElement;
+  expect(within(keyRow).getByText("CORE-1")).toBeDefined();
+  expect(within(keyRow).queryByText("The pager reads the rows it shows")).toBeNull();
+  const titleRow = view.container.querySelector("[data-grid-title-row=CORE-1]") as HTMLElement;
+  expect(keyRow.nextElementSibling).toBe(titleRow);
+  expect(within(titleRow).getByText("The pager reads the rows it shows")).toBeDefined();
 });
 
 // happy-dom lays nothing out, so what is asserted is what decides the wrap in a browser: the
@@ -384,7 +385,15 @@ test("at 390 the key and two primary columns fit the box between them", async ()
   expect(widths).toHaveLength(3);
   expect(Math.min(...widths.slice(1))).toBeGreaterThanOrEqual(96);
   expect(widths.reduce((sum, width) => sum + width, 0)).toBeLessThanOrEqual(390);
-  expect(view.container.querySelectorAll("[data-grid-key-title]")).toHaveLength(1);
+  // The title's line spans every column of the row, at three lines and an ellipsis.
+  const title = view.container.querySelector("[data-grid-key-title]") as HTMLElement;
+  const cell = title.closest("td") as HTMLTableCellElement;
+  expect(cell.colSpan).toBe(widths.length);
+  expect(Number.parseFloat(cell.style.width)).toBeGreaterThanOrEqual(
+    0.9 * Number.parseFloat(grid.style.width)
+  );
+  expect(title.className).toContain("line-clamp-3");
+  expect(title.getAttribute("title")).toBe("A title long enough to need both of its lines");
 });
 
 // A box inside a container that is not shown, and the instant before a full-page capture's
