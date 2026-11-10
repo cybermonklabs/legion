@@ -3,7 +3,6 @@ package testpg_test
 import (
 	"context"
 	"errors"
-	"net/url"
 	"os"
 	"testing"
 
@@ -36,7 +35,7 @@ func TestTheForcedFallbackNeedsARightThisLoginMayNotHold(t *testing.T) {
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	admin, database := adminURL(t, dsn)
+	admin := adminURL(t, dsn)
 	conn, err := pgx.Connect(t.Context(), admin)
 	if err != nil {
 		t.Fatalf("connect to the admin database: %v", err)
@@ -74,7 +73,12 @@ func TestTheForcedFallbackNeedsARightThisLoginMayNotHold(t *testing.T) {
 	if _, err := conn.Exec(t.Context(), "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
-	held, err := pgx.Connect(t.Context(), testdb.DatabaseURL(database, name))
+	own, err := testdb.DatabaseURL(dsn, name)
+	if err != nil {
+		_, _ = conn.Exec(context.Background(), "drop database "+name+" with (force)")
+		t.Fatal(err)
+	}
+	held, err := pgx.Connect(t.Context(), own)
 	if err != nil {
 		_, _ = conn.Exec(context.Background(), "drop database "+name+" with (force)")
 		t.Fatalf("hold a connection on %s: %v", name, err)
@@ -92,14 +96,13 @@ func TestTheForcedFallbackNeedsARightThisLoginMayNotHold(t *testing.T) {
 	}
 }
 
-// adminURL is dsn pointed at the admin database, and dsn's server for naming a database on it.
-func adminURL(t testing.TB, dsn string) (string, url.URL) {
+// adminURL is dsn pointed at the admin database, through the one rewrite this module makes
+// (testdb.DatabaseURL), which refuses a rewrite that would name another server.
+func adminURL(t testing.TB, dsn string) string {
 	t.Helper()
-	server, err := url.Parse(dsn)
+	admin, err := testdb.DatabaseURL(dsn, "postgres")
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", errors.Unwrap(err))
+		t.Fatal(err)
 	}
-	admin := *server
-	admin.Path = "/postgres"
-	return admin.String(), *server
+	return admin
 }

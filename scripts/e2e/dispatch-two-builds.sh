@@ -75,12 +75,12 @@ envoy_port=${TWO_BUILDS_ENVOY_PORT:-19073}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, which would replace the URL's host for the reset below while a server,
-# which never reads it, connects to the host the check admitted.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR) unset "$name" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
   esac
 done
 
@@ -184,28 +184,14 @@ begin prerequisites
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
 [ -n "$base_commit" ] ||
   fail "--base-commit is required: it names the commit the base build is built from (the merge base with the default branch)"
+for tool in go bun curl psql git openssl python3; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${database_url#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
-fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-esac
-[[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-  fail "DATABASE_URL must not name its host in a parameter"
-for tool in go bun curl psql git openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
   fail "--base-commit '$base_commit' names no commit of this repository"
 for port in "$base_port" "$head_port" "$envoy_port"; do

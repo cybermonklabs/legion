@@ -111,7 +111,8 @@
 # one of them is stopped on any exit, by the pid it was started as; the daemon's tmux server is
 # killed, the run's database is dropped and its work directory removed. The run is re-runnable: it
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
-# NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_* or CLAUDE_* variable of the caller's.
+# NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or PGSERVICEFILE
+# variable of the caller's.
 # Several runs at once out of one jj checkout leave divergent commits behind, whatever that
 # checkout's own state. The build step reads the working copy with jj to report what it built
 # from (lib/built-from.sh), and jj snapshots the working copy at every read; the plugin pack
@@ -134,9 +135,11 @@ model_id=${LEGION_E2E_MODEL_ID:-}
 claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
 omp_bin=${LEGION_E2E_OMP_PATH:-}
 claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
   case $variable in
-    DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_*) unset "$variable" ;;
+    DISPATCH_* | ENVOY_* | LEGION_* | NATS_* | OMP* | PI_* | TMUX* | ANTHROPIC_* | CLAUDE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
   esac
 done
 
@@ -635,20 +638,7 @@ case $pg_dsn in
   postgres://* | postgresql://*) ;;
   *) fail "CLEAN_SESSION_STOP_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${pg_dsn#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-case $hostport in
-  \[*)
-    db_host=${hostport#\[}
-    db_host=${db_host%%\]*}
-    ;;
-  *) db_host=${hostport%%:*} ;;
-esac
-case $db_host in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "CLEAN_SESSION_STOP_PG_DSN must name 127.0.0.1, localhost or ::1, not '$db_host': the run creates and drops a database in it" ;;
-esac
+require_loopback_dsn db_host CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
 [ -n "$omp_bin" ] || omp_bin=$(command -v omp || true)
 [ -n "$omp_bin" ] || { [ ! -x /opt/omp/bin/omp ] || omp_bin=/opt/omp/bin/omp; }
 [ -n "$omp_bin" ] ||
@@ -792,9 +782,11 @@ note "the listener on 127.0.0.1:$listener_port judges records with a ${live_wind
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
   fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
-database_url=${pg_dsn%%\?*}
-database_url=${database_url%/*}/$database
-case $pg_dsn in *\?*) database_url="$database_url?${pg_dsn#*\?}" ;; esac
+run_database_url database_url CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
+  "the run creates and drops a database there" || fail "$database_url"
+# That string holds spaces and single quotes, so the daemon's configuration file takes it as a
+# single-quoted YAML scalar, in which a single quote is written twice.
+daemon_dsn=${database_url//\'/\'\'}
 note "the daemon's store is the run's own database $database"
 echo "ok services"
 
@@ -808,7 +800,7 @@ keep_port daemon_keeper daemon_port
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $daemon_port
-postgres_dsn: $database_url
+postgres_dsn: '$daemon_dsn'
 state_dir: $state_dir
 operator_token_file: $work/operator-token
 envoy_url: http://127.0.0.1:$listener_port
