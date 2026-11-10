@@ -85,6 +85,15 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
 ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
 ARG GH_TOOL=gh@2.98.0
+# The shared public leak check a pod installs before any role's agent starts: the tag of the
+# private repository whose leak-check directory holds it, which `legion worker-shim` fetches with
+# the role's own gh and unpacks under the issue's scratch
+# (packages/daemon/internal/leakguard's Install). R5 of dispatch://INFRA-1527 requires the newest
+# `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
+# newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-09T23:45:49Z,
+# and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
+# is where the shim reads it, so the version has this one home and no copy of it lives in Go.
+ARG LEAK_CHECK_TAG=leak-check-v15
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -1086,6 +1095,17 @@ COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # it hands git's remote, URL and update lines to `legion leak-check pre-push` and holds no rule of
 # its own (packages/daemon/docker/githooks/pre-push, packages/daemon/internal/leakguard).
 COPY --chmod=0755 packages/daemon/docker/githooks/pre-push /opt/legion/githooks/pre-push
+# The pin of the shared public leak check, re-declared here so the runtime stage can read the
+# global ARG above, and exported as a variable of the image: every process the image runs finds
+# it, which is how `legion worker-shim` reads the pin from its own environment before it starts
+# a role's agent (packages/daemon/internal/leakguard's TagVariable and Install). The image is its
+# only setter, so a deployment's `runtime.kubernetes.pod.env` may not move it
+# (sandbox/operatorpod.go imageEnv). It goes in after the toolchain and the probe layer, with the
+# wrappers above, so a tag bump reruns only these last few layers. The check itself is not in the
+# image: it publishes often and is fetched per pod at this tag, and the image build has no
+# credential for the private repository that publishes it.
+ARG LEAK_CHECK_TAG
+ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # The final step: /opt/legion, /opt/legion/bin and /opt/legion/githooks are root's with mode 0755,
 # so the runtime user can neither rename nor replace what they hold; everything under
 # /opt/legion/pi-envoy,

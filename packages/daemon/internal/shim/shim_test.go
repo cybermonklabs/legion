@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -548,6 +550,64 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
 		t.Fatalf("OMP read %v; the pre-ack prompt must never reach it", got)
 	}
+}
+
+// The pod's shared public leak check is installed before the harness is started, and a pod whose
+// check could not be installed runs no agent at all: the shim ends with that failure, exit 1, and
+// the daemon reads the failure as the shim's own. Every write path of such a role would refuse
+// anyway, and the rescue helper runs in this same shim — the daemon's frames are read only once
+// the spawn has returned — so a pod that started one would lose a dying pod's work for a reason
+// nobody could see.
+func TestTheLeakCheckIsInstalledBeforeTheHarnessStarts(t *testing.T) {
+	t.Run("the install runs before the child, with the shim's own environment", func(t *testing.T) {
+		path := socketPath(t)
+		daemon := listen(t, path)
+		child := newOMP(t)
+		cfg := config(t, path, child)
+		var installed atomic.Int32
+		var tooLate, wrongEnv atomic.Bool
+		cfg.InstallLeakCheck = func(_ context.Context, env []string) error {
+			installed.Add(1)
+			tooLate.Store(child.started())
+			wrongEnv.Store(!slices.Equal(env, cfg.Env))
+			return nil
+		}
+		sh := run(t, cfg, newClock())
+
+		daemon.accept(t).open(t)
+		if n := installed.Load(); n != 1 {
+			t.Errorf("the install ran %d times, want once before the one spawn; log:\n%s", n, sh.log)
+		}
+		if tooLate.Load() {
+			t.Error("the install ran with the harness already started")
+		}
+		if wrongEnv.Load() {
+			t.Error("the install was handed an environment that is not the shim's own")
+		}
+	})
+
+	t.Run("a failed install fails the launch and spawns nothing", func(t *testing.T) {
+		path := socketPath(t)
+		daemon := listen(t, path)
+		child := newOMP(t)
+		cfg := config(t, path, child)
+		const why = "LEAK CHECK SETUP ERROR: the pod's install of the shared public leak check: `gh api` exited 1"
+		cfg.InstallLeakCheck = func(context.Context, []string) error { return errors.New(why) }
+		sh := run(t, cfg, newClock())
+
+		p := daemon.accept(t)
+		p.expectHello(t)
+		p.send(t, shimwire.HelloAck{})
+		if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
+			t.Fatalf("the shim kept running after a failed install; log:\n%s", sh.log)
+		}
+		if sh.code != 1 || sh.err() != why {
+			t.Errorf("the shim ended %d, %q; want 1 and the install's own failure %q", sh.code, sh.err(), why)
+		}
+		if child.started() {
+			t.Error("the harness was started after an install that failed")
+		}
+	})
 }
 
 // The workspace's CodeGraph warm-up (Config.WarmCodegraph) starts on the first line the child
