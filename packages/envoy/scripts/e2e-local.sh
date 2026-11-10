@@ -1303,16 +1303,21 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
 # of a count this run pins for ses_e2e_local.
 #
 # A clean stop deletes the session's consumer with the record it belongs to (deleteSessionConsumer,
-# on the DELETE /v1/sessions route), so the registration that follows is given a new consumer, and
-# that registration sends no resume. The listener then holds no position for the session: the new
-# consumer starts at the first message the stream still holds on that session's own agent subject
-# (bus.SessionConsumers.Ensure; consumerFor honours a resume only when it names the stream the
-# listener relays and carries a seq). The session is offered the message it has already taken.
+# on the DELETE /v1/sessions route), and records that consumer's ack floor on the session's own
+# resume lane before the delete takes it (sessionDelivery.deleteConsumer, ackFloorBeforeDelete,
+# bus.SessionResumeSubject). So the registration that follows, which sends no resume of its own,
+# is given a new consumer starting at the sequence after that floor, and the session is handed
+# nothing it had already taken: the assertions below read the recorded floor, require the new
+# consumer's start to be floor+1, and read an absence - the one frame this window pins, and no
+# second offer of it.
 #
-# That repeat is correct rather than a defect: the stream holds that copy for this session alone,
-# on its own agent subject, and nothing has acknowledged it for the new consumer, since the ack
-# floor of the old one went with the clean stop. What makes a real session read it once is the
-# ledger its client keeps — ConsumerDeliverySnapshotSchema in
+# What the session had NOT taken is not lost by that start: the floor is the old consumer's ack
+# floor, so everything stored above it is still delivered when the session comes back. The live
+# delivery proof drives that half (scripts/e2e/envoy-session-delivery.sh, window g,
+# dispatch://INFRA-2365): a cleanly stopped session takes, once, on its return, everything the
+# stream held for it while it was down.
+#
+# A session whose client keeps a ledger sends a cursor instead - ConsumerDeliverySnapshotSchema in
 # packages/envoy-client/src/consumer-delivery.ts, whose resumePoint() produces the cursor the
 # relaunch above sends. The stand-in here writes that same point to a cursor file of its own and
 # this window sends none of it, so its two registrations differ from a relaunch that continues in
