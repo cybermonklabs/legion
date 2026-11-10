@@ -135,9 +135,10 @@ function threadRowsOf(data: unknown): readonly MyReplyRow[] {
 
 /** The Inbox's own thread reads (`inboxThreadsQuery` and `dismissedThreadsQuery`, so both the
  *  Inbox and the Dismissed view), when one of their rows is a thread on issue `key`: a Reply row
- *  shows its issue's title and priority, and whether it is listed at all turns on who the issue
- *  is assigned to (`myRepliesOwner` in the server's replies.go leaves out an open ask on an open
- *  issue assigned to the reader, which the Inbox lists under Waiting on you instead). Built like
+ *  shows its issue's title and priority, and whether it is listed at all turns on who waits on
+ *  the ask (`myRepliesOwner` in the server's replies.go leaves out an open ask on an open issue
+ *  that waits on the reader, which the Inbox lists under Waiting on you instead), which an
+ *  assignee move changes for every ask nobody has handed on. Built like
  *  `inboxRowsOf`: it needs no field of the event's, so an older server's event reaches it too. */
 function inboxThreadRowsOf(key: string): RefreshTarget {
   return {
@@ -554,10 +555,10 @@ function issueWriteTargets(
     targets.push(pinnedRow(key));
   }
   // An Inbox thread row shows its thread's issue title and its priority, and an assignee move
-  // decides whether an open ask's thread is listed here at all. The assignee rule is the
-  // conditional half of the belt `movesInboxThreads` describes: it needs no field the server
-  // only recently writes, so it catches a reassignment an older server's event says nothing of,
-  // in the one direction a listed row can be tested for.
+  // decides whether the thread of an open ask nobody has handed on is listed here at all. The
+  // assignee rule is the conditional half of the belt `movesInboxThreads` describes: it needs no
+  // field the server only recently writes, so it catches a reassignment an older server's event
+  // says nothing of, in the one direction a listed row can be tested for.
   if (!created && (moved("title") || moved("priority") || moved("assignee"))) {
     targets.push(inboxThreadRowsOf(key));
   }

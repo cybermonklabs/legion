@@ -39,7 +39,7 @@ Dispatch sits beside Legion and the Secrets Broker.
 | **Settings** | Projects, repository mappings, architecture sources, and the tokens your agents use. |
 
 The sidebar links the Inbox, Agents, your pinned issues, every project, and Settings. The Inbox
-entry shows one count: the asks waiting on you — those on issues assigned to you — plus the
+entry shows one count: the open asks that wait on you, plus the
 credential requests waiting on you and the threads you have not read. Widening the Inbox's
 filter lists more asks without changing that count. The Agents entry shows a count when an agent
 has replied to you and you have not read it.

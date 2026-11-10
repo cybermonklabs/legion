@@ -24,8 +24,9 @@ A project page has up to three tabs:
   sources**.
 
 Opening a project from the sidebar takes you to Architecture when the project has a source, and to
-Issues otherwise. When an ask in the project is waiting on you — its next move a person's, on an
-issue assigned to you — the header shows a **Blocked on you · N** pill that links to the Inbox.
+Issues otherwise. When an ask in the project is waiting on you — its next move a person's, and
+you are the person it waits on — the header shows a **Blocked on you · N** pill that links to
+the Inbox.
 It counts no credential request: a request belongs to no project.
 
 A project's components can come from more than one repository. Each architecture source is one
@@ -109,7 +110,8 @@ Inbox row. Choose it and pick a value. Closed issues cannot change priority.
 
 ### Assignee
 
-The assignee is the person who answers the issue's asks, and whose Inbox lists them by default.
+The assignee is the person every ask on the issue waits on until somebody hands that ask to
+another person, and whose Inbox lists those asks.
 Change it from the issue header. The choices are **Unassigned** and every login allowed to sign in.
 An agent that creates an issue without naming one gets the person its token acts for, else the
 parent's assignee, else the project's default assignee: the person you name in the projects table

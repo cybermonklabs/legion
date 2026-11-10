@@ -35,8 +35,8 @@ export function waitingOnHuman<
  *  person's and that they have not deferred (`waitingOnHuman`), waiting on them
  *  (`isMine`, the same rule the list's own filter reads, which reads the server's
  *  `waiting_on_person`: whoever the ask was handed to, and the assignee of its issue until
- *  somebody hands it on). A question nobody waits on - one on an issue nobody holds that
- *  nobody was handed, and every document question - is nobody's, so it waits on nobody here.
+ *  somebody hands it on). A question nobody waits on - one on an issue nobody holds, or on a
+ *  project document, that nobody was handed - is nobody's, so it waits on nobody here.
  *  Nobody is the reader until the login resolves, so an unknown viewer is waited on by
  *  nothing: a list taken over the whole inbox while the shell loads would not be theirs.
  *  Every count of such work - the badges, the banner, the Agents page's first card number -

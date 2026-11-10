@@ -30,11 +30,12 @@ func issueThreadLogins(ctx context.Context, tx pgx.Tx, issueKey string, closedMo
 //
 // A status move names issueThreadLogins' logins. An assignee move names the assignee it took the
 // issue from and the one it gave it to (movedAssignees, either of which may be nil for an issue
-// nobody held or nobody holds): the Replies list leaves out an open ask on an open issue assigned
-// to the reader (api/replies.go, myRepliesOwner), so moving the assignee takes those asks out of
-// the new assignee's list and puts them into the old one's. A write that moved both names the
-// union of the two, which is why the result is sorted here rather than taken as
-// events.IssueThreadLogins sorted it.
+// nobody held or nobody holds): the Replies list leaves out an open ask on an open issue that
+// waits on the reader (api/replies.go, myRepliesOwner), so moving the assignee takes the asks
+// nobody has handed on out of the new assignee's list and puts them into the old one's. An ask
+// somebody handed on waits on that person wherever its issue goes, so the move leaves its row
+// where it is. A write that moved both names the union of the two, which is why the result is
+// sorted here rather than taken as events.IssueThreadLogins sorted it.
 //
 // movedAssignees is nil on a write that left the assignee alone, so a status-only move still
 // answers exactly what it answered before.

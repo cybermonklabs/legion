@@ -1146,7 +1146,7 @@ export interface Ask extends AnchorPosition {
    *  once somebody has handed the ask on, and the assignee of its issue until then. Present on
    *  every ask read (inbox rows, ask lists, the ask detail, the issue detail's `open_asks`);
    *  absent on `ask.*` event payloads, as `waiting_on` is, and absent where nobody waits on the
-   *  ask: one on a project document, or on an issue nobody holds that nobody was handed. */
+   *  ask: one on a project document, or on an issue nobody holds, that nobody was handed. */
   readonly waiting_on_person?: string;
   readonly edited_at: string | null;
   /** Present only on a server-created approval ask. */
@@ -1278,8 +1278,8 @@ export interface OpenAsk {
   /** Whose reply would move the currently open ask forward. */
   readonly waiting_on: AskTurn;
   /** The person that reply waits on: whoever the ask was handed to (`asked_of`), and the
-   *  assignee of its issue until somebody hands it on. Empty where nobody waits on it: an ask on
-   *  a project document, or on an issue nobody holds. */
+   *  assignee of its issue until somebody hands it on. Empty where nobody waits on it: an ask
+   *  on a project document, or on an issue nobody holds, that nobody was handed. */
   readonly waiting_on_person?: string;
 }
 

@@ -30,9 +30,9 @@ export function isMine(row: InboxListRow, viewer: string): boolean {
 }
 
 /** Rows nobody waits on: asks the server resolved no person for - one on an issue nobody holds
- *  that nobody was handed, and every document ask (a document has no assignee). Also what
- *  decides whether a row offers "Assign to me". A thread row is the reader's own, so nobody is
- *  never its holder. */
+ *  that nobody was handed, and a document ask nobody was handed (a document has no assignee to
+ *  fall back to). Also what decides whether a row offers "Assign to me". A thread row is the
+ *  reader's own, so nobody is never its holder. */
 export function isUnassigned(row: InboxListRow): boolean {
   return row.kind === "ask" && askWaitingOnPerson(row.ask) === null;
 }
@@ -49,7 +49,7 @@ export const EVERYONE_FILTER_VALUE = "everyone";
  * Whether a row survives the assignee filter, the one place that decides what a filtered list
  * holds. An empty selection is the cleared filter and keeps everything; otherwise an ask is
  * kept when the person it waits on is one of the selected people, or when nobody waits on it
- * (`isUnassigned`, every document ask included) and `unassigned` is selected.
+ * (`isUnassigned`, a document ask nobody was handed included) and `unassigned` is selected.
  *
  * A thread row is the reader's own and nobody else's, so it survives a selection naming them
  * and no other: `unassigned` names nobody, so it drops the threads too.

@@ -556,7 +556,7 @@ function AgentRow({
    *  away. */
   mdViewport: boolean;
   /** This session's open questions that wait on the reader themselves: whose next move is a
-   *  person's, on an issue assigned to them, and not snoozed. */
+   *  person's, which wait on them, and not snoozed. */
   needsYou: number;
   onPin: () => void;
   onSelect: (selected: boolean) => void;
@@ -1175,7 +1175,7 @@ export function AgentsPage(): ReactNode {
     JSON.stringify(next)
   );
   // The first card number: the reader's own work with this session - a question whose next move
-  // is a person's, on an issue assigned to them. One meaning for every count of what waits on
+  // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.
   const needsYouBySession = useMemo(
     () => tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),

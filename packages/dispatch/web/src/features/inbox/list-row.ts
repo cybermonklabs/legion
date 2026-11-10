@@ -72,7 +72,7 @@ export function rowProject(row: InboxListRow): string | null {
  * The person an ask waits on, as the server resolved it (`waiting_on_person`, the one
  * expression `coalesce(a.asked_of, i.assignee)` every list reading an ask shares): whoever the
  * ask was handed to, and the assignee of its issue until somebody hands it on. Null where
- * nobody waits on it - an ask on a project document, or on an issue nobody holds that nobody
+ * nobody waits on it - an ask on a project document or on an issue nobody holds that nobody
  * was handed - which the server sends as an absent field rather than an empty one.
  *
  * The web app does not work this out again: handing an ask on moves it between people without
