@@ -30,16 +30,19 @@
 # left pending on it; the other two panes answer a warm-up task of their own before the step that
 # drives them (the driver's seed says why each claim holds one).
 #
-# Run it from a checkout on a Linux host with go, awk, bash, tar and bun, as
+# Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \
-#     LEGION_TEST_PG_DSN=postgres://<user>@<host>:<port>/<database>?sslmode=disable \
+#     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/provider-error-retry.sh
 # LEGION_OMP_PATH is required and names the Oh My Pi every pane runs, an absolute executable: this
 # proof launches real agents, and no pin is guessed for it. In a Legion worker pod that binary is
 # the fleet's build rather than the branch's fetch, and the driver prints which build it ran.
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on — CI's
-# service, a devbox container and a pod's own embedded PostgreSQL all satisfy it, and this script
-# starts none. The broker is the run's own: a nats-server from LEGION_E2E_NATS_BIN, or the pinned
+# service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback
+# address, and this script starts none. That server must be this machine's: prerequisites reads
+# the DSN with lib/loopback-dsn.sh's require_loopback_dsn and refuses a host that is not
+# 127.0.0.1, localhost or ::1 with exit 2, before it builds or starts anything.
+# The broker is the run's own: a nats-server from LEGION_E2E_NATS_BIN, or the pinned
 # one this script installs with `go install` into a GOBIN of its own, started with JetStream on a
 # port of the run's own and stopped on any exit. PROVIDER_ERROR_RETRY_EVIDENCE_DIR (default a fresh
 # directory under TMPDIR, or /tmp when it is unset, kept and printed) keeps the transcript, the
@@ -49,7 +52,7 @@
 # so it needs bun and the repository's node_modules. It needs no kube context and no tmux — the
 # panes are child process groups of the driver — so it runs in a Legion pod and on a devbox alike.
 # The run around the driver is lib/live-daemon-proof.sh's, which ci-red-no-takeover.sh and
-# merged-root-waits.sh make too.
+# conflict-no-takeover.sh make too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

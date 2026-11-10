@@ -25,9 +25,7 @@ const tables = [
   "delivery_runs",
   "delivery_pull_requests",
   // pull_request_heads and check_results are reached by the cascade below (both carry a
-  // foreign key into issues); default_branch_commits and branch_commits carry none, so they
-  // are named here.
-  "default_branch_commits",
+  // foreign key into issues); branch_commits carries none, so it is named here.
   "branch_commits",
   "user_issue_state",
   "user_agent_state",

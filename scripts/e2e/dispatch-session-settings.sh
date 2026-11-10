@@ -11,8 +11,8 @@
 #
 # This script is setup and cleanup only. The checks are lib/dispatch-session-settings.ts's: each
 # prints `== <name>`, what it observed and `ok <name>`, and the first that fails ends the run
-# non-zero naming it. Run it from a checkout on a Linux host with go, bun, jq, curl and python3, no
-# docker, tmux or root needed, as
+# non-zero naming it. Run it from a checkout on a Linux host with go, bun, jq, curl, psql and
+# python3, no docker, tmux or root needed, as
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     ANTHROPIC_API_KEY=… OPENAI_API_KEY=… bash scripts/e2e/dispatch-session-settings.sh
@@ -40,12 +40,16 @@
 # Everything the run starts is its own and goes on any exit, by the exact pid it was started as: the
 # nats-server, the listener, Dispatch, the process holding the broken provider's port closed, and
 # every Oh My Pi the driver started (it records each pid in $work/omp.pids). Its database is dropped
-# and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP* or PI_*
-# variable of the caller's shell reaches any process of the run: the rig talks only to its own
-# loopback stack.
+# and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*,
+# PGHOSTADDR, PGSERVICE or PGSERVICEFILE variable of the caller's shell reaches any process of
+# the run: the rig talks only to its own loopback stack.
 set -euo pipefail
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
-  case $variable in DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_*) unset "$variable" ;; esac
+  case $variable in
+    DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
+  esac
 done
 
 # The provider keys leave the environment before anything starts, so no process of the run inherits
@@ -77,7 +81,10 @@ nats_pid=
 listener_pid=
 dispatch_pid=
 holder_pid=
+# The run has its database's name from `setup`, before it creates it, so the drop below reads
+# database_created, which the `create database` sets, and never names a database that is not there.
 database=
+database_created=
 ok=
 
 note() { echo "   $*"; }
@@ -105,8 +112,9 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
-  if [ -n "$database" ]; then
-    bun "$driver" db-drop "$database" || echo "could not drop database $database; drop it by hand" >&2
+  if [ -n "$database_created" ]; then
+    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+      echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
   if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
@@ -123,9 +131,16 @@ trap 'exit 143' TERM
 echo "== setup"
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-for tool in go bun jq curl tar python3; do
+for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
+# The database's name is only this shell's pid and random bytes, so the run has it here, and the
+# one read of the DSN runs in this step, before the builds, the services and the `create
+# database` further down: the rewrite refuses every DSN the loopback guard refuses, and a DSN
+# whose values the connection string cannot carry as well. Its answer is the connection string
+# the run keeps, and its refusal is the line this script fails with.
+database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -190,8 +205,8 @@ nats_pid=$!
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
-database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-database_url=$(bun "$driver" db-create "$database") || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+database_created=1
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&

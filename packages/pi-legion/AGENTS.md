@@ -2,8 +2,8 @@
 
 Tracked Oh My Pi extension package `@sjawhar/pi-legion`: the Legion entry (`extensions/legion.ts`),
 the Legion lifecycle modules (`src/`), the task agents Legion's prompts dispatch (`agents/`), and
-the seven Legion skills (`legion-architect`, `legion-controller`, `legion-oracle`, `legion-retro`,
-`legion-worker`, `leading-a-work-stream`, `simplify-settled-diff`),
+the six Legion skills (`legion-architect`, `legion-controller`, `legion-oracle`, `legion-retro`,
+`legion-worker`, `simplify-settled-diff`),
 staged into `dist/skills` by `scripts/pi-plugin-prepack.sh` at the repository root. It is installed
 beside `@sjawhar/pi-envoy` (`packages/pi-envoy`), which every session loads for Envoy messaging and
 the Dispatch tools; the Legion daemon installs both into its Oh My Pi profile and a worker image
@@ -591,7 +591,11 @@ refusal changed nothing, and an accepted completion is answered with an empty ob
 merger merges and the daemon submits no merge. The
 operation mints its grant in-process and posts it with the request; nothing is written to the
 pane. A predecessor's handoff is read with `dispatch handoff-read`, at the version the task's
-`Handoff:` line names (`--version <n>`). GitHub is the pane's
+`Handoff:` line names (`--version <n>`), except the plan.
+The plan is the issue's `plan.md` document, which its planner goes on writing after the planning
+phase ends, so a worker builds from `plan.md` at the newest version the plan review approved, the
+version the `Approval:` line of `dispatch read` names, and reads the
+`Handoff: plan version <n>` line as the receipt for the record the daemon accepted. GitHub is the pane's
 `gh` and `git`, which read the role's App tokens from the gh bundle under `LEGION_GH_OWNERS_DIR`; no
 tool operation writes to GitHub for a role. Review threads are the pull request author's to
 resolve: the reviewer, whose review
