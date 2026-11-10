@@ -509,6 +509,34 @@ const unreachable = new NetworkError(
   new TypeError("Failed to fetch")
 );
 
+/** Waits out the send deadline of the press now in flight and stops the write it left, as the
+ *  reader does at the shell's indicator, then waits out the minute the stopped write takes to
+ *  settle. The press is the reader's to make again afterwards. */
+async function stopTheLateWrite(queryClient: QueryClient): Promise<void> {
+  await tick(SEND_DEADLINE_MS + 1_000);
+  const [late] = writesOf(queryClient).rows();
+  expect(late?.status).toBe("late");
+  act(() => {
+    writesOf(queryClient).stop(late?.id ?? 0);
+  });
+  await tick(60_000);
+}
+
+/** The press made again is the stopped one: one more attempt, under the first's key, carrying
+ *  the base read for that press, which was read once and not since. */
+function expectTheStoppedPressAgain(
+  uploadArtifact: Mock<typeof api.uploadArtifact>,
+  ownerArtifactText: Mock<typeof api.ownerArtifactText>,
+  stopped: number
+): void {
+  expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+  const first = uploadArtifact.mock.calls[0];
+  const again = uploadArtifact.mock.calls.at(-1);
+  expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
+  expect(again?.[2].key).toBe(first?.[2].key);
+  expect(ownerArtifactText).toHaveBeenCalledTimes(1);
+}
+
 // A press the reader stopped is no verdict: it may have reached Dispatch, which answers its key
 // with what it did there. So the press made again goes under that key, and the key covers the
 // whole body, the `precondition` field included - a press that read the token afresh would read
@@ -528,13 +556,7 @@ test("pressing Upload again after a stopped press sends that press's base under 
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
-    await tick(SEND_DEADLINE_MS + 1_000);
-    const [late] = writesOf(view.queryClient).rows();
-    expect(late?.status).toBe("late");
-    act(() => {
-      writesOf(view.queryClient).stop(late?.id ?? 0);
-    });
-    await tick(60_000);
+    await stopTheLateWrite(view.queryClient);
     expect(screen.getByRole("alert")).not.toBeNull();
     const stopped = uploadArtifact.mock.calls.length;
 
@@ -542,12 +564,62 @@ test("pressing Upload again after a stopped press sends that press's base under 
     await user.click(screen.getByRole("button", { name: "Upload" }));
     await tick(1_000);
 
+    expectTheStoppedPressAgain(uploadArtifact, ownerArtifactText, stopped);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+/** The file one upload attempt carried, for a case that tells two files apart: what the client
+ *  takes either carries a file or the text of a document. */
+function fileSent(input: Parameters<typeof api.uploadArtifact>[1] | undefined): Blob | undefined {
+  return input !== undefined && "file" in input ? input.file : undefined;
+}
+
+// A press of another file is a press of its own, however alike the two read: a `File` carries no
+// field `JSON.stringify` writes, so each is `{}` to it and, under one base token, the two
+// presses' variables are the same text. Sent under the stopped press's key, the second file
+// would be answered `422 KEY_REUSED` once the first press reached Dispatch, and nothing of it
+// would be stored.
+test("a press of another file after a stopped press goes under a key of its own", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  // One token for both reads, so nothing but the file itself tells the two presses apart.
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    const other = new File(["other words"], "notes.md", { type: "text/markdown" });
+    expect(JSON.stringify({ base: { token: "sha256:chosen" }, file })).toBe(
+      JSON.stringify({ base: { token: "sha256:chosen" }, file: other })
+    );
+
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.upload(screen.getByLabelText("Upload artifact"), [other]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await tick(1_000);
+
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
     const first = uploadArtifact.mock.calls[0];
-    const again = uploadArtifact.mock.calls.at(-1);
-    expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
-    expect(again?.[2].key).toBe(first?.[2].key);
-    expect(ownerArtifactText).toHaveBeenCalledTimes(1);
+    const second = uploadArtifact.mock.calls.at(-1);
+    expect(fileSent(second?.[1])).toBe(other);
+    expect(second?.[2].key).not.toBe(first?.[2].key);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
@@ -574,13 +646,63 @@ test("a draft's Retry after a stopped upload sends that press's base under its k
     fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [file] } });
     // The base is read before the write is made, so the write's own deadline starts here.
     await tick(1_000);
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expectTheStoppedPressAgain(uploadArtifact, ownerArtifactText, stopped);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// The hook holds the press the reader stopped, and that press is the one Retry makes again: one
+// judge of what goes out and of the key it goes under. Here a paste carries two files and the
+// reader stops the second before the first, so the press the field's own state names is not the
+// press the hook holds. Read from that state instead, a Retry sends the second press's body
+// under a key the hook mints afresh - one Dispatch has never seen - so whatever the stopped
+// attempt landed is stored a second time.
+test("a draft's Retry makes the press the hook holds, under that press's key", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderWith(<DraftHarness />);
+
+  try {
+    const notes = new File(["content"], "notes.md", { type: "text/markdown" });
+    // A picture replaces no document, so its press names no base: the two presses differ in
+    // their text as well as in their files.
+    const chart = new File(["bytes"], "chart.png", { type: "image/png" });
+    fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [notes, chart] } });
+    // Each press's deadline starts once its file is kept, and the second file is kept behind the
+    // first, so the window is crossed once for each of them.
+    await tick(1_000);
     await tick(SEND_DEADLINE_MS + 1_000);
-    const [late] = writesOf(view.queryClient).rows();
-    expect(late?.status).toBe("late");
+    await tick(SEND_DEADLINE_MS + 1_000);
+    const rows = writesOf(view.queryClient).rows();
+    expect(rows.map((row) => row.status)).toEqual(["late", "late"]);
+    // The second press is stopped first, so the press the hook holds is the first one while the
+    // field's own refusal is the second one's.
     act(() => {
-      writesOf(view.queryClient).stop(late?.id ?? 0);
+      writesOf(view.queryClient).stop(rows[1]?.id ?? 0);
     });
     await tick(60_000);
+    act(() => {
+      writesOf(view.queryClient).stop(rows[0]?.id ?? 0);
+    });
+    await tick(60_000);
+    const key = uploadArtifact.mock.calls.find((call) => fileSent(call[1]) === notes)?.[2].key;
     const stopped = uploadArtifact.mock.calls.length;
 
     uploadArtifact.mockResolvedValue(UPLOADED);
@@ -588,10 +710,11 @@ test("a draft's Retry after a stopped upload sends that press's base under its k
     await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
-    const first = uploadArtifact.mock.calls[0];
     const again = uploadArtifact.mock.calls.at(-1);
+    expect(fileSent(again?.[1])).toBe(notes);
+    expect(again?.[2].key).toBe(key);
+    // Base and all: nothing was read for it, so it sends the bytes its key covers.
     expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
-    expect(again?.[2].key).toBe(first?.[2].key);
     expect(ownerArtifactText).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();

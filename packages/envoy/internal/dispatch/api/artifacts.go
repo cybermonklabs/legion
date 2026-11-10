@@ -441,21 +441,48 @@ const uploadBaseAdvice = "read the document with `dispatch doc-read`, which prin
 	"`Document token: sha256:…`, and upload again naming that token as " +
 	"`--precondition-json '{\"document\":\"sha256:…\"}'`"
 
-// uploadPreconditionFailed is an upload refused for a token the document has moved past, worded
-// for the caller this route answers. The document service reports which tree the token missed
-// and nothing else (docs.ErrPreconditionFailed): the number of the version the client is behind
-// and the sentence telling it where a current token is printed are this route's own, so they are
-// held here and the 409 reads both off this error (writeHandlerError).
-type uploadPreconditionFailed struct {
-	stale   *docs.ErrPreconditionFailed
-	version int
-}
+// errUploadCreatesTheDocument reports an upload that names a token under a name its owner holds
+// nothing under. The route creates the document rather than replacing a version, so no document
+// write is made and no error of the document service reports it: this one carries the case to
+// writeUploadDocumentError, which refuses it as it refuses a repair naming a token, since
+// neither document has a token to answer with.
+var errUploadCreatesTheDocument = errors.New("an upload creating a document names no version, so it names no token")
 
-func (e *uploadPreconditionFailed) Error() string {
-	return e.stale.Error() + "; " + uploadBaseAdvice
+// writeUploadDocumentError answers an upload whose document write was refused, which is where
+// this route's words meet the document service's: the service reports which tree a token missed
+// and knows neither the version rows nor a command its reader runs, so the number of the version
+// the client is behind and the sentence saying where a current token is printed are added here.
+// version is the number the document stands at, which this route read beside its write.
+//
+// A token named where the document has none for it to name is refused with a sentence of its own
+// and no live token beside it: an upload creating a document names a version that is not there,
+// and a repair's live tree is outside the Proof schema, which renders no markdown and has no
+// token at all. Neither reader can be sent to `dispatch doc-read` for a current token, because
+// nothing can print one, so both are told to send the upload again naming none.
+func (s *server) writeUploadDocumentError(w http.ResponseWriter, err error, name string, version int) {
+	var stale *docs.ErrPreconditionFailed
+	if errors.As(err, &stale) {
+		body := editPreconditionBody(stale)
+		body.Current.Version = &version
+		body.Error += "; " + uploadBaseAdvice
+		WriteJSON(w, http.StatusConflict, body)
+		return
+	}
+	// The write knows no document is named, only that a token was wanted and none came.
+	if errors.Is(err, docs.ErrPreconditionRequired) {
+		s.writeHandlerError(w, errorf(http.StatusBadRequest, "PRECONDITION_REQUIRED",
+			"an upload replacing document %q must name the token of the version it replaces: "+uploadBaseAdvice,
+			name))
+		return
+	}
+	if errors.Is(err, docs.ErrPreconditionUnavailable) || errors.Is(err, errUploadCreatesTheDocument) {
+		s.writeHandlerError(w, errorf(http.StatusConflict, "PRECONDITION_FAILED",
+			"%q has no token for this upload to name, so it replaces nothing: send it again naming no token",
+			name))
+		return
+	}
+	s.writeHandlerError(w, err)
 }
-
-func (e *uploadPreconditionFailed) Unwrap() error { return e.stale }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
 // decoded version the route returns to its caller. Uploads keep this separate from
@@ -639,14 +666,10 @@ func (s *server) storeArtifact(
 			// A first upload under a name the owner holds nothing under replaces nothing, so a
 			// token names a version that is not there: the caller read something this owner
 			// does not hold, or another writer has taken the name since. The caller believed
-			// its write was conditional, so it is refused rather than taken, with a sentence of
-			// its own and no live token beside it: this owner holds no document under the name,
-			// so there is no token to answer with, and telling the caller to read one would
-			// send it after a token nothing can print.
+			// its write was conditional, so it is refused rather than taken, and refused as a
+			// repair naming a token is, since neither document has a token to answer with.
 			if input.precondition != nil {
-				s.writeHandlerError(w, errorf(http.StatusConflict, "PRECONDITION_FAILED",
-					"%q names no document of this owner, so this upload creates one and replaces nothing: send it again naming no token",
-					input.name))
+				s.writeUploadDocumentError(w, errUploadCreatesTheDocument, input.name, nextNumber-1)
 				return
 			}
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
@@ -660,32 +683,10 @@ func (s *server) storeArtifact(
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor, input.precondition)
 		}
 		if err != nil {
-			// The document service knows the tree the token missed, not the version rows; this
-			// route has just read the next number, so the version the client is behind is the one
-			// before it. The refusal carries both, and says where a current token is printed, as
-			// the refusal of an upload naming none does. Nothing is written.
-			var stale *docs.ErrPreconditionFailed
-			if errors.As(err, &stale) {
-				err = &uploadPreconditionFailed{stale: stale, version: nextNumber - 1}
-			}
-			// The write knows no document is named, only that a token was wanted and none came.
-			if errors.Is(err, docs.ErrPreconditionRequired) {
-				err = errorf(http.StatusBadRequest, "PRECONDITION_REQUIRED",
-					"an upload replacing document %q must name the token of the version it replaces: "+uploadBaseAdvice,
-					input.name)
-			}
-			// A repair is the one upload over an existing document that names no token: its
-			// live tree is outside the Proof schema, so it renders no markdown and has no token
-			// for anybody to name. One that names a token is refused with a sentence of its own
-			// and no live token beside it, as a first upload naming one is, since there is no
-			// token to read and sending the caller after one would send it after a token
-			// nothing can print.
-			if errors.Is(err, docs.ErrPreconditionUnavailable) {
-				err = errorf(http.StatusConflict, "PRECONDITION_FAILED",
-					"document %q is outside the Proof schema, so it has no token and this upload repairs it whole: send it again naming no token",
-					input.name)
-			}
-			s.writeHandlerError(w, err)
+			// The document service knows the tree a token missed and nothing of this route's
+			// own; the refusal the client reads is worded where the two meet. Nothing is
+			// written.
+			s.writeUploadDocumentError(w, err, input.name, nextNumber-1)
 			return
 		}
 		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary)

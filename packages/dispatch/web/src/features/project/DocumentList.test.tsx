@@ -1,12 +1,16 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit, and act for the stop of a late write
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { DocumentList } from "./DocumentList";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
@@ -59,7 +63,7 @@ function renderList(artifacts: Artifact[]) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { listProjectArtifacts, view };
+  return { listProjectArtifacts, queryClient, view };
 }
 
 test("Documents requests unlinked project artifacts and links a document to its project page", async () => {
@@ -227,5 +231,43 @@ test("a New document Dispatch refused over a name it holds says the name is take
     view.unmount();
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();
+  }
+});
+
+// Stop trying is no verdict of Dispatch's: the create may have reached it, and a press of Create
+// again asks under the same key. The shell lets go of an inline write the reader stopped, so this
+// form is the only place they read what became of it, and the words it shows are the stopped
+// write's own - which say what a retry of it does. "Could not upload the artifact." names the
+// wrong thing and promises nothing.
+test("a New document the reader stopped says what the stopped write says", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { listProjectArtifacts, queryClient, view } = renderList([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE/artifacts", new TypeError("Failed to fetch"))
+  );
+
+  try {
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await tick(SEND_DEADLINE_MS + 1_000);
+    const [late] = writesOf(queryClient).rows();
+    expect(late?.status).toBe("late");
+    act(() => {
+      writesOf(queryClient).stop(late?.id ?? 0);
+    });
+    await tick(60_000);
+
+    expect(screen.getByRole("alert").textContent).toBe(new SendStoppedError().message);
+    // The form stands, so Create presses again - under that same key, as those words say.
+    expect(screen.getByRole("form", { name: "New document" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
+    uploadArtifact.mockRestore();
+    realClock();
   }
 });

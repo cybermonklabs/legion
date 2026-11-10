@@ -74,6 +74,28 @@ type editPreconditionError struct {
 	Mismatches []model.EditPreconditionMismatch `json:"mismatches"`
 }
 
+// editPreconditionBody reads that body off the refusal: the live document token, the block
+// tokens the write found, and the mismatches that named them. The version is the caller's to
+// fill in, since the write reads no version rows: an edit's refusal names none, and an upload's
+// names the number it read beside its write and adds the sentence saying where a current token
+// is printed (writeUploadDocumentError).
+func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
+	currentBlocks := make([]model.EditBlockPrecondition, 0)
+	for _, mismatch := range failed.Mismatches {
+		if mismatch.Scope == "block" && mismatch.Current != nil {
+			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
+				ID: mismatch.BlockID, Token: *mismatch.Current,
+			})
+		}
+	}
+	return editPreconditionError{
+		Code:       "PRECONDITION_FAILED",
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
+		Error:      failed.Error(),
+		Mismatches: failed.Mismatches,
+	}
+}
+
 // editLostError is the 409 EDIT_LOST_TO_CONCURRENT_CHANGE body a document write answers when a
 // concurrent browser change removed its text before it could be versioned. A write refused for
 // an accepted comment names that comment in Suggestion and no operation index; any other names
@@ -129,35 +151,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 
 	var preconditionFailed *docs.ErrPreconditionFailed
 	if errors.As(err, &preconditionFailed) {
-		currentBlocks := make([]model.EditBlockPrecondition, 0)
-		for _, mismatch := range preconditionFailed.Mismatches {
-			if mismatch.Scope == "block" && mismatch.Current != nil {
-				currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
-					ID: mismatch.BlockID, Token: *mismatch.Current,
-				})
-			}
-		}
-		// An upload's refusal carries what only its route knows: the version the client is
-		// behind and the sentence sending it to `dispatch doc-read` for a current token
-		// (uploadPreconditionFailed). An edit's refusal carries neither, and reads as the
-		// document service wrote it.
-		message := preconditionFailed.Error()
-		var currentVersion *int
-		var upload *uploadPreconditionFailed
-		if errors.As(err, &upload) {
-			message = upload.Error()
-			currentVersion = &upload.version
-		}
-		WriteJSON(w, http.StatusConflict, editPreconditionError{
-			Code: "PRECONDITION_FAILED",
-			Current: editPreconditionCurrent{
-				Blocks:   currentBlocks,
-				Document: preconditionFailed.CurrentDocument,
-				Version:  currentVersion,
-			},
-			Error:      message,
-			Mismatches: preconditionFailed.Mismatches,
-		})
+		WriteJSON(w, http.StatusConflict, editPreconditionBody(preconditionFailed))
 		return
 	}
 	// A write whose text a concurrent browser change removed before the write could be versioned

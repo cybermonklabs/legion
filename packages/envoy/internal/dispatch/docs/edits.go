@@ -227,7 +227,7 @@ var ErrPreconditionUnavailable = errors.New("an upload repairing a document outs
 // CurrentDocument is the token the live tree carries now, which is what the write read. How far
 // behind the client is, and what it should do next, are the caller's: the write reads no version
 // rows and knows no command its reader runs, so the route that answers the client words both
-// (api's uploadPreconditionFailed).
+// (api's writeUploadDocumentError).
 type ErrPreconditionFailed struct {
 	CurrentDocument string
 	Mismatches      []model.EditPreconditionMismatch

@@ -51,12 +51,32 @@ export type KeyedWriteMade<TData, TVariables> =
       readonly request: (variables: TVariables) => WriteRequest<TData>;
     };
 
+/** What a `File` serialises as when variables are compared: a name of its own, which it keeps
+ *  for as long as the file is held. `JSON.stringify` writes a `File` as `{}` - a file has no
+ *  fields of its own to write - so two files a person picked one after the other serialise
+ *  alike however little they have in common, and nothing but the file itself tells them apart. */
+const fileNames = new WeakMap<File, string>();
+let filesNamed = 0;
+
+/** `value` as it is compared: a `File` by the file it is, every other value by what it holds. */
+function byFileIdentity(_key: string, value: unknown): unknown {
+  if (!(value instanceof File)) return value;
+  let named = fileNames.get(value);
+  if (named === undefined) {
+    filesNamed += 1;
+    named = `file ${filesNamed}`;
+    fileNames.set(value, named);
+  }
+  return named;
+}
+
 /** Whether `a` and `b` are the same variables: one value, or two that serialise alike (a form
- *  built afresh at each submit); variables that do not serialise are only themselves. */
+ *  built afresh at each submit), a `File` among them being only itself (`byFileIdentity`);
+ *  variables that do not serialise are only themselves. */
 function sameVariables(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   try {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return JSON.stringify(a, byFileIdentity) === JSON.stringify(b, byFileIdentity);
   } catch {
     return false;
   }
@@ -79,6 +99,11 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
 > & {
   readonly unanswered: UnansweredLanding<TVariables> | undefined;
   readonly forgetUnanswered: () => void;
+  /** The press the reader stopped, which a `mutate` of the same variables makes again under its
+   *  key, or `undefined` where the last press ended any other way. A surface that sends such a
+   *  press again reads it here rather than working it out for itself, so what it sends and the
+   *  key that press goes out under are decided by the one rule. */
+  readonly stopped: () => TVariables | undefined;
 };
 
 /**
@@ -90,11 +115,13 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * then and rolls it back on anything but a landing. A `mutate` of the same variables a press the
  * reader stopped was made with is that press made again, under its key - Dispatch may have taken
  * it, and answers the key with what it did - while one after Dispatch's own refusal is a new
- * press, since Dispatch would answer the old key with that refusal. It runs whether or not the
- * browser says it is online (`networkMode: "always"`): the write's own tries wait out a network
- * that is down, and a mutation TanStack paused offline would make none, never go late and never
- * offer Stop trying. A press that lands with no answer is kept as `unanswered` for the surface
- * to say so, until the next press or `forgetUnanswered`.
+ * press, since Dispatch would answer the old key with that refusal. The stopped press is the
+ * surface's to read (`stopped`), so a surface making it again makes that press rather than judging
+ * for itself which press the key covers. It runs whether or not the browser says it is online
+ * (`networkMode: "always"`): the write's own tries wait out a network that is down, and a mutation
+ * TanStack paused offline would make none, never go late and never offer Stop trying. A press that
+ * lands with no answer is kept as `unanswered` for the surface to say so, until the next press or
+ * `forgetUnanswered`.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
@@ -115,6 +142,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     undefined
   );
   const forgetUnanswered = useCallback(() => setUnanswered(undefined), []);
+  const stoppedPress = useCallback(() => stopped.current?.variables, []);
   const mutation = useMutation({
     ...options,
     mutationFn: (variables: TVariables) => {
@@ -152,5 +180,5 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     },
     networkMode: "always",
   });
-  return { ...mutation, forgetUnanswered, unanswered };
+  return { ...mutation, forgetUnanswered, stopped: stoppedPress, unanswered };
 }

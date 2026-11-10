@@ -188,7 +188,7 @@ draft to send as-is.
 
 An upload that does replace a document the owner already holds under that name says which version it replaces.
 Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--precondition-json '{"document":"sha256:…"}'`.
-An upload that names no token is refused `400 PRECONDITION_REQUIRED`, and one naming a token the document has moved past is refused `409 PRECONDITION_FAILED`, which names the live token and the live version; nothing is written either way: read the document again, decide what the new version says, and upload again.
+An upload that names no token is refused `400 PRECONDITION_REQUIRED`, and one naming a token the document has moved past is refused `409 PRECONDITION_FAILED`; nothing is written either way, and the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
 A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end

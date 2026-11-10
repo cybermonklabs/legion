@@ -334,7 +334,7 @@ ends in `.md`.
 
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`.
-A token behind the live document is refused `409 PRECONDITION_FAILED`, which names the live token and the live version number, and nothing is written: read the document again, decide what the new version says, and upload again.
+A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
 An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
 A first upload of a name replaces no version, so it names no token.
 

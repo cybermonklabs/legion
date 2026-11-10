@@ -17,8 +17,9 @@ import (
 // uploadBase is the token an upload replacing a document names: the one the document carries
 // now, read the way `dispatch doc-read` reads it (GET /api/v1/artifacts/{id}/text). A JSON upload
 // sends the object this returns under `precondition`, a multipart upload its JSON text in the
-// form field of that name (uploadBaseField).
-func uploadBase(t *testing.T, handler http.Handler, artifactID string) map[string]string {
+// form field of that name (uploadBaseField), and the upload benchmark the token alone
+// (BenchmarkUploadVersion), which is why this takes a benchmark's TB as well as a test's.
+func uploadBase(t testing.TB, handler http.Handler, artifactID string) map[string]string {
 	t.Helper()
 	return map[string]string{"document": readDocumentPrecondition(t, handler, artifactID).Token}
 }

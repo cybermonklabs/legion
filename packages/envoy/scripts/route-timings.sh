@@ -160,9 +160,14 @@ fi
     "$issue" "$large_artifact" >&2
   exit 1
 }
+# Every read of a document goes by its slug: a name carries spaces and other characters a path
+# would have to encode, and a slug carries none.
 large_slug="$(jq -r --arg name "$large_artifact" \
   'map(select(.name == $name)) | .[0].slug // empty' <<<"$documents")"
 [[ -n "$large_slug" ]] || { printf '%s carries no document named %s\n' "$issue" "$large_artifact" >&2; exit 1; }
+slug="$(jq -r --arg name "$artifact" \
+  'map(select(.name == $name)) | .[0].slug // empty' <<<"$documents")"
+[[ -n "$slug" ]] || { printf '%s carries no document named %s\n' "$issue" "$artifact" >&2; exit 1; }
 
 # The large upload writes back the document's own current markdown with one line added, so every
 # one of its requests is an upload over a latest version in the 100-660 KB band. A small body
@@ -227,19 +232,21 @@ measure() {
 # size it was. The line is plain prose: an upload is parsed as a Proof document, which accepts
 # no HTML comment.
 payload() {
-  local kind="$1" round="$2"
+  local kind="$1" round="$2" base
   case "$kind" in
     comment) jq -nc --arg body "$(body "$round")" '{body: $body}' ;;
     ask) jq -nc --arg question "$(body "$round" "$ask_bytes")" '{question: $question}' ;;
     message) jq -nc --arg body "$(body "$round")" '{body: $body}' ;;
     upload)
-      jq -nc --arg name "$artifact" --arg content "$(body "$round")" --arg base "$(document_token "$artifact")" \
+      base="$(document_token "$slug")" || exit 1
+      jq -nc --arg name "$artifact" --arg content "$(body "$round")" --arg base "$base" \
         '{name: $name, content: $content, precondition: {document: $base}}'
       ;;
     title) jq -nc --arg title "Bench round ${round} survey" '{title: $title}' ;;
     large-upload)
       printf '\nBench round %s of the survey.\n' "$round" >>"${workdir}/large.md"
-      jq -nc --arg name "$large_artifact" --rawfile content "${workdir}/large.md" --arg base "$(document_token "$large_slug")" \
+      base="$(document_token "$large_slug")" || exit 1
+      jq -nc --arg name "$large_artifact" --rawfile content "${workdir}/large.md" --arg base "$base" \
         '{name: $name, content: $content, precondition: {document: $base}}'
       ;;
     *) printf 'no such body: %s\n' "$kind" >&2; exit 1 ;;
@@ -248,15 +255,19 @@ payload() {
 
 # document_token is the token of the version the next upload over that document replaces, read
 # fresh each round because every round writes a version and moves it. Both uploads write over a
-# name the issue already carries, and Dispatch refuses a replacement that names no token, so the
-# read is part of building the body; it runs in payload, before the timed request, so no reading
-# of it is counted in a route's time.
+# document the issue already carries, and Dispatch refuses a replacement that names no token, so
+# the read is part of building the body; it runs in payload, before the timed request, so no
+# reading of it is counted in a route's time.
+#
+# A read that answers no token stops the run, and the caller is where it stops: this runs inside
+# the command substitution that takes its token, so an exit of its own would end that subshell
+# and leave the run posting an empty token.
 document_token() {
   local document="$1" token
   token="$(request "${url}/api/v1/issues/${issue}/artifacts/${document}/text" | jq -r '.token // empty')"
   [[ -n "$token" ]] || {
     printf '%s carries no document token for %s; the upload has no version to name\n' "$issue" "$document" >&2
-    exit 1
+    return 1
   }
   printf '%s' "$token"
 }

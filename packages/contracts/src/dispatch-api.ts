@@ -1433,7 +1433,12 @@ interface CreateArtifactOptions {
    *  `400 PRECONDITION_REQUIRED`. A token behind the live document is refused
    *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
    *  live version number. A first upload under a name replaces no version, and a file is no
-   *  document, so neither names one. */
+   *  document, so neither names one. An upload that names a token where the document has none
+   *  for it to name — a first upload under a name its owner holds nothing under, and the repair
+   *  of a document whose live tree is outside the Proof schema — is refused
+   *  `409 PRECONDITION_FAILED` carrying `code` and `error` alone: there is no live token to put
+   *  in a `current`, and no mismatch to report, so the refusal asks for the upload again naming
+   *  no token. */
   readonly precondition?: UploadPrecondition;
   readonly actor?: Actor;
 }

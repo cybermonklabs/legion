@@ -30,7 +30,6 @@ import { formatArtifactBytes, versionsNewestFirst } from "../artifacts/ArtifactH
 import {
   ArtifactDropZone,
   ArtifactUploadStatus,
-  uploadErrorMessage,
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
 import { ApprovalChip } from "../doc/ApprovalChip";
@@ -49,19 +48,26 @@ function nameTaken(name: string): string {
   return `A document named ${name} already exists`;
 }
 
+/** What the form says of a refusal that says nothing itself: it calls what it could not make a
+ *  document, the thing this form makes, rather than an artifact. */
+const CREATE_REFUSAL = "Could not create the document.";
+
 /** What the form says when Dispatch refused the document it posted under `name`. Dispatch
  *  refuses an upload under the name of a document that already exists unless it names the
  *  version it replaces (`400 PRECONDITION_REQUIRED`), and a new document replaces nothing, so
  *  it names none: the name is held by a document this list did not show - one created since the
  *  list was read, or one whose slug this title matches - which is what the duplicate check says
- *  above in the page's own words. The server's own sentence is written for a caller holding the
- *  `dispatch` command, which a person in a browser has no way to run, so every other refusal is
- *  the one the upload route gives a person (`uploadErrorMessage`). */
+ *  above in the page's own words. The server's own sentence for that one is written for a caller
+ *  holding the `dispatch` command, which a person in a browser has no way to run, so the form
+ *  says the name is taken instead. Every other refusal is shown in its own words: the create is
+ *  `inline`, so the shell lets go of a write the reader stopped and this form is the only place
+ *  they read what became of it, and what a stopped write says is that a Retry asks again under
+ *  the same key. */
 function createRefusal(error: Error | null, name: string | undefined): string {
   if (name !== undefined && error instanceof ApiError && error.code === "PRECONDITION_REQUIRED") {
     return nameTaken(name);
   }
-  return uploadErrorMessage(error);
+  return error === null || error.message === "" ? CREATE_REFUSAL : error.message;
 }
 
 function DocumentRow({ document }: { document: Artifact }): ReactNode {

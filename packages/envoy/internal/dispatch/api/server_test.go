@@ -365,7 +365,7 @@ func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *h
 	}
 }
 
-func dispatchRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
+func dispatchRequest(t testing.TB, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
 	t.Helper()
 	if strings.HasSuffix(target, "/answer") {
 		data, err := json.Marshal(body)
@@ -503,7 +503,7 @@ func assertRefusal(t *testing.T, request string, status int, body []byte, code, 
 	}
 }
 
-func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
+func decodeBody[T any](t testing.TB, response *httptest.ResponseRecorder) T {
 	t.Helper()
 	var value T
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {

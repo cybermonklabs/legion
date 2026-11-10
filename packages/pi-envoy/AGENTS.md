@@ -921,7 +921,7 @@ directive, not as an issue-level `dispatch ask`. Every request a command sends h
 
 `dispatch artifact` takes a `--precondition-json` of its own, the document token alone: an upload replaces the whole document, so a `blocks` guard in one returns `INVALID_PRECONDITION`.
 An upload over a document the owner already holds under that name names the token of the version it replaces, the one `dispatch doc-read` prints as `Document token: sha256:…`, and one that names none returns `PRECONDITION_REQUIRED`.
-A token behind the live document returns `PRECONDITION_FAILED` with the live token and the live version number, and writes nothing: read the document again, decide what the new version says, and upload again.
+A token behind the live document returns `PRECONDITION_FAILED` and writes nothing: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
 A first upload of a name replaces no version, so it names no token.
 
 With Dispatch configured, a `context` handler (`src/dispatch-first.ts`) puts the `dispatch-first`

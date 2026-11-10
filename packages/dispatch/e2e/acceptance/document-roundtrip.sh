@@ -41,13 +41,28 @@ case "$project_status" in
     ;;
 esac
 
+work="$(mktemp -d)"
+readonly work
+trap 'rm -rf "$work"' EXIT
+
 # A run after the first finds the project and the document its last run left, and Dispatch refuses
 # a replacement that names no token, so the upload names the token of the version it replaces where
-# the project holds that document; a first run reads none and sends none.
-base="$(
-  curl --silent --show-error "${headers[@]}" \
-    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$name/text" | jq --raw-output '.token // empty'
+# the project holds that document; a first run reads none and sends none. A 404 is that first run,
+# and that status alone: any other answer stops the script naming the status it was, rather than
+# reading no token out of it and letting the upload report the 400 PRECONDITION_REQUIRED that
+# follows as the cause.
+text_status="$(
+  curl --silent --show-error --output "$work/text" --write-out '%{http_code}' "${headers[@]}" \
+    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$name/text"
 )"
+case "$text_status" in
+  200) base="$(jq --exit-status --raw-output '.token' <"$work/text")" ;;
+  404) base="" ;;
+  *)
+    printf 'read %s/%s: expected 200 or 404, got %s\n' "$project" "$name" "$text_status" >&2
+    exit 1
+    ;;
+esac
 readonly base
 artifact="$(
   curl --fail-with-body --silent --show-error \
