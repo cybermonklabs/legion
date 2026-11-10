@@ -97,6 +97,8 @@ type timedObservation struct {
 	fieldKey
 	value json.RawMessage
 	at    time.Time
+	// supersede deletes the field's rows after at before this one is written.
+	supersede bool
 }
 
 // ApplyPush stores one delivery in one transaction and answers the last sequence number the
@@ -307,10 +309,18 @@ func observationsOf(events []PushEvent, current map[fieldKey]heldValue, snapshot
 		switch {
 		case !ok && string(value) == "null":
 			return
+		case ok && jsonEqual(held.value, value):
+			return
+		case ok && at.Before(held.at) && snapshot:
+			// A snapshot is the daemon's current value: one it changed at `at` refutes every
+			// later row Dispatch holds for the field (a daemon restarted onto older state, or a
+			// value Dispatch stored that the daemon never kept), so those rows go and this one
+			// is the newest.
+			newest[key] = heldValue{value: value, at: at}
+			rows = append(rows, timedObservation{fieldKey: key, value: value, at: at, supersede: true})
+			return
 		case ok && at.Before(held.at):
 			rows = append(rows, timedObservation{fieldKey: key, value: value, at: at})
-			return
-		case ok && jsonEqual(held.value, value):
 			return
 		}
 		newest[key] = heldValue{value: value, at: at}
@@ -402,6 +412,17 @@ func jsonEqual(a, b json.RawMessage) bool {
 func writeObservations(ctx context.Context, tx pgx.Tx, project string, rows []timedObservation) error {
 	if len(rows) == 0 {
 		return nil
+	}
+	for _, row := range rows {
+		if !row.supersede {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			delete from legion_observations
+			where project = $1 and issue_key = $2 and field = $3 and observed_at > $4
+		`, project, row.issue, row.field, row.at); err != nil {
+			return fmt.Errorf("replace the Legion observations of %s: %w", project, err)
+		}
 	}
 	issues, fields, values, ats := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows)), make([]time.Time, len(rows))
 	for index, row := range rows {
