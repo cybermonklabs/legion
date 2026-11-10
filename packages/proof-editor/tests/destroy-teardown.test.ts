@@ -3,6 +3,7 @@ import { prosemirrorToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
 import {
+  type CreateProofEditorOptions,
   createProofEditor,
   type EditorReferences,
   type ProofEditorHandle,
@@ -10,6 +11,7 @@ import {
   type ReferenceTarget,
 } from "../src/lib";
 import { createHeadlessProof } from "../src/lib-headless.js";
+import { serverBlockSchema } from "./block-schema-fixture";
 import { withDomWindow } from "./dom-window";
 
 /**
@@ -54,7 +56,8 @@ const BODY = "Linked: [`dispatch://CORE-1`](dispatch://CORE-1) and `--window` af
  *  configured as Dispatch's margin configures it, as the package's other editor tests are
  *  (`./marks-editor.ts`). `run` is handed the handle and tears it down itself. */
 async function withTornDownEditor(
-  run: (editor: ProofEditorHandle) => void | Promise<void>
+  run: (editor: ProofEditorHandle) => void | Promise<void>,
+  options: Partial<CreateProofEditorOptions> = {}
 ): Promise<void> {
   const { parseMarkdown } = await createHeadlessProof();
   const ydoc = new Y.Doc();
@@ -67,17 +70,17 @@ async function withTornDownEditor(
       onMarkHover: () => {},
       user: { color: "#0369a1", name: "alice" },
       ydoc,
+      ...options,
     });
     handle.setReferences(references({ "dispatch://CORE-1": CORE_1 }));
     try {
       await run(handle);
     } finally {
-      // Whatever `run` left, the view's teardown is drained while this window is still open: its
-      // plugins read the DOM as they go, and before this fix it ran in a microtask of its own,
-      // after the window was closed, where its throw would stand in for whatever `run` reported.
-      for (let drain = 0; drain < 100 && !handle.view.isDestroyed; drain += 1) {
-        await Promise.resolve();
-      }
+      // The editor's own teardown runs after the view's, and `destroy` is what answers for it.
+      // It is awaited while this window is still open, because its plugins read the DOM as they
+      // go: left to settle after `withDomWindow` closed the window, its throw would stand in for
+      // whatever `run` reported. A `run` that never destroyed the handle is torn down here.
+      await handle.destroy();
     }
   });
 }
@@ -88,7 +91,7 @@ test("destroy takes the view down before the ctx that draws it", async () => {
     const title = view.dom.querySelector("code > a.dispatch-reference");
     expect(title?.textContent).toBe("CORE-1 Fix the thing");
 
-    handle.destroy();
+    void handle.destroy();
 
     // The slices every mark draws itself from are gone the moment the editor is destroyed, so a
     // view that outlived it would throw `Context "inlineCodeAttr" not found` out of its next
@@ -106,7 +109,7 @@ test("a host write that lands after destroy draws nothing and throws nothing", a
     const blockId = handle.view.dom.querySelector("p")?.getAttribute("data-block-id") ?? "";
     expect(blockId).not.toBe("");
 
-    handle.destroy();
+    void handle.destroy();
 
     expect(() => handle.setReferences(null)).not.toThrow();
     expect(() => handle.setActiveMarks(["mark-1"])).not.toThrow();
@@ -121,4 +124,36 @@ test("a host write that lands after destroy draws nothing and throws nothing", a
     // A host whose own teardown runs twice asks the editor twice.
     expect(() => handle.destroy()).not.toThrow();
   });
+});
+
+test("every other write on the handle does nothing after destroy, and says so", async () => {
+  await withTornDownEditor(
+    (handle) => {
+      const markId = handle.view.dom.querySelector<HTMLElement>("[data-id]")?.dataset.id;
+      const blockId = handle.view.dom.querySelector("p")?.getAttribute("data-block-id") ?? "";
+      expect(handle.blockMenuItems().length).toBeGreaterThan(0);
+      const staleMenuItem = handle.blockMenuItems()[0];
+
+      void handle.destroy();
+
+      expect(() => handle.setAccess("read")).not.toThrow();
+      expect(() => handle.setMarkdown("Something else entirely.\n")).not.toThrow();
+      expect(() => handle.applyRemoteMarks({})).not.toThrow();
+      expect(() => handle.removeMark(markId ?? "no-such-mark")).not.toThrow();
+      expect(handle.retypeMark(markId ?? "no-such-mark", "comment")).toEqual({
+        refused: "missing",
+      });
+      expect(handle.remarkMark(markId ?? "no-such-mark", "comment", "Linked", null)).toEqual({
+        refused: "gone",
+      });
+      expect(handle.commentOnSelection()).toBe(false);
+      expect(handle.insertTypedBlock("ask")).toBe(false);
+      expect(handle.retypeBlock(blockId, "ask")).toBe(false);
+      expect(handle.setBlockAttributes(blockId, {})).toBe(false);
+      expect(handle.blockMenuItems()).toEqual([]);
+      // A menu item the host read before the teardown and ran after it.
+      expect(() => staleMenuItem?.run()).not.toThrow();
+    },
+    { blockSchema: serverBlockSchema }
+  );
 });
