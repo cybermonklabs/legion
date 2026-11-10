@@ -113,12 +113,20 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	}
 	srv.Registry.Add(sess)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		srv.enrollLoop(ctx, sess)
 		close(done)
 	}()
+	// The loop writes the registry's file under t.TempDir(), so it must have ended before the
+	// directory goes: a cancel alone leaves the attempt in flight, and t.TempDir's own
+	// RemoveAll then fails the test with "directory not empty" (dispatch://INFRA-1075, run
+	// 42846844681). Cleanups run in reverse order of registration and t.TempDir registered
+	// its removal above, so this one runs first and the loop is over before it.
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	// It asks again: a loop that read the refusal as the name's final answer would send one
 	// POST and return, and this session would sign nothing ever again.
