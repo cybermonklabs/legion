@@ -1,6 +1,6 @@
 // Package testnats serves daemon tests one JetStream server per test binary, started on first use
 // and removed by Main. Each test gets it empty and to itself, and a test that leaves a client
-// connected to it fails at its own cleanup rather than the next test (leakcheck.go). A test takes
+// connected to it is the test that fails, at its own cleanup (leakcheck.go). A test takes
 // its own client from Connect, which names it after the test and closes it when the test ends.
 //
 // One container per package, not per test: testcontainers keeps its Ryuk reaper only while a
