@@ -25,9 +25,16 @@ import (
 // own command answering with the profile's current model. The same command with the flag taken
 // out is the control, and reports the saved model instead.
 //
-// The resume leaves the session's earlier bytes alone and adds no second file, because a launch
-// under the flag records no model of its own — which is why the flag rides every launch and not
-// the resuming one alone (TestInnerCommand).
+// **The control runs first, and it must.** A resume carrying a role alias writes a
+// `model_change` of its own into the session it resumed, naming what the role resolved to
+// (upstream oh-my-pi #18534, in the fork from 18.18.6; through 18.16.0 it wrote nothing). So the
+// flagged arm leaves the session pinned to `operator/configured`, and a control run after it
+// would read that back and measure nothing but the arm before it. Run before the flagged arm,
+// the control reads the pin the saving turn wrote, which is the only thing it was ever asking
+// about, and it reads the same on either build.
+//
+// The resumes leave the session's earlier bytes alone and add no second file, which is why the
+// flag rides every launch and not the resuming one alone (TestInnerCommand).
 func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
@@ -88,15 +95,9 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	if err != nil || pairs != nil {
 		t.Fatalf("Launch = %v, %v", pairs, err)
 	}
-	stdout, stderr, err := run(inner, `{"type":"get_state","id":"1"}`+"\n")
-	if err != nil {
-		t.Fatalf("%s: %v\nstdout: %s\nstderr: %s", inner, err, stdout, stderr)
-	}
-	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
-		t.Errorf("the resumed pane runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
-	}
 
-	// The control: the same command with the flag taken out reads the session's own pin.
+	// The control, and it runs first: the same command with the flag taken out reads the session's
+	// own pin, which at this point is the one the saving turn wrote and nothing else.
 	without := strings.Replace(inner, " --model @default", "", 1)
 	if without == inner {
 		t.Fatalf("the pane's command carries no --model @default: %s", inner)
@@ -107,6 +108,16 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	}
 	if got := testbin.StateModel(t, plain); got != "operator/saved" {
 		t.Errorf("without the flag the resumed pane runs %s, want the session's own operator/saved", got)
+	}
+
+	// The pane's own command, which carries the flag: it answers on the profile's role whatever
+	// the session was pinned to.
+	stdout, stderr, err := run(inner, `{"type":"get_state","id":"1"}`+"\n")
+	if err != nil {
+		t.Fatalf("%s: %v\nstdout: %s\nstderr: %s", inner, err, stdout, stderr)
+	}
+	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
+		t.Errorf("the resumed pane runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
 	}
 
 	after, err := os.ReadFile(saved[0])

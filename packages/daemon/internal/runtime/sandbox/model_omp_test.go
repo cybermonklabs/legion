@@ -45,9 +45,16 @@ func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin str
 // recorded argv's own answer naming the profile's current model. The same argv with the flag
 // taken out is the control, and reports the saved model instead.
 //
-// The resume leaves the session's earlier bytes alone and adds no second file, and — because a
-// launch under the flag writes no `model_change` entry of its own — the saved pin is still in
-// there, which is why the flag rides every launch and not the resuming one alone
+// **The control runs first, and it must.** A resume carrying a role alias writes a
+// `model_change` of its own into the session it resumed, naming what the role resolved to
+// (upstream oh-my-pi #18534, in the fork from 18.18.6; through 18.16.0 it wrote nothing). So the
+// flagged arm leaves the session pinned to `operator/configured`, and a control run after it
+// would read that back and measure nothing but the arm before it. Run before the flagged arm,
+// the control reads the pin the saving turn wrote, which is the only thing it was ever asking
+// about, and it reads the same on either build.
+//
+// The resumes leave the session's earlier bytes alone and add no second file, which is why the
+// flag rides every launch and not the resuming one alone
 // (TestAgentArgvCarriesTheConfiguredModel).
 func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
@@ -92,15 +99,9 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	}
 
 	argv := launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}, prompt: "The test's system prompt."}.agentArgv([]string{omp})
-	stdout, stderr, err := runOmp(t, argv, work, environ, `{"type":"get_state","id":"1"}`+"\n")
-	if err != nil {
-		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
-	}
-	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
-		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
-	}
 
-	// The control: the same launch with the flag taken out reads the session's own pin.
+	// The control, and it runs first: the same launch with the flag taken out reads the session's
+	// own pin, which at this point is the one the saving turn wrote and nothing else.
 	without := slices.DeleteFunc(slices.Clone(argv), func(word string) bool { return word == "--model" || word == "@default" })
 	plain, stderr, err := runOmp(t, without, work, environ, `{"type":"get_state","id":"1"}`+"\n")
 	if err != nil {
@@ -108,6 +109,16 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	}
 	if got := testbin.StateModel(t, plain); got != "operator/saved" {
 		t.Errorf("without the flag the resumed agent runs %s, want the session's own operator/saved", got)
+	}
+
+	// The recorded argv itself, which carries the flag: it answers on the profile's role whatever
+	// the session was pinned to.
+	stdout, stderr, err := runOmp(t, argv, work, environ, `{"type":"get_state","id":"1"}`+"\n")
+	if err != nil {
+		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
+	}
+	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
+		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
 	}
 
 	after, err := os.ReadFile(saved[0])
