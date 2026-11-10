@@ -4835,16 +4835,17 @@ jobs:
           # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the two
           # calls below name 5433 and 5434. The package list above leaves the package out.
           #
-          # -timeout 4m. The call's slowest package is its only one, and with its round trips
-          # off the shared service what is left of it is CPU: 63.8 s of it, against 53.7 s of
-          # wall on a box whose four cores were idle, which this job's never are. So the half
-          # rule is taken on 120 s - that CPU at about half of one of the four cores, while the
-          # package list and the race-impossible call have the rest - and 4 is the smallest
-          # whole minute 120 s is at most half of. No floor stands above that rule here: no test
-          # of internal/pgmigrate reads the test binary's deadline, so it declares no margin of
-          # its own the way the documents package's roomWaitMargin (30 s) and pmdoc's
-          # perCallReportMargin (60 s) are theirs.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 4m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+          # -timeout 8m, from the call's own measured times rather than from its CPU. The first
+          # arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core - and 4m
+          # was too small: the call measured 159.7 s and 183.2 s on two runs and then ran past
+          # 240 s on a slower one, where go killed it mid-test ("panic: test timed out after
+          # 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run 42856652273).
+          # A call's limit is the smallest whole minute at which its slowest measured time is at
+          # most half, and that time is now 240 s, so 8m, which 240 s fills by half. No floor
+          # stands above that rule here: no test of internal/pgmigrate reads the test binary's
+          # deadline, so it declares no margin of its own the way the documents package's
+          # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 8m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
           pgmigrate=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
