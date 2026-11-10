@@ -74,6 +74,17 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		// later reader who changes one sees a row go red and knows to ask.
 		{name: "a github.com URL written inside another host's query is still written", body: "See https://evil.test/r?u=https://github.com/acme/widgets/issues/7 here.", credit: true},
 		{name: "the DNS trailing dot is another host, as it is on main", body: "See https://github.com./acme/widgets/issues/7 here.", credit: false},
+
+		// Eight shapes measured in this pod against the parse, each row the answer the code gives
+		// today rather than one anybody wishes it gave.
+		{name: "a host with a port is still github.com, since url.Hostname drops the port", body: "See https://github.com:443/acme/widgets/issues/7 here.", credit: true},
+		{name: "a citation keeps its meaning with a trailing slash", body: "See https://github.com/acme/widgets/issues/7/ here.", credit: true},
+		{name: "a tab delimits the token as a space does", body: "See\thttps://github.com/acme/widgets/issues/7\there.", credit: true},
+		{name: "a punycode host that reads like github.com is another host", body: "See https://xn--github-8m9b.com/acme/widgets/issues/7 here.", credit: false},
+		{name: "a percent-encoded host is no host net/url reads as github.com", body: "See https://%67ithub.com/acme/widgets/issues/7 here.", credit: false},
+		{name: "github.com percent-encoded into another host's userinfo", body: "See https://github.com%40evil.test/acme/widgets/issues/7 here.", credit: false},
+		{name: "a backslash before the userinfo at-sign leaves the host another's", body: "See https://github.com\\@evil.test/acme/widgets/issues/7 here.", credit: false},
+		{name: "a pull-request URL is no issue citation, and this row records that rather than asking for it", body: "See https://github.com/acme/widgets/pull/7 here.", credit: false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			urls := citedIssues(repo, row.body)
@@ -83,8 +94,8 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 				}
 				return
 			}
-			if slices.Contains(urls, cited) {
-				t.Errorf("citedIssues(%q, %q) = %v, want no citation of %s", repo, row.body, urls, cited)
+			if len(urls) != 0 {
+				t.Errorf("citedIssues(%q, %q) = %v, want no citation at all", repo, row.body, urls)
 			}
 		})
 	}
