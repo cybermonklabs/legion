@@ -276,6 +276,10 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
   expect(use("ACME-3")).toBe("held: idle");
   // An architect in a turn makes the slot working, whatever the phase.
   expect(use("ACME-6")).toBe("working");
+  // A phone reads the slot and its use under the phase name, in the phase's own cell.
+  expect(slot("ACME-6")?.querySelector("[data-legion-slot-line]")?.textContent).toBe(
+    "slot 3 · working"
+  );
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toBe(
     "4 slots, all in use · 2 working · 0 between turns · 1 held · 0 on a person · 1 idle"
   );

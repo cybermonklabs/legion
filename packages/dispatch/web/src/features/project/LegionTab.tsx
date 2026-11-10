@@ -101,8 +101,17 @@ interface SlotRow {
 
 /** A slot holder's phase: one label ("Retro" for a merging issue in retro) and, below it from
  *  640 px up, the time alone: in the phase, or since admission where the phase start is not
- *  recorded. The hover says which, and what a waiting root waits on; a phone shows the label. */
-function SlotPhase({ card, label }: { card: LegionBoardCard; label: string }): ReactNode {
+ *  recorded. The hover says which, and what a waiting root waits on. Below 640 px the second
+ *  line is the slot and its use, whose own columns a phone does not show. */
+function SlotPhase({
+  card,
+  label,
+  use,
+}: {
+  card: LegionBoardCard;
+  label: string;
+  use: string;
+}): ReactNode {
   const now = Date.now();
   const time =
     card.phase_since !== null
@@ -128,6 +137,13 @@ function SlotPhase({ card, label }: { card: LegionBoardCard; label: string }): R
       >
         {time.text}
       </span>
+      {/* Below 640 px the Slot and Slot use columns are hidden: the cell says both. */}
+      <span
+        className={`text-xs whitespace-normal sm:hidden ${textMutedOnCanvas}`}
+        data-legion-slot-line
+      >
+        slot {card.slot} · {use}
+      </span>
     </span>
   );
 }
@@ -142,7 +158,13 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
     // phase with no worker in a turn is between turns; else the root holds it for its children.
     const use = (card: LegionBoardCard): Pick<SlotRow, "use" | "detail"> => {
       if (card.roles.length > 0)
-        return { use: "working", detail: `${card.roles.join(", ")} in a turn` };
+        return {
+          use: "working",
+          detail:
+            card.phase === "awaiting_person" && card.roles.includes("architect")
+              ? "the architect is in a turn while the root waits on a person"
+              : `${card.roles.join(", ")} in a turn`,
+        };
       if (card.phase === "awaiting_person")
         return {
           use: "held: person",
@@ -200,7 +222,9 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
             value: (row) => phases.get(row.key)?.order ?? Number.MAX_SAFE_INTEGER,
             cell: (row) => {
               const phase = phases.get(row.key);
-              return phase === undefined ? null : <SlotPhase card={row.card} label={phase.label} />;
+              return phase === undefined ? null : (
+                <SlotPhase card={row.card} label={phase.label} use={row.use} />
+              );
             },
             filter: "picks",
             size: 160,
