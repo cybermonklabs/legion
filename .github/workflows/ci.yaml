@@ -2397,8 +2397,8 @@ jobs:
     # not one, which is why the old allowance was about twice what those steps could cost. What
     # one ladder costs, and how it is derived, is in the comment above ci_tools_curl of
     # .github/scripts/ci-tools.sh.
-    # What the change did: job 129743677408 ran 1,994 s and job 129826623707 ran 264 s, and the
-    # one case that still drives the real ladder measured 64 s inside it.
+    # What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the
+    # one case that still drives the real ladder measured 63 s inside it.
     timeout-minutes: 22
     # contents: read is the two checkouts'; actions: read and checks: write are the
     # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
@@ -2543,9 +2543,10 @@ jobs:
       # 1952 s in the steps that pay for them.
       # Every other fetch keeps the pinned ladder, so that ladder still rides out a flap of
       # npm, PyPI, get.pulumi.com or the local origin, each of which this job reaches through
-      # the fault proxy and none of which it faults. No reading of this job counts requests or
-      # durations, so a shortened ladder takes no statement away: what a case proves is which
-      # source served its bytes and that the digest held, and the stand-in changes neither.
+      # the fault proxy and none of which it faults. No case reading of this job counts
+      # requests or durations, so a shortened ladder takes no statement away: what a case
+      # proves is which source served its bytes and that the digest held, and the stand-in
+      # changes neither. The ladder-report step is the one reading of durations.
       # One case keeps the pinned ladder, the head's own install-crane below, and the
       # ladder-report step at the end of this job reads what that one measured. That install
       # carries no seam, so its primary is the real faulted host and its second source the real
@@ -3172,9 +3173,11 @@ jobs:
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
       # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
-      # one did; for a kept measurement outside the window the rig holds it to; and for a fetch
+      # one did; for a kept measurement outside the window the rig holds it to; for a fetch
       # that stayed on the ladder, spent one and then failed, which is a fault shape the
-      # stand-in's rule did not recognise.
+      # stand-in's rule did not recognise; and for a fetch the stand-in shortened that then
+      # served the bytes, which is the reading that holds the shorten-ladder step at its
+      # position.
       - name: Read what the stand-in curl measured of every fetch
         run: .github/scripts/ci-tools-proof.sh ladder-report
 

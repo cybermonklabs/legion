@@ -57,9 +57,9 @@
 #       proxy and none of which it faults.
 #       It takes no argument, as `stage` does, and it refuses the job where no curl is on PATH
 #       for the stand-in to run.
-#       It logs one line per fetch to $RUNNER_TEMP/ci-tools-proof/curl.log — the times, the
-#       decision, the host and curl's exit — and never an argument and never a URL, because
-#       .github/scripts/ci-tools.sh hands curl its credentials as arguments.
+#       It logs one line per fetch to $RUNNER_TEMP/ci-tools-proof/curl.log — the seconds it
+#       took, the decision, the host and curl's exit — and never an argument and never a URL,
+#       because .github/scripts/ci-tools.sh hands curl its credentials as arguments.
 #       It exists because this job spent 1952 s of its 1994 s inside retry ladders the proof
 #       does not read: a case here is a refusal this rig arranged, and a refusal arranged is a
 #       ladder nobody reads (dispatch://INFRA-2621). One case keeps the ladder, and
@@ -778,9 +778,18 @@ stage() {
 # The four values this rig decides are written in at the top of it for the same reason: the
 # stand-in takes the hosts and the address from this one file, and nobody writes a second copy
 # of them by hand.
+# The file is one redirection of three pieces: the head of the script, those four values, and
+# the body.
+# The values go through `%q`, which writes each of them as one word the stand-in reads back as
+# it stands, whatever it holds: a value carrying a space, a quote, a dollar or a backtick would
+# otherwise be expanded as this rig writes it or leave the written script broken.
+# Both heredocs are quoted, so the body needs no escape at all and reads as the plain shell it
+# is. One escape missed in an unquoted heredoc expands a value of this rig silently as the file
+# is written, and `set -u` catches none of it.
 write_stand_in() {
   local real_curl=$1
-  cat > "$stand_in" <<SH
+  {
+    cat <<'SH'
 #!/usr/bin/env bash
 # Written by the shorten-ladder verb of .github/scripts/ci-tools-proof.sh, which states what
 # this claims and what it leaves untouched.
@@ -794,41 +803,49 @@ write_stand_in() {
 # the real curl exited with, whatever that status is.
 set -uo pipefail
 
-real_curl="$real_curl"
-curl_log="$curl_log"
-fault_hosts="$FAULT_HOSTS"
-dead_address="$DEAD_ADDRESS"
+SH
+    printf '%s=%q\n' \
+      real_curl "$real_curl" \
+      curl_log "$curl_log" \
+      fault_hosts "$FAULT_HOSTS" \
+      dead_address "$DEAD_ADDRESS"
+    cat <<'SH'
 
 # The request is the first argument that starts with http:// or https://, and its authority is
-# the text up to the first /, with any user@ before that removed.
+# the text up to the first /, ? or #, with any user@ before that removed.
+# The cut at ? and # is made beside the cut at /, because a URL that carries a query or a
+# fragment and no path at all ends its authority at that ? or #, and the query of such a URL
+# would otherwise stand in the host field of the line below. No URL and no part of one reaches
+# that log.
 # Nothing else of the arguments is read, and no argument reaches the log: this helper is handed
 # credentials as arguments — -u for a ghcr token, an Authorization header for a blob — and
 # .github/scripts/ci-tools.sh passes them that way exactly so that they reach no log line.
 url=""
-for argument in "\$@"; do
-  case \$argument in
+for argument in "$@"; do
+  case $argument in
     http://* | https://*)
-      url=\$argument
+      url=$argument
       break
       ;;
   esac
 done
-authority=\${url#*://}
-authority=\${authority%%/*}
-authority=\${authority##*@}
-[ -n "\$authority" ] || authority=none
-host=\${authority%%:*}
+authority=${url#*://}
+authority=${authority%%/*}
+authority=${authority%%[?#]*}
+authority=${authority##*@}
+[ -n "$authority" ] || authority=none
+host=${authority%%:*}
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
 # (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
 # github.com and x.github.com, and it does not hold github.com.invalid, the reserved control
 # name the probe verb asks for.
 faulted() {
-  local host=\${1,,} held
+  local host=${1,,} held
   local IFS=,
-  for held in \$fault_hosts; do
-    case \$host in
-      "\$held" | *".\$held") return 0 ;;
+  for held in $fault_hosts; do
+    case $host in
+      "$held" | *".$held") return 0 ;;
     esac
   done
   return 1
@@ -838,9 +855,9 @@ faulted() {
 # shape the base-pulumi control of the job writes where the others write a seam.
 dead_proxy() {
   local value
-  for value in "\${http_proxy:-}" "\${https_proxy:-}" "\${HTTP_PROXY:-}" "\${HTTPS_PROXY:-}"; do
-    value=\${value%/}
-    [ "\${value#*://}" != "\$dead_address" ] || return 0
+  for value in "${http_proxy:-}" "${https_proxy:-}" "${HTTP_PROXY:-}" "${HTTPS_PROXY:-}"; do
+    value=${value%/}
+    [ "${value#*://}" != "$dead_address" ] || return 0
   done
   return 1
 }
@@ -848,30 +865,31 @@ dead_proxy() {
 # CI_TOOLS_PROOF_FULL_LADDER is the way back to the pinned ladder, and the one case that
 # measures that ladder is the case that sets it.
 decision=full
-if [ -z "\${CI_TOOLS_PROOF_FULL_LADDER:-}" ] &&
-  { faulted "\$host" || [ "\$authority" = "\$dead_address" ] || dead_proxy; }; then
+if [ -z "${CI_TOOLS_PROOF_FULL_LADDER:-}" ] &&
+  { faulted "$host" || [ "$authority" = "$dead_address" ] || dead_proxy; }; then
   decision=shortened
 fi
 
-started=\$(printf '%(%s)T' -1)
+started=$(printf '%(%s)T' -1)
 status=0
-if [ "\$decision" = shortened ]; then
+if [ "$decision" = shortened ]; then
   # curl reads the last word on --retry-max-time, so this bound wins over the helper's own
   # --retry-max-time 60. It is appended after the arguments and changes nothing else of them.
-  "\$real_curl" "\$@" --retry-max-time 1 || status=\$?
+  "$real_curl" "$@" --retry-max-time 1 || status=$?
 else
-  "\$real_curl" "\$@" || status=\$?
+  "$real_curl" "$@" || status=$?
 fi
-ended=\$(printf '%(%s)T' -1)
+ended=$(printf '%(%s)T' -1)
 
 # The one line per fetch the ladder-report verb reads, and the whole of what this script writes
 # of its own: curl's stdout and stderr pass through untouched, because the probe verb parses
 # what curl printed.
-printf 'start=%s end=%s seconds=%s decision=%s host=%s exit=%s full-ladder=%s\n' \\
-  "\$started" "\$ended" "\$((ended - started))" "\$decision" "\$host" "\$status" \\
-  "\${CI_TOOLS_PROOF_FULL_LADDER:-none}" >> "\$curl_log"
-exit "\$status"
+printf 'seconds=%s decision=%s host=%s exit=%s full-ladder=%s\n' \
+  "$((ended - started))" "$decision" "$host" "$status" \
+  "${CI_TOOLS_PROOF_FULL_LADDER:-none}" >> "$curl_log"
+exit "$status"
 SH
+  } > "$stand_in"
   chmod 0755 "$stand_in"
 }
 
@@ -1523,9 +1541,7 @@ ladder_report() {
   local problems=0 names="" longest=0 unrecognised="" rode_out="" served="" kept measured who
   local seconds decision host status bypass
   note "every fetch the stand-in curl of the shorten-ladder step measured"
-  # The start and the end are written in each line for a person reading the run; what this
-  # reading is made of is the seconds between them.
-  while read -r _ _ seconds decision host status bypass; do
+  while read -r seconds decision host status bypass; do
     seconds=${seconds#*=}
     decision=${decision#*=}
     host=${host#*=}
