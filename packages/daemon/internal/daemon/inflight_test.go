@@ -482,48 +482,82 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 	}
 }
 
-// quietStop requires the stop to have logged nothing an operator must act on, which is every WARN
-// and ERROR but one: the claim write a cancelled decision left owed.
+// quietStop requires the stop to have logged nothing an operator must act on: it reports every line
+// stopComplaints refuses, and logs the one it permits with what the halt was deciding.
+func quietStop(t *testing.T, stopLog string) {
+	t.Helper()
+	for _, line := range stopComplaints(stopLog) {
+		t.Errorf("the stop logged: %s", line)
+	}
+	for _, line := range owedStopWrites(stopLog) {
+		t.Logf("the stop owed a claim write (the halt was deciding %v): %s", decidingAtHalt(stopLog), line)
+	}
+}
+
+// stopComplaints is the lines of a stop's log window an operator must act on: every WARN and ERROR
+// but one, the claim write a cancelled decision left owed.
 //
 // A rollout's stop cuts decisions short by design — halt closes every machine's inbox, narrows the
 // stream and cancels, waiting for nothing, and its own `legion daemon stopping` line names the
 // decisions it is cancelling (`deciding`, daemon.go). A decision caught mid-write fails with
 // context.Canceled, which writeOwed owes because it is no *pgconn.PgError, so the stop logs
 // owedWriteFailedLine with `"owed":true` and the claim's next decision writes the row again. That
-// line means the design is working; its sibling with `"owed":false` — a repair that failed again —
-// is the one an operator must come and look at, and this still refuses it, as it refuses every
-// other WARN and ERROR.
+// the repair happens is proven where it can be: internal/supervise/owedwrite_test.go and
+// repairagain_test.go over the machine, and owedwrite_test.go in this package as an operator reads
+// the two lines. This permission asserts none of it — the next daemon of the test it exists for is
+// a bare net.Listen on the same socket, with no store to repair anything — it only declines to read
+// the design's own line as a defect.
 //
-// The permission is not bounded by that list, and the bound was tried before it was dropped: the
-// run this exception exists for owed the write of a claim the stopping line did not name, because
-// the list is read as the halt begins and the race is between that read and the cancel a few
-// statements later. A bound on the named claims would refuse the very line it was written to
-// permit. The line's own `"owed":true` is the bound instead, and the list is reported beside it so
-// a reader sees what the halt caught.
+// Its sibling with `"owed":false` — a repair that failed again — is the one an operator must come
+// and look at, and this refuses it, as it refuses every other WARN and ERROR.
+//
+// The permission is not bounded by the deciding list, and the bound was tried before it was
+// dropped: the run this exception exists for owed the write of a claim the stopping line did not
+// name, because the list is read as the halt begins and the race is between that read and the
+// cancel a few statements later. A bound on the named claims would refuse the very line it was
+// written to permit, and every green run would have been consistent with it. The line's own
+// `"owed":true` is the bound instead, and the list is reported beside it so a reader sees what the
+// halt caught.
 //
 // One shuffled run in 31 at 6ad469101b6f hit it, in
 // TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon, which drives a shim's frame
 // into the drain on purpose; the serial suite never lost the race and so never read the line.
-func quietStop(t *testing.T, stopLog string) {
-	t.Helper()
+func stopComplaints(stopLog string) []string {
+	var refused []string
 	for _, line := range strings.Split(stopLog, "\n") {
 		if !strings.Contains(line, `"level":"ERROR"`) && !strings.Contains(line, `"level":"WARN"`) {
 			continue
 		}
-		if strings.Contains(line, loggedMessage(owedWriteFailedLine)) && strings.Contains(line, `"owed":true`) {
-			t.Logf("the stop owed a claim write, which the next daemon repairs (the halt was deciding %v): %s",
-				decidingAtHalt(t, stopLog), line)
+		if owedStopWrite(line) {
 			continue
 		}
-		t.Errorf("the stop logged: %s", line)
+		refused = append(refused, line)
 	}
+	return refused
+}
+
+// owedStopWrite is whether line is the one a stop may log: a claim write left owed, which the
+// claim's next decision makes again.
+func owedStopWrite(line string) bool {
+	return strings.Contains(line, loggedMessage(owedWriteFailedLine)) && strings.Contains(line, `"owed":true`)
+}
+
+// owedStopWrites is the permitted lines of a window, which quietStop logs rather than refuses.
+func owedStopWrites(stopLog string) []string {
+	var owed []string
+	for _, line := range strings.Split(stopLog, "\n") {
+		if owedStopWrite(line) {
+			owed = append(owed, line)
+		}
+	}
+	return owed
 }
 
 // decidingAtHalt is the decisions the halt reported cancelling, read from the stop's own
 // `legion daemon stopping` line: each claim with the decision it was in. It is empty where the
-// window holds no such line.
-func decidingAtHalt(t *testing.T, stopLog string) []string {
-	t.Helper()
+// window holds no such line, and where the line's `deciding` cannot be read, since it is reported
+// beside a permitted line rather than deciding anything.
+func decidingAtHalt(stopLog string) []string {
 	for _, line := range strings.Split(stopLog, "\n") {
 		if !strings.Contains(line, `"msg":"legion daemon stopping"`) {
 			continue
@@ -532,7 +566,7 @@ func decidingAtHalt(t *testing.T, stopLog string) []string {
 			Deciding []string `json:"deciding"`
 		}
 		if err := json.Unmarshal([]byte(line), &fields); err != nil {
-			t.Fatalf("read the stopping line's deciding list (%v): %s", err, line)
+			return nil
 		}
 		return fields.Deciding
 	}
