@@ -20,6 +20,15 @@ export function scrollElementToTop(element: Element, container: HTMLElement): vo
  * older one's re-run, so a reader is never pulled back to the block they have left. */
 let disposeRerun: (() => void) | undefined;
 
+/** Drops the pending re-run, if one waits. The Inbox's reading pane calls it when the row it
+ * shows changes: a **Skip to the answer** in the head leaves a re-run that reads the reader on
+ * the window and lives up to three seconds, and a row changed by no action of the reader's would
+ * otherwise leave it to write the next item's column. */
+export function cancelBlockScroll(): void {
+  disposeRerun?.();
+  disposeRerun = undefined;
+}
+
 /**
  * Scrolls `container` so the block with `blockId` sits at its top, and answers whether the
  * container held that block. A container that already shows it there is not moved.
@@ -37,8 +46,7 @@ let disposeRerun: (() => void) | undefined;
  * chose at the top of the column, with the document under it to read on into.
  */
 export function scrollBlockToTop(blockId: string, container: HTMLElement): boolean {
-  disposeRerun?.();
-  disposeRerun = undefined;
+  cancelBlockScroll();
   const selector = `[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(blockId)}"]`;
   if (container.querySelector(selector) === null) {
     return false;
