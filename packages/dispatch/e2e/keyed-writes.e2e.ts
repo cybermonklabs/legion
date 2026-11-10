@@ -118,7 +118,8 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
 
 // @webkit @firefox: the keyed write path's request failure, which each engine hands the page its
 // own way.
-test("a comment whose answer is lost lands once, under one key @webkit @firefox", async ({
+// @pr: A keyed write: a comment whose answer is lost lands once, under one key.
+test("a comment whose answer is lost lands once, under one key @webkit @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -394,7 +395,8 @@ test("an ask answer whose answer is lost lands once, under one key @webkit", asy
 // no page clock can move. 3 s is the shortest hold that still has the key in flight when the
 // page's repeat arrives a second after the abort (`FIRST_BACKOFF_MS`), with room for the press
 // and the attempt's flight: 2 s left Firefox's press on the wrong side of it.
-test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once", async ({
+// @pr: An idempotent repeat: the repeat of a write still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once.
+test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once @pr", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -542,7 +544,8 @@ test("a comment Dispatch takes 20 s to make lands once from the page, every repe
 // SLOW(>=2s): The upload must really keep moving while the page's clock crosses
 // `KEYED_SEND_ATTEMPT_MS`; a throttled 4 s transfer is the shortest one that still emits progress
 // across the fast-forwards.
-test("an upload throttled to take 30 s is one attempt and lands once", async ({
+// @pr: Upload and download: a 30-second upload is one attempt under its key, not a second file.
+test("an upload throttled to take 30 s is one attempt and lands once @pr", async ({
   browser,
   browserName,
 }) => {
@@ -888,7 +891,8 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 // SLOW(>=2s): Two tabs are the property - the discard has to reach the tab that did not sign out
 // - and each is a real page load with a status change held at the network and a label queued
 // behind it. That setup is what is left; the straggler window costs no real time.
-test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab", async ({
+// @pr: Sign-in and tokens across two tabs: a confirmed sign-out sends nothing after the confirm, in the tab that signed out and the one that did not.
+test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(
@@ -1215,7 +1219,8 @@ test("the issue header's pin pressed during an outage survives a reload and land
 // sends. Alice's write is dropped, in memory and in the tab's storage, and nothing runs as bob: an
 // attempt that still reaches Dispatch names alice (`Dispatch-Login`), so Dispatch refuses it
 // `409 LOGIN_CHANGED` before anything runs.
-test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob", async ({
+// @pr: Sign-in and tokens across two tabs: bob's sign-in drops alice's pending write, and nothing of hers runs as him.
+test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob @pr", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
