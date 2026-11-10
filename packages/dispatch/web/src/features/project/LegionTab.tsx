@@ -120,7 +120,7 @@ function SlotPhase({ card, label }: { card: LegionBoardCard; label: string }): R
   const title = `${time.text === "—" ? "" : `${time.text} `}${time.about}${waiting}`;
   return (
     <span className="flex flex-col gap-1" data-legion-phase={card.phase} title={title}>
-      <span>{legionPhaseLabel(label, card.phase)}</span>
+      <span className="whitespace-normal break-words">{legionPhaseLabel(label, card.phase)}</span>
       <span
         className={`hidden text-xs sm:block ${textMutedOnCanvas}`}
         data-legion-fact="phase-time"
