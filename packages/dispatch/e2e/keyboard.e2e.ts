@@ -143,6 +143,10 @@ test("Shift+L/H move a focused card to the top of the adjacent status through th
     const golfCard = page.getByRole("article", { name: `${golf.key} Golf` });
     await golfCard.focus();
     await page.keyboard.press("Shift+H");
+    // Triage has no status before it, so Shift+H writes nothing, and a write that never happens
+    // marks nothing to wait on: this window is the check. A PATCH would leave the page in the
+    // task of the keypress and `page.on` above records it as it goes, so 300 ms of real time is
+    // many frames past where it would show.
     await page.waitForTimeout(300);
     expect(patches).toEqual([]);
     await expect(golfCard).toBeFocused();

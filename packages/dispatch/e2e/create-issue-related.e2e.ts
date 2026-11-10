@@ -280,6 +280,9 @@ test("an answer that arrives after the title changed is not shown for the new ti
     release();
     await answered;
     await page.clock.runFor(1);
+    // The render's margin, from the paragraph above: react-query delivered the answer on the
+    // tick before this, and this window is what a render of it would show in. It is Node's
+    // clock, since the page's is the test's and a page-side wait would never return.
     await sleep(250);
 
     // The answer that landed is the first title's, so the dialog still says it is checking and

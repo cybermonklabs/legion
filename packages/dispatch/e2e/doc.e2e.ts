@@ -609,6 +609,9 @@ for (const row of [
       const started = await page.evaluate(() => Date.now());
       for (let spent = 0; spent < PAST_THE_RECEIVE_TIMEOUT_MS; spent += PROVIDER_TIMER_STEP_MS) {
         await page.clock.runFor(PROVIDER_TIMER_STEP_MS);
+        // The real time each step leaves for what those timers sent to come back: the clock
+        // jumped above is the page's, and the round trip over the socket is not, so the step is
+        // paced with `PROVIDER_ECHO_MS` of the wall clock before the next jump.
         await sleep(PROVIDER_ECHO_MS);
       }
       // However little of the run that cost, the page itself has spent the whole timeout: a

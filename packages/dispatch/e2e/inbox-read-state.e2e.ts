@@ -65,16 +65,21 @@ test("a reply taller than the reading pane is marked read by reading it, and its
     await expect(reply).toBeVisible();
 
     // The reader scrolls the reply through the pane, a part of a screen at a time, pausing on
-    // each - the dwell the read mark asks for, given ten times over.
+    // each - the dwell the read mark asks for, given ten times over. The poll is both halves of
+    // that: each attempt moves the wheel once, and the 1,200 ms between attempts is the pause
+    // the mark asks a reader for, so the row ends on the mark rather than on a count of turns.
     const pane = await reply.boundingBox();
     expect(pane).not.toBeNull();
-    for (let step = 0; step < 10; step += 1) {
-      await page.mouse.move((pane?.x ?? 0) + 10, 400);
-      await page.mouse.wheel(0, 300);
-      await page.waitForTimeout(1200);
-      if (!(await longUnread())) break;
-    }
-    expect(await longUnread()).toBe(false);
+    await expect
+      .poll(
+        async () => {
+          await page.mouse.move((pane?.x ?? 0) + 10, 400);
+          await page.mouse.wheel(0, 300);
+          return await longUnread();
+        },
+        { intervals: [1200], timeout: 12_000 }
+      )
+      .toBe(false);
     await expect(row.locator("[aria-label='Unread']")).toHaveCount(0);
 
     // The row stays where it stood, drawn as read: only a dismiss takes a thread out of the

@@ -300,6 +300,9 @@ test("a tab that reloaded three times in the last five minutes does not reload f
     // The handler runs on the failure itself, so a reload it decided to make would already have
     // asked for the page; four frames of margin for the request to reach the counter.
     await failed;
+    // The margin that paragraph names: a reload the handler decided on asked for the page in the
+    // task of the failure awaited above, so this window is four frames for that request to reach
+    // the counter; a reload that never happens marks nothing else to wait on.
     await sleep(250);
     expect(counts).toEqual({ documents: 1, entryRequests: 1 });
     expect(await tabReloads(page)).toEqual(spent);

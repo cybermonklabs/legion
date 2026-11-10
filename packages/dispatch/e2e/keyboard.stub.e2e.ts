@@ -53,7 +53,10 @@ chordTest(
     await expect(indicator).toBeVisible();
     await expect(indicator).toHaveCount(0, { timeout: 2000 });
     await page.keyboard.press("i");
-    await page.waitForTimeout(300);
+    // No window before this: a `g i` the chord had kept alive navigates in the task of the
+    // keypress, which the press above has already awaited, and `toHaveURL` retries to its
+    // deadline for whatever route the page is on. So the Inbox would be read here, not slept
+    // past, and the agents route is the key standing alone.
     await expect(page).toHaveURL(new RegExp(`${scene.agents}$`));
   }
 );

@@ -111,18 +111,32 @@ async function eventBarrier(
   await expect(header).toHaveText(title);
   const loads = traffic.issueReads(key);
   expect(loads, `the page read ${key} before the barrier`).toBeGreaterThan(0);
-  for (let attempt = 1; attempt <= 10; attempt += 1) {
-    const written = `${title} (barrier ${attempt})`;
-    await patchIssue(key, { title: written }, bob);
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      if (traffic.issueReads(key) > loads && (await header.textContent())?.trim() === written) {
-        return written;
+  // The poll is the whole barrier. It writes a new title whenever the one before it has had its
+  // 2 s and has not arrived - the page may still have been subscribing when the first went out,
+  // and an event it missed never comes again - and it ends on the first title the page both read
+  // and drew. Ten writes 2 s apart is the budget the row spends here, as before.
+  let written = "";
+  let attempt = 0;
+  let writeDue = 0;
+  await expect
+    .poll(
+      async () => {
+        if (Date.now() >= writeDue) {
+          attempt += 1;
+          written = `${title} (barrier ${attempt})`;
+          await patchIssue(key, { title: written }, bob);
+          writeDue = Date.now() + 2_000;
+        }
+        return traffic.issueReads(key) > loads && (await header.textContent())?.trim() === written;
+      },
+      {
+        intervals: [100],
+        message: `no event reached the page for ${key} in 10 writes 2 s apart`,
+        timeout: 20_000,
       }
-      await page.waitForTimeout(100);
-    }
-  }
-  throw new Error(`no event reached the page for ${key} in 10 writes 2 s apart`);
+    )
+    .toBe(true);
+  return written;
 }
 
 /** The GETs of one window grouped by path, most sent first, for an assertion's message. */

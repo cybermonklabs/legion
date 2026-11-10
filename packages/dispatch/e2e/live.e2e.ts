@@ -184,6 +184,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // Anything the first rename scheduled fires on this clock, and is then cleared with the
     // counters below; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS);
+    // The margin that paragraph names: a read the jump above set going leaves the page at once,
+    // and this window in Node is for it to reach Playwright's counter before the counters are
+    // cleared, since the page's own clock cannot carry a request across the wire.
     await sleep(100);
     inboxReads = 0;
     pinnedReads = 0;
@@ -197,6 +200,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // `MIN_REFETCH_INTERVAL_MS` both fall due inside this jump, so a read either owed is sent and
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a read either timer owed leaves the page in the jump
+    // above, and this window in Node is for it to reach Playwright's counter, which the page's
+    // own clock cannot move it to. A read that never happens marks nothing else to wait on.
     await sleep(100);
 
     expect([inboxReads, pinnedReads]).toEqual([0, 0]);
@@ -789,6 +795,9 @@ test("live: an event during a project list's first load fetches it again once th
     // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a third request would leave the page inside the jump
+    // above, and this window in Node is for it to reach Playwright's counter; a request that is
+    // never made marks nothing else the row could wait on.
     await sleep(100);
     expect([listRequests, mostInFlight]).toEqual([2, 1]);
   } finally {

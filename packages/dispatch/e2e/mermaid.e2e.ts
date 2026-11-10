@@ -276,6 +276,9 @@ async function expectNothingHostile(
   // The shadow-root walk is read first: it is the positive signal that the drawing is installed,
   // and walking it forces the style pass each hostile carrier would fetch from.
   expect(await hostileLeftovers(preview)).toEqual([]);
+  // `REQUEST_MARGIN_MS`, at the call: the walk above forced the style pass a hostile carrier
+  // would fetch from, and this window covers a fetch begun a task or two after that pass. A
+  // request that is never made marks nothing to wait on, so the window is the check.
   await sleep(REQUEST_MARGIN_MS);
   expect(await page.evaluate(() => window.__hostile)).toEqual([]);
   expect(requested).toEqual([]);
@@ -486,6 +489,9 @@ test("a document's mermaid diagram draws, styles nothing outside it, and fetches
     expect(ownStyles).toContainEqual(expect.stringContaining("--_text"));
     expect(ownStyles?.filter((style) => style?.includes("@import"))).toEqual([]);
 
+    // `REQUEST_MARGIN_MS`, at the call: the sheet whose `@import` would fetch the font is
+    // installed and resolved by the read above, and this window covers a fetch begun a task or
+    // two after that pass. A request that is never made marks nothing else to wait on.
     await sleep(REQUEST_MARGIN_MS);
     expect(googleFonts).toEqual([]);
   } finally {
@@ -662,6 +668,9 @@ test("a reader who scrolls after a block link lands is not pulled back once the 
     // either moves the offset the sampler reads or starts a smooth scroll inside the Node-side
     // margin after it.
     await settledScrollTop(page);
+    // `PULL_BACK_MARGIN_MS`, at the call: long enough for a smooth scroll a focus re-run started
+    // to have moved the offset the sampler above read, so an offset still equal below is a pull
+    // back that never happened rather than one this row read too early.
     await sleep(PULL_BACK_MARGIN_MS);
     expect(await page.evaluate(() => document.scrollingElement?.scrollTop)).toBe(scrolled);
     await expect(paragraph).not.toBeInViewport();

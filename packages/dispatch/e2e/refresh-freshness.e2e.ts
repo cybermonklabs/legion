@@ -352,6 +352,9 @@ test("budget: a document in another project citing 25 documents reads no issue d
       .poll(
         async () => {
           const before = gets.length;
+          // The sample's own width: each attempt counts the reads that arrive in 100 ms of real
+          // time, and the poll ends on the first window that holds none, which is what "the
+          // opening reads have stopped" means here.
           await sleep(100);
           return gets.length - before;
         },
@@ -366,6 +369,9 @@ test("budget: a document in another project citing 25 documents reads no issue d
     // `MIN_REFETCH_INTERVAL_MS`; one jump fires both, and the margin is for a request they make
     // reaching Playwright's counter.
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a read either timer owed leaves the page inside the jump
+    // above, and this window in Node is for it to reach Playwright's counter, which the page's
+    // own clock cannot do. A read that is never made marks nothing else to wait on.
     await sleep(200);
     console.log(`REFETCH-INDEX [${testInfo.project.name}] GETs: ${gets.join(", ")}`);
     const unrelated = gets.filter(

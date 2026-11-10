@@ -159,6 +159,10 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     await expect(send).toBeFocused();
     await send.click({ force: true });
     await field.press("Control+Enter");
+    // Neither the forced click nor Ctrl+Enter may send while `/btw ` strips to an empty message,
+    // and a send that never happens marks nothing to wait on: this window is the check. A POST
+    // would leave the page in the task of the gesture that made it and `page.on` above records
+    // it as it goes, so 500 ms of real time is many frames past where it would show.
     await page.waitForTimeout(500);
     expect(posts).toEqual([]);
 

@@ -360,14 +360,19 @@ test("an undo that restores the approved text around a decision block the agent 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // Settlement runs two seconds after the room's last update; a version it wrote would be
-    // judged by the same rule, so the approval is read once it has had the chance.
-    await page.waitForTimeout(3000);
-    expect((await getArtifact(issue.id, { login: "alice" })).approval).toMatchObject({
-      latest_version: 3,
-      state: "stale",
-      version: 1,
-    });
+    // The restored text is one character away from the approved version, so the approval stays
+    // stale at version 1 with version 3 the latest. The read is polled rather than slept on:
+    // nothing settles into this artifact - `editArtifact` wrote version 3 itself, and no page
+    // is in the room - which 16 reads 250 ms apart measured here, every one of them this same
+    // answer. A poll that cannot pass at once would say the opposite, so it is the right shape
+    // either way: a verdict that arrived late would still be read.
+    await expect
+      .poll(async () => (await getArtifact(issue.id, { login: "alice" })).approval)
+      .toMatchObject({
+        latest_version: 3,
+        state: "stale",
+        version: 1,
+      });
     await page.goto(`/issues/${issue.key}`);
     await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
   } finally {

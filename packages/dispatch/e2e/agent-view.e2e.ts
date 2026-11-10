@@ -586,6 +586,10 @@ test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing
     const sent = (await getSentMessages()).length;
     await send.click({ force: true });
     await field.press("Enter");
+    // Neither the forced click nor Enter may send while the box is empty, and a send that never
+    // happens marks nothing to wait on: this window is the check. One would be a POST made in
+    // the task of the gesture that made it and recorded by the fake Envoy a server hop later, so
+    // 500 ms of real time is many frames past where it would show.
     await page.waitForTimeout(500);
     expect(await getSentMessages()).toHaveLength(sent);
 

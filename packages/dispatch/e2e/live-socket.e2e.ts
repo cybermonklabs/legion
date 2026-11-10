@@ -293,6 +293,9 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
     for (const pageSockets of sockets) await untilFeedStarts(pageSockets);
     await Promise.all(pending.map(waitForReads));
 
+    // The idle itself: five seconds of real time with every page's socket open. A request a page
+    // holds open ages on the wall clock whatever that page's timers believe, so no clock jump
+    // can stand in for this window - it is the measurement this row is.
     await board.waitForTimeout(IDLE_MS);
     for (const page of pages) await page.clock.fastForward(SILENCE_CHECK_MS);
     // Whatever the checks started - the sign-in check that jump also fires among them - is a read

@@ -1523,11 +1523,16 @@ test("a human-paced double click on one Retry sends that message once, and never
     if (box === null) throw new Error("Retry has no box to click");
     const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     await page.mouse.click(point.x, point.y);
+    // The hand's own pause between the two clicks, as the comment above sets out: 120 ms is the
+    // pace of the gesture this row is about, and nothing of the page is being waited for.
     await page.waitForTimeout(120);
     await page.mouse.click(point.x, point.y);
     await expect(
       row("Retried once.").getByRole("link", { name: "Sent to 2 agents" })
     ).toBeVisible();
+    // The absence `ABSENCE_MARGIN_MS` is named for, repeated at the call: a third send the
+    // second click might have made would be the work of that click's own task, so this window
+    // in Node - which the page's clock cannot skip - covers one deferred a task or two past it.
     await sleep(ABSENCE_MARGIN_MS);
     expect(posted.map((request) => request.input.body)).toEqual([
       "Retried once.",
@@ -1564,6 +1569,9 @@ test("a selection over the broadcast limit says so and never asks the server", a
     const send = composer.getByRole("button", { name: "Send to 101" });
     await expect(send).toBeDisabled();
     await send.click({ force: true });
+    // A selection over the limit asks nothing of the server, and a request that never leaves
+    // marks nothing to wait on: `ABSENCE_MARGIN_MS` is the window a POST made in the forced
+    // click's own task would show in, taken in Node so the page's clock cannot skip it.
     await sleep(ABSENCE_MARGIN_MS);
     expect(posts).toEqual([]);
     expect(await getSentMessages()).toEqual([]);
@@ -1635,6 +1643,9 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
     // Refused, not merely grey: pressing it anyway asks nothing of the server.
     await dead.click({ force: true });
     await dead.press("Enter");
+    // Refused, not merely grey: nothing is sent, and a request that never leaves marks nothing
+    // to wait on. `ABSENCE_MARGIN_MS` is the window a POST made in the click's or the Enter's
+    // own task would show in, taken in Node so the page's clock cannot skip it.
     await sleep(ABSENCE_MARGIN_MS);
     expect(posts).toEqual([]);
     expect(await getSentMessages()).toEqual([]);
