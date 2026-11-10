@@ -330,7 +330,7 @@ test("the sections come in one column, in the order a reader asks, each with its
     )
   ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "finished"]);
   // Each headline holds numbers with their units and nothing else.
-  expect(headline("work_time")).toBe("2 issues finished · median 24.0 h · p90 36.8 h");
+  expect(headline("work_time")).toBe("median 24.0 h · p90 36.8 h");
   expect(headline("phase_breakdown")).toBe(
     "2 issues finished · 18.0 h in phases · 30.0 h roots waited on children"
   );
@@ -394,9 +394,10 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Roots" }));
-  await waitFor(() => expect(headline("work_time")).toStartWith("1 issue finished"));
-  expect(metrics).toHaveBeenCalledWith(
-    expect.objectContaining({ project: "ACME", scope: "roots" })
+  await waitFor(() =>
+    expect(metrics).toHaveBeenCalledWith(
+      expect.objectContaining({ project: "ACME", scope: "roots" })
+    )
   );
 });
 
@@ -461,8 +462,10 @@ test("when one tree holds a large share of the finished issues, a note under wor
     if (found === null) throw new Error("no note");
     return found;
   });
-  expect(note.textContent).toContain("Leave out ACME-6");
-  fireEvent.click(screen.getByRole("button", { name: "Leave out ACME-6" }));
+  expect(note.textContent).toContain(
+    "Leave out ACME-6's tree (2 of 2 issues): A standing reviewer"
+  );
+  fireEvent.click(screen.getByRole("button", { name: /^Leave out ACME-6's tree/ }));
   await waitFor(() =>
     expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }))
   );

@@ -24,7 +24,7 @@ import { InfoHint } from "../../components/InfoHint";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
-  chartParts,
+  filingScale,
   legionPhaseScale,
   surfaceBg,
   textMutedOnSurface,
@@ -204,7 +204,6 @@ export function LegionSections({
           <TrendSection
             compare={source(compared.data)}
             headline={line(
-              `${issues(report.finished)} finished`,
               `median ${formatHours(report.work_time.median_hours)}`,
               `p90 ${formatHours(report.work_time.p90_hours)}`
             )}
@@ -389,7 +388,8 @@ function LargestTree({
   return (
     <div className="flex items-center gap-1.5" data-legion-tree-note>
       <button className={button} onClick={() => onExclude([tree.root])} type="button">
-        Leave out {tree.root}
+        Leave out {tree.root}'s tree ({count(tree.finished)} of {issues(report.finished)}):{" "}
+        {tree.title}
       </button>
       <InfoHint label={`About ${tree.root}`}>
         {tree.root}'s tree has {count(tree.finished)} of the {count(report.finished)} finished
@@ -480,7 +480,7 @@ function FilingClasses({ report }: { report: LegionMetricsResponse }): ReactNode
         {classes.map((one, index) =>
           one.count === 0 ? null : (
             <span
-              className={chartParts[index] ?? ""}
+              className={filingScale[index] ?? ""}
               key={one.key}
               style={{ width: `${one.share * 100}%` }}
               title={`${one.label}: ${one.count}`}
@@ -493,7 +493,7 @@ function FilingClasses({ report }: { report: LegionMetricsResponse }): ReactNode
           <li className="flex items-center gap-2" key={one.key}>
             <span
               aria-hidden
-              className={`inline-block h-3 w-3 shrink-0 rounded-sm ${chartParts[index] ?? ""}`}
+              className={`inline-block h-3 w-3 shrink-0 rounded-sm ${filingScale[index] ?? ""}`}
             />
             <span className={`flex-1 ${textSecondaryOnCanvas}`}>{one.label}</span>
             <span className={`tabular-nums ${textPrimaryOnCanvas}`}>{one.count}</span>

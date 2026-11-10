@@ -17,6 +17,7 @@ function card(overrides: Partial<LegionBoardCard>): LegionBoardCard {
     title: "A child",
     tree: "ACME-1",
     tree_slot: null,
+    slot_since: null,
     waiting_on: null,
     ...overrides,
   };

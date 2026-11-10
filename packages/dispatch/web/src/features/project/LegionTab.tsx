@@ -18,7 +18,6 @@ import {
 } from "../../theme/classes";
 import { buildProjectPath } from "../refs/routes";
 import { IssueGrid } from "./IssueGrid";
-import { LegionPhaseCell } from "./issues-table-columns";
 import { formatPhaseTime, legionPhases } from "./issues-table-model";
 import { LegionIssueTimeline } from "./LegionIssueTimeline";
 import { LegionSections, SectionTitle } from "./LegionSections";
@@ -100,6 +99,39 @@ interface SlotRow {
   readonly detail: string;
 }
 
+/** A slot holder's phase: one label ("Retro" for a merging issue in retro), and the time in the
+ *  phase, or, where the phase start is not recorded, the time since the slot was admitted. */
+function SlotPhase({ card, label }: { card: LegionBoardCard; label: string }): ReactNode {
+  const now = Date.now();
+  const time =
+    card.phase_since !== null
+      ? { text: `${formatPhaseTime(card.phase_since, now)} in phase`, title: card.phase_since }
+      : card.slot_since !== null
+        ? {
+            text: `${formatPhaseTime(card.slot_since, now)} since admission`,
+            title: "time since admission; phase start not recorded",
+          }
+        : { text: "—", title: "phase start and admission not recorded" };
+  return (
+    <span className="flex flex-col gap-1" data-legion-phase={card.phase}>
+      <span>{card.phase === "retro" ? "Retro" : label}</span>
+      <span
+        className={`text-xs ${textMutedOnCanvas}`}
+        data-legion-fact="phase-time"
+        title={time.title}
+      >
+        {time.text}
+      </span>
+      {card.waiting_on ? (
+        <span className="text-xs">
+          Waiting on {card.waiting_on.kind}
+          {card.waiting_on.answered_at ? "; answered" : ""}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 /** Each slot's holder, live, in the Issues tab's table: slot, phase, what the slot is used for
  *  (the detail, with a held root's children not started, in the cell's hover) and CI. */
 function Slots({ board, project }: { board: LegionBoardResponse; project: string }): ReactNode {
@@ -128,17 +160,21 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
       .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
       .map((card) => ({ key: card.key, card, ...use(card) }));
   }, [board]);
-  const held = rows.filter((row) => row.use.startsWith("held")).length;
-  const idle = rows.filter((row) => row.use === "held: idle").length;
-  const { header } = board;
+  // Each slot in use is in exactly one of these, so they add up to the slots in use.
+  const tally = (use: string) => rows.filter((row) => row.use === use).length;
+  const cap = board.header.slot_cap;
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
       <SectionTitle
-        info="Held: the root waits on its children, and no worker of the root is in a turn. Idle: no child of the root implements, tests or reviews."
+        info="Working: a worker is in a turn. Between turns: no worker of the root is in a turn. Held: the root waits on its children, who work. Idle: the root waits on its children, and none of them works."
         title="Slots"
       />
       <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-slot-summary>
-        {header.slots_in_use} of {header.slot_cap ?? "?"} in use · {held} held · {idle} idle
+        {cap === rows.length
+          ? `${rows.length} slots, all in use`
+          : `${rows.length} of ${cap ?? "?"} slots in use`}{" "}
+        · {tally("working")} working · {tally("between turns")} between turns ·{" "}
+        {tally("held: children")} held · {tally("held: idle")} idle
       </p>
       <IssueGrid<SlotRow>
         columns={[
@@ -158,7 +194,7 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
             value: (row) => phases.get(row.key)?.order ?? Number.MAX_SAFE_INTEGER,
             cell: (row) => {
               const phase = phases.get(row.key);
-              return phase === undefined ? null : <LegionPhaseCell phase={phase} />;
+              return phase === undefined ? null : <SlotPhase card={row.card} label={phase.label} />;
             },
             filter: "picks",
             size: 160,
@@ -266,7 +302,11 @@ function WaitingLine({
           {
             id: "place",
             header: "#",
-            value: (row) => row.place ?? 0,
+            // The queue first, by place; then the rows with no place, the longest wait first
+            // and an unknown wait last.
+            value: (row) =>
+              row.place ??
+              (row.since === null ? 2e12 : 1e12 - (now - Date.parse(row.since)) / 1000),
             cell: (row) =>
               row.place === null ? (
                 <span

@@ -1890,6 +1890,8 @@ export interface LegionBoardCard {
    *  the tree's root, and a child works under it. Null for a root, an issue with its own slot,
    *  and a tree whose root holds none. */
   readonly tree_slot: number | null;
+  /** When the issue was admitted to its own slot; null with no slot of its own. */
+  readonly slot_since: string | null;
   readonly roles: readonly string[];
   readonly checks_verdict: string | null;
   readonly blocked_by: readonly string[];

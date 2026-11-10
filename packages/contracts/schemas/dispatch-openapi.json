@@ -20429,6 +20429,13 @@
               "integer"
             ]
           },
+          "slot_since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "title": {
             "type": "string"
           },
@@ -20460,6 +20467,7 @@
           "phase_since",
           "slot",
           "tree_slot",
+          "slot_since",
           "roles",
           "checks_verdict",
           "blocked_by",
@@ -20557,6 +20565,19 @@
           "header": {
             "$ref": "#/components/schemas/LegionBoardHeader"
           },
+          "phase_hours": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "format": "double",
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -20581,6 +20602,7 @@
           "columns",
           "settings",
           "setting_sources",
+          "phase_hours",
           "computed_at"
         ],
         "type": "object"

@@ -351,7 +351,8 @@ test("the Legion tab says where the finished issues' time went, then each metric
     const headline = (id: string) =>
       page.locator(`[data-legion-section="${id}"] [data-legion-headline]`);
     await expect(headline("phase_breakdown")).toContainText("2 issues finished");
-    await expect(headline("work_time")).toContainText("2 issues finished");
+    // The count is said once, in the first card; work time says its medians.
+    await expect(headline("work_time")).toContainText("median");
     // Two issues finished: the root with no review round, the child with one.
     await expect(headline("rework")).toContainText("median 0.5 review rounds");
     await expect(headline("rework")).toContainText("50% sent back");
@@ -374,7 +375,7 @@ test("the Legion tab says where the finished issues' time went, then each metric
 
     // The toggle reads the metrics again for the roots alone: one of the two finished.
     await page.getByRole("button", { name: "Roots" }).click();
-    await expect(headline("work_time")).toContainText("1 issue finished");
+    await expect(headline("phase_breakdown")).toContainText("1 issue finished");
     await page.getByRole("button", { name: "All issues" }).click();
 
     await finished.first().locator('a[data-issue-link][href*="/legion/"]').click();

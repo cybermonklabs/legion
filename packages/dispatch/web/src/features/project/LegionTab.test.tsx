@@ -57,6 +57,7 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
     title: `${key} title`,
     tree: key,
     tree_slot: null,
+    slot_since: null,
     waiting_on: null,
     ...overrides,
   };
@@ -77,7 +78,13 @@ const BOARD: LegionBoardResponse = {
         : column.id === "accepting"
           ? [
               card("ACME-2", { phase: "accepting", slot: 1, children: 1, phase_since: null }),
-              card("ACME-6", { phase: "accepting", slot: 3, roles: ["architect"] }),
+              card("ACME-6", {
+                phase: "accepting",
+                slot: 3,
+                roles: ["architect"],
+                phase_since: null,
+                slot_since: "2026-11-09T20:00:00Z",
+              }),
             ]
           : column.id === "merging"
             ? [card("ACME-3", { phase: "awaiting_merge", slot: 2, checks_verdict: "red" })]
@@ -270,7 +277,7 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
   // An architect in a turn makes the slot working, whatever the phase.
   expect(use("ACME-6")).toBe("working");
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toBe(
-    "4 of 4 in use · 2 held · 1 idle"
+    "4 slots, all in use · 2 working · 0 between turns · 1 held · 1 idle"
   );
   // The phase is the issues table's own cell.
   expect(slot("ACME-1")?.querySelector('[data-legion-phase="implementing"]')).not.toBeNull();
@@ -326,13 +333,17 @@ test("an open timeline draws its phases with the table's label and colour, and i
   );
 });
 
-test("a slot whose phase entry time is unknown shows no time in phase, never 0 m", async () => {
+test("a slot whose phase start is unknown shows the time since admission, else no time, never 0 m", async () => {
   await renderTab();
 
   await waitFor(() => expect(row("Slots", "ACME-2")).not.toBeNull());
   const time = (key: string) => row("Slots", key)?.querySelector('[data-legion-fact="phase-time"]');
   expect(time("ACME-2")?.textContent).toBe("—");
-  expect(time("ACME-2")?.getAttribute("title")).toBe("Phase entry time unknown");
+  expect(time("ACME-2")?.getAttribute("title")).toBe("phase start and admission not recorded");
+  expect(time("ACME-6")?.textContent).toMatch(/ since admission$/);
+  expect(time("ACME-6")?.getAttribute("title")).toBe(
+    "time since admission; phase start not recorded"
+  );
   expect(time("ACME-1")?.textContent).toMatch(/ in phase$/);
 });
 

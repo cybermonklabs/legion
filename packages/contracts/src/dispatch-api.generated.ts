@@ -4821,6 +4821,8 @@ export interface components {
       priority: null | number;
       roles: string[] | null;
       slot: null | number;
+      /** Format: date-time */
+      slot_since: null | string;
       title: string;
       tree: string;
       tree_slot: null | number;
@@ -4846,6 +4848,11 @@ export interface components {
       /** Format: date-time */
       computed_at: string;
       header: components["schemas"]["LegionBoardHeader"];
+      phase_hours: {
+        [key: string]: {
+          [key: string]: number;
+        };
+      } | null;
       project: string;
       setting_sources: {
         [key: string]: unknown;

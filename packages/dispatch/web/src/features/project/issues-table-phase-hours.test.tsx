@@ -68,6 +68,7 @@ function card(key: string): LegionBoardCard {
     title: `Work ${key}`,
     tree: key,
     tree_slot: null,
+    slot_since: null,
     waiting_on: null,
   };
 }

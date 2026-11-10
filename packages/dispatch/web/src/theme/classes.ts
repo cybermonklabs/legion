@@ -283,7 +283,7 @@ for (const [status, , light, lightText, dark, darkText] of ISSUE_STATUS_ROWS) {
   registerText(`issue status scale: ${status}`, pair(lightText, darkText), pair(light, dark));
 }
 
-/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases in Carbon's purple, blue, cyan, teal and magenta. Each working phase differs from both neighbours in hue and alternates light and dark, so a thin bar still tells adjacent phases apart. The issues table, its status bar, the board and the Legion tab use it. */
+/** The Legion phase scale in workflow order (dispatch://INFRA-979), from IBM Carbon's categorical palette and gray ramp: queued and waiting states gray or muted, the working phases in Carbon's purple, blue, cyan, teal, orange and magenta. Each working phase differs from its neighbours by a CIEDE2000 ΔE of 20 or more in both schemes (phase-scale.test.ts), so a thin bar still tells adjacent phases apart. The issues table, its status bar, the board and the Legion tab use it. */
 const LEGION_PHASE_ROWS = [
   [
     "queue",
@@ -335,10 +335,10 @@ const LEGION_PHASE_ROWS = [
   ],
   [
     "accepting",
-    "bg-[#009d9a] text-[#161616] dark:bg-[#08bdba] dark:text-[#161616]",
-    P.CARBON_TEAL_50,
-    P.CARBON_GRAY_100,
-    P.CARBON_TEAL_40,
+    "bg-[#ba4e00] text-white dark:bg-[#ff832b] dark:text-[#161616]",
+    P.CARBON_ORANGE_60,
+    P.WHITE,
+    P.CARBON_ORANGE_40,
     P.CARBON_GRAY_100,
   ],
   [
@@ -983,6 +983,16 @@ export const chartSeries = [
     fill: "fill-teal-600 dark:fill-teal-400",
     swatch: "bg-teal-600 dark:bg-teal-400",
   },
+] as const;
+
+/** The filed-issues bar's classes, in order (dispatch://INFRA-979): IBM Carbon's cool gray ramp,
+ *  dark to light, so it shares no colour with the Legion phase scale; decorative, since a legend
+ *  names each class. */
+export const filingScale = [
+  "bg-[#343a3f] dark:bg-[#dde1e6]",
+  "bg-[#697077] dark:bg-[#a2a9b0]",
+  "bg-[#a2a9b0] dark:bg-[#697077]",
+  "bg-[#dde1e6] dark:bg-[#4d5358]",
 ] as const;
 
 /** A plot's axes: its tick labels and its grid lines. */

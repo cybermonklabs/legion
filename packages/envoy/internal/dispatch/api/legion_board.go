@@ -160,7 +160,9 @@ type legionBoardCard struct {
 	// TreeSlot is the slot of the issue's tree root, for an issue that holds none of its own: a
 	// slot belongs to the tree's root, and a child works under it. Null for a root, an issue
 	// holding its own slot, and a tree whose root holds none.
-	TreeSlot      *int             `json:"tree_slot"`
+	TreeSlot *int `json:"tree_slot"`
+	// SlotSince is when the issue was admitted to its own slot; null with no slot of its own.
+	SlotSince     *time.Time       `json:"slot_since"`
 	Roles         []string         `json:"roles"`
 	ChecksVerdict *string          `json:"checks_verdict"`
 	BlockedBy     []string         `json:"blocked_by"`
@@ -260,6 +262,9 @@ type legionBoardIssue struct {
 	// phase row of that same time has no time in phase.
 	entryUnknownAt time.Time
 	slot           *int
+	// slotSince is when the newest slot observation was recorded, which is when the issue was
+	// admitted to that slot.
+	slotSince time.Time
 	// tree is the daemon's own `tree` for the issue, empty where it named none.
 	tree          string
 	waitingOn     *legionBoardWait
@@ -397,7 +402,7 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 	case field == legion.FieldSlot:
 		var slot *int
 		if err := json.Unmarshal(value, &slot); err == nil {
-			issue.slot = slot
+			issue.slot, issue.slotSince = slot, at
 		}
 	case field == legion.FieldWaitingOn:
 		var wait struct {
@@ -723,6 +728,10 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 	if !issue.phaseSince.IsZero() && !issue.phaseSince.Equal(issue.entryUnknownAt) {
 		since := issue.phaseSince.UTC()
 		card.PhaseSince = &since
+	}
+	if issue.slot != nil && !issue.slotSince.IsZero() {
+		since := issue.slotSince.UTC()
+		card.SlotSince = &since
 	}
 	if issue.checksVerdict != "" {
 		verdict := issue.checksVerdict
