@@ -936,7 +936,8 @@ test("once the search has failed, Down takes the first action found inside its l
 });
 
 test("a background refetch keeps the actions the query starts and the hits walkable, and a highlight already among the More actions moving", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
     { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
@@ -961,6 +962,8 @@ test("a background refetch keeps the actions the query starts and the hits walka
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
+    // The palette's 150 ms keystroke debounce, which the search for these words waits out.
+    await tick(150);
     await waitFor(() => expect(optionIds()).toEqual([report, optionId(hit), CLOSE_ROW]));
     expect(input).toHaveAttribute("aria-activedescendant", report);
 
@@ -986,6 +989,7 @@ test("a background refetch keeps the actions the query starts and the hits walka
     await act(async () => second.resolve(searchAnswer([hit])));
     expect(ran).toEqual([]);
   } finally {
+    realClock();
     search.mockRestore();
     unregister();
     view.unmount();
@@ -1234,7 +1238,8 @@ test("says meaning search is not running, and still shows the hits", async () =>
 });
 
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
@@ -1260,6 +1265,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
   } finally {
+    realClock();
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();
