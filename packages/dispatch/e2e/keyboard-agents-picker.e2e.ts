@@ -205,7 +205,8 @@ test.describe("agents page", () => {
   // A message on its way to the server is addressed already, so its issue cannot change under it,
   // and the text the server is taking must never come back to the composer, enabled - one
   // Ctrl+Enter from sending it twice.
-  test("a send in flight holds the picker, and the sent text never comes back", async ({
+  // @pr: A write on the wire: the picker is held while a send is out, and the text the server is taking never comes back to the composer.
+  test("a send in flight holds the picker, and the sent text never comes back @pr", async ({
     browser,
   }) => {
     await seedAgents();

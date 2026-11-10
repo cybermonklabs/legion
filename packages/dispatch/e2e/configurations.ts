@@ -14,6 +14,13 @@
 
 /** A row of `playwright test --list --reporter=json`: one test of one project. */
 export type ListedRow = {
+  /** What Playwright expects of the row, as the listing states it before anything runs:
+   *  `skipped` for a row skipped where it is declared - `test.skip(title, fn)`, `test.fixme`,
+   *  a `describe.skip`, or a describe-level `test.skip(true)` or `test.fixme()` - and `failed`
+   *  for a row marked `test.fail()`. A row skipped inside its own body, or by a describe-level
+   *  modifier whose condition is a function of a fixture, is `passed` here, because only the
+   *  run can know. */
+  expectedStatus: string;
   /** The spec file, as the listing names it: relative to the config's root directory. */
   file: string;
   /** The project that runs the row, by `name` in the config. */
@@ -69,7 +76,7 @@ type ListingSuite = {
 
 type ListingSpec = {
   file: string;
-  tests?: readonly { projectName?: string }[];
+  tests?: readonly { expectedStatus?: string; projectName?: string }[];
   title: string;
 };
 
@@ -156,7 +163,12 @@ function collectRows(suite: ListingSuite, titles: readonly string[], rows: Liste
       if (test.projectName === undefined) {
         throw new Error(`a listed row of ${spec.file} names no project: ${title}`);
       }
-      rows.push({ file: spec.file, project: test.projectName, title });
+      rows.push({
+        expectedStatus: test.expectedStatus ?? "passed",
+        file: spec.file,
+        project: test.projectName,
+        title,
+      });
     }
   }
   for (const child of suite.suites ?? []) {
@@ -193,4 +205,61 @@ export function duplicateRows<Row extends ListedRow>(
     found.projects.push(row.project);
   }
   return [...seen.values()].filter((duplicate) => duplicate.projects.length > 1);
+}
+
+/** The projects of the stubbed layer, which run a real browser against a recording of the API
+ *  (`e2e/stub/`). They are named here rather than in the config so that the config, a bun test
+ *  and a tool all read one list: a project added to the layer and missed in the budget test
+ *  would leave that test measuring a lane the shard job does not run. */
+export const stubProjectNames: readonly string[] = ["stub", "stub-phone"];
+
+/** The projects the pull-request lane runs, which is what
+ *  `.github/workflows/dispatch-browser.yaml`'s shard job names for `lane: pull-request`. The
+ *  lane is these four and the `@pr` tag; every other project, and every row without the tag,
+ *  runs on the full lane at the merge queue and on the nightly. */
+export const pullRequestLaneProjects: readonly string[] = [
+  "chromium",
+  "iphone",
+  ...stubProjectNames,
+];
+
+/** A title tag as this suite selects one: `@phone`, `@webkit`, `@firefox`, `@pr`. The pattern is
+ *  anchored so a tag matches only as a whole whitespace-separated token, never inside a longer
+ *  one such as `@phones`, `x@phone` or `@pr-only`. */
+export function tagged(tag: string): RegExp {
+  return new RegExp(`(^|\\s)@${tag}(\\s|$)`);
+}
+
+/** The projects `--project` names on `argv`, read as Playwright reads them, lower-cased.
+ *
+ *  Playwright's `--project <project-name...>` is variadic, so one flag takes every value up to
+ *  the next option: `--project stub chromium` names two. A reader that took one value per flag
+ *  would see `stub` alone there and answer that the run is the stubbed layer by itself, which
+ *  waives the harness refusals and the preflight for the `chromium` rows beside it. Playwright
+ *  matches a project name without regard to case, so the names come back lower-cased and a
+ *  caller compares them against its own lower-case list.
+ *
+ *  A value holding `*` is a pattern Playwright expands against the config's own projects, which
+ *  this cannot see, so it comes back as it was written and a caller reads it as "projects I
+ *  cannot name": the conservative answer in both directions is that such a run may hold any
+ *  project, so nothing is waived for it.
+ *
+ *  An empty list is a run that names no project, which is every project of its mode. Every
+ *  `--project` of the whole line is read, and a `--` ends one flag's values because it begins
+ *  with `-`: `e2e/run.ts` reads the Playwright argv it passes after its own `--`, and the
+ *  config reads a Playwright command line that has no `--` in it. */
+export function projectsOnCommandLine(argv: readonly string[]): string[] {
+  const named: string[] = [];
+  for (const [index, word] of argv.entries()) {
+    if (word.startsWith("--project=")) {
+      named.push(word.slice("--project=".length).toLowerCase());
+      continue;
+    }
+    if (word !== "--project") continue;
+    for (const value of argv.slice(index + 1)) {
+      if (value.startsWith("-")) break;
+      named.push(value.toLowerCase());
+    }
+  }
+  return named;
 }

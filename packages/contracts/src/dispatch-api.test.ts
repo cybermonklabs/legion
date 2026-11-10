@@ -32,6 +32,7 @@ import {
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedMessagePayloadSchema,
   type EditCommentInput,
+  everyBuildReadsSearch,
   type Handoff,
   HandoffRecordedPayloadSchema,
   type HandoffSummary,
@@ -60,6 +61,7 @@ import {
   retriesUnderKey,
   retryNoRoute,
   type Sleep,
+  SEARCH_MEMBERS_EVERY_BUILD_READS,
   serviceSubjectLabel,
   sleep,
   type TmuxPlace,
@@ -1569,4 +1571,44 @@ test("a call with no wait of its own waits on a timer, which an aborted request 
     )
   ).rejects.toBe(reason);
   expect(attempts).toBe(1);
+});
+
+test("a search of the members every build reads stays on GET /api/v1/search", () => {
+  expect(SEARCH_MEMBERS_EVERY_BUILD_READS).toEqual(["q", "project", "limit", "offset", "session"]);
+
+  expect(everyBuildReadsSearch({})).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe" })).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe", project: "LEGION", limit: 20, offset: 40 })).toBe(
+    true
+  );
+
+  // `session` is declared on every operation of every build and read by `actingPerson` on every
+  // route, so an older build serves a request carrying it correctly; sending that request to a
+  // path the build refuses would be the inversion of what this rule is for.
+  expect(everyBuildReadsSearch({ q: "astrolabe", session: "session-1" })).toBe(true);
+
+  // Both clients build a request out of optional filters, so a filter nobody set is a key whose
+  // value is `undefined`. It narrows nothing and an older build drops nothing, so it is not
+  // carried.
+  expect(everyBuildReadsSearch({ q: "astrolabe", status: undefined })).toBe(true);
+  expect(
+    everyBuildReadsSearch({ q: "astrolabe", keywords_only: undefined, number_project: undefined })
+  ).toBe(true);
+});
+
+test("a search carrying anything beyond them goes to GET /api/v1/search/results", () => {
+  const beyond: Record<string, unknown> = {
+    number_project: "INFRA",
+    status: "in_progress",
+    author: "sami@theorem.dev",
+    updated_since: "2026-11-01T00:00:00Z",
+    keywords_only: true,
+  };
+  for (const [member, value] of Object.entries(beyond)) {
+    expect(everyBuildReadsSearch({ q: "astrolabe", [member]: value })).toBe(false);
+  }
+
+  // The rule reads the request's own keys, so a member added after this test was written routes
+  // itself without anyone remembering to list it here.
+  expect(everyBuildReadsSearch({ q: "astrolabe", component: "search" })).toBe(false);
 });

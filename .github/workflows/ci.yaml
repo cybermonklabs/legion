@@ -1340,6 +1340,12 @@ jobs:
               # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
               # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
+              # The generated API document, read at e2e/__tests__/stub-recordings.test.ts:36-39
+              # (the new URL at :37), which holds every committed recording's body to the shape
+              # that document declares. The document is generated from the Go route table, so a
+              # change to it is a change to a shape the recordings carry, and this job's test
+              # step is where that test runs.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
               # reads and parses with the app's own remark pipeline: a filter change that moves
