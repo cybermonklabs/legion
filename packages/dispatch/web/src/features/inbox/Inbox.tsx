@@ -753,14 +753,36 @@ export function Inbox({
       return next;
     });
   }, []);
+  /** The rows the reader can see, in the order they see them, as this list last rendered them:
+   *  what the motion hold is read against, what the selection steps through, and which asks a
+   *  hand-on may hold. Written on every render below, and read here as the record of the
+   *  render a registration arrives after. */
+  const presented = useRef<readonly PlacedRow[]>([]);
   // And the same for a hand-on, whose control sits in the card rather than beside it
   // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
   // write starts, so without this the card holding the control would be unmounted before the
   // server answered and a refusal would come back to a fresh card that never failed. The cards
   // register through the context this list provides below (`hand-on-live.ts`), since one of
   // them is the document page's own and takes no prop of this list's.
+  //
+  // Only an ask this list was drawing when the write began is held. That context reaches every
+  // card under the Inbox, and most of them are not a listed row's own: the card of a Reply
+  // row's thread (`ThreadBody`), whose ask is often one the reader's filters hide, and every
+  // ask block of a document open in the column, not only the selected one. Holding one of
+  // those would pull a question the filters hide into the list, and a refusal would leave it
+  // there, since the write stays failed until it is tried again and no card unmounts to
+  // release it. So a registration is held to `presented`, the rows this list last drew: its
+  // own cards are those rows, and so is the column's, which shows a drawn row and nothing else
+  // (`pane-selection.ts`, `showing`). Letting go is never refused, so a hold always ends with
+  // the write that took it.
   const [handingOn, setHandingOn] = useState<ReadonlySet<string>>(() => new Set());
   const onHandOnLive = useCallback((askId: string, live: boolean) => {
+    if (
+      live &&
+      !presented.current.some((placed) => placed.row.kind === "ask" && placed.row.ask.id === askId)
+    ) {
+      return;
+    }
     setHandingOn((current) => {
       if (current.has(askId) === live) return current;
       const next = new Set(current);
@@ -776,9 +798,6 @@ export function Inbox({
   // afresh without it and takes its new place then.
   const viewport = useRef<ViewportAnchor>(null);
   const anchor = viewport.current?.interacted() ?? null;
-  /** The rows the reader can see, in the order they see them, as this list last rendered them:
-   *  what the motion hold is read against, and what the selection steps through. */
-  const presented = useRef<readonly PlacedRow[]>([]);
   const answered = useRef<string | null>(null);
   const [, setReleased] = useState(0);
   const release = () => setReleased((count) => count + 1);

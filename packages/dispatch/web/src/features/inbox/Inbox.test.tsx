@@ -28,6 +28,7 @@ import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
+import { replyRow } from "../threads/replies-fixture";
 import { Inbox } from "./Inbox";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
@@ -4132,11 +4133,11 @@ test("the answer keys act on the selected decision block, not the first one in t
 });
 
 // The same refusal, pressed on the card the reading column draws for a question written as a
-// decision block. That card is the document page's own (`ReadingPane` -> `PaneDocument` ->
-// `ProofDocument` -> `AskBlockCard`), so no prop of this list reaches it: the registration it
-// holds its row with is the one it reads from the context the list provides. Without it the
-// optimistic `waiting_on_person` drops the row, the column has nothing selected to draw, and
-// the refusal comes back to no card at all.
+// decision block. That card is the document page's own (`ReadingPane` -> `DocumentPane`, in
+// `PaneDocument.tsx`, -> `ProofDocument` -> `AskBlockCard`), so no prop of this list reaches
+// it: the registration it holds its row with is the one it reads from the context the list
+// provides. Without it the optimistic `waiting_on_person` drops the row, the column has
+// nothing selected to draw, and the refusal comes back to no card at all.
 test("a refused hand-on from the column's decision block keeps the row, with the reason on that card", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
