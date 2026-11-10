@@ -256,24 +256,33 @@ func brokenConnection() *pgconn.PgError {
 	return &pgconn.PgError{Code: "08006", Message: "server closed the connection unexpectedly", Severity: "FATAL"}
 }
 
-// slowClaimWrite is a database that is merely slow rather than away: the claim writes of one
-// token take by before the store behind takes them, and every other call goes straight through.
+// slowClaimWrite is a database that is merely slow rather than away: one token's claim writes
+// wait by in the server before the store behind takes them, and every other call goes straight
+// through. The wait is a real statement (pg_sleep) on the write's own context rather than a
+// timer beside it, so what the deadline meets is what it met in the incident: a server that has
+// taken a statement and not answered yet. A deadline that fires there is pgconn's own timeout,
+// so the row reads the incident's "timeout: context deadline exceeded" rather than the bare
+// "context deadline exceeded" that a context already expired before the call gives. The
+// "put claim <token>: " the incident's line carries as well is store.Store.PutClaim's own wrap,
+// which this error does not pass through.
+//
 // It stands behind the detach, nearest the database, because what it stands for is the database
 // call itself; in front of the detach it would run on the machine's own claim-write deadline and
-// be cut short at the head as well as at main, which would prove nothing.
+// be cut short at the head as well as at main, which would prove nothing. A stop still ends the
+// wait, because the statement runs on the write's own context.
 type slowClaimWrite struct {
 	supervise.Store
+	// pool is the test's own connection to the same database, which is what makes the wait a
+	// statement of the server's rather than a timer of the test's.
+	pool  *pgxpool.Pool
 	token claim.Token
 	by    time.Duration
 }
 
 func (s slowClaimWrite) PutClaim(ctx context.Context, c supervise.Claim) error {
 	if c.Token == s.token {
-		// The fall-through on ctx.Done() is deliberate: a stop ends the wait, and the expired
-		// context then reaches the database exactly as it did in the incident.
-		select {
-		case <-time.After(s.by):
-		case <-ctx.Done():
+		if _, err := s.pool.Exec(ctx, "select pg_sleep($1)", s.by.Seconds()); err != nil {
+			return err
 		}
 	}
 	return s.Store.PutClaim(ctx, c)
@@ -438,11 +447,11 @@ func (r *owedWriteRig) answers() {
 	r.store.use(r.real)
 }
 
-// slow puts a database that is merely slow behind the detach: role's claim writes take by, and
-// the real store takes them after that.
+// slow puts a database that is merely slow behind the detach: role's claim writes wait by in the
+// server, and the real store takes them after that.
 func (r *owedWriteRig) slow(role claim.Role, by time.Duration) {
 	r.t.Helper()
-	r.database.use(slowClaimWrite{Store: r.st, token: r.token(role), by: by})
+	r.database.use(slowClaimWrite{Store: r.st, pool: r.pool, token: r.token(role), by: by})
 }
 
 // owedTurnStart is the measured incident over a real store: the agent's turn started, the claim
