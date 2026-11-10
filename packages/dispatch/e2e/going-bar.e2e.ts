@@ -112,6 +112,8 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
   }
 });
 
+// SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its actions
+// group and its box.
 test("slash and g p open the same bar as Control+K @phone", async ({ browser }) => {
   // Every check here carries the suite's own 15 s deadline, and a run where two of the three
   // keys open something else reports each of them, which takes longer than one row's budget.
@@ -210,6 +212,7 @@ test("the chip names what the bar will act on, and nothing where the page names 
   }
 });
 
+// SLOW(>=2s): a document opened and its editor connected before the caret goes in.
 test("Tab narrows the chip to the block the cursor is in and Backspace widens it to the project @phone", async ({
   browser,
 }) => {
@@ -278,6 +281,7 @@ test("an empty input lists the person's recent items and the actions of that pag
 // to Issues. The bar a person opened in that moment is theirs, and a redirect the page made on
 // its own is no navigation of theirs, so the bar stays open and stays typable
 // (dispatch://INFRA-2452).
+// SLOW(>=2s): the seed of a project, two issues and a document, then a page held mid-redirect.
 test("the bar opened on a project page that has not settled survives that page's own redirect", async ({
   browser,
 }) => {
