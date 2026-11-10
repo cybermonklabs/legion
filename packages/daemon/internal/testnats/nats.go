@@ -155,8 +155,8 @@ func URL(t testing.TB) string {
 		// 2.10.22, the line this package's image is, under a load of four busy loops on its two
 		// CPUs, one round being create, publish 12, delete, create again, read: 9 of 10,000
 		// rounds of delete-then-create came back holding all 12 messages, and 0 of 10,000 rounds
-		// that purged first did. A purge is one request per stream, and the server answers it
-		// when the store is empty.
+		// that purged first did. The purge is a lookup of the stream and one purge request per
+		// stream, and the server answers the purge when the store is empty.
 		stream, err := js.Stream(t.Context(), name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
@@ -333,7 +333,9 @@ const namedInFailure = 10
 // assertCreatedEmpty fails the test when the stream just created holds a message or a consumer,
 // naming each message by subject, stream sequence and stored time and each consumer by name. It
 // costs one STREAM.INFO round trip on a clean create, and reads nothing else unless the stream is
-// not empty.
+// not empty. The create's own answer carries that state too, but this read is a moment later, so
+// it also catches a message that reached the stream after the create answered, which is the same
+// contamination arriving by the other door.
 func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	t.Helper()
 	info, err := stream.Info(t.Context())
@@ -344,16 +346,18 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 		return
 	}
 	var held []string
-	for seq := info.State.FirstSeq; seq <= info.State.LastSeq && len(held) < namedInFailure; seq++ {
-		message, err := stream.GetMsg(t.Context(), seq)
-		if err != nil {
-			held = append(held, fmt.Sprintf("message %d: %v", seq, err))
-			continue
+	if info.State.Msgs > 0 {
+		for seq := info.State.FirstSeq; seq <= info.State.LastSeq && len(held) < namedInFailure; seq++ {
+			message, err := stream.GetMsg(t.Context(), seq)
+			if err != nil {
+				held = append(held, fmt.Sprintf("message %d: %v", seq, err))
+				continue
+			}
+			held = append(held, fmt.Sprintf("message %d %s stored %s", seq, message.Subject, message.Time.Format(time.RFC3339Nano)))
 		}
-		held = append(held, fmt.Sprintf("message %d %s stored %s", seq, message.Subject, message.Time.Format(time.RFC3339Nano)))
-	}
-	if left := int(info.State.Msgs) - len(held); left > 0 {
-		held = append(held, fmt.Sprintf("and %d more", left))
+		if left := int(info.State.Msgs) - len(held); left > 0 {
+			held = append(held, fmt.Sprintf("and %d more", left))
+		}
 	}
 	consumers := stream.ConsumerNames(t.Context())
 	for consumer := range consumers.Name() {

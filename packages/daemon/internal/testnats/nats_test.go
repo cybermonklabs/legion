@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"os"
@@ -170,30 +171,71 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// The stream a test is handed must be empty. A create that comes back holding messages — the
-// store the delete before it left behind, adopted by a create of the same name (URL's reset) —
-// fails the test there, naming each message by subject, stream sequence and stored time, rather
-// than reaching the test as a count it reads later and reads as its own.
+// The stream a test is handed must be empty. A create that comes back holding a previous test's
+// work — the store the delete before it left behind, adopted by a create of the same name (URL's
+// reset) — fails the test there, naming each message by subject, stream sequence and stored time
+// and each consumer by name, rather than reaching the test as a count it reads later and reads as
+// its own. A stream holding a consumer and no message names the consumer alone: there is no
+// message to name, and a sequence nothing stored is not one.
 func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 	js := JetStream(t)
-	config := jetstream.StreamConfig{Name: "ALREADY_FULL", Subjects: []string{"full.>"}}
-	if _, err := js.CreateStream(t.Context(), config); err != nil {
-		t.Fatalf("create the stream: %v", err)
-	}
-	if _, err := js.Publish(t.Context(), "full.one", []byte("x")); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-	again := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		CreateStream(again, js, config)
-	}()
-	<-done
-	for _, want := range []string{"ALREADY_FULL is not empty at its create", "message 1 full.one stored "} {
-		if !strings.Contains(again.message, want) {
-			t.Errorf("CreateStream of a stream holding a message failed with %q, want it to say %q", again.message, want)
-		}
+	for _, row := range []struct {
+		name   string
+		stream string
+		leave  func(t *testing.T, stream jetstream.Stream)
+		want   []string
+		unwant string
+	}{
+		{
+			name:   "a message",
+			stream: "ALREADY_FULL",
+			leave: func(t *testing.T, _ jetstream.Stream) {
+				if _, err := js.Publish(t.Context(), "full.one", []byte("x")); err != nil {
+					t.Fatalf("publish: %v", err)
+				}
+			},
+			want: []string{"ALREADY_FULL is not empty at its create", "message 1 full.one stored "},
+		},
+		{
+			name:   "a consumer and no message",
+			stream: "ALREADY_CONSUMED",
+			leave: func(t *testing.T, stream jetstream.Stream) {
+				if _, err := stream.CreateConsumer(t.Context(), jetstream.ConsumerConfig{Durable: "left-behind"}); err != nil {
+					t.Fatalf("create consumer: %v", err)
+				}
+			},
+			want:   []string{"ALREADY_CONSUMED is not empty at its create", "consumer left-behind"},
+			unwant: "message",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			config := jetstream.StreamConfig{Name: row.stream, Subjects: []string{"full.>"}}
+			stream, err := js.CreateStream(t.Context(), config)
+			if err != nil {
+				t.Fatalf("create the stream: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := js.DeleteStream(context.Background(), row.stream); err != nil {
+					t.Errorf("delete the stream: %v", err)
+				}
+			})
+			row.leave(t, stream)
+			again := &fatalRecorder{TB: t}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				CreateStream(again, js, config)
+			}()
+			<-done
+			for _, want := range row.want {
+				if !strings.Contains(again.message, want) {
+					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say %q", again.message, want)
+				}
+			}
+			if row.unwant != "" && strings.Contains(again.message, row.unwant) {
+				t.Errorf("CreateStream of a stream holding no message failed with %q, want it to name no %q", again.message, row.unwant)
+			}
+		})
 	}
 }
 
