@@ -17,14 +17,17 @@ import {
 import { AnchoredPanel } from "./AnchoredPanel";
 import { TruncatedText } from "./TruncatedText";
 
-function fold(value: string): string {
-  return value.trim().toLocaleLowerCase();
+function fold(value: string | undefined): string {
+  return (value ?? "").trim().toLocaleLowerCase();
 }
 
 export interface MultiSelectProps {
   /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
   readonly children?: ReactNode;
   readonly disabled?: boolean;
+  /** The trigger is busy with what the last close committed: it stays focusable, and says so
+   *  rather than looking actionable and doing nothing. */
+  readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
@@ -65,6 +68,7 @@ export interface MultiSelectProps {
  * `open`, so it can stage a draft on open and commit on close.
  */
 export function MultiSelect({
+  ariaDisabled = false,
   children,
   disabled = false,
   emptyMessage,
@@ -95,7 +99,10 @@ export function MultiSelect({
 
   const searchText = query.trim();
   const needle = fold(searchText);
-  const visibleOptions = options.filter((option) => fold(optionLabel(option)).includes(needle));
+  // A host's label function can answer nothing for a value it does not know — a `?status=` of
+  // another deploy, say — and a value with no label is still an option, read as itself.
+  const labelOf = (option: string) => optionLabel(option) ?? option;
+  const visibleOptions = options.filter((option) => fold(labelOf(option)).includes(needle));
   const createValue =
     onCreate !== undefined &&
     searchText !== "" &&
@@ -105,11 +112,15 @@ export function MultiSelect({
   const rows = createValue === undefined ? visibleOptions : [...visibleOptions, createValue];
   const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
 
+  // What the reader picked, compared as the server compares a label: a URL that lower-cased
+  // `Epic` still ticks the option the project spells `Epic`, and ticking it again removes it
+  // rather than adding a second spelling.
+  const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
   const toggle = (value: string) => {
     setActiveValue(value);
     onChange(
-      selected.includes(value)
-        ? selected.filter((current) => current !== value)
+      isPicked(value)
+        ? selected.filter((current) => fold(current) !== fold(value))
         : [...selected, value]
     );
   };
@@ -167,6 +178,7 @@ export function MultiSelect({
   return (
     <>
       <button
+        aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={triggerAriaLabel}
@@ -213,8 +225,8 @@ export function MultiSelect({
             role="listbox"
           >
             {visibleOptions.map((option) => {
-              const isSelected = selected.includes(option);
-              const label = optionLabel(option);
+              const isSelected = isPicked(option);
+              const label = labelOf(option);
               const detail = optionDetail?.(option);
               const spokenDetail = optionDetailLabel?.(option) ?? detail;
               return (

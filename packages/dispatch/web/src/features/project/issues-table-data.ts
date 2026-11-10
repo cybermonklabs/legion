@@ -54,24 +54,33 @@ export function useProjectIssueItems(
     queryFn: async () => {
       const known = new Map<string, EpicAncestor>(all.map((issue) => [issue.key, issue]));
       const ancestors: EpicAncestor[] = [];
+      // A parent this reader cannot read — deleted, or in a project they are not in — costs
+      // its own rows their epic and nothing else: the walk keeps every ancestor it did read,
+      // and stops asking for the one that failed.
+      const unreadable = new Set<string>();
       for (;;) {
         const missing = [
           ...new Set(
             [...known.values()].flatMap((issue) =>
-              issue.parent && !known.has(issue.parent) ? [issue.parent] : []
+              issue.parent && !known.has(issue.parent) && !unreadable.has(issue.parent)
+                ? [issue.parent]
+                : []
             )
           ),
         ];
-        if (missing.length === 0) return ancestors;
+        if (missing.length === 0) return { ancestors, unreadable: [...unreadable] };
         for (let from = 0; from < missing.length; from += PARENT_READS_IN_FLIGHT) {
-          for (const parent of await Promise.all(
-            missing
-              .slice(from, from + PARENT_READS_IN_FLIGHT)
-              .map((key) => queryClient.fetchQuery({ ...issueQuery(key), staleTime: Infinity }))
-          )) {
-            known.set(parent.key, parent);
-            ancestors.push(parent);
-          }
+          const slice = missing.slice(from, from + PARENT_READS_IN_FLIGHT);
+          const answers = await Promise.allSettled(
+            slice.map((key) => queryClient.fetchQuery({ ...issueQuery(key), staleTime: Infinity }))
+          );
+          answers.forEach((answer, index) => {
+            const key = slice[index];
+            if (answer.status === "fulfilled") {
+              known.set(answer.value.key, answer.value);
+              ancestors.push(answer.value);
+            } else if (key !== undefined) unreadable.add(key);
+          });
         }
       }
     },
@@ -82,7 +91,7 @@ export function useProjectIssueItems(
       buildItems(
         all,
         text.label,
-        ancestry.data,
+        ancestry.data?.ancestors,
         (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry)
       ),
     [all, text, ancestry.data, registry]

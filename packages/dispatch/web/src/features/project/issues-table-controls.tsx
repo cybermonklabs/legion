@@ -23,6 +23,7 @@ import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
   ALL_ROWS,
+  defaultView,
   type Item,
   PAGE_SIZES,
   readUrl,
@@ -360,7 +361,9 @@ export function IssueTableToolbar({
                 (current) => {
                   const next = writeUrl(current, {
                     ...readUrl(current),
-                    filters: [],
+                    // Back to the view the table opens with, not to no filter at all: an empty
+                    // status pick asks the server for every closed issue in the project.
+                    filters: defaultView.filters,
                     search: "",
                     page: 0,
                   });
@@ -448,13 +451,15 @@ export function IssueTableSelection({
   epics: readonly IssueSummary[];
   busy: boolean;
   unansweredEpic: string | undefined;
-  startNext: (keys: readonly string[]) => void;
+  startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
   newEpic: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
   const setSelection = table.setRowSelection;
+  /** The epic the reader has picked to move the selection into; no write has been sent yet. */
+  const [epic, setEpic] = useState("");
   return (
     <>
       {/* Over the page, not in it: selecting a row moves nothing else. */}
@@ -469,25 +474,43 @@ export function IssueTableSelection({
               Select all {leafCount} matching
             </Action>
           ) : null}
-          <Action disabled={busy} onClick={() => startNext(selectedKeys)}>
+          {/* A selection the reader cannot see all of — "Select all N matching" — is asked
+              about first: Start next writes once per issue. */}
+          <Action
+            disabled={busy}
+            onClick={() =>
+              startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
+            }
+          >
             Start next
           </Action>
+          {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
+              commits on an arrow key in Chrome on Linux and Windows, and this one reparents
+              every selected issue. */}
           <select
             aria-label="Move to epic"
             className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
             disabled={busy}
-            onChange={(event) => {
-              if (event.target.value) void moveTo(selectedKeys, event.target.value);
-            }}
-            value=""
+            onChange={(event) => setEpic(event.target.value)}
+            value={epic}
           >
             <option value="">Move to epic…</option>
-            {epics.map((epic) => (
-              <option key={epic.key} value={epic.key}>
-                {epic.title}
+            {epics.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.title}
               </option>
             ))}
           </select>
+          <Action
+            disabled={busy || epic === ""}
+            onClick={() => {
+              const into = epic;
+              setEpic("");
+              void moveTo(selectedKeys, into);
+            }}
+          >
+            Move
+          </Action>
           <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
             Take out of epic
           </Action>

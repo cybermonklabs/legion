@@ -198,6 +198,11 @@ test("merging an epic moves open descendants through closed intermediates and pr
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    await page
+      .getByRole("dialog", { name: "Merge this epic?" })
+      .getByRole("button", { name: "Merge", exact: true })
+      .click();
     await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
     expect((await getIssue(open.key)).parent).toBe(target.key);
     expect((await getIssue(grandchild.key)).parent).toBe(target.key);
@@ -232,6 +237,7 @@ test("selection actions move, remove and create an epic, whose name can then cha
     await page
       .getByRole("combobox", { name: "Move to epic", exact: true })
       .selectOption(target.key);
+    await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect
       .poll(async () => [(await getIssue(first.key)).parent, (await getIssue(second.key)).parent])
       .toEqual([target.key, target.key]);
@@ -813,7 +819,7 @@ test("an unavailable ancestor uses one retry policy per attempt @phone", async (
       await route.fulfill({ status: 503, json: { error: "Ancestor unavailable" } });
     });
     await page.goto("/projects/CORE/issues");
-    await expect(page.getByRole("alert")).toContainText("Could not load some ancestors");
+    await expect(page.getByRole("alert")).toContainText("Could not load 1 ancestor");
     expect(attempts).toBe(3);
     await page.getByRole("button", { name: "Retry loading ancestors" }).click();
     await expect.poll(() => attempts).toBe(6);
@@ -850,6 +856,11 @@ test("a refused merge move leaves the source open without a close reason", async
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    await page
+      .getByRole("dialog", { name: "Merge this epic?" })
+      .getByRole("button", { name: "Merge", exact: true })
+      .click();
     await expect(page.getByRole("alert")).toContainText(bad.key);
     await expect.poll(() => getIssue(good.key).then((issue) => issue.parent)).toBe(target.key);
     expect((await getIssue(source.key)).status).not.toBe("done");
@@ -1027,6 +1038,11 @@ test("reload mid merge moves current open descendants then records one reason an
     });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    await page
+      .getByRole("dialog", { name: "Merge this epic?" })
+      .getByRole("button", { name: "Merge", exact: true })
+      .click();
     await expect
       .poll(() => getIssue(completedChild.key).then((issue) => issue.parent))
       .toBe(target.key);
@@ -1055,6 +1071,94 @@ test("reload mid merge moves current open descendants then records one reason an
     await page.reload();
     await expect(interrupted).toHaveCount(0);
     expect(await listIssueMessages(source.key)).toHaveLength(1);
+  } finally {
+    await context.close();
+  }
+});
+
+// B1: a `?status=` this bundle does not know — a bookmark, a link from an older deploy — is a
+// filter that matches nothing. The page it opens is the table, never the error boundary.
+test("a status the bundle does not know leaves the whole page standing", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Status row" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    for (const status of ["bogus", "Done", "in-progress"]) {
+      await page.goto(`/projects/CORE/issues?status=${status}`);
+      await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
+      await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
+      await expect(page.getByText("Something went wrong in this page")).toHaveCount(0);
+      await page.getByRole("button", { name: /^Filter Status/ }).click();
+      await expect(
+        page.getByRole("option", { name: new RegExp(`^${status}`) }).first()
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
+// select stages a target instead, and the confirmation is what sends anything.
+test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const source = await createIssue({ project: "CORE", title: "Arrow source" });
+  const target = await createIssue({ project: "CORE", title: "Arrow target" });
+  await patchIssue(source.key, { labels: ["epic"] });
+  await patchIssue(target.key, { labels: ["epic"] });
+  const child = await createIssue({ project: "CORE", parent: source.key, title: "Arrow child" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/projects/CORE/issues?group=epic");
+    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
+    const select = page.getByRole("combobox", { name: "Merge into another epic" });
+    await select.focus();
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(500);
+    expect((await getIssue(source.key)).status).not.toBe("done");
+    expect((await getIssue(child.key)).parent).toBe(source.key);
+    await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
+
+    // The confirmed path still merges, and says what it is about to do first.
+    await select.selectOption(target.key);
+    await page.getByRole("button", { name: "Merge…" }).click();
+    const asked = page.getByRole("dialog", { name: "Merge this epic?" });
+    await expect(asked).toContainText(source.key);
+    await expect(asked).toContainText(target.key);
+    await expect(asked).toContainText("closes as done");
+    await asked.getByRole("button", { name: "Merge", exact: true }).click();
+    await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
+    expect((await getIssue(child.key)).parent).toBe(target.key);
+  } finally {
+    await context.close();
+  }
+});
+
+// F2 (dispatch://INFRA-2542 item 1): a press on a panel's own prose focuses nothing, and the
+// panel must still be the Escape key's owner afterwards.
+test("Escape closes a panel after a click on its own text", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Hint text epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  await createIssue({ project: "CORE", parent: epic.key, title: "Hint text child" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/projects/CORE/issues?group=epic");
+    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Hint text epic/ }) });
+    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
+    const hint = page.getByText("To split it, tick some of its issues");
+    await expect(hint).toBeVisible();
+    await hint.click();
+    await page.keyboard.press("Escape");
+    await expect(hint).toHaveCount(0);
+    await expect(heading.getByRole("button", { name: "Epic actions ▾" })).toBeFocused();
   } finally {
     await context.close();
   }

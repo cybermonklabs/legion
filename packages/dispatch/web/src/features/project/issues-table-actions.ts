@@ -20,6 +20,8 @@ interface Patch {
   key: string;
   input: UpdateIssueInput;
 }
+/** The write key each step of an action was given, by the issue the step writes. */
+type Keys = Readonly<Record<string, string>>;
 interface Notice {
   kind: "success" | "error";
   text: string;
@@ -28,6 +30,13 @@ interface DuplicateEpic {
   keys: readonly string[];
   title: string;
   message: string;
+}
+/** An action waiting on the reader's yes, with everything the dialog says and does. */
+interface Confirmation {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  run: () => void;
 }
 /** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
 export type EpicNaming =
@@ -67,6 +76,7 @@ export function useIssueTableActions({
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
   const [naming, setNaming] = useState<EpicNaming>();
+  const [confirming, setConfirming] = useState<Confirmation>();
   const recovery = useTableRecovery(project, (text) =>
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
@@ -86,9 +96,15 @@ export function useIssueTableActions({
     recovery.watch(key, issue);
     return answer;
   };
-  const apply = async (operations: readonly Patch[], id?: string) => {
-    const sends = operations.map((operation) => ({ ...operation, write: newSendKey() }));
-    recovery.record(Object.fromEntries(sends.map(({ key, write }) => [key, write])), id);
+  const apply = async (operations: readonly Patch[], id?: string, minted?: Keys) => {
+    const sends = operations.map((operation) => ({
+      ...operation,
+      write: minted?.[operation.key] ?? newSendKey(),
+    }));
+    // A caller that minted the keys has already recorded them: a step-at-a-time action records
+    // its whole batch once rather than re-serialising the store on every step.
+    if (minted === undefined)
+      recovery.record(Object.fromEntries(sends.map(({ key, write }) => [key, write])), id);
     const results = await settledWithLimit(
       sends,
       WRITES_IN_FLIGHT,
@@ -181,10 +197,14 @@ export function useIssueTableActions({
       error instanceof Error ? error.message : String(error)
   ) => {
     const operations = startNextWrites(current, record.keys);
+    // Every step's key, minted and stored in one write before the first send: 250 issues move
+    // up under one storage write rather than 250 read-modify-write cycles of the whole store.
+    const minted: Keys = Object.fromEntries(operations.map(({ key }) => [key, newSendKey()]));
+    recovery.record(minted, record.id);
     for (const [index, operation] of operations.entries()) {
       if (!recovery.active(record.id)) return false;
       try {
-        await apply([operation], record.id);
+        await apply([operation], record.id, minted);
       } catch (error) {
         throw new Error(
           failure(
@@ -196,9 +216,8 @@ export function useIssueTableActions({
     }
     return recovery.active(record.id);
   };
-  const startNext = (keys: readonly string[]) => {
-    if (!canBegin()) return;
-    const queued = queuedInOrder(items, keys);
+  /** Sends a start-next action for queued issues already checked by `startNext`. */
+  const runQueued = (queued: readonly string[]) => {
     if (!queued.length) {
       setNotice({
         kind: "error",
@@ -228,6 +247,22 @@ export function useIssueTableActions({
         return queued;
       }
     );
+  };
+  /** A start-next the reader has not seen the whole of: `Select all N matching` picked rows
+   *  off the page, and each one is a write, so the count is put to them first. */
+  const startNext = (keys: readonly string[], confirmFirst = false) => {
+    if (!canBegin()) return;
+    const queued = queuedInOrder(items, keys);
+    if (confirmFirst && queued.length) {
+      setConfirming({
+        title: "Start these next?",
+        body: `${queued.length} issues move to the head of Legion's queue, one write each.`,
+        confirmLabel: "Start next",
+        run: () => runQueued(queued),
+      });
+      return;
+    }
+    runQueued(queued);
   };
   const newEpic = async (keys: readonly string[], chosenTitle?: string, force = false) => {
     if (unansweredEpic || !canBegin()) return;
@@ -308,20 +343,26 @@ export function useIssueTableActions({
     // only that a write was made, and a write discarded in Pending changes leaves that key
     // behind. `settle` has already waited on any write of this action still in flight, so a
     // reason that landed is in the source's messages, compared as the whole sentence.
+    const posted = recovery.current.current?.reasonBody;
+    const prefix = `Merged into ${into} (`;
     const alreadySaid =
       resumed &&
-      (await api.listIssueMessages(from)).some(
-        ({ message }) => message.body === mergeReason(into, titleOf(into))
+      (await api.listIssueMessages(from)).some(({ message }) =>
+        // The sentence the merge actually sent, kept with the record: the target may have been
+        // renamed or closed since, which would make a freshly built sentence miss and post a
+        // second one. A record from before this was kept falls back to the title-free opening.
+        posted === undefined ? message.body.startsWith(prefix) : message.body === posted
       );
     if (!recovery.active(record.id)) return;
     if (!alreadySaid) {
       const reason = newSendKey();
-      recovery.record({ reason }, record.id);
+      const body = mergeReason(into, titleOf(into));
+      recovery.record({ reason }, record.id, { reasonBody: body });
       await request(
         {
           method: "POST",
           path: `/api/v1/issues/${encodeURIComponent(from)}/messages`,
-          body: { body: mergeReason(into, titleOf(into)) },
+          body: { body },
         },
         `Record the merge reason on ${from}`,
         from,
@@ -330,6 +371,18 @@ export function useIssueTableActions({
     }
     if (recovery.active(record.id))
       await apply([{ key: from, input: { status: "done" } }], record.id);
+  };
+  /** What a merge is about to do, in the page, before any write: a merge closes an issue, so
+   *  it is the one table action that asks whatever the input device. */
+  const askMerge = (from: string, into: string) => {
+    if (!canBegin()) return;
+    const moving = mergeMembers(issues, from).length;
+    setConfirming({
+      title: "Merge this epic?",
+      body: `${moving} open ${moving === 1 ? "issue moves" : "issues move"} from ${from} “${titleOf(from)}” to ${into} “${titleOf(into)}”, and ${from} closes as done.`,
+      confirmLabel: "Merge",
+      run: () => void mergeEpic(from, into),
+    });
   };
   const mergeEpic = (from: string, into: string) => {
     if (!canBegin()) return;
@@ -448,12 +501,19 @@ export function useIssueTableActions({
     interruptedDescription: interrupted && kinds[interrupted.kind].describe(interrupted),
     naming,
     cancelNaming: () => setNaming(undefined),
+    confirming,
+    cancelConfirming: () => setConfirming(undefined),
+    confirmed: () => {
+      const waiting = confirming;
+      setConfirming(undefined);
+      waiting?.run();
+    },
     finish,
     dismiss: recovery.dismiss,
     moveTo,
     startNext,
     newEpic,
     renameEpic,
-    mergeEpic,
+    mergeEpic: askMerge,
   };
 }

@@ -48,8 +48,23 @@ export function AnchoredPanel({
   // scroll, which is when the viewport coordinates it is placed at change.
   useLayoutEffect(() => {
     const place = () => {
-      const box = anchorRef.current?.getBoundingClientRect();
+      const anchor = anchorRef.current;
+      const box = anchor?.getBoundingClientRect();
+      // A panel hanging off nothing is one the reader cannot place: when its anchor has left
+      // the page, or is drawn nowhere while the page around it is drawn — a row the virtualizer
+      // took away, a control a narrow window folded — the panel closes rather than standing
+      // where the anchor used to be. The second half is asked only of an environment that lays
+      // anything out at all, so a test DOM with no layout keeps its panels.
+      if (anchor === null || anchor === undefined || !anchor.isConnected) {
+        dismiss.current();
+        return;
+      }
       if (box === undefined) return;
+      const drawn = panelRef.current?.getBoundingClientRect();
+      if (box.width === 0 && box.height === 0 && drawn !== undefined && drawn.height > 0) {
+        dismiss.current();
+        return;
+      }
       const width = Math.min(panelRef.current?.offsetWidth || PANEL_WIDTH, window.innerWidth - 16);
       const left = Math.max(
         8,
@@ -79,7 +94,17 @@ export function AnchoredPanel({
     const outside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) {
+        // A press on the panel's own prose focuses nothing, which would leave focus on the
+        // body and Escape with no owner. The panel takes it, so the reader stays in the panel.
+        if (
+          !(document.activeElement instanceof HTMLElement) ||
+          !panelRef.current.contains(document.activeElement)
+        )
+          panelRef.current.focus();
+        return;
+      }
+      if (anchorRef.current?.contains(target)) return;
       dismiss.current();
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
@@ -110,7 +135,13 @@ export function AnchoredPanel({
 
   const named = role === undefined ? {} : { role, "aria-label": label };
   return createPortal(
-    <div className={className} ref={panelRef} style={{ position: "fixed", ...position }} {...named}>
+    <div
+      className={className}
+      ref={panelRef}
+      style={{ position: "fixed", ...position }}
+      tabIndex={-1}
+      {...named}
+    >
       {children}
     </div>,
     document.body

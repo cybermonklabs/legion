@@ -155,7 +155,9 @@ export function IssueLabels({
         <MultiSelect
           // Not disabled while it saves what the close committed: a disabled button cannot hold
           // focus, so Escape's return to the trigger would be undone by the save's own render.
-          // `setOpenState` is what refuses to reopen until the save has landed.
+          // `setOpenState` is what refuses to reopen until the save has landed, and `aria-disabled`
+          // is how the reader is told it is busy without focus being taken away.
+          ariaDisabled={saving}
           disabled={disabled}
           emptyMessage="No labels yet."
           error={inputError}

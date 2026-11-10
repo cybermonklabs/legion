@@ -3,7 +3,7 @@ import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
-import { type IssueStatus, issueStatuses, openIssueStatuses, statusLabel } from "./board-model";
+import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 
 export interface Item {
   readonly issue: IssueSummary;
@@ -143,7 +143,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 108,
     compactMin: 88,
     pinned: true,
-    filter: one((item) => item.issue.key, { groups: false }),
+    filter: { kind: "text", value: (item) => item.issue.key },
   },
   {
     id: "title",
@@ -162,7 +162,9 @@ export const COLUMNS: readonly ColumnSpec[] = [
       values: (item) => [item.issue.status],
       group: (item) => item.issue.status,
       order: issueStatuses,
-      show: (value) => statusLabel(value as IssueStatus),
+      // A `?status=` this bundle does not know stays under its own text: the filter applies
+      // and matches nothing, which is what the Board has always done (`statusText`).
+      show: statusText,
       // Shared with the Board, and every status is offered even before its rows are loaded.
       param: "status",
       always: issueStatuses,
@@ -182,11 +184,12 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 132,
     filter: {
       kind: "picks",
-      values: (item) => (item.issue.labels ?? []).map((label) => label.toLowerCase()),
-      // Shared with the Board: every picked label, in the case the server matches them in.
+      // The project's own spelling of each label, which is the Board's too: one `?label=` is
+      // one cache key and one ticked option in both views. Matching is case-insensitive, so a
+      // link in another casing still picks the same rows.
+      values: (item) => item.issue.labels ?? [],
       match: "all",
       param: "label",
-      normalize: (value) => value.toLowerCase(),
     },
   },
   {
@@ -372,6 +375,9 @@ function withinOneEdit(a: string, b: string): boolean {
   return edits + a.length - i + b.length - j <= 1;
 }
 export function matchesSearch(item: Item, query: string): boolean {
+  // Nothing typed matches everything, and the two hot callers — the epic fold-in and the
+  // facet counts — ask on every render, so this answers before any work is done.
+  if (query.trim() === "") return true;
   let words: string[] | undefined;
   const searchWords = () => {
     if (words === undefined) words = item.search.toLowerCase().split(/[^\p{L}\p{N}]+/u);
@@ -405,14 +411,21 @@ export function matchesFilters(item: Item, filters: ColumnFiltersState, except?:
       : facets(item, id).some((entry) => value.includes(entry));
   });
 }
+/** The headings that stand for "none of them", wherever a column has one: they read last, after
+ *  every named group. */
+const EMPTY_GROUPS: readonly string[] = ["No epic", "Unknown epic", "Nobody", "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
- *  and by name where the registry gives none. A group's place is its column's, not the row
- *  sort's, so the headings read P0, P1, P2, P3 however the rows beneath them are sorted. */
+ *  and by name where the registry gives none — numbers inside a name counted as numbers, so
+ *  `CORE-2` reads before `CORE-10`, and the empty group last. A group's place is its column's,
+ *  not the row sort's, so the headings read P0, P1, P2, P3 however the rows are sorted. */
 export function compareGroups(id: string, a: string, b: string): number {
   const filter = columnFilterSpec(id);
   if (filter?.kind !== "picks" || filter.group === undefined) return 0;
   const order = filter.order;
-  if (order === undefined) return a.localeCompare(b);
+  if (order === undefined) {
+    const empty = Number(EMPTY_GROUPS.includes(a)) - Number(EMPTY_GROUPS.includes(b));
+    return empty !== 0 ? empty : a.localeCompare(b, undefined, { numeric: true });
+  }
   const place = (value: string) => {
     const index = order.indexOf(value);
     return index === -1 ? order.length : index;
@@ -499,6 +512,12 @@ export function readUrl(params: URLSearchParams): View {
     pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
   };
 }
+/** Whether a status pick is exactly the set the table opens with. */
+function isDefaultStatus(value: unknown): boolean {
+  const picked = Array.isArray(value) ? value.map(String) : [];
+  const fallback = (defaultView.filters[0]?.value ?? []) as string[];
+  return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
+}
 export function writeUrl(params: URLSearchParams, state: View): URLSearchParams {
   const next = new URLSearchParams(params);
   for (const key of [...next.keys()])
@@ -514,6 +533,10 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
   if (state.grouping[0]) next.set("group", state.grouping[0]);
   if (!state.filters.some(({ id }) => id === "status")) next.set("nofilter", "1");
   for (const filter of state.filters) {
+    // The open statuses are what the table shows when nothing says otherwise, so a link that
+    // carries them says nothing; `readUrl` puts them back, and `nofilter=1` is how an empty
+    // selection stays expressible.
+    if (filter.id === "status" && isDefaultStatus(filter.value)) continue;
     const values = Array.isArray(filter.value) ? filter.value : [filter.value];
     for (const value of values) {
       if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set("unclaimed", "1");

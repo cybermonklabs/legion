@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import type { IssueSummary } from "../../api/types";
 import {
   buildItems,
+  columnFilterSpec,
+  compareGroups,
   defaultView,
   facetCounts,
   isEpic,
@@ -84,8 +86,9 @@ test("facet counts apply search and every other filter, not their own", () => {
     { id: "status", value: ["todo"] },
     { id: "labels", value: ["backend"] },
   ];
+  // The project's own spelling of a label is the facet, in the table as on the Board.
   expect([...facetCounts(items, "labels", filters, "search")]).toEqual([
-    ["frontend", 1],
+    ["FrontEnd", 1],
     ["backend", 1],
     ["legion", 1],
   ]);
@@ -93,9 +96,11 @@ test("facet counts apply search and every other filter, not their own", () => {
     ["todo", 1],
     ["testing", 1],
   ]);
+  // A URL keeps the casing it carries — one spelling for the table and the Board — and the
+  // matching is what is case-insensitive.
   expect(
     readUrl(new URLSearchParams("label=FrontEnd")).filters.find(({ id }) => id === "labels")?.value
-  ).toEqual(["frontend"]);
+  ).toEqual(["FrontEnd"]);
 });
 
 test("URL round trip preserves Board status and label params plus every table control", () => {
@@ -248,4 +253,55 @@ test("a column dropped on itself, or on one the order does not hold, stays where
   expect(reorder(order, "title", "title")).toEqual(order);
   expect(reorder(order, "title", "claim")).toEqual(order);
   expect(reorder(order, "claim", "title")).toEqual(order);
+});
+
+// B1: a `?status=` this bundle does not know is still the reader's filter, under its own text.
+test("an unknown status keeps its own text and its place in the picks", () => {
+  const show = columnFilterSpec("status");
+  if (show?.kind !== "picks" || show.show === undefined) throw new Error("the status filter");
+  expect(show.show("bogus")).toBe("bogus");
+  expect(show.show("Done")).toBe("Done");
+  expect(show.show("done")).toBe("Done");
+  expect(readUrl(new URLSearchParams("status=bogus")).filters).toEqual([
+    { id: "status", value: ["bogus"] },
+  ]);
+});
+
+// O1: the view the table opens with says nothing in a link, and comes back when read.
+test("a shared link leaves out the default status set and reads it back", () => {
+  const params = writeUrl(new URLSearchParams(), { ...defaultView, search: "rank" });
+  expect(params.get("status")).toBeNull();
+  expect(params.get("nofilter")).toBeNull();
+  expect(readUrl(params).filters).toEqual(defaultView.filters);
+  // An empty selection is still expressible, and still means every status.
+  expect(writeUrl(new URLSearchParams(), { ...defaultView, filters: [] }).get("nofilter")).toBe(
+    "1"
+  );
+  expect(readUrl(new URLSearchParams("nofilter=1")).filters).toEqual([]);
+});
+
+// O2: Key filters by what the reader types, not by a list of every issue.
+test("the Key column filters by typed text", () => {
+  const key = columnFilterSpec("key");
+  expect(key?.kind).toBe("text");
+  const item = buildItems([issue("CORE-12")], () => "")[0];
+  if (item === undefined) throw new Error("no item");
+  expect(matchesFilters(item, [{ id: "key", value: "re-1" }])).toBe(true);
+  expect(matchesFilters(item, [{ id: "key", value: "CORE-9" }])).toBe(false);
+});
+
+// I3: a key reads as a number where it is one, and the empty group reads last.
+test("groups order by number inside a name, with the empty group last", () => {
+  expect(compareGroups("epic", "CORE-2 · Two", "CORE-10 · Ten")).toBeLessThan(0);
+  expect(compareGroups("epic", "No epic", "CORE-10 · Ten")).toBeGreaterThan(0);
+  expect(compareGroups("claim", "Nobody", "zoe")).toBeGreaterThan(0);
+  expect(compareGroups("assignee", "Unassigned", "alice")).toBeGreaterThan(0);
+});
+
+// F8: nothing typed matches every row, before any of the work a query needs.
+test("a blank search matches every row", () => {
+  const item = buildItems([issue("CORE-1")], () => "")[0];
+  if (item === undefined) throw new Error("no item");
+  expect(matchesSearch(item, "")).toBe(true);
+  expect(matchesSearch(item, "   ")).toBe(true);
 });

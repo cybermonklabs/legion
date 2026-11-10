@@ -43,7 +43,9 @@ export interface IssueFiltersState {
 }
 
 /** The one query key for a project's issue list: the plain list, or the server-filtered list
- *  when labels are active. List and Board build their keys here so the caches are shared. */
+ *  when labels are active. List and Board build their keys here, so one set of labels is one
+ *  key in both; `api/queries.ts` then forks on `open`, so the open-only read of a view that
+ *  hides closed issues is a key of its own under the same prefix. */
 export function projectIssuesQueryKey(
   project: string,
   labels: readonly string[]

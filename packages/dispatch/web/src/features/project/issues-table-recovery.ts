@@ -23,7 +23,12 @@ export const tableEpicWrite = defineWriteKind<string>({
     ) {
       writeTableAction(write.detail, { ...action, target: answer.key });
     }
-    if (!awaited || answer === null) void client.invalidateQueries();
+    // What a created epic changes is this project's listings and the ancestry read that hangs
+    // off them, not every query the tab holds.
+    if (!awaited || answer === null) {
+      void client.invalidateQueries({ queryKey: ["issues", "project", write.detail] });
+      void client.invalidateQueries({ queryKey: ["issue-ancestors", write.detail] });
+    }
   },
 });
 
@@ -127,18 +132,22 @@ export function useTableRecovery(project: string, report: (text: string) => void
     action,
     current,
     active,
-    begin: (record: Omit<TableAction, "id" | "project" | "writes">) => {
-      const next = { ...record, id: newSendKey(), project, writes: {} };
+    begin: (record: Omit<TableAction, "id" | "project" | "writes" | "startedAt">) => {
+      const next = { ...record, id: newSendKey(), project, startedAt: Date.now(), writes: {} };
       remember(next);
       return next;
     },
     /** The keys of the writes a step of `id`'s action is about to send, kept with the record so
      *  a resume can wait on them. One storage write and one render for the whole batch: a
      *  250-row action records its keys once, not once per issue. */
-    record: (steps: Readonly<Record<string, string>>, id?: string) => {
+    record: (
+      steps: Readonly<Record<string, string>>,
+      id?: string,
+      fields?: Partial<TableAction>
+    ) => {
       const held = current.current;
-      if (id && held?.id === id && Object.keys(steps).length)
-        remember({ ...held, writes: { ...held.writes, ...steps } });
+      if (id && held?.id === id && (Object.keys(steps).length || fields))
+        remember({ ...held, ...fields, writes: { ...held.writes, ...steps } });
     },
     watch: (key: string, issue: string) => {
       const row = writes.rows().find((value) => value.key === key);
@@ -167,6 +176,15 @@ export function useTableRecovery(project: string, report: (text: string) => void
         rows.filter((row) => row.status === "refused"),
         WRITES_IN_FLIGHT,
         async (row) => {
+          // Between the read above and this row's turn the reader may have retried it in
+          // Pending changes, and a write already on its way answers no second retry: asking
+          // for one would leave Finish waiting for an outcome that never comes.
+          const now = writes.rows().find((current) => current.id === row.id);
+          if (now === undefined) return;
+          if (now.status !== "refused") {
+            await outcome(row);
+            return;
+          }
           const landed = outcome(row);
           writes.retry(row.id);
           await landed;

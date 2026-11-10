@@ -28,8 +28,18 @@ export interface TableAction {
   keys: readonly string[];
   source?: string;
   target?: string;
+  /** When the action was begun, as epoch milliseconds. A record older than `ACTION_LIFETIME_MS`
+   *  is a tab somebody closed a day ago, not work this reader left half-done. */
+  startedAt?: number;
+  /** The merge reason exactly as it was sent, so a resume knows the sentence it is looking for
+   *  even if the target has been renamed, or closed, since. */
+  reasonBody?: string;
   writes: Record<string, string>;
 }
+/** How long a stored action is still the reader's to finish: a day. Past that the banner goes
+ *  and a new action may begin, because the writes it named have long since landed or been
+ *  discarded in Pending changes. */
+export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
 const EMPTY_LAYOUT: TableLayout = { sizing: {}, order: [], visibility: { updated: false } };
 
@@ -106,6 +116,10 @@ export function readTableAction(project: string): TableAction | undefined {
     !Array.isArray(action.writes) &&
     Object.values(action.writes).every((key) => typeof key === "string") &&
     (action.target === undefined || typeof action.target === "string") &&
+    (action.startedAt === undefined ||
+      (typeof action.startedAt === "number" &&
+        Date.now() - action.startedAt < ACTION_LIFETIME_MS)) &&
+    (action.reasonBody === undefined || typeof action.reasonBody === "string") &&
     (action.kind !== "merge" ||
       (typeof action.source === "string" && typeof action.target === "string"))
   )

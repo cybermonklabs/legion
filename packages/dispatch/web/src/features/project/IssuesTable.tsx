@@ -30,6 +30,7 @@ import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
@@ -245,6 +246,9 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     mergeEpic,
     naming,
     cancelNaming,
+    confirming,
+    cancelConfirming,
+    confirmed,
     interrupted,
     interruptedDescription,
     finish,
@@ -256,14 +260,37 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     clearSelection: () => setSelection({}),
   });
 
+  // How many parents the walk could not read: every one of them when the walk itself failed,
+  // else the ones it named. The rest of the rows keep the epic they were read with.
+  const unreadableAncestors =
+    missingParents.length === 0
+      ? 0
+      : ancestry.isError
+        ? missingParents.length
+        : (ancestry.data?.unreadable.length ?? 0);
   const pageRows = table.getRowModel().rows;
   const continued =
     pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
       ? pageRows[0].getParentRow()
       : undefined;
-  const displayRows: { row: Row<Item>; continued?: boolean }[] = [
-    ...(continued === undefined ? [] : [{ row: continued, continued: true }]),
-    ...pageRows.map((row) => ({ row })),
+  // A page is a flat slice of leaves, so its last heading can be one whose rows all start on
+  // the next page. A heading with nothing under it here is left for the page that holds its
+  // rows; the ones that stay say how many of their rows this page shows.
+  const onThisPage = new Map<string, number>();
+  for (const row of pageRows)
+    if (!row.getIsGrouped()) {
+      const group = row.getParentRow()?.id;
+      if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
+    }
+  const displayRows: { row: Row<Item>; continued?: boolean; shown?: number }[] = [
+    ...(continued === undefined
+      ? []
+      : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
+    ...pageRows.flatMap((row) =>
+      row.getIsGrouped() && (onThisPage.get(row.id) ?? 0) === 0
+        ? []
+        : [{ row, ...(row.getIsGrouped() ? { shown: onThisPage.get(row.id) } : {}) }]
+    ),
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
   // neither the rows this page holds nor a notice above the table is measured from here.
@@ -327,7 +354,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const columnOrder = table.getAllLeafColumns().map((column) => column.id);
 
   return (
-    <section aria-label="Project issues" className="space-y-3 pb-24">
+    <section aria-label="Project issues" className="space-y-3 sm:pb-24">
       <div className="space-y-3" ref={attachAbove}>
         {listingError ? (
           <p className={dangerText} role="alert">
@@ -341,9 +368,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
             </button>
           </p>
         ) : null}
-        {missingParents.length > 0 && ancestry.isError ? (
+        {unreadableAncestors > 0 ? (
           <p className={dangerText} role="alert">
-            Could not load some ancestors; affected rows show Unknown epic.{" "}
+            Could not load {unreadableAncestors}{" "}
+            {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown epic.{" "}
             <button type="button" onClick={() => void ancestry.refetch()}>
               Retry loading ancestors
             </button>
@@ -486,6 +514,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                     key={`${entry.continued ? "continued-" : ""}${row.id}`}
                     measure={virtualizer.measureElement}
                     onMerge={mergeEpic}
+                    shown={entry.shown}
                     onRename={renameEpic}
                     onStartAll={(key) =>
                       startNext(
@@ -538,6 +567,16 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         moveTo={moveTo}
         newEpic={newEpic}
       />
+      {confirming === undefined ? null : (
+        <ConfirmDialog
+          body={confirming.body}
+          confirmLabel={confirming.confirmLabel}
+          key={confirming.title}
+          onCancel={cancelConfirming}
+          onConfirm={confirmed}
+          title={confirming.title}
+        />
+      )}
       {naming === undefined ? null : naming.kind === "new" ? (
         <EpicNameDialog
           key="new-epic"

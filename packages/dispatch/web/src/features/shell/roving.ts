@@ -33,7 +33,7 @@ export function focusedMatching(selector: string): HTMLElement | null {
  * `checkVisibility()` would answer this and more, and needs Safari 17.4 / Chrome 105 /
  * Firefox 106; a focus rule is not worth raising the browsers Dispatch runs on.
  */
-export function reachableRows(nodes: readonly HTMLElement[]): HTMLElement[] {
+function reachableRows(nodes: readonly HTMLElement[]): HTMLElement[] {
   return nodes.filter((node) => node.closest("details:not([open])") === null);
 }
 

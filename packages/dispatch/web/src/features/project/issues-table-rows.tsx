@@ -1,5 +1,5 @@
 import { flexRender, type Header, type Row } from "@tanstack/react-table";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import {
@@ -198,10 +198,13 @@ export function GroupRow({
   continued,
   index,
   measure,
+  shown,
   viewportWidth,
 }: {
   /** A repeat of the header of a group the page opens in the middle of. */
   continued?: boolean;
+  /** How many of the group's rows this page holds, when that is fewer than the group has. */
+  shown?: number;
   index: number;
   measure: (element: Element | null) => void;
   row: Row<Item>;
@@ -217,7 +220,14 @@ export function GroupRow({
   const value = String(row.groupingValue ?? "");
   // A heading reads as the column's filter does: the registry holds that text once.
   const groupedBy = columnFilterSpec(grouping);
-  const shown = groupedBy?.kind === "picks" && groupedBy.show ? groupedBy.show(value) : value;
+  const heading = groupedBy?.kind === "picks" && groupedBy.show ? groupedBy.show(value) : value;
+  // What the reader can see under this heading, which a page boundary can make fewer than the
+  // group holds: "3 of 5 issues" rather than a count of rows that are not on this page.
+  const here = shown ?? leaves.length;
+  const count =
+    here === leaves.length
+      ? `${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}`
+      : `${here} of ${leaves.length} issues`;
   const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
   const leafCounts = new Map<string, number>();
   let next = Number.POSITIVE_INFINITY;
@@ -238,7 +248,7 @@ export function GroupRow({
         >
           <button
             aria-expanded={row.getIsExpanded()}
-            aria-label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${shown}, ${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}${continued ? ", continued" : ""}`}
+            aria-label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
             className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
             onClick={row.getToggleExpandedHandler()}
             type="button"
@@ -246,12 +256,12 @@ export function GroupRow({
             <span className={`w-4 ${textMutedOnSurfaceMuted}`}>
               {row.getIsExpanded() ? "▾" : "▸"}
             </span>
-            {epicKey === undefined ? shown : null}
+            {epicKey === undefined ? heading : null}
             {continued ? (
               <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
             ) : null}
             <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
-              {leaves.length} {leaves.length === 1 ? "issue" : "issues"}
+              {count}
               {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
             </span>
           </button>
@@ -260,7 +270,7 @@ export function GroupRow({
               className={`font-semibold ${linkText} ${linkHoverText}`}
               to={buildIssuePath({ key: epicKey, kind: "issue" })}
             >
-              {shown}
+              {heading}
             </Link>
           )}
           <span className="flex items-center gap-2">
@@ -306,6 +316,8 @@ function EpicActions({
   onMerge: (into: string) => void;
   onStartAll: () => void;
 }): ReactNode {
+  /** The epic the reader has picked to merge into, which no write has been sent for yet. */
+  const [target, setTarget] = useState("");
   return (
     <span className="ml-auto">
       <Popover align="right" label="Epic actions ▾">
@@ -331,17 +343,15 @@ function EpicActions({
             >
               Start all its queued issues next
             </button>
+            {/* Two steps, because a merge closes an issue: the select stages a target, and
+                Merge… asks before anything is written. A closed `<select>` commits on an arrow
+                key in Chrome on Linux and Windows, which is one keystroke from a closed epic. */}
             <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
               Merge into another epic
               <select
                 className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                onChange={(event) => {
-                  if (event.target.value) {
-                    close();
-                    onMerge(event.target.value);
-                  }
-                }}
-                value=""
+                onChange={(event) => setTarget(event.target.value)}
+                value={target}
               >
                 <option value="">Choose an epic…</option>
                 {epics
@@ -353,6 +363,17 @@ function EpicActions({
                   ))}
               </select>
             </label>
+            <button
+              className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
+              disabled={target === ""}
+              onClick={() => {
+                close();
+                onMerge(target);
+              }}
+              type="button"
+            >
+              Merge…
+            </button>
             <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
               To split it, tick some of its issues and choose “New epic from these”.
             </span>
