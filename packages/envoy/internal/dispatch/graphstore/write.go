@@ -95,6 +95,10 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 				state = excluded.state,
 				attributes = excluded.attributes,
 				source_event = excluded.source_event
+			where graph_nodes.supertag is distinct from excluded.supertag
+			   or graph_nodes.visibility is distinct from excluded.visibility
+			   or graph_nodes.state is distinct from excluded.state
+			   or graph_nodes.attributes is distinct from excluded.attributes
 			returning kind, id, state, xmax = 0 as made
 		)
 		select incoming.ordinality, written.made, stored.state is distinct from written.state
