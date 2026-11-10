@@ -1300,10 +1300,9 @@ test("an issue's whole title wraps at every width, whether prose or one unbroken
   }
 });
 
-test("the details rail fades its trailing edge only while it has somewhere to scroll @phone", async ({
+test("the details rail fades its trailing edge only while it has somewhere to scroll @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the rail only overflows at a phone width");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Rail fade" });
 

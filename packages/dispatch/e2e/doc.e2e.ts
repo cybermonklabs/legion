@@ -113,10 +113,9 @@ test("the spec opens as a formatted, editable document with no source pane", asy
 // The narrow-screen half of the row above. The spec's table holds a token nothing can break, the
 // widest thing a document can carry; on a 390 px screen it has to wrap inside its cell rather
 // than push the table, and the page with it, sideways.
-test("a spec whose table holds an unbreakable token keeps the page within the screen @phone", async ({
+test("a spec whose table holds an unbreakable token keeps the page within the screen @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "only a phone screen is narrower than the token");
+}) => {
   await createProject({ key: "READ", name: "Readable" });
   const issue = await createIssue({
     project: "READ",
@@ -575,11 +574,7 @@ for (const row of [
   // leaving PROVIDER_ECHO_MS of real time for what those timers sent to come back.
   test(`an idle document provider stays on one connection past its receive timeout, as ${row.reader}`, async ({
     browser,
-  }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "chromium",
-      "one Hocuspocus provider proves the document socket stays connected"
-    );
+  }) => {
     await createProject({ key: row.key, name: "Idle document" });
     const issue = await createIssue({
       project: row.key,

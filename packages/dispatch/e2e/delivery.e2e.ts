@@ -273,10 +273,9 @@ test("dragging the zoom slider zooms without setting a brush window", async ({ b
   await context.close();
 });
 
-test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone", async ({
+test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "a finger drag exercises the phone project");
+}) => {
   await seedDeliveryFixture();
   // The reconcile pass the server runs on its own five-minute tick (`ReconcileInterval`,
   // `delivery/reconcile.go`) can land anywhere inside this row: the fake GitHub holds no
@@ -348,10 +347,9 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
 // laid out once around the longest text the rows can carry; here the failure is written while
 // the finger is down, so the rewrap itself happens under the finger and the width is read
 // across it.
-test("on a phone a reconcile error arriving under the finger widens nothing @phone", async ({
+test("on a phone a reconcile error arriving under the finger widens nothing @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "a finger on the chart is the phone project's");
+}) => {
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

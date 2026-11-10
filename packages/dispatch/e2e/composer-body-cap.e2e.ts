@@ -20,7 +20,6 @@ import { asUser } from "./users";
 test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph @pr", async ({
   browser,
 }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the composer");
   test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Long comment" });
@@ -59,7 +58,6 @@ test("the comment composer takes a 40,000-character body, and shows the server's
 });
 
 test("the ask composer takes a question past the length it used to cut", async ({ browser }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the composer");
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",

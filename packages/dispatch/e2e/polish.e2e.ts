@@ -11,9 +11,11 @@ import { asUser } from "./users";
 // The narrow-screen half of the stubbed row. The board lays its columns out side by side, so it
 // is the page a phone's width can push sideways; the stubbed row walks the same board at
 // 1280 px, where there is room for them. It carries `@phone`, which is why it is not a stubbed
-// row of its own: the `iphone` project runs none.
-test("the project board's columns stay inside the screen @phone", async ({ browser }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "only a phone screen is narrower than the columns");
+// row of its own: the `iphone` project runs none. ` @phone-only` beside it is what keeps the
+// row out of `chromium`, which runs every other `@phone` row at the desktop width.
+test("the project board's columns stay inside the screen @phone @phone-only", async ({
+  browser,
+}, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Polish the queue" });
   await patchIssue(issue.key, { status: "todo" });

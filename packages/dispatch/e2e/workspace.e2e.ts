@@ -14,7 +14,6 @@ import { seedWorkspace } from "./workspace";
 test("the seeded workspace fills every surface the person scope opens @pr", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the seeded workspace");
   const seeded = await seedWorkspace();
   expect(await getInbox({ login: "alice" })).toHaveLength(seeded.inboxRows);
 

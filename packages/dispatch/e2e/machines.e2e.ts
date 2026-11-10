@@ -204,12 +204,13 @@ test.describe("@machines-honesty", () => {
 
 test.describe("@machines-width", () => {
   // The phone project's own, and only its own: every claim here is about what the phone layout
-  // does at 390 px, which `chromium` at its own width would only contradict. A test that skips
-  // every project but `iphone` is always tagged (`packages/dispatch/AGENTS.md`, R5).
-  test("at a phone width the strip scrolls sideways, the drawn panes keep their proportions, and a 22-pane window is listed in layout order @phone", async ({
+  // does at 390 px, which `chromium` at its own width would only contradict. A row the phone
+  // projects alone run carries ` @phone-only` beside its `@phone`, and that second tag is what
+  // keeps `chromium` from scheduling it (`packages/dispatch/AGENTS.md`, R5;
+  // e2e/playwright.config.ts).
+  test("at a phone width the strip scrolls sideways, the drawn panes keep their proportions, and a 22-pane window is listed in layout order @phone @phone-only", async ({
     browser,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== "iphone", "the phone layout is the iphone project's");
+  }) => {
     await seedWidthMachine(Date.now());
     const alice = await asUser(browser, "alice");
     try {

@@ -213,10 +213,9 @@ test("a project with a source opens on its Architecture: bars, drill-down, detai
 // are touch-sized. Each claim is read where the page renders it, reached by its own URL. The
 // touch rule is the phone layout's alone (styles.css gives every control 44 px below 1280 px),
 // so the row runs on the phone and nowhere else.
-test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone", async ({
+test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "these are the phone layout's own measurements");
   const issues = await seedArchitecture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

@@ -673,13 +673,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await alice.close();
 });
 
-test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone", async ({
+test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the margin sheet toggle only renders as a fixed bottom bar on phone; desktop hides it via md:hidden"
-  );
   await createProject({ key: "CORE", name: "Core" });
   // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no
   // issue is open, so the toggle only exists on an issue page.

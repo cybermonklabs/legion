@@ -88,12 +88,8 @@ const longTitleTest = stubbed(async () => {
 // phone viewport can break: the project page fits its screen, and the tabs, filters and document
 // controls a finger presses are touch-sized.
 phoneTest(
-  "the project page fits a phone screen with touch-sized tabs, filters and document controls @phone @pr",
-  async ({ page, scene }, testInfo) => {
-    phoneTest.skip(
-      testInfo.project.name !== "stub-phone",
-      "the 44 px touch rule and the fit are the phone layout's"
-    );
+  "the project page fits a phone screen with touch-sized tabs, filters and document controls @phone @phone-only @pr",
+  async ({ page, scene }) => {
     await page.goto(`/projects/${scene.project}/documents`);
     // The page draws a loading skeleton first, and one of its placeholder rows is 472 px wide,
     // which zooms a 390 px screen out to 473. The claim is about the page, so wait for the

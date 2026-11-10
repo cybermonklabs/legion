@@ -1793,10 +1793,9 @@ for (const refusal of [
   });
 }
 
-test("an ask card's time stays with its author, never opening a line of its own @phone", async ({
+test("an ask card's time stays with its author, never opening a line of its own @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the provenance line only wraps where it must");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Provenance line" });
   // A live session names itself in a sentence, so the author fills the line and the time is what

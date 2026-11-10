@@ -659,10 +659,9 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
   }
 });
 
-test("the iPhone Conversation fits controls and keeps the composer above the review panel @phone", async ({
+test("the iPhone Conversation fits controls and keeps the composer above the review panel @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "phone geometry is covered by the iphone project");
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Phone conversation" });
   for (let index = 0; index < 10; index += 1) {

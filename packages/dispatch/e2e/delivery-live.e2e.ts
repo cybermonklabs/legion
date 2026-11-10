@@ -477,13 +477,12 @@ test("the freshness row says Live with the last change, and Reconnecting while d
   }
 });
 
+// The WebKit iPhone project owns this phone path and is the only project that runs the row:
+// it selects the row by its title, and `chromium`, the one other project this file reaches,
+// inverts the same fragment (`webkitPhoneDeliveryRow`, e2e/playwright.config.ts).
 test("on a phone the delivery page shows a merge without a reload", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "webkit-iphone",
-    "the WebKit iPhone project owns the phone path"
-  );
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
   await sql(

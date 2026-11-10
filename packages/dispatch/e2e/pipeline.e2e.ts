@@ -71,10 +71,9 @@ test("the Pipeline page shows each stage's timing and the failing jobs @pr", asy
 
 // The narrow-screen half of the row above: the six cards stack in one column on a phone, where
 // the page is narrower than the 46rem the second column needs.
-test("the Pipeline page stacks its cards in one column on a phone @phone", async ({
+test("the Pipeline page stacks its cards in one column on a phone @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the cards only stack below 768 px");
   await seedPipelineFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

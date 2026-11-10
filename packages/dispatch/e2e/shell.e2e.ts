@@ -151,10 +151,6 @@ test("signing out revokes the session on the server and returns to the sign-in p
 test("a chunk that fails after a Download link was followed reloads the page @pr", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium" && testInfo.project.name !== "firefox-download-navigation",
-    "the guard is checked in Chromium and Firefox"
-  );
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", spec: "Downloadable spec.", title: "Files" });
   const context = await asUser(browser, "alice");
@@ -257,8 +253,7 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
 // the stubbed layer's file server answers with `index.html` rather than a 404.
 test("a tab whose three reloads are older than five minutes reloads for a new failure", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the recovery does not depend on the layout");
+}) => {
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const counts = await missEntryChunk(page, () => false, baseUrl);
@@ -288,8 +283,7 @@ test("a tab whose three reloads are older than five minutes reloads for a new fa
 // real 404.
 test("a tab that reloaded three times in the last five minutes does not reload for a new failure", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the recovery does not depend on the layout");
+}) => {
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const counts = await missEntryChunk(page, () => false, baseUrl);
@@ -324,8 +318,7 @@ test("a tab that reloaded three times in the last five minutes does not reload f
 for (const leaving of ["beforeunload", "pagehide"]) {
   test(`a page whose entry chunk fails after ${leaving} stays until it is shown again`, async ({
     browser,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== "chromium", "the recovery does not depend on the layout");
+  }) => {
     const context = await asUser(browser, "alice");
     const page = await context.newPage();
     const requested = Promise.withResolvers<void>();

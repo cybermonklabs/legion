@@ -40,11 +40,10 @@ const longNameTest = stubbed(async () => {
   return { issue: issue.key, reply: reply.id, root: root.id, title };
 });
 
-test("on a phone the ask card's asker still opens its copy handles, and the live link beside it opens the conversation @phone @pr", async ({
+test("on a phone the ask card's asker still opens its copy handles, and the live link beside it opens the conversation @phone @phone-only @pr", async ({
   page,
   scene,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "stub-phone", "the kept action is checked at phone width");
+}) => {
   await page.goto("/");
   const card = page.getByTestId(`ask-${scene.runAsk}`);
   const asker = card.getByRole("button", { expanded: false, name: /Running agent \(current\)/ });
@@ -82,14 +81,10 @@ test("on a phone the ask card's asker still opens its copy handles, and the live
 // The narrow-screen half of the registry walk in `agent-name.e2e.ts`: the claim chip and the
 // agent turns carry a session's whole name, and on a phone that name is the widest thing the
 // Conversation draws, so this is where one that cannot wrap would widen the page.
-test("a claimed issue's Conversation fits a phone screen with its agent turns @phone @pr", async ({
+test("a claimed issue's Conversation fits a phone screen with its agent turns @phone @phone-only @pr", async ({
   page,
   scene,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "stub-phone",
-    "a page fits a phone screen only at a phone width"
-  );
+}) => {
   await page.goto(`/issues/${scene.runIssue}/conversation`);
   await expect(agentIn(page.getByTestId("issue-claim"), runId)).toHaveAttribute(
     "data-agent-state",
@@ -146,11 +141,10 @@ test("a claimed List row and Board card open their issue by keyboard, and the cl
 // A board card is itself a drag handle, so the agent link inside it has to navigate under a
 // finger rather than lifting the card. The keyboard walk above cannot see that; only a real tap
 // can, so it is a phone row of its own.
-test("a tap on a board card's agent link opens the agent rather than dragging the card @phone @pr", async ({
+test("a tap on a board card's agent link opens the agent rather than dragging the card @phone @phone-only @pr", async ({
   page,
   scene,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "stub-phone", "a tap is a phone gesture");
+}) => {
   await page.goto("/projects/AGT");
   await page.getByRole("button", { name: "Board" }).click();
   const card = page.locator(`[data-board-card="${scene.runIssue}"]`);

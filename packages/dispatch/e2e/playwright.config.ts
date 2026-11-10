@@ -16,22 +16,43 @@ import { stubSelection } from "./stub/selection";
 // open the plain-HTTP name, which only that project maps, and the origin rows' first assertion
 // fails on loopback by design.
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
-// The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone`, `@webkit` and
-// `@firefox`, written at the end of the test's title. Which tests take `@phone` is in
-// `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine tag names a row for one of two
-// reasons, and a comment above the row says which. Either the row exercises one engine behaviour
-// the comment above those projects lists - the usual reason - or every measured failure of that
-// row was in that engine, so the row is kept where its cause lives: a row green only on an engine
-// its defect was never seen on proves nothing about that defect. Two rows carry a tag for the
-// second reason today, each named in `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask
-// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
-// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
-// branches, every one in WebKit). A row that only repeats an assertion Chromium already made, and
-// whose failures are not an engine's, carries no tag. An untagged
-// test drops out with no failure. The pattern is anchored so a tag matches only as a whole
-// whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
-// `@webkit-iphone` or `@firefox-alone`.
+// The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone` (or the
+// `@phone-only` below it), `@webkit` and `@firefox`, written at the end of the test's title.
+// Which tests take `@phone` is in `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine
+// tag names a row for one of two reasons, and a comment above the row says which. Either the
+// row exercises one engine behaviour the comment above those projects lists - the usual reason
+// - or every measured failure of that row was in that engine, so the row is kept where its
+// cause lives: a row green only on an engine its defect was never seen on proves nothing about
+// that defect. Two rows carry a tag for the second reason today, each named in
+// `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask answer whose answer is lost (two
+// timeouts in 213 CI runs, both in WebKit) and `keyboard-agents-picker.e2e.ts`'s row back after
+// the reader left mid-send (six failures on six branches, every one in WebKit). A row that only
+// repeats an assertion Chromium already made, and whose failures are not an engine's, carries
+// no tag. An untagged test drops out with no failure. The pattern is anchored so a tag matches
+// only as a whole whitespace-separated token, never inside a longer one such as `@phones`,
+// `x@phone`, `@webkit-iphone` or `@firefox-alone`.
 const phoneTagged = tagged("phone");
+// A row of the phone projects alone, which `@phone` does not say: `@phone` means "runs on the
+// phone AS WELL", and `chromium`, `stub` and `visual` run those rows at their own width. A row
+// whose claim exists only below the phone breakpoint carries ` @phone-only` BESIDE its `@phone`,
+// and the desktop half of each pair inverts that second tag alone. `@phone` is never inverted:
+// a review of the stubbed layer read the three rows that cost when `stub` inverted it, and the
+// comment above `stub-phone` at the end of this file holds that reading.
+//
+// The pair is a selector, not a skip. Each of these rows used to be scheduled in the desktop
+// project and call `test.skip` against `testInfo.project.name` in its own body, so the report
+// named a row that was never going to run; the tag lets the project that owns the row select it
+// (dispatch://INFRA-1410). Playwright reads an array of patterns as OR, so a phone project
+// names both tags and takes a row carrying either.
+const phoneOnlyTagged = tagged("phone-only");
+const phoneRowTagged = [phoneTagged, phoneOnlyTagged];
+// `delivery-live.e2e.ts`'s one phone row, which `webkit-iphone` owns by itself: it carries no
+// `@phone`, since the Chromium phone project never ran it, and no `@phone-only` would say that
+// either - that tag would hand it to `iphone`. `chromium` is the only other project the file
+// reaches, so `chromium` inverts the row by the same title fragment `webkit-iphone`'s own `grep`
+// selects it by, below. A title edit that misses one of the two leaves the row in `chromium`,
+// where its phone assertions fail at the desktop width rather than passing unseen.
+const webkitPhoneDeliveryRow = /on a phone the delivery page/;
 const webkitTagged = tagged("webkit");
 const firefoxTagged = tagged("firefox");
 // Specs of two Dispatch processes behind the round-robin proxy (e2e/round-robin-proxy.ts), each
@@ -217,6 +238,12 @@ const multiprocessProjects = [
 // so these files run in the `-alone` projects at the end of this list, after every other project
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
 const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
+// The three rows of `heavy-bodies.e2e.ts` that read where a reader's place ends up once a long
+// body formats under them. The compensation they measure is layout Chromium and WebKit anchor
+// differently, and those are the two engines it was ever measured on, so `firefox-alone` below
+// inverts them. Each fragment names one row of that file and no other.
+const readersPlaceRows =
+  /a long comment above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long comment/;
 
 // The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
 // and `visual-phone` projects at the end of this list and in no project above them: a project
@@ -231,15 +258,19 @@ const visualSpecs = /visual\.e2e\.ts$/;
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
 // project added here is one more the clock rows wait for.
 const parallelProjects = [
+  // The desktop half of the pair: every row of the suite except the two kinds this project is
+  // not the one for. A `@phone-only` row has no desktop case to make, and the one row of
+  // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
+    grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
-    grep: phoneTagged,
+    grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
   // WebKit runs the rows a WebKit decision can change, and nothing else: it selects by the
@@ -295,6 +326,9 @@ const parallelProjects = [
   // rows is already as narrow as a tag would make it, and Playwright reads an array of regexes
   // as OR (`createTitleMatcher` answers on the first that matches), so a tag beside the titles
   // below would widen the project rather than narrow it.
+  // One of those titles, `delivery-live.e2e.ts`'s phone row, is this project's alone, and
+  // `chromium` inverts it by the same fragment: `webkitPhoneDeliveryRow` at the top of this
+  // file says why the one row is written in both places.
   {
     name: "webkit-iphone",
     testMatch:
@@ -431,6 +465,7 @@ const aloneProjects = [
     name: "firefox-alone",
     dependencies: [...parallelProjects.map((project) => project.name), "chromium-alone"],
     testMatch: /heavy-bodies\.e2e\.ts/,
+    grepInvert: readersPlaceRows,
     use: { ...devices["Desktop Firefox"] },
     workers: 1,
     retries: 0,
@@ -457,7 +492,9 @@ const aloneProjects = [
  * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
  * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
  * it and `visual` inverts it, so every row runs under exactly one project and reads the
- * baseline directory of that project alone.
+ * baseline directory of that project alone. Each also names ` @phone-only` on its own side of
+ * that split, so a phone row written here with that tag alone lands in `visual-phone` rather
+ * than in both projects at once; no row of this spec carries it today.
  *
  * A baseline a person takes and a baseline CI compares must be the same rendering, so both
  * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on
@@ -487,7 +524,7 @@ const visualProjects = [
   {
     name: "visual",
     testMatch: visualSpecs,
-    grepInvert: phoneTagged,
+    grepInvert: phoneRowTagged,
     // A baseline is an input a person reads in a review, not an output of a row, so these files
     // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
     // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`
@@ -503,7 +540,7 @@ const visualProjects = [
   {
     name: "visual-phone",
     testMatch: visualSpecs,
-    grep: phoneTagged,
+    grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
@@ -550,6 +587,7 @@ const stubProjects = [
     retries: 0,
     testMatch: stubSpecs,
     testIgnore: [],
+    grepInvert: phoneOnlyTagged,
     use: {
       ...devices["Desktop Chrome"],
       baseURL: stub.recording ? baseUrl : stubOrigin(),
@@ -560,15 +598,17 @@ const stubProjects = [
   // `iphone` does. `stub` does **not** invert the tag, which it did until a review read the
   // three rows that cost: a `@phone` row that `chromium` ran at the desktop width lost that
   // case in the move, and a moved row has to assert what it asserted before. A row that is a
-  // phone row alone says so itself, with the `test.skip` its author wrote against `iphone`,
-  // read here against this project's name - which is how those rows were skipped in `chromium`
-  // on the real stack too.
+  // phone row alone carries ` @phone-only` beside its `@phone`, which this project greps and
+  // `stub` inverts - the second tag, and not the first, is the one a desktop project may
+  // invert. Those rows used to say it in their own bodies instead, with a `test.skip` against
+  // `testInfo.project.name`, so `stub` scheduled a row it was never going to run
+  // (dispatch://INFRA-1410).
   {
     name: "stub-phone",
     retries: 0,
     testMatch: stubSpecs,
     testIgnore: [],
-    grep: phoneTagged,
+    grep: phoneRowTagged,
     use: {
       ...devices["iPhone 13"],
       browserName: "chromium" as const,

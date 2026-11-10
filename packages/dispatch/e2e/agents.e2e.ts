@@ -605,8 +605,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
 
 test("the header checkbox selects and clears only the rows the filters match, by pointer and by Space", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the selection rule");
+}) => {
   // No `last_seen`: the fixture answers every read with the current time, so none of them ages
   // into Inactive.
   const session = (id: string, title: string, role: string): FakeSession => ({
@@ -726,8 +725,7 @@ test("the header checkbox selects and clears only the rows the filters match, by
 // The registry's own order is not that order, which is what this seeds.
 test("select-all ticks the rows in the order the page shows them, not the order the registry lists them", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the order rule");
+}) => {
   const session = (id: string, title: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/workspaces/${id}`,
@@ -784,8 +782,7 @@ test("select-all ticks the rows in the order the page shows them, not the order 
 
 test("the header checkbox stays under the pointer on a phone when its click opens the composer", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+}) => {
   await setLiveSessions(
     ["a", "b", "c"].map((id) => ({
       capabilities: ["aside", "btw"],
@@ -875,8 +872,7 @@ async function wholeCardsAbove(agents: Locator, composer: Locator): Promise<numb
 // empty and filled at each compact size; the layout under measurement is what the row proves.
 test("on a phone the open composer keeps its height budget at forty recipients, empty or filled, keeps its message box steady, and keeps every chip reachable", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+}) => {
   await setLiveSessions(planners(40, 40));
 
   const alice = await asUser(browser, "alice");
@@ -981,8 +977,7 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
 
 test("a narrow or short screen gets the compact composer, filled within 45% of its height", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+}) => {
   await setLiveSessions(planners(40, 40));
 
   const alice = await asUser(browser, "alice");
@@ -1029,8 +1024,7 @@ test("a narrow or short screen gets the compact composer, filled within 45% of i
 // element generates no box, so it sticks nothing.
 test("on a narrow or short screen a refused send's row stays out of the sticky block, which holds 45% with the message filled", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+}) => {
   await setLiveSessions(planners(40, 40));
 
   const alice = await asUser(browser, "alice");
@@ -1155,8 +1149,7 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
 
 test("with half the recipients unable to take the mode, the compact composer keeps its budget and every exclusion stays reachable on one line", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+}) => {
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -1202,8 +1195,7 @@ test("with half the recipients unable to take the mode, the compact composer kee
 });
 
 test.describe("the composer's notices share one slot, highest first, within budget on compact screens", () => {
-  test("the limit alone: 120 recipients", async ({ browser }, testInfo) => {
-    test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+  test("the limit alone: 120 recipients", async ({ browser }) => {
     const alice = await asUser(browser, "alice");
     try {
       const page = await alice.newPage();
@@ -1219,8 +1211,7 @@ test.describe("the composer's notices share one slot, highest first, within budg
 
   test("the limit over exclusions: 120 selected, 110 recipients, each excluded chip still names its reason", async ({
     browser,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+  }) => {
     const alice = await asUser(browser, "alice");
     try {
       const page = await alice.newPage();
@@ -1239,8 +1230,7 @@ test.describe("the composer's notices share one slot, highest first, within budg
   // the boundary; the layout under measurement is what the row proves.
   test("the boundary with exclusions: 101 recipients show the limit, exactly 100 the Excluded line", async ({
     browser,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== "chromium", "the viewport is set here, not by the project");
+  }) => {
     const alice = await asUser(browser, "alice");
     try {
       const page = await alice.newPage();
@@ -1269,8 +1259,7 @@ test.describe("the composer's notices share one slot, highest first, within budg
 
 test("a typed broadcast survives clearing the selection and picking again, and a refused send gives it back", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the draft rule");
+}) => {
   const pair = planners(40, 40).slice(0, 2);
   await setLiveSessions(pair);
 
@@ -1350,8 +1339,7 @@ test("a typed broadcast survives clearing the selection and picking again, and a
 
 test("a second broadcast pressed while the first is on the wire waits its turn, and each send keeps its own row", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   const pair = planners(40, 40).slice(0, 2);
   await setLiveSessions(pair);
 
@@ -1438,8 +1426,7 @@ test("a second broadcast pressed while the first is on the wire waits its turn, 
 // @pr: A write the server refuses: the refused broadcast keeps its row after a later send lands, and Retry sends exactly what was refused.
 test("a send the server refuses keeps its row after a later send succeeds, and Retry sends it again as it was @pr", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   const pair = planners(40, 40).slice(0, 2);
   await setLiveSessions(pair);
 
@@ -1501,8 +1488,7 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
 
 test("a human-paced double click on one Retry sends that message once, and never the refused row beside it", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   const pair = planners(40, 40).slice(0, 2);
   await setLiveSessions(pair);
 
@@ -1560,8 +1546,7 @@ test("a human-paced double click on one Retry sends that message once, and never
 
 test("a selection over the broadcast limit says so and never asks the server", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the limit");
+}) => {
   await setLiveSessions(planners(101, 101));
 
   const alice = await asUser(browser, "alice");
@@ -1610,8 +1595,7 @@ function builder(id: string, capabilities: string[]): FakeSession {
 
 test("a mode no selected agent advertises leaves Send dead, and Send says so and names the mode that would reach them", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the reason");
+}) => {
   // Both advertise `steer` only, so the default BTW mode leaves every selected agent out.
   await setLiveSessions([builder("a", ["steer"]), builder("b", ["steer"])]);
 
@@ -1668,8 +1652,7 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
 
 test("with one of two selected agents gone from the registry, Send reaches the live one and names the one left out", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the reason");
+}) => {
   // The page learns of a departure only on its 15 s agent poll, which the page clock fires: the
   // jump also trips the live socket's own 15 s silence check, so the tab reconnects mid-row,
   // which nothing here reads.
@@ -1708,8 +1691,7 @@ test("with one of two selected agents gone from the registry, Send reaches the l
 
 test("a session that registers under the filter after select-all is not swept into the send", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the selection rule");
+}) => {
   const planner = (id: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/workspaces/${id}`,
