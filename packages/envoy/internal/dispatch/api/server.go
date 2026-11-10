@@ -970,6 +970,26 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		if supplied != nil {
 			actor.Origin = supplied.Origin
 		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person; the actor's kind and id are
+		// left as they were, so every stored author, every event and every reader keeps the
+		// shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for and no act, because an actor that merely claims a session proves nothing
+		// about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session: authenticated.ID,
+				Scopes:  authenticated.Credential.Scopes,
+			}
+		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
 	}

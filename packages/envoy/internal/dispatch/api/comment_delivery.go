@@ -448,13 +448,25 @@ func (s *server) completeCommentDelivery(
 	sent.Duplicate, sent.EnvelopeID = duplicate, envelopeID
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
+			settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries set envelope_id = $5, state = $6, error = $7, duplicate = $8
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
 				returning `+commentDeliveryColumns,
 				comment.ID, sent.Target, claim.attempt, claim.claimedAt, envelopeID, sent.State, sent.Error, duplicate,
 			))
+			if err != nil {
+				return settled, err
+			}
+			// The session this attempt reached, in the transaction that records that it did
+			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
+			// this moment, a pending or failed one reached nobody and writes nothing. A row
+			// whose resolution named no session carries a null, which records nothing either.
+			session := ""
+			if settled.SessionID != nil {
+				session = *settled.SessionID
+			}
+			return settled, graphstore.Reached(ctx, tx, settled.State, session, actor, settled.CreatedAt)
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool

@@ -885,7 +885,29 @@ type resolvedRole struct {
 
 // deliveredGraph is what the settled events of one record state about the people and agents of
 // the store (graphstore): the role each event routed to with the session resolveRoleHolders
-// found holding it, every session the batch reached, and one delivered_to tuple per delivery.
+// found holding it, the sessions a sent mention reached, and one delivered_to tuple per delivery
+// of something this tree gives a node.
+//
+// A node and a tuple are separate facts here, and the two requirements part them.
+//
+// The node side is R19's: the row a store census holds a node against is "the set of distinct
+// actors and sessions the tables this child projects hold", which for a session is a comment
+// whose author it is and a delivery attempt that settled `sent` against it. So a session is
+// recorded here only where such a row exists - `deliveredByMention` is exactly that, a mention
+// whose `comment_deliveries` attempt is sent - and a destination this batch reached over the
+// bus is not: a route delivery leaves no row in `comment_deliveries` or `message_deliveries`,
+// so no table this child projects holds that session and a node for it would be a node the
+// census rightly reports as projected by no row. The two writers that do see such a row record
+// it there: graphstore.Authored for a comment's author, and graphstore.Reached where an attempt
+// settles sent.
+//
+// The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
+// may point at an address a later child writes. So the delivered_to tuple of a destination this
+// batch reached is stated whatever node that session has yet - dispatch://INFRA-1152 owns
+// messages and their deliveries and gives those sessions their nodes. Only a comment has a node
+// on the near end today (deliveredItem), so an event that delivered anything else appends no
+// tuple at all; the children that give an issue, an ask and a message their nodes append those
+// (dispatch://INFRA-1253, dispatch://INFRA-1152).
 //
 // A delivery is a destination this batch reached, and a mention of a new comment that some
 // attempt already delivered (mentionDeliveries.sent): the outbox sends such a session nothing,
@@ -894,9 +916,9 @@ type resolvedRole struct {
 // neither list. A delivery to a role ends at the role node: the session it was forwarded to is
 // what the role's held_by tuple names.
 //
-// Every page there is hangs here: a role's page under the role, and a session's own page under
-// a session this batch saw holding no role. A session the batch resolved as a role's holder is
-// part_of that role instead, and its page is the role's.
+// The roles and their pages are written whatever a row says of their holders, because their own
+// row side is there: `comment_deliveries.target`, `messages.target` and `issues.route` each hold
+// the role a delivery was routed by (graphcensus's addressedRoles).
 func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
 	roles := map[string]resolvedRole{}
 	var roleOrder []string
@@ -926,22 +948,24 @@ func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
 			roleOrder = append(roleOrder, dest.role)
 		}
 		kind, id, delivers := deliveredItem(event.event)
-		if !delivers {
-			continue
-		}
 		for _, subject := range event.outcome.reached {
 			toKind, toID, ok := nodeOfSubject(subject)
 			if !ok {
 				continue
 			}
-			if toKind == graphstore.KindSession {
-				recordSession(toID, cause)
+			// The tuple alone: this destination was reached over the bus, so no projected table
+			// holds it and the node is not this writer's to make (R19). The far end is an
+			// address, which R1 lets a tuple point at whether a node stands there yet or not.
+			if delivers {
+				write.tuples = append(write.tuples, deliveredTo(kind, id, toKind, toID, at, cause))
 			}
-			write.tuples = append(write.tuples, deliveredTo(kind, id, toKind, toID, at, cause))
 		}
 		for _, session := range event.deliveredByMention {
 			recordSession(session, cause)
-			write.tuples = append(write.tuples, deliveredTo(kind, id, graphstore.KindSession, session, at, cause))
+			if delivers {
+				write.tuples = append(write.tuples,
+					deliveredTo(kind, id, graphstore.KindSession, session, at, cause))
+			}
 		}
 	}
 	held := map[string]struct{}{}

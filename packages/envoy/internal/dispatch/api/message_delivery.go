@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -661,12 +662,19 @@ func (s *server) completeMessageDelivery(
 	}, pending.resolved.title)
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			return scanMessageDelivery(tx.QueryRow(ctx, `
+			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
 				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
 				message.ID, pending.attempt, pending.claimedAt, envelopeID, state, failure, duplicate,
 			))
+			if err != nil {
+				return settled, err
+			}
+			// The session this attempt reached, in the transaction that records that it did
+			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
+			// this moment, a pending or failed one reached nobody and writes nothing.
+			return settled, graphstore.Reached(ctx, tx, settled.State, settled.SessionID, actor, settled.CreatedAt)
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool

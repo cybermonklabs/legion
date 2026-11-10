@@ -3,6 +3,7 @@ package graphstore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -143,21 +144,82 @@ func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor
 	return nil
 }
 
+// DeliverySent is the one state of a delivery attempt that is a delivery: R14's "a sent attempt
+// is a delivery; a pending or failed one is not".
+const DeliverySent = "sent"
+
+// Reached records the session a delivery attempt reached, inside the transaction that settles
+// that attempt. R14 gives the store writer two first writes of a session id, and this is the
+// second of them: "a comment whose author is a session, or a delivery attempt that reached one"
+// (graphstore.Authored is the first). The moment an attempt reaches a session is the moment its
+// send landed, which is where its settling transaction writes `sent`, so that transaction is
+// where the node belongs.
+//
+// A pending or failed attempt is passed over, and so is an attempt that resolved no session:
+// neither reached anybody, so neither records one. That is the same sentence the store census
+// binds its session row side with (graphcensus's recordedSessions), so the writer and the census
+// read one rule and a reader of either finds the other.
+//
+// It writes the node alone, through the same arms every other write of this store splices in
+// (WriteArms): the node row is upserted `do nothing`, and the base attributes are stated only
+// for a row that insert returned, so a resend of one attempt - and a second attempt reaching the
+// same session - appends nothing. One node, so the ascending (kind, id) order a multi-node write
+// takes is kept by having nothing to order. The write takes no event: the attempt's settle
+// appends its receipt after this, so the node is made at the sentinel (NoEvent), under which a
+// repeat appends nothing because the node row is already there.
+func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) error {
+	if state != DeliverySent || strings.TrimSpace(session) == "" {
+		return nil
+	}
+	arms, params, err := WriteArms(1, []Node{SessionNode(session, who, at, NoEvent)}, nil, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
+		return fmt.Errorf("record the session %s a delivery reached: %w", session, err)
+	}
+	return nil
+}
+
 // aliases are the tuples that tie a person to how this write names them: the session the server
-// itself proved theirs, which only a credential acting as its person carries, and the raw actor
-// id the record stored where that is not the canonical login. A session author has neither: a
-// session is nobody's until a credential proves it.
+// itself proved theirs, and the raw actor id the record stored where that is not the canonical
+// login. A session an actor merely claims earns neither, which is R14's rule: a session is
+// nobody's until a credential proves it.
+//
+// The proved session reaches here two ways, and both are one fact - the credential proved the
+// session and proved whose it is.
+//
+//   - The author is the person, and the agent that acted for them is named beside them: a
+//     credential acting as its person (api.actingPerson), whose Act carries the session.
+//   - The author is the session itself, and the credential that proved it names the person it
+//     belongs to: a token the secrets broker scoped to a person, recorded as the session it
+//     proved with that session on its Act (api.bearerSessionActor). Authorship stays the
+//     session's - a thing a session wrote is on no person's page - and the alias is what makes
+//     a delivery to that session reach its person (api's personNodesQuery).
+//
+// A credential that proved no session carries no Act, so a body-named session - a personal
+// token's, the shared bearer's - is no alias of anybody.
 func aliases(authorKind, authorID string, actor model.Actor, at time.Time, event int64) []Tuple {
+	alias := func(session, person string) Tuple {
+		return Tuple{
+			FromKind: KindSession, FromID: session, Kind: TupleAliasOf,
+			ToKind: KindPerson, ToID: person,
+			At: at, Who: actor, SourceEvent: event, Asserted: true,
+		}
+	}
+	if authorKind == KindSession {
+		if actor.Act == nil || actor.Act.Session != authorID || actor.Owner == nil ||
+			model.CanonicalLogin(*actor.Owner) == "" {
+			return nil
+		}
+		return []Tuple{alias(authorID, model.CanonicalLogin(*actor.Owner))}
+	}
 	if authorKind != KindPerson {
 		return nil
 	}
 	var tuples []Tuple
 	if actor.Act != nil && actor.Act.Session != "" {
-		tuples = append(tuples, Tuple{
-			FromKind: KindSession, FromID: actor.Act.Session, Kind: TupleAliasOf,
-			ToKind: KindPerson, ToID: authorID,
-			At: at, Who: actor, SourceEvent: event, Asserted: true,
-		})
+		tuples = append(tuples, alias(actor.Act.Session, authorID))
 	}
 	if actor.ID != "" && actor.ID != authorID {
 		tuples = append(tuples, Tuple{

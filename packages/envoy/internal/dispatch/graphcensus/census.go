@@ -242,18 +242,25 @@ const commentPeople = `
 	where author.login is not null and user_threads_login(author.login) <> ''`
 
 // recordedSessions are the sessions the projected tables and the delivery records name: a
-// comment a session wrote (graphstore.AuthorOf), and every session a comment mention or a
-// message was delivered to, which is what the publisher's own record states a node of
-// (outbox.deliveredGraph).
+// comment a session wrote (graphstore.AuthorOf), and every session a delivery reached - a
+// comment mention's and a targeted message's alike, whether the outbox's record states it
+// (outbox.deliveredGraph) or the attempt's own settle does (graphstore.Reached).
+//
+// R14 is exact about which attempt that is: "a sent attempt is a delivery; a pending or failed
+// one is not". So this binds `state = 'sent'`, the test the writer binds too: an attempt still
+// pending has reached nobody yet and a failed one never will, and counting either here would
+// hold the store to a node no writer is meant to have written.
 const recordedSessions = `
 	select distinct id from (
 		select case when c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
 		            then c.author->>'id' end as id
 		from comments c
 		union
-		select d.session_id from comment_deliveries d where coalesce(d.session_id, '') <> ''
+		select d.session_id from comment_deliveries d
+		where coalesce(d.session_id, '') <> '' and d.state = '` + graphstore.DeliverySent + `'
 		union
-		select d.session_id from message_deliveries d where coalesce(d.session_id, '') <> ''
+		select d.session_id from message_deliveries d
+		where coalesce(d.session_id, '') <> '' and d.state = '` + graphstore.DeliverySent + `'
 	) sessions
 	where id is not null and id <> ''`
 
