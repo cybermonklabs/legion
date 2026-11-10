@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -37,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The key pair the AWS rows sign with: the one the stand-in holds, in the shape AWS mints them,
@@ -468,6 +470,78 @@ func TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt(t *testing.T)
 				t.Errorf("the repository answered %s; want the one named %s", body, tc.full)
 			}
 		})
+	}
+}
+
+// TestTheGitHubStandRevokesATokenItMinted: a caller gives a token back as the token itself, which
+// is what the broker's minter does with a token it will not release, so the stand-in has to
+// answer that route as GitHub does: 204 with no body for a token it minted, which reaches
+// nothing afterwards, and 401 for a credential it never minted, as its repository route answers
+// one.
+func TestTheGitHubStandRevokesATokenItMinted(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
+	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
+		Name: "legion-github-app", Value: gitHubAppValue(t), GitHubOwners: []string{"acme-org"},
+	})
+	if err != nil {
+		t.Fatalf("mint a github-app secret against the stand-in: %v", err)
+	}
+	token := mintedGitHubToken(t, minted.Value, "acme-org")
+	client := clientOf(service)
+	// ask is one call to the stand-in with credential, which is the whole of what the two routes
+	// below decide on.
+	ask := func(method, path, credential string) (int, string) {
+		t.Helper()
+		request, err := http.NewRequestWithContext(t.Context(), method, service.URL()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+credential)
+		return answerOf(t, client, request)
+	}
+
+	if status, body := ask(http.MethodGet, "/repos/acme-org/proofs", token); status != http.StatusOK {
+		t.Fatalf("the read with the minted token answered %d: %s; want 200 before the revoke", status, body)
+	}
+	if status, body := ask(http.MethodDelete, "/installation/token", token); status != http.StatusNoContent || strings.TrimSpace(body) != "" {
+		t.Fatalf("the revoke answered %d: %q; want 204 and no body", status, body)
+	}
+	if status, body := ask(http.MethodGet, "/repos/acme-org/proofs", token); status != http.StatusUnauthorized {
+		t.Fatalf("the read with the revoked token answered %d: %s; want 401, as a credential this stand-in never minted reads", status, body)
+	}
+	if status, body := ask(http.MethodDelete, "/installation/token", "ghs_no_token_of_this_runs"); status != http.StatusUnauthorized {
+		t.Fatalf("the revoke of a credential this stand-in never minted answered %d: %s; want 401", status, body)
+	}
+}
+
+// TestTheGitHubStandAnswersTheMintersOwnRevoke: the widening option is the one path that makes
+// the broker's minter revoke a token, so it is what proves the revoke route serves that minter.
+// The release is still refused with nothing released, the revoke is the last call the stand-in
+// saw, and the run logs no revoke failure, which a route the stand-in did not serve would leave
+// behind.
+func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
+	var logged logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewGitHubStand(GitHubOptions{
+		Installations: map[string]int64{"acme-org": 7}, WidenTokens: true,
+	}).Answer)
+
+	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
+		Name: "legion-github-app", Value: gitHubAppValue(t), GitHubOwners: []string{"acme-org"},
+		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}},
+	})
+	if minted.Value != "" || secrets.MintErrorClass(err) != "upstream" {
+		t.Fatalf("mint against the widened answer = %q, %v (class %s); want nothing released and class upstream",
+			minted.Value, err, secrets.MintErrorClass(err))
+	}
+	seen := service.Requests()
+	if last := seen[len(seen)-1]; last.Method != http.MethodDelete || last.Path != "/installation/token" {
+		t.Fatalf("the stand-in was last asked %s %s; want the revoke of the token the minter refused", last.Method, last.Path)
+	}
+	if line := logged.Lines("revoke"); line != "" {
+		t.Errorf("the run logged %q; want no revoke failure, since the stand-in answered the minter's revoke", line)
 	}
 }
 

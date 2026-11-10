@@ -71,13 +71,14 @@ var standInGitHubPermissions = map[string]string{"contents": "write", "metadata"
 // metadata, pull requests and actions, so it is the permission half of a token wider than asked.
 const widerPermission, widerPermissionLevel = "administration", "write"
 
-// GitHubStand is the three routes a narrowed github-app release is made and spent over: GET
-// /app/installations, which answers the installations it was given; POST
+// GitHubStand is the four routes a narrowed github-app release is made, spent and given back
+// over: GET /app/installations, which answers the installations it was given; POST
 // /app/installations/{id}/access_tokens, which answers that installation's token, its expiry and
-// what the token holds, read from the body the request sent; and GET /repos/{owner}/{repo}, the
+// what the token holds, read from the body the request sent; GET /repos/{owner}/{repo}, the
 // read a caller makes with such a token, which answers only for a token this stand-in minted
-// whose scope holds that repository. Pointing BROKER_AIRLOCK_TEST_GITHUB_API_BASE at a Service
-// answering as one is what makes a github-app secret mint against this process.
+// whose scope holds that repository; and DELETE /installation/token, the revoke the minter makes
+// of a token it minted and will not release. Pointing BROKER_AIRLOCK_TEST_GITHUB_API_BASE at a
+// Service answering as one is what makes a github-app secret mint against this process.
 //
 // It remembers what each token it minted reaches, since that is the whole of what the repository
 // route decides on, and one stand-in answers several callers of a stack at once, so that record
@@ -143,7 +144,18 @@ func (g *GitHubStand) scopeOf(token string) (githubScope, bool) {
 	return scope, minted
 }
 
-// Answer is GitHub's answer to each of the three routes, and a 404 naming anything else: a caller
+// forget drops what token reaches, for the revoke route, and reports whether this stand-in had
+// minted it. A token it forgot is a credential of nobody's again, so the repository route reads
+// it as it reads one this stand-in never minted.
+func (g *GitHubStand) forget(token string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, minted := g.scopes[token]
+	delete(g.scopes, token)
+	return minted
+}
+
+// Answer is GitHub's answer to each of the four routes, and a 404 naming anything else: a caller
 // that called a route this stand-in does not serve reads which one rather than an empty answer.
 func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Request) bool {
 	w.Header().Set("Content-Type", "application/json")
@@ -161,8 +173,10 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 		g.answerToken(w, seen, owner)
 	case "repository":
 		g.answerRepository(w, githubCredential(seen), owner, repository)
+	case "revoke":
+		g.answerRevoke(w, githubCredential(seen))
 	default:
-		http.Error(w, "the GitHub stand-in serves GET /app/installations, POST /app/installations/{id}/access_tokens and GET /repos/{owner}/{repo}, not "+seen.Method+" "+seen.Path, http.StatusNotFound)
+		http.Error(w, "the GitHub stand-in serves GET /app/installations, POST /app/installations/{id}/access_tokens, GET /repos/{owner}/{repo} and DELETE /installation/token, not "+seen.Method+" "+seen.Path, http.StatusNotFound)
 	}
 	return true
 }
@@ -249,6 +263,22 @@ func (g *GitHubStand) answerRepository(w http.ResponseWriter, credential, owner,
 	}
 }
 
+// answerRevoke is GitHub's answer to the revoke a caller makes with the token itself, which the
+// minter makes of a token it minted and will not release
+// (secrets.GitHubApp.revokeInstallationToken): 204 and no body for a token this stand-in minted,
+// which it then forgets, so a later read with that token is refused as any other credential of
+// nobody's is; and 401 for a credential it never minted, as the repository route answers one.
+// GitHub's own 204 carries no body, so the content type Answer set is dropped again.
+func (g *GitHubStand) answerRevoke(w http.ResponseWriter, credential string) {
+	if !g.forget(credential) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad credentials"})
+		return
+	}
+	w.Header().Del("Content-Type")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // githubAccessTokens is the access_tokens body a token request sent, the fields the minter writes
 // into one (secrets' githubAccessTokensBody).
 type githubAccessTokens struct {
@@ -282,14 +312,18 @@ func githubCredential(seen Request) string {
 	return ""
 }
 
-// route reads which of the three routes a request is: the installations list; a token request,
-// with the owner whose installation id it names; and a repository read, with the account and the
-// repository it names. An installation id no owner holds is no route of this stand-in's: a minter
-// that asked for a token of an installation nothing was configured for reads the 404 above rather
-// than a token of nobody's.
+// route reads which of the four routes a request is: the installations list; a token request,
+// with the owner whose installation id it names; a repository read, with the account and the
+// repository it names; and the revoke of a token, which names nothing but itself, in its
+// Authorization header. An installation id no owner holds is no route of this stand-in's: a
+// minter that asked for a token of an installation nothing was configured for reads the 404
+// above rather than a token of nobody's.
 func (g *GitHubStand) route(seen Request) (owner, repository, route string) {
 	if seen.Method == http.MethodGet && seen.Path == "/app/installations" {
 		return "", "", "installations"
+	}
+	if seen.Method == http.MethodDelete && seen.Path == "/installation/token" {
+		return "", "", "revoke"
 	}
 	if rest, isRepository := strings.CutPrefix(seen.Path, "/repos/"); isRepository && seen.Method == http.MethodGet {
 		account, name, named := strings.Cut(rest, "/")
