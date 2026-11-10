@@ -32,23 +32,86 @@ import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../re
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
-/** One block of a decision's text, as the server's reading of it holds one: the whole tree with
- *  that block alone in it, which is what a body draws, and the block's own words, which say
- *  whether it is the decision's doubt and which the Change composer quotes. */
+/** The word that opens the paragraph the server reads as a decision's doubt
+ *  (`api/decisions.go`'s `unsurePrefix`). */
+const UNSURE_PREFIX = "Unsure:";
+
+/** One block of a decision's text below its heading, as a view draws one: what `MarkdownBody`
+ *  draws it from - the markdown whose references it cites, and the server's reading with that
+ *  block alone in it where the answer carried one - whether the block is the decision's doubt,
+ *  and the words the Change composer quotes. */
 interface DecisionBlock {
-  readonly tree: DisplayTree;
+  /** The field's own markdown, which the references this body links are read from
+   *  (`MarkdownBody`), or this block's own markdown where there is no reading to draw and the
+   *  browser parses the markdown itself. */
+  readonly markdown: string;
+  readonly tree: DisplayTree | undefined;
   readonly unsure: boolean;
   readonly words: string;
 }
 
 /** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
- *  against, since a quote names the document's text and never its markdown. */
+ *  against, since a quote names the document's text and never its markdown. The server writes
+ *  one space wherever two text runs are not adjacent in the document's own positions
+ *  (`pmdoc.buildFlattenedText`), which is wherever anything was entered, left or passed between
+ *  them: the break inside a wrapped line, or the end of one list item and the start of the
+ *  next. Two runs are adjacent only as consecutive children of one parent, so everything else
+ *  this walk crosses opens the space the server wrote. */
 function wordsOf(node: DisplayTree): string {
-  if (typeof node.text === "string") {
-    return node.text;
+  let words = "";
+  let apart = false;
+  const read = (current: DisplayTree): void => {
+    if (typeof current.text === "string") {
+      words += apart && words !== "" ? ` ${current.text}` : current.text;
+      apart = false;
+      return;
+    }
+    // The node's own open position, and its close once its children are read; a leaf that is no
+    // text, a hard break among them, takes the one position it is.
+    apart = true;
+    const content = current.content;
+    if (Array.isArray(content)) {
+      for (const child of content as DisplayTree[]) {
+        read(child);
+      }
+      apart = true;
+    }
+  };
+  read(node);
+  return words;
+}
+
+/** Whether a block is the decision's doubt, as the server marks one: a paragraph whose markdown
+ *  starts `Unsure:` and nothing else (`api/decisions.go`'s `decisionSections`). In the reading
+ *  of such a paragraph the word stands in a first child that is plain text, since a mark over
+ *  it - strong, a code span, a link - would have written its own characters first. */
+function isUnsureBlock(node: DisplayTree): boolean {
+  if (node.type !== "paragraph" || !Array.isArray(node.content)) {
+    return false;
   }
-  const content = node.content;
-  return Array.isArray(content) ? (content as DisplayTree[]).map(wordsOf).join("") : "";
+  const first = (node.content as DisplayTree[])[0];
+  const marks = first?.marks;
+  return (
+    typeof first?.text === "string" &&
+    (!Array.isArray(marks) || marks.length === 0) &&
+    first.text.startsWith(UNSURE_PREFIX)
+  );
+}
+
+/** The blocks of a decision whose answer carried no reading of its text: a pod of the build
+ *  before this one serves none during a rolling deploy, and the markdown split the browser has
+ *  always made is what draws the decision then, as every other view falls back to parsing. */
+function markdownBlocks(text: string): DecisionBlock[] {
+  return text
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter((block) => block !== "" && !block.startsWith("#"))
+    .map((markdown) => ({
+      markdown,
+      tree: undefined,
+      unsure: markdown.startsWith(UNSURE_PREFIX),
+      words: markdown,
+    }));
 }
 
 /** The blocks of a decision below its heading, each marked unsure or not, taken from the tree Go
@@ -56,17 +119,36 @@ function wordsOf(node: DisplayTree): string {
  *  have been split into, already divided, so the browser splits nothing and parses nothing. A
  *  heading is the decision's own, drawn by the card above its text, or one written inside it,
  *  which the markdown split dropped too. */
-function decisionBlocks(tree: DisplayTree | undefined): DecisionBlock[] {
+function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
+  const tree = decision.text_tree;
   const content = tree?.content;
   if (tree === undefined || !Array.isArray(content)) {
-    return [];
+    return markdownBlocks(decision.text);
   }
   return (content as DisplayTree[])
     .filter((node) => node.type !== "heading")
-    .map((node) => {
-      const words = wordsOf(node);
-      return { tree: { ...tree, content: [node] }, unsure: words.startsWith("Unsure:"), words };
-    });
+    .map((node) => ({
+      // What a body cites is read from the field's own markdown, never from the words of one
+      // block of it: a link's target and the backticks that end a key are in the markdown alone.
+      markdown: decision.text,
+      tree: { ...tree, content: [node] },
+      unsure: isUnsureBlock(node),
+      words: wordsOf(node),
+    }));
+}
+
+const blocksByDecision = new WeakMap<Decision, readonly DecisionBlock[]>();
+
+/** The blocks of one decision, read once and shared by every reader of it: the card draws them
+ *  and the Change composer quotes the first of them, and a row is a new object only when the
+ *  decisions were read again. */
+function decisionBlocks(decision: Decision): readonly DecisionBlock[] {
+  let blocks = blocksByDecision.get(decision);
+  if (blocks === undefined) {
+    blocks = readDecisionBlocks(decision);
+    blocksByDecision.set(decision, blocks);
+  }
+  return blocks;
 }
 
 /** The path that opens the issue's spec at `blockId`: through the spec's own document route when
@@ -238,7 +320,7 @@ function DecisionCard({
   return (
     <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
       <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>{decision.heading}</h3>
-      {decisionBlocks(decision.text_tree).map((block, index) =>
+      {decisionBlocks(decision).map((block, index) =>
         block.unsure ? (
           <div
             className={`border-l-2 pl-2 ${decisionUnsureAccent}`}
@@ -246,11 +328,11 @@ function DecisionCard({
             // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
             key={index}
           >
-            <MarkdownBody markdown={block.words} source={source} tree={block.tree} />
+            <MarkdownBody markdown={block.markdown} source={source} tree={block.tree} />
           </div>
         ) : (
           // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
-          <MarkdownBody key={index} markdown={block.words} source={source} tree={block.tree} />
+          <MarkdownBody key={index} markdown={block.markdown} source={source} tree={block.tree} />
         )
       )}
       {(decision.asks ?? []).map((ask) => (
@@ -286,7 +368,7 @@ function WaitingDecision({
   // A change anchors on the decision's first block below its heading, by the words that block
   // holds: an anchor quote names the document's own text, which is what the server matches it
   // against (`pmdoc.FindQuote`).
-  const quote = decisionBlocks(decision.text_tree)[0]?.words;
+  const quote = decisionBlocks(decision)[0]?.words;
   const keep = useKeyedWrite({
     inline: true,
     label: () => `Keep ${decision.heading}`,

@@ -247,3 +247,158 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
     comment.mockRestore();
   }
 });
+
+/** The view one decision of its own makes: it waits for review, so the row draws its Keep and
+ *  Change beside the blocks of its text. */
+function waitingView(
+  fields: Partial<Decision> & Pick<Decision, "heading" | "text">
+): IssueDecisions {
+  return {
+    decisions: [decision({ block_id: "only", waiting_review: true, ...fields })],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+}
+
+/** The quote the Change composer offers for the one decision `view` holds. */
+async function quoteOf(view: IssueDecisions): Promise<string> {
+  const user = userEvent.setup();
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    return within(waiting).getByTestId("decision-quote").textContent ?? "";
+  } finally {
+    read.mockRestore();
+  }
+}
+
+// A Change anchors on the words of the decision's first block, which the server finds by
+// matching them against the document's own flattened text: that text writes one space wherever
+// two text runs are not adjacent in the document's positions (`pmdoc.buildFlattenedText`). The
+// end of one list item and the start of the next are four positions apart, so the quote the
+// composer sends must hold that space too, or `pmdoc.FindQuote` finds nothing to anchor on.
+test("the quote of a first block that is a list holds one space between its items", async () => {
+  const quote = await quoteOf(
+    waitingView({
+      heading: "Name them notices",
+      text: "## Name them notices\n\n- **alpha**\n- beta\n\nThat is the whole of it.",
+    })
+  );
+  expect(quote).toBe("alpha beta");
+});
+
+// The same rule at a hard break: the break is a leaf of its own and takes a position, so the
+// two lines it divides are one space apart in the text the server matches a quote against.
+test("the quote of a first block with a hard break holds one space between its lines", async () => {
+  const quote = await quoteOf(
+    waitingView({
+      heading: "Wrap the lines",
+      text: "## Wrap the lines\n\nline one  \nline two\n\nThat is the whole of it.",
+    })
+  );
+  expect(quote).toBe("line one line two");
+});
+
+// `MarkdownBody` reads what a text cites out of the markdown it is handed, so each block is
+// handed the decision's own markdown beside that block's reading. The words of a block hold
+// neither a link's target nor the backticks that end a key, so a reading taken from them cites
+// neither the ask this decision answers nor the key its code span names - both of which the
+// server indexed for this same text.
+test("a decision's references are read from its own markdown, not from the words of a block", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      heading: "Read the keys",
+      text: `## Read the keys\n\nIt answers [the earlier ask](dispatch://CORE-1/ask/${askId}), and a \`CORE-9\`-style key names the issue it shaped.`,
+    })
+  );
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "The ninth issue",
+  }));
+  const ask = spyOn(api, "getAsk").mockRejectedValue(new Error("the ask is not read here"));
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    const link = await waitFor(() => {
+      const found = waiting.querySelector<HTMLElement>("a[data-dispatch-ref]");
+      if (found === null) {
+        throw new Error("the ask the decision links is still plain text");
+      }
+      return found;
+    });
+    expect(link.getAttribute("data-dispatch-ref")).toBe(`dispatch://CORE-1/ask/${askId}`);
+    expect(link.getAttribute("href")).toBe(`/issues/CORE-1/asks/${askId}`);
+    await waitFor(() => expect(summary).toHaveBeenCalledWith("CORE-9"));
+  } finally {
+    ask.mockRestore();
+    read.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+// An answer with no reading of its text comes from a pod of the build before this one during a
+// rolling deploy. The panel draws it the way every other view does: it splits the markdown
+// itself and parses each block, so the decision keeps its body, its doubt and its Change.
+test("a decision whose answer carried no reading is still drawn, quoted and marked unsure", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      heading: "Keep a log",
+      text: "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.",
+      text_tree: undefined,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    await waitFor(() =>
+      expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
+        "the index may be slow."
+      )
+    );
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    expect(within(waiting).getByTestId("decision-quote").textContent).toBe("A log is enough.");
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// The server marks a decision unsure for a paragraph whose markdown starts `Unsure:` and for
+// nothing else (`api/decisions.go`), so the accent the panel draws follows that rule exactly: a
+// strong `Unsure:`, a list item, a quote and a code block are the decision's words like any
+// other, and `decision.unsure` stays false for every one of them.
+test("only a plain paragraph that starts Unsure: takes the accent", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      heading: "Where the doubt is",
+      text: [
+        "## Where the doubt is",
+        "Unsure: the index may be slow.",
+        "**Unsure:** the strong one.",
+        "- Unsure: the list one.",
+        "> Unsure: the quoted one.",
+        "```\nUnsure: the fenced one.\n```",
+      ].join("\n\n"),
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await waitFor(() =>
+      expect(within(waiting).getByText("the fenced one.", { exact: false })).toBeDefined()
+    );
+    expect(
+      within(waiting)
+        .queryAllByTestId("decision-unsure")
+        .map((block) => block.textContent)
+    ).toEqual(["Unsure: the index may be slow."]);
+  } finally {
+    read.mockRestore();
+  }
+});
