@@ -35,6 +35,7 @@ import {
   requestApproval,
 } from "./api";
 import {
+  type BaselineSeed,
   seedFrontierDeep,
   seedFrontierShallow,
   seedNoChildren,
@@ -2269,6 +2270,31 @@ test("every address of the old page still resolves", async ({ browser }) => {
   });
 });
 
+/** The load the budget is read against actually happened, and the page drew what its reads
+ *  carry. A ceiling is only a budget while the page loaded: a page whose reads all failed sends
+ *  few requests and would pass the ceiling for the opposite of the reason this check exists,
+ *  which is a page that reads too much. `expectIssuePageDrawn` does not answer that question —
+ *  the tree element is drawn before its rows are — so every requirement the seed wrote has a
+ *  row of its own here, and the settle below is read after them. */
+async function expectTheSeedIsDrawn(page: Page, seeded: BaselineSeed): Promise<void> {
+  const slug = await primarySlug(seeded.key);
+  await expect(
+    nodeRow(page, seeded.key).first(),
+    "the tree draws no row for the issue itself, so nothing was loaded to count the reads of"
+  ).toBeVisible();
+  for (const requirement of seeded.requirements) {
+    await expect(
+      nodeRow(page, blockNodeId(slug, requirement)).first(),
+      `the tree draws no row for ${requirement}, so the page did not load what the count is of`
+    ).toBeVisible();
+  }
+  await expect
+    .poll(async () => (await drawnRows(page)).length, {
+      message: "the tree drew fewer rows than the seed's requirements alone",
+    })
+    .toBeGreaterThanOrEqual(seeded.requirements.length);
+}
+
 // c-requests.
 test("the first load stays inside its request budget", async ({ browser }) => {
   let baseline: { byRoute: string; total: number } | null = null;
@@ -2278,6 +2304,7 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     traffic.reset();
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectTheSeedIsDrawn(page, seeded);
     await expectLoadSettled(traffic);
     const byRoute = JSON.stringify(traffic.byRoute());
 
@@ -2307,10 +2334,17 @@ test("the first load stays inside its request budget", async ({ browser }) => {
       "the first load read the stored text of a document it does not show"
     ).toEqual([]);
 
+    // The ceiling and a floor together, because a ceiling alone passes a page that read
+    // nothing: the baseline's own load is 37 reads, so a count in single figures is a page
+    // that failed rather than a page that improved, and it has to be looked at either way.
     expect(
       traffic.total(),
       `the first load sent ${traffic.total()} requests under /api/: ${byRoute}`
     ).toBeLessThanOrEqual(40);
+    expect(
+      traffic.total(),
+      `the first load sent only ${traffic.total()} requests under /api/, too few to be a load of this issue: ${byRoute}`
+    ).toBeGreaterThanOrEqual(20);
     baseline = { byRoute, total: traffic.total() };
   });
 
@@ -2320,6 +2354,7 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     traffic.reset();
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectTheSeedIsDrawn(page, seeded);
     await expectLoadSettled(traffic);
     const byRoute = JSON.stringify(traffic.byRoute());
     expect(
