@@ -226,8 +226,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     ...(continued === undefined ? [] : [{ row: continued, continued: true }]),
     ...pageRows.map((row) => ({ row })),
   ];
-  // The box is measured when its contents change height, never on a scroll: the virtualizer
-  // commits on every visible range, and measuring there is a forced reflow per scrolled row.
   // biome-ignore lint/correctness/useExhaustiveDependencies: how many rows the page holds and how they are grouped is what changes the box's height.
   useLayoutEffect(measure, [measure, displayRows.length, grouping[0]]);
   const virtualizer = useVirtualizer({
@@ -252,14 +250,15 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     if (previousControls.current !== controlSignature) scrollRef.current?.scrollTo({ top: 0 });
     previousControls.current = controlSignature;
   }, [controlSignature, scrollRef]);
+  const pageCount = table.getPageCount();
   useEffect(() => {
     if (
       (!wantsDone || everyIssue.data !== undefined) &&
       issues.data &&
-      pagination.pageIndex >= Math.max(table.getPageCount(), 1)
+      pagination.pageIndex >= Math.max(pageCount, 1)
     )
-      table.setPageIndex(Math.max(table.getPageCount() - 1, 0));
-  });
+      table.setPageIndex(Math.max(pageCount - 1, 0));
+  }, [wantsDone, everyIssue.data, issues.data, pagination.pageIndex, pageCount, table]);
   const openFacets = useMemo(
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]

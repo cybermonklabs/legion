@@ -60,13 +60,9 @@ async function settledWithLimit<T, R>(
   return results;
 }
 
-/** The one sentence a merge records on the source issue, written and recognised in one place. */
 const mergeReason = (into: string, title: string) =>
   `Merged into ${into} (“${title}”) from the issues table.`;
 
-/** What an interrupted action of each kind says it left behind, and how it is finished. The
- *  record's kind union is the only list of kinds: a new one fails to compile until both are
- *  written for it. */
 interface ResumableAction {
   describe: (record: TableAction) => string;
   resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;

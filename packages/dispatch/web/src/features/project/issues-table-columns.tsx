@@ -221,9 +221,10 @@ const renderings = (
     sortingFn: (a, b) =>
       compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
     cell: ({ getValue }) => (
-      <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-        <Timestamp at={getValue<string>()} />
-      </span>
+      <Timestamp
+        at={getValue<string>()}
+        className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+      />
     ),
   },
   updated: {
@@ -232,9 +233,10 @@ const renderings = (
     sortingFn: (a, b) =>
       compareTimestamps(a.original.issue.updated_at, b.original.issue.updated_at),
     cell: ({ getValue }) => (
-      <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-        <Timestamp at={getValue<string>()} />
-      </span>
+      <Timestamp
+        at={getValue<string>()}
+        className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+      />
     ),
   },
 });

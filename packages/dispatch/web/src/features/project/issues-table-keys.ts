@@ -88,7 +88,6 @@ export function useRowKeymap({
       when: () => document.activeElement?.matches("[data-issue-row]") === true,
     },
     {
-      // Selecting walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
       id: "list-select",
       keys: "x",
       label: "Select or deselect the focused issue",

@@ -97,7 +97,6 @@ export function AnchoredPanel({
     };
   }, [anchorRef]);
 
-  // The role and the name it carries go on together: a panel with no role names nothing.
   const named = role === undefined ? {} : { role, "aria-label": label };
   return createPortal(
     <div className={className} ref={panelRef} style={{ position: "fixed", ...position }} {...named}>

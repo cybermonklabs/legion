@@ -317,7 +317,11 @@ function withinOneEdit(a: string, b: string): boolean {
   return edits + a.length - i + b.length - j <= 1;
 }
 export function matchesSearch(item: Item, query: string): boolean {
-  const words = item.search.toLowerCase().split(/[^\p{L}\p{N}]+/u);
+  let words: string[] | undefined;
+  const searchWords = () => {
+    if (words === undefined) words = item.search.toLowerCase().split(/[^\p{L}\p{N}]+/u);
+    return words;
+  };
   return query
     .trim()
     .toLowerCase()
@@ -325,7 +329,7 @@ export function matchesSearch(item: Item, query: string): boolean {
     .every(
       (word) =>
         rankItem(item.search, word, { threshold: rankings.CONTAINS }).passed ||
-        (word.length >= 5 && words.some((candidate) => withinOneEdit(candidate, word)))
+        (word.length >= 5 && searchWords().some((candidate) => withinOneEdit(candidate, word)))
     );
 }
 export function facets(item: Item, id: string): string[] {

@@ -165,13 +165,16 @@ export function GroupRow({
         ? priorityName(value)
         : value;
   const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
+  const leafCounts = new Map<string, number>();
+  let next = Number.POSITIVE_INFINITY;
+  for (const leaf of leaves) {
+    const { issue, queue } = leaf.original;
+    leafCounts.set(issue.status, (leafCounts.get(issue.status) ?? 0) + 1);
+    if (queue !== undefined && queue < next) next = queue;
+  }
   const byStatus = issueStatuses
-    .map(
-      (status) =>
-        [status, leaves.filter((leaf) => leaf.original.issue.status === status).length] as const
-    )
+    .map((status) => [status, leafCounts.get(status) ?? 0] as const)
     .filter(([, count]) => count > 0);
-  const next = Math.min(...leaves.map((leaf) => leaf.original.queue ?? Number.POSITIVE_INFINITY));
   return (
     <tr className={surfaceMutedBg} data-index={index} ref={measure}>
       <td className="px-2 py-2" colSpan={columns}>
@@ -429,12 +432,13 @@ export function IssueTableStatus({
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
   const statusCounts = new Map<string, number>();
-  for (const item of items)
+  let queuedCount = 0;
+  let runningCount = 0;
+  for (const item of items) {
     statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
-  const queuedCount = items.filter((item) => item.queue !== undefined).length;
-  const runningCount = items.filter((item) =>
-    (runningIssueStatuses as readonly string[]).includes(item.issue.status)
-  ).length;
+    if (item.queue !== undefined) queuedCount += 1;
+    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
+  }
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div

@@ -18,9 +18,12 @@ export interface TableLayout {
   order: ColumnOrderState;
   visibility: VisibilityState;
 }
+/** The kinds of action a reload can interrupt. The union and the check a stored record passes
+ *  are one list, so neither can gain a kind the other refuses. */
+export const ACTION_KINDS = ["newEpic", "startNext", "merge"] as const;
 export interface TableAction {
   id: string;
-  kind: "newEpic" | "startNext" | "merge";
+  kind: (typeof ACTION_KINDS)[number];
   project: string;
   keys: readonly string[];
   source?: string;
@@ -95,7 +98,7 @@ export function readTableAction(project: string): TableAction | undefined {
   if (
     action?.project === project &&
     typeof action.id === "string" &&
-    ["newEpic", "startNext", "merge"].includes(action.kind) &&
+    (ACTION_KINDS as readonly string[]).includes(action.kind) &&
     Array.isArray(action.keys) &&
     action.keys.every((key: unknown) => typeof key === "string") &&
     action.writes &&
