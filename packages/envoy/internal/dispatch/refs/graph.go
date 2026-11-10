@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -628,7 +629,13 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
-		where d.node_id = any($1) and `+VisibleKind("block", "d.node_id", "$2"), ids, VisibilityArg(who))
+		where d.node_id = any($1) and `+VisibleKind("block", "d.node_id", "$2"),
+		// QueryExecModeDescribeExec, so this statement is planned with its values. Its ids
+		// arrive as one array against the hash index on document_blocks.node_id, and a
+		// generic plan reads that array as an unknown-length scalar-array operation rather
+		// than a constant it can hash: measured on this pod over a document of 8,001
+		// blocks, 460 ms against 90 ms with the values in hand.
+		pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load block nodes: %w", err)
 	}
