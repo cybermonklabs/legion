@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-import { createIssue, createIssueArtifact, createProject, editArtifact, getArtifact } from "./api";
+import {
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  editArtifact,
+  getArtifact,
+  listComments,
+} from "./api";
 import { blockId } from "./editor";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
@@ -16,6 +23,11 @@ import { signIn } from "./users";
 const STALE_TITLE = "A decision that shaped this block changed after it.";
 const DECISION = "Store notices in a table";
 const REASON = "Chosen for the simplest storage.";
+/** The decision whose text is no plain paragraph: a list below its heading, with a reference in
+ *  one item and an issue key in the other. */
+const LISTED = "Name the notice store";
+const LISTED_OPENING = "Notices live in a table, as";
+const LISTED_CHANGE = "Measure the file store first.";
 
 test.beforeEach(async ({ context }) => {
   await resetDatabase();
@@ -105,4 +117,74 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   await expect(
     page.getByRole("region", { name: "Your decisions" }).getByRole("heading", { name: DECISION })
   ).toBeVisible();
+});
+
+// The same tab for a decision whose text the server read into a tree with more in it than one
+// paragraph: a list of two items that cites the spec and names an issue key. The tab draws that
+// tree, so what it draws and what it quotes both come from the server's reading, and the quote
+// has to be the words that reading flattens to - one space where one list item ends and the
+// next begins (`pmdoc.buildFlattenedText`) - or the server finds nothing to anchor the Change
+// on and refuses it.
+// @pr: The Decisions tab draws a decision written as a list, keeps its link and its key, and anchors its Change on the words the server flattens that list to.
+test("a decision written as a list keeps its link and its key, and anchors its Change on the words that list flattens to @pr", async ({
+  page,
+}) => {
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Notices are lost today.\n\nStore each notice.\n",
+    title: "Decisions written as a list",
+  });
+  const reference = `dispatch://${issue.key}/spec`;
+  // The markdown an agent writes and the words the server matches a quote against differ by
+  // exactly what this row is about: the link's target and the backticks around the key are the
+  // markdown's alone, and the end of the first item is one space from the start of the second.
+  const list = [
+    `- ${LISTED_OPENING} [the spec](${reference}) asks.`,
+    `- A \`${issue.key}\`-style key names where each notice came from.`,
+  ].join("\n");
+  const words = `${LISTED_OPENING} the spec asks. A ${issue.key}-style key names where each notice came from.`;
+  const decisions = await createIssueArtifact(issue.key, {
+    content: `## ${LISTED}\n\n${list}\n\nNothing else about a notice changes.\n`,
+    name: "decisions.md",
+  });
+  const listBlock = await blockId(decisions.artifact.id, list);
+
+  await page.goto(`/issues/${issue.key}/decisions`);
+  const card = page
+    .getByRole("region", { name: "Waiting for your review" })
+    .locator("[data-decision]");
+  await expect(card.getByRole("heading", { name: LISTED })).toBeVisible();
+
+  // The list is drawn as a list: one item each, both readable, rather than one run of words.
+  const items = card.getByRole("listitem");
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText(LISTED_OPENING);
+  await expect(items.last()).toHaveText(
+    `A ${issue.key}-style key names where each notice came from.`
+  );
+
+  // The reference is a link into the app and the key stands in a code span, both of which the
+  // reading takes from the decision's own markdown: the words of a block hold neither a link's
+  // target nor the backticks that end a key.
+  await expect(card.locator(`a[data-dispatch-ref="${reference}"]`)).toHaveAttribute(
+    "href",
+    `/issues/${issue.key}/spec`
+  );
+  await expect(card.locator("code")).toHaveText(issue.key);
+
+  // Change quotes that first block as the server flattens it, and the server finds those words
+  // in the document's own text: the comment it writes is anchored to the list block the quote
+  // names, which a quote with its items run together would never have reached.
+  await card.getByRole("button", { name: "Change" }).click();
+  const composer = page.getByRole("form", { name: `Change ${LISTED}` });
+  await expect(composer.getByTestId("decision-quote")).toHaveText(words);
+  await composer.getByRole("textbox").fill(LISTED_CHANGE);
+  await composer.getByRole("button", { name: "Send" }).click();
+  await expect(composer).toBeHidden();
+  await expect
+    .poll(async () => {
+      const comments = await listComments(issue.key, decisions.artifact.id);
+      return comments.find((comment) => comment.body === LISTED_CHANGE)?.anchor;
+    })
+    .toMatchObject({ block_id: listBlock, orphaned: false, quote: words });
 });
