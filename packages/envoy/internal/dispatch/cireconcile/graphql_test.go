@@ -479,13 +479,6 @@ func (f *fakeGitHub) refusePage(repository string, page int) {
 	f.refusedPages[repository][page] = struct{}{}
 }
 
-// allowPage undoes refusePage for one page.
-func (f *fakeGitHub) allowPage(repository string, page int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.refusedPages[repository], page)
-}
-
 // rateLimitQuery makes the next query answer as GitHub answers a spent GraphQL budget, in the
 // shape named.
 func (f *fakeGitHub) rateLimitQuery(limit graphQLLimit) {

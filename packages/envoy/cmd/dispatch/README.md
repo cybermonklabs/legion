@@ -370,6 +370,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 - What a query cannot answer whole is read over REST exactly as every head was read before: the commit's check runs (`filter=all`) and its check suites, page by page and conditional on the ETags the pass kept.
   Four things fall back that way: a head with more than 30 check suites, a head one of whose suites has more than 60 check runs, a head whose Checks fields GitHub refuses or answers null, and every head of a page GitHub refuses, gives up on, or answers past the 1 MiB response limit.
   For a refused page the pass lists that repository's open pull requests over REST and reads every head from that page onwards: the cursor of the page after it comes only in the answer the pass did not get, so there is no next page to ask for.
+  That listing is read in pages of twenty, the size of a query's page, and each of those pages is named by the number of its first open pull request: a pass cut short in such a repository leaves the cursor at that number, and the pass taking it up reads the listing again and begins where the page began, rather than at the position it sat at, which a pull request merged below it moves.
   Each head read over REST is named at INFO with the reason, so a head that falls back at every pass says why.
 
 - Each completed run and each completed suite is recorded through the mapping a webhook's own body goes through, whichever read answered it, so a pass over a run the listener already recorded changes no record and publishes no settlement.

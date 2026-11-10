@@ -21,12 +21,20 @@
 -- A row struck before this migration carries null here, so the first strike after the deploy
 -- starts that scope's run again: no backfill writes the column, since a census that rewrites a
 -- row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy census"), and a run restarted is
--- the safe direction -- it costs at most one shorter wait, which the next strike doubles again.
+-- the cheap direction -- it shortens the next wait by at most the doubling it has reached, and
+-- the strike after it doubles again, while a limit already in force is never shortened, since
+-- the statement takes greatest(l.until, ...).
 --
 -- A plain nullable add with no default is a catalog change that rewrites no row, so it holds
 -- github_rate_limits (one row per scope, of which a deployment has a handful) ACCESS EXCLUSIVE
--- for milliseconds. The release before this one neither reads nor writes the column, and its
--- own Strike leaves it null while it keeps striking by updated_at, so the two roll side by side
--- (cmd/dispatch/README.md, "Database migrations"). Rolling back past it is an image rollback
--- alone; the column left behind is read by nothing.
+-- for milliseconds. The release before this one neither reads nor writes the column, so the two
+-- roll side by side (cmd/dispatch/README.md, "Database migrations"), with one thing to know:
+-- the old build's Strike keeps striking by updated_at and writes struck_at not at all, so on a
+-- row the new build has already struck it leaves the new build's time standing rather than
+-- nulling it. During a roll, and during a rollback to that build, the old build's strikes do
+-- not move struck_at, and the new build's next strike reads a clock the old build's strikes
+-- never advanced: a run the old build was keeping going starts again at one minute if the new
+-- build's own last strike of that scope is an hour old. That costs one shorter wait, as the
+-- deploy itself does. Rolling back past this migration is an image rollback alone; the column
+-- left behind is read by nothing.
 alter table github_rate_limits add column struck_at timestamptz;

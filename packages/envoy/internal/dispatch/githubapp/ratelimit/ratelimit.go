@@ -152,16 +152,20 @@ const StrikeReset = time.Hour
 // limit days after the one before it would wait the full 64 minutes for limits unrelated to it.
 // The reset is an hour with no strike, which is what StrikeReset says it is.
 //
-// A row struck before that migration carries no struck_at, and the first strike after it starts
-// that scope's run again: nothing backfilled the column, and a run restarted costs one shorter
-// wait, which the strike after it doubles again.
+// A null struck_at is a scope no strike has been recorded for: every row Record created and
+// nothing has struck -- an installation's scope that has met the ordinary REST limits alone --
+// and every row struck before the migration added the column, which nothing backfilled. The
+// first strike of such a scope begins its run at one minute, which is what '-infinity' says in
+// the reset condition below: a scope never struck is further back than any hour, so the one
+// condition reads the same in both the places it appears. For a row struck by the release
+// before the column, that costs one shorter wait, which the strike after it doubles again.
 const strike = `
 	insert into github_rate_limits as l (scope, until, strikes, struck_at, updated_at)
 	values ($1, now() + greatest(make_interval(secs => $2), interval '1 minute'), 1, now(), now())
 	on conflict (scope) do update set
-		strikes = case when l.struck_at is null or l.struck_at < now() - make_interval(secs => $3) then 1 else l.strikes + 1 end,
+		strikes = case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 1 else l.strikes + 1 end,
 		until = greatest(l.until, now() + greatest(make_interval(secs => $2),
-			interval '1 minute' * power(2, case when l.struck_at is null or l.struck_at < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
+			interval '1 minute' * power(2, case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
 		struck_at = now(),
 		updated_at = now()
 	returning ` + columns
