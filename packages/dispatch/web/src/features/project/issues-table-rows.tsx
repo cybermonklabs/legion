@@ -79,7 +79,27 @@ export function TableHeaderCell({
       <span
         className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
-        {column.getCanSort() ? (
+        {column.columnDef.meta?.control ? (
+          // The header draws its own controls, so the sort is a mark beside them: a press on a
+          // hint or a switch inside the header sorts nothing, and no button nests in another.
+          <span className="flex min-w-0 items-center gap-1">
+            {flexRender(column.columnDef.header, header.getContext())}
+            {column.getCanSort() ? (
+              <button
+                aria-label={`Sort by ${column.id}`}
+                className={textMutedOnCanvas}
+                draggable={!pinned}
+                onClick={column.getToggleSortingHandler()}
+                onDragEnd={() => setDragColumn(undefined)}
+                onDragStart={() => setDragColumn(column.id)}
+                title="Sort (shift-click to add a second sort)"
+                type="button"
+              >
+                {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? "↕"}
+              </button>
+            ) : null}
+          </span>
+        ) : column.getCanSort() ? (
           <button
             className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
             draggable={!pinned}
@@ -126,23 +146,25 @@ export function TableHeaderCell({
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
 export function IssueRow({
-  busy,
+  busy = false,
   index,
   measure,
   moved,
   onStartNext,
   row,
 }: {
-  busy: boolean;
+  busy?: boolean;
   index: number;
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
-  moved: ReadonlySet<string>;
-  onStartNext: (key: string) => void;
+  moved?: ReadonlySet<string>;
+  /** Moves the issue to the head of Legion's queue; a grid that acts on nothing gives none,
+   *  and the row keeps the trailing cell empty so every table has one shape. */
+  onStartNext?: (key: string) => void;
   row: Row<Item>;
 }): ReactNode {
   const { issue, queue } = row.original;
-  const changed = moved.has(issue.key);
+  const changed = moved?.has(issue.key) ?? false;
   return (
     <tr
       aria-label={`${issue.key} ${issue.title}`}
@@ -170,7 +192,7 @@ export function IssueRow({
         );
       })}
       <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-        {queue !== undefined && queue > 1 ? (
+        {onStartNext !== undefined && queue !== undefined && queue > 1 ? (
           <button
             className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
             disabled={busy}

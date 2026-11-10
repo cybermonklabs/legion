@@ -48,6 +48,9 @@ declare module "@tanstack/react-table" {
     always?: readonly string[];
     /** Filter by typed text instead of picking values: for a column of free text. */
     text?: boolean;
+    /** The header holds a control of its own — a hint, a switch — so it is drawn beside the
+     *  sort button rather than inside it: a press on that control sorts nothing. */
+    control?: boolean;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
