@@ -54,7 +54,7 @@ the glob `packages/proof-editor/proof-sdk-*.tgz`, so a new name needs no edit in
 
 | File | What it is |
 | --- | --- |
-| `src/lib.ts` | The library entry: builds the Milkdown editor and its plugin stack, binds collab, exposes the handle |
+| `src/lib.ts` | The library entry: builds the Milkdown editor and its plugin stack, binds collab, exposes the handle. `destroy` is idempotent and destroys the ProseMirror view before the editor: `Editor.destroy()` runs every plugin's cleanup, which removes each `$ctx` slice, before it destroys the view, and a mark's `toDOM` reads its slice as it draws, so a view that outlived the ctx throws `Context "inlineCodeAttr" not found` out of whatever redrew it (INFRA-2409). Every host-facing write on the handle - `setReferences`, `setActiveMarks`, `setActiveBlocks`, `setBlockMarks`, `setChangeDecorations` - answers a destroyed view by doing nothing, since a host writes them from effects and React runs a child's cleanup after the parent's |
 | `src/lib-headless.ts` | The DOM-free engine: parse and serialize markdown, used by the SPA's reference bodies and by the pmdoc fixture generator |
 | `src/dispatch-*.ts` | Dispatch's host contract: the selection action bar, mark events, `dispatch://` links, soft breaks, the popover hook |
 | `src/lib-remark-*.ts` | The remark plugins the entry installs (container directives, frontmatter) |

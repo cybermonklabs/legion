@@ -597,12 +597,23 @@ export async function createProofEditor(
       return null;
     },
     destroy(): void {
+      // Idempotent: a second call would ask a ctx that no longer holds `collabServiceCtx` for it.
+      if (!alive) return;
       alive = false;
       unregisterPopoverHook();
       editor.action((ctx) => {
         const collabService = ctx.get(collabServiceCtx);
         collabService.disconnect();
       });
+      // The view goes before the ctx. `editor.destroy()` runs every plugin's cleanup first -
+      // which removes each `$ctx` slice, the commonmark presets' node and mark attributes among
+      // them - and only then destroys the ProseMirror view, so between the two the view is live
+      // over an emptied ctx: anything that redraws it there reads a slice that is gone and
+      // throws `Context "<slice>" not found, do you forget to inject it?` out of whatever called
+      // it, which in Dispatch is a React effect and so the page's error boundary (INFRA-2409).
+      // Every `view.isDestroyed` guard in this package and its hosts is written against this
+      // order: destroying the view here makes all of them hold before a slice can go.
+      view.destroy();
       void editor.destroy();
     },
   };
