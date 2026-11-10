@@ -277,7 +277,7 @@ test("the slots name each holder's phase, its turn and whether the slot is held 
   // An architect in a turn makes the slot working, whatever the phase.
   expect(use("ACME-6")).toBe("working");
   expect(document.querySelector("[data-legion-slot-summary]")?.textContent).toBe(
-    "4 slots, all in use · 2 working · 0 between turns · 1 held · 1 idle"
+    "4 slots, all in use · 2 working · 0 between turns · 1 held · 0 on a person · 1 idle"
   );
   // The phase is the issues table's own cell.
   expect(slot("ACME-1")?.querySelector('[data-legion-phase="implementing"]')).not.toBeNull();
@@ -338,13 +338,12 @@ test("a slot whose phase start is unknown shows the time since admission, else n
 
   await waitFor(() => expect(row("Slots", "ACME-2")).not.toBeNull());
   const time = (key: string) => row("Slots", key)?.querySelector('[data-legion-fact="phase-time"]');
+  // The cell shows the duration alone; its hover says what the duration counts.
   expect(time("ACME-2")?.textContent).toBe("—");
   expect(time("ACME-2")?.getAttribute("title")).toBe("phase start and admission not recorded");
-  expect(time("ACME-6")?.textContent).toMatch(/ since admission$/);
-  expect(time("ACME-6")?.getAttribute("title")).toBe(
-    "time since admission; phase start not recorded"
-  );
-  expect(time("ACME-1")?.textContent).toMatch(/ in phase$/);
+  expect(time("ACME-6")?.textContent).toMatch(/^\d+ (d|h|m)/);
+  expect(time("ACME-6")?.getAttribute("title")).toBe("since admission; phase start not recorded");
+  expect(time("ACME-1")?.getAttribute("title")).toBe("in this phase");
 });
 
 test("a root's phase hatches the hours it waited on its children, and the key names each colour", async () => {

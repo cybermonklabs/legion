@@ -83,21 +83,27 @@ export const EMERALD_950 = swatch("emerald-950", 0.262, 0.051, 172.552);
 // IBM Carbon's data-visualization colours (https://carbondesignsystem.com/data-visualization/color-palettes/):
 // its categorical palette's hues and its gray ramp, which the Legion phase scale and the issue
 // status scale use (dispatch://INFRA-979). OKLCH converted from Carbon's published hex values.
+// The MUTED_ ones keep a Carbon colour's lightness and hue at about 60% of its chroma (yellow at
+// 75%), so the warm phases do not shout beside the cool ones.
 export const CARBON_PURPLE_70 = swatch("carbon-purple-70", 0.468, 0.219, 295.08); // #6929c4
 export const CARBON_PURPLE_50 = swatch("carbon-purple-50", 0.663, 0.208, 298.001); // #a56eff
 export const CARBON_PURPLE_30 = swatch("carbon-purple-30", 0.836, 0.097, 301.177); // #d4bbff
+export const CARBON_PURPLE_20 = swatch("carbon-purple-20", 0.911, 0.052, 302.576); // #e8daff
+export const CARBON_CYAN_30 = swatch("carbon-cyan-30", 0.822, 0.102, 237.186); // #82cfff
+export const CARBON_TEAL_30 = swatch("carbon-teal-30", 0.813, 0.126, 193.679); // #3ddbd9
+export const CARBON_MAGENTA_30 = swatch("carbon-magenta-30", 0.84, 0.103, 351.664); // #ffafd2
 export const CARBON_CYAN_50 = swatch("carbon-cyan-50", 0.641, 0.162, 246.51); // #1192e8
 export const CARBON_CYAN_40 = swatch("carbon-cyan-40", 0.729, 0.155, 241.664); // #33b1ff
 export const CARBON_TEAL_70 = swatch("carbon-teal-70", 0.433, 0.074, 194.769); // #005d5d
-export const CARBON_ORANGE_60 = swatch("carbon-orange-60", 0.557, 0.157, 46.022); // #ba4e00
+export const MUTED_ORANGE_60 = swatch("muted-orange-60", 0.557, 0.095, 46.077); // #a16142
 export const CARBON_TEAL_60 = swatch("carbon-teal-60", 0.532, 0.092, 190.843); // #007d79
-export const CARBON_ORANGE_40 = swatch("carbon-orange-40", 0.738, 0.177, 50.583); // #ff832b
-export const CARBON_MAGENTA_70 = swatch("carbon-magenta-70", 0.465, 0.172, 1.339); // #9f1853
-export const CARBON_MAGENTA_40 = swatch("carbon-magenta-40", 0.756, 0.167, 354.525); // #ff7eb6
+export const MUTED_ORANGE_40 = swatch("muted-orange-40", 0.738, 0.107, 50.622); // #e0966b
+export const MUTED_MAGENTA_70 = swatch("muted-magenta-70", 0.466, 0.103, 1.141); // #873e56
+export const MUTED_MAGENTA_40 = swatch("muted-magenta-40", 0.756, 0.1, 353.985); // #e295b4
 export const CARBON_BLUE_80 = swatch("carbon-blue-80", 0.363, 0.184, 263.056); // #002d9c
 export const CARBON_BLUE_60 = swatch("carbon-blue-60", 0.557, 0.243, 261.953); // #0f62fe
-export const CARBON_YELLOW_50 = swatch("carbon-yellow-50", 0.645, 0.132, 85.25); // #b28600
-export const CARBON_YELLOW_40 = swatch("carbon-yellow-40", 0.734, 0.149, 86.457); // #d2a106
+export const MUTED_YELLOW_50 = swatch("muted-yellow-50", 0.645, 0.099, 85.602); // #a98940
+export const MUTED_YELLOW_40 = swatch("muted-yellow-40", 0.734, 0.112, 86.405); // #c8a44f
 export const CARBON_GREEN_60 = swatch("carbon-green-60", 0.527, 0.141, 148.295); // #198038
 export const CARBON_GREEN_30 = swatch("carbon-green-30", 0.81, 0.152, 150.442); // #6fdc8c
 export const CARBON_GRAY_10 = swatch("carbon-gray-10", 0.967, 0.0, 89.876); // #f4f4f4
@@ -108,4 +114,5 @@ export const CARBON_GRAY_50 = swatch("carbon-gray-50", 0.643, 0.0, 89.876); // #
 export const CARBON_GRAY_60 = swatch("carbon-gray-60", 0.542, 0.0, 89.876); // #6f6f6f
 export const CARBON_GRAY_70 = swatch("carbon-gray-70", 0.439, 0.0, 89.876); // #525252
 export const CARBON_GRAY_80 = swatch("carbon-gray-80", 0.345, 0.0, 89.876); // #393939
+export const CARBON_GRAY_90 = swatch("carbon-gray-90", 0.269, 0.0, 89.876); // #262626
 export const CARBON_GRAY_100 = swatch("carbon-gray-100", 0.2, 0.0, 89.876); // #161616

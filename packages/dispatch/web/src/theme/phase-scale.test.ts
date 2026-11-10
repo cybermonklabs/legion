@@ -1,11 +1,13 @@
-// Adjacent Legion phases must look different in a thin bar (dispatch://INFRA-979): each pair of
-// phases next to each other in the bars' order differs by a CIEDE2000 ΔE of 20 or more, in the
-// light scheme and in the dark one. Text contrast on each phase is the theme's own check
+// Side-by-side segments must look different in a thin bar (dispatch://INFRA-979): each pair of
+// phases next to each other in the phase bars' order, and each pair of statuses and phases next
+// to each other in the Issues bar's lifecycle order, differs by a CIEDE2000 ΔE of 20 or more, in
+// the light scheme and in the dark one. Text contrast on each is the theme's own check
 // (text-on-background.test.ts).
 import { expect, test } from "bun:test";
 
+import { LIFECYCLE_ORDER } from "../features/project/issues-table-model";
 import { PHASE_ORDER } from "../features/project/PhaseHoursBar";
-import { legionPhaseScale } from "./classes";
+import { issueStatusScale, legionPhaseScale } from "./classes";
 
 type Lab = readonly [l: number, a: number, b: number];
 
@@ -66,14 +68,26 @@ function deltaE2000(one: Lab, two: Lab): number {
   return Math.sqrt((dL / sL) ** 2 + (dC / sC) ** 2 + (dH / sH) ** 2 + rT * (dC / sC) * (dH / sH));
 }
 
-/** A phase's fill in one scheme, read from its classes. */
-function fill(phase: string, scheme: "light" | "dark"): string {
-  const classes = legionPhaseScale[phase] ?? "";
+/** A phase's (or, as `status:<id>`, a status's) fill in one scheme, read from its classes. */
+function fill(entry: string, scheme: "light" | "dark"): string {
+  const [scale, id] = entry.startsWith("status:")
+    ? [issueStatusScale, entry.slice("status:".length)]
+    : [legionPhaseScale, entry.replace(/^phase:/, "")];
+  const classes = scale[id] ?? "";
   const pattern =
     scheme === "light" ? /(?:^| )bg-\[#([0-9a-f]{6})\]/ : /dark:bg-\[#([0-9a-f]{6})\]/;
   const hex = pattern.exec(classes)?.[1];
-  if (hex === undefined) throw new Error(`no ${scheme} fill for ${phase}`);
+  if (hex === undefined) throw new Error(`no ${scheme} fill for ${entry}`);
   return hex;
+}
+
+/** The pairs of an order whose two fills differ by less than ΔE 20. */
+function tooClose(order: readonly string[], scheme: "light" | "dark"): string[] {
+  return order.slice(1).flatMap((entry, index) => {
+    const before = order[index] ?? "";
+    const difference = deltaE2000(lab(fill(before, scheme)), lab(fill(entry, scheme)));
+    return difference < 20 ? [`${before}/${entry} ${difference.toFixed(1)}`] : [];
+  });
 }
 
 test("the CIEDE2000 formula matches Sharma's published pair", () => {
@@ -82,11 +96,15 @@ test("the CIEDE2000 formula matches Sharma's published pair", () => {
 
 for (const scheme of ["light", "dark"] as const) {
   test(`each pair of adjacent phases differs by ΔE ≥ 20 in the ${scheme} scheme`, () => {
-    const pairs = PHASE_ORDER.slice(1).map((phase, index) => {
-      const before = PHASE_ORDER[index]?.id ?? "";
-      const difference = deltaE2000(lab(fill(before, scheme)), lab(fill(phase.id, scheme)));
-      return { pair: `${before}/${phase.id}`, difference: Math.round(difference * 10) / 10 };
-    });
-    expect(pairs.filter((one) => one.difference < 20)).toEqual([]);
+    expect(
+      tooClose(
+        PHASE_ORDER.map((phase) => phase.id),
+        scheme
+      )
+    ).toEqual([]);
+  });
+
+  test(`each side-by-side pair of the Issues bar differs by ΔE ≥ 20 in the ${scheme} scheme`, () => {
+    expect(tooClose(LIFECYCLE_ORDER, scheme)).toEqual([]);
   });
 }

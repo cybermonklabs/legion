@@ -99,35 +99,35 @@ interface SlotRow {
   readonly detail: string;
 }
 
-/** A slot holder's phase: one label ("Retro" for a merging issue in retro), and the time in the
- *  phase, or, where the phase start is not recorded, the time since the slot was admitted. */
+/** A slot holder's phase: one label ("Retro" for a merging issue in retro) and, below it from
+ *  640 px up, the time alone: in the phase, or since admission where the phase start is not
+ *  recorded. The hover says which, and what a waiting root waits on; a phone shows the label. */
 function SlotPhase({ card, label }: { card: LegionBoardCard; label: string }): ReactNode {
   const now = Date.now();
   const time =
     card.phase_since !== null
-      ? { text: `${formatPhaseTime(card.phase_since, now)} in phase`, title: card.phase_since }
+      ? { text: formatPhaseTime(card.phase_since, now), about: "in this phase" }
       : card.slot_since !== null
         ? {
-            text: `${formatPhaseTime(card.slot_since, now)} since admission`,
-            title: "time since admission; phase start not recorded",
+            text: formatPhaseTime(card.slot_since, now),
+            about: "since admission; phase start not recorded",
           }
-        : { text: "—", title: "phase start and admission not recorded" };
+        : { text: "—", about: "phase start and admission not recorded" };
+  const waiting =
+    card.waiting_on === null
+      ? ""
+      : `; waits on a ${card.waiting_on.kind}${card.waiting_on.answered_at ? ", answered" : ""}`;
+  const title = `${time.text === "—" ? "" : `${time.text} `}${time.about}${waiting}`;
   return (
-    <span className="flex flex-col gap-1" data-legion-phase={card.phase}>
+    <span className="flex flex-col gap-1" data-legion-phase={card.phase} title={title}>
       <span>{card.phase === "retro" ? "Retro" : label}</span>
       <span
-        className={`text-xs ${textMutedOnCanvas}`}
+        className={`hidden text-xs sm:block ${textMutedOnCanvas}`}
         data-legion-fact="phase-time"
-        title={time.title}
+        title={time.about}
       >
         {time.text}
       </span>
-      {card.waiting_on ? (
-        <span className="text-xs">
-          Waiting on {card.waiting_on.kind}
-          {card.waiting_on.answered_at ? "; answered" : ""}
-        </span>
-      ) : null}
     </span>
   );
 }
@@ -143,6 +143,11 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
     const use = (card: LegionBoardCard): Pick<SlotRow, "use" | "detail"> => {
       if (card.roles.length > 0)
         return { use: "working", detail: `${card.roles.join(", ")} in a turn` };
+      if (card.phase === "awaiting_person")
+        return {
+          use: "held: person",
+          detail: `Waits on a person${card.waiting_on ? ` (${card.waiting_on.kind})` : ""}`,
+        };
       if (!HELD_FOR_CHILDREN[card.phase])
         return { use: "between turns", detail: "Own phase, no worker in a turn" };
       const busy = cards.some(
@@ -166,7 +171,7 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
   return (
     <section aria-label="Slots" className={CARD} data-legion-slots>
       <SectionTitle
-        info="Working: a worker is in a turn. Between turns: no worker of the root is in a turn. Held: the root waits on its children, who work. Idle: the root waits on its children, and none of them works."
+        info="Working: a worker is in a turn. Between turns: no worker of the root is in a turn. Held: the root waits on its children, who work. On a person: the root waits on a person. Idle: the root waits on its children, and none of them works."
         title="Slots"
       />
       <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-slot-summary>
@@ -174,7 +179,8 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
           ? `${rows.length} slots, all in use`
           : `${rows.length} of ${cap ?? "?"} slots in use`}{" "}
         · {tally("working")} working · {tally("between turns")} between turns ·{" "}
-        {tally("held: children")} held · {tally("held: idle")} idle
+        {tally("held: children")} held · {tally("held: person")} on a person · {tally("held: idle")}{" "}
+        idle
       </p>
       <IssueGrid<SlotRow>
         columns={[
@@ -319,6 +325,7 @@ function WaitingLine({
               ),
             filter: false,
             size: 64,
+            primary: true,
           },
           "key",
           "title",
