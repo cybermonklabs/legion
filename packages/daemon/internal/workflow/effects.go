@@ -289,9 +289,8 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // is never refused for an assignment nothing ever delivered, and the phase's resume task, which
 // says to carry the work on rather than beginning it. It is exported for admission's repair of a
 // slot whose worker has no task (admit's resumeSlottedWorkers), which is the one caller: every
-// other way back into a phase is a transition with a task of its own. The task is
-// ResumePhaseTask says to carry the work on and names no head: the merger reads the head it
-// merges on GitHub, so no task of the daemon's names one.
+// other way back into a phase is a transition with a task of its own. The task names no head:
+// the merger reads the head it merges on GitHub, so no task of the daemon's names one.
 func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue), false)
 }

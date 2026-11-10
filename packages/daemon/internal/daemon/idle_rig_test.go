@@ -808,8 +808,7 @@ func (r *idleWakeRig) publish(subject, source, eventID, payload string) {
 }
 
 // publishSettlement publishes the CI settlement of the issue's pull request head, as Envoy relays
-// GitHub's check report (ci_red_no_takeover_live_test.go's publishSettlement builds the same
-// payload).
+// GitHub's check report.
 func (r *idleWakeRig) publishSettlement(issue idleRigIssue) {
 	r.t.Helper()
 	group := func() map[string]any { return map[string]any{"names": []string{}, "truncated": false} }
