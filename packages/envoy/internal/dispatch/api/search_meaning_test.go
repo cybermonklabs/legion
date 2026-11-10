@@ -1064,6 +1064,13 @@ func crowdCommentWindows(t *testing.T, database *store.Store, embedder embed.Emb
 // the crowd, and the project's own comments are returned by nothing - which is what every
 // scoped search met before this change, and what makes the scoped assertion below a test of
 // the predicate's place rather than of the fixture.
+//
+// The fill's row is recorded done, because this is the world the column's own predicate is
+// read in: every row here was written by this release's writers and carries its project
+// already, and a deployment reaches that state at the boot after the pass finishes
+// (meaningStatementFor). Until it does, a scoped search reads the owner each arm joins and
+// this arm is the one measured above - which is what
+// TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling stands on.
 func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes(t *testing.T) {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
@@ -1079,6 +1086,7 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 	}
 	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
 	processAllPending(t, database, embedder)
+	recordEmbeddingProjectKeyFill(t, database, true)
 
 	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
@@ -1097,5 +1105,138 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 			t.Fatalf("the unscoped search returned %s, so the crowd of %d windows does not fill the arm's %d candidates and this test proves nothing",
 				result.ID, searchWindowCandidates+1, searchWindowCandidates)
 		}
+	}
+}
+
+// recordEmbeddingProjectKeyFill writes the one row of embeddings_project_key_backfill the read
+// path switches on, and embeddingProjectKeyFillIsDone reads it back. A test stands either side
+// of the fill by writing that row rather than by running the pass, which would label the very
+// rows a test of an unlabelled corpus needs left null.
+func recordEmbeddingProjectKeyFill(t *testing.T, database *store.Store, done bool) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(),
+		"update embeddings_project_key_backfill set done = $1", done); err != nil {
+		t.Fatalf("record the embeddings project_key fill as done=%v: %v", done, err)
+	}
+}
+
+func embeddingProjectKeyFillIsDone(t *testing.T, database *store.Store) bool {
+	t.Helper()
+	var done bool
+	if err := database.Pool.QueryRow(context.Background(),
+		"select done from embeddings_project_key_backfill").Scan(&done); err != nil {
+		t.Fatalf("read the embeddings project_key fill's progress: %v", err)
+	}
+	return done
+}
+
+// resultProject is the project a search result belongs to, read off the page as a person
+// reading it would: an issue-owned hit from its issue's key, a document-owned one from the
+// owner's own project. It is how the test below filters an unscoped page by hand.
+func resultProject(result model.SearchResult) string {
+	if result.Owner.Kind == "issue" {
+		project, _, _ := strings.Cut(result.Owner.Key, "-")
+		return project
+	}
+	return result.Owner.Project
+}
+
+// searchResultKeys is a page as a set of "<kind>/<id>" in one order, for comparing two pages by
+// what they hold rather than by the order fusion ranked them in.
+func searchResultKeys(results []model.SearchResult) []string {
+	keys := make([]string, 0, len(results))
+	for _, result := range results {
+		keys = append(keys, result.Kind+"/"+result.ID)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling is the second half of INFRA-988's
+// defect. project_key is nullable, every row stored before migration 20261109120000 carries
+// null until store.FillEmbeddingProjectKeys labels it - 31 m 41 s for 1,109,536 rows on a clone
+// of the load-test database, longer in production - and `null = $2` is unknown in SQL, so while
+// that pass runs a predicate on the column alone hides every row it has not reached. A
+// deployment that had taken the migration and not the pass answered a project-scoped meaning
+// search from the labelled part of its corpus and nothing else, which is strictly worse than
+// the release before it: the read path serves the predicate on the owner each arm joins until
+// the fill's own row reads done (meaningStatementFor, meaningProjectScope).
+//
+// The fixture is one row of each kind a meaning arm reads - an issue, a comment, a message, an
+// ask and a document - in one project, each embedded to a word the corpus does not hold, so
+// only the meaning leg can answer at all (requireNoKeywordHit). The distance is cosine 0.9,
+// well clear of searchMeaningFloor rather than near it: a row at the floor itself is one
+// rounding away from being cut by the floor, and a test that lost a row that way would read
+// as this defect. The rows are then unlabelled the only way a test can unlabel them, as the
+// fill's own test does (embedding_project_key_test.go), and the fill's row is left not done:
+// that pair is a database the migrations have reached and the pass has not.
+//
+// What it asserts is the scoped page against the unscoped page filtered by hand to this project
+// - the answer that does not depend on the column at all - and each of the five items by name,
+// so a fixture that quietly stopped embedding one of them fails here rather than passing on two
+// short pages. The issue's own auto-created spec document is a sixth embeddings row and is in
+// neither page: nothing maps its text, so it embeds at cosine 0 and stands below
+// searchMeaningFloor, which is why five rather than six is the whole answer.
+func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
+	const project, title, spec = "UNFL", "An unlabelled subject", "Body text."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		"wibbleflorp":                   queryVector(),
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+	}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, project, title, spec)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to find."}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message to find."}, "alice")
+	ask := createIssueAsk(t, handler, issue.Key, "A question to find?")
+	document := uploadSearchDocument(t, handler, issue.Key, "notes.md", "A document to find.\n")
+	windowOwedOwners(t, deps)
+	// A distinct axis each, as angledVector requires of vectors answering one query.
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.9, 3))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+message.ID, angledVector(0.9, 4))
+	embedWindowsAs(t, database, embedder, "ask_part", "ask/"+ask, angledVector(0.9, 5))
+	embedWindowsAs(t, database, embedder, "document_block", document.ID, angledVector(0.9, 6))
+	processAllPending(t, database, embedder)
+
+	if _, err := database.Pool.Exec(context.Background(), "update embeddings set project_key = null"); err != nil {
+		t.Fatalf("unlabel the stored rows: %v", err)
+	}
+	// Both halves of "the pass has not run". Without either, the scoped search below would be
+	// answered by the column's own predicate and this test would prove nothing.
+	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
+		t.Fatalf("%d embeddings rows are still labelled, so this is not the database a fill has yet to reach", labelled)
+	}
+	if embeddingProjectKeyFillIsDone(t, database) {
+		t.Fatal("the fill's row reads done, so this test stands after the pass rather than during it")
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	scoped := searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if scoped.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", scoped.Degraded)
+	}
+	for _, want := range []struct{ kind, id string }{
+		{"issue", issue.Key},
+		{"comment", comment.ID},
+		{"message", message.ID},
+		{"ask", ask},
+		{"document", document.ID},
+	} {
+		searchHit(t, scoped, want.kind, want.id)
+	}
+
+	unscoped := searchResponse(t, handler, "q=wibbleflorp")
+	owned := make([]model.SearchResult, 0, len(unscoped.Results))
+	for _, result := range unscoped.Results {
+		if resultProject(result) == project {
+			owned = append(owned, result)
+		}
+	}
+	if len(owned) != 5 {
+		t.Fatalf("the unscoped search found %d rows of %s, want the fixture's five; this test compares the two pages, so an unscoped page missing one proves nothing: %+v",
+			len(owned), project, unscoped.Results)
+	}
+	if got, want := searchResultKeys(scoped.Results), searchResultKeys(owned); !slices.Equal(got, want) {
+		t.Errorf("the scoped search returned %v, want %v: what the unscoped search found of %s, which no project_key predicate filtered",
+			got, want, project)
 	}
 }

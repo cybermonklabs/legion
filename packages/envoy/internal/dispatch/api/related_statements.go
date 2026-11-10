@@ -2,13 +2,13 @@ package api
 
 import "fmt"
 
-// This file holds the related-item check's own SQL: the six statements it runs
+// This file holds the related-item check's own SQL: the eight statements it runs
 // (relatedKeywordQuery and relatedKeywordExcludingQuery, relatedMeaningQuery and
-// relatedMeaningExcludingQuery and the project-scoped counterpart of each, paired into
-// relatedKeywordStatement, relatedMeaningStatement and relatedMeaningScopedStatement) and the
-// fragments below that they are built from. Two fragments they
-// also read live elsewhere: relatedQOpener, which every one of them opens with
-// (related_terms.go), and relatedExcludedOwners, which the two excluding statements take
+// relatedMeaningExcludingQuery and the two project-scoped counterparts of each, paired into
+// relatedKeywordStatement, relatedMeaningStatement, relatedMeaningScopedStatement and
+// relatedMeaningJoinedStatement) and the fragments below that they are built from. Two
+// fragments they also read live elsewhere: relatedQOpener, which every one of them opens with
+// (related_terms.go), and relatedExcludedOwners, which the four excluding statements take
 // (related_excluded_owners.go). They sit here together, apart from the Go of the check that
 // runs them (suggestions.go), so that each can be read, measured and compared with search's own
 // statements (search.go) on its own.
@@ -28,24 +28,31 @@ var (
 	// relatedMeaningQuery is the check's stage 2: search's meaning query, which fuses the same
 	// keyword legs with the meaning arms, over the same lexemes and the text's embedding.
 	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes and $13 their idf. It is
-	// composed twice, as search's own is: scoped, with `e.project_key = $2` in every meaning
-	// arm, and unscoped, with no project predicate in any of them (meaningProjectScope).
+	// composed three times, as search's own is: scoped on the candidate row's own
+	// `e.project_key = $2`, scoped on the owner each meaning arm joins, and unscoped, with no
+	// project predicate in any arm (meaningProjectScope).
 	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) +
 		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", meaningEveryProject)
 	relatedMeaningScopedQuery = relatedQOpener + relatedTermWeights(12) +
 		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", meaningOneProject)
+	relatedMeaningJoinedQuery = relatedQOpener + relatedTermWeights(12) +
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", meaningOneProjectJoined)
 	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14,
-	// and its scoped counterpart.
+	// and its two scoped counterparts.
 	relatedMeaningExcludingQuery = relatedQOpener + relatedTermWeights(12) +
 		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), meaningEveryProject)
 	relatedMeaningScopedExcludingQuery = relatedQOpener + relatedTermWeights(12) +
 		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), meaningOneProject)
+	relatedMeaningJoinedExcludingQuery = relatedQOpener + relatedTermWeights(12) +
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), meaningOneProjectJoined)
 	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs; a check
-	// that names a project runs relatedMeaningScopedStatement in place of the second
+	// that names a project runs relatedMeaningScopedStatement in place of the second once the
+	// embeddings project_key fill has finished, and relatedMeaningJoinedStatement until it has
 	// (relatedMeaningStatementFor).
 	relatedKeywordStatement       = relatedStatement{plain: relatedKeywordQuery, excluding: relatedKeywordExcludingQuery}
 	relatedMeaningStatement       = relatedStatement{plain: relatedMeaningQuery, excluding: relatedMeaningExcludingQuery}
 	relatedMeaningScopedStatement = relatedStatement{plain: relatedMeaningScopedQuery, excluding: relatedMeaningScopedExcludingQuery}
+	relatedMeaningJoinedStatement = relatedStatement{plain: relatedMeaningJoinedQuery, excluding: relatedMeaningJoinedExcludingQuery}
 )
 
 // relatedStatement is one of the check's two searches in both its shapes: the statement itself,

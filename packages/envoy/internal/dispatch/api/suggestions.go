@@ -555,19 +555,30 @@ func (s *server) relatedMeaningSearch(
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project), project, picked, excluded,
+	// The flag is read only where it can change the statement, as search reads it
+	// (runMeaningSearch): a check naming no project runs the unscoped one either way.
+	filled := project != "" && embeddingProjectKeysFilled(ctx, tx)
+	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project, filled), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
 }
 
-// relatedMeaningStatementFor is the meaning statement for a check of project: the scoped one,
-// whose meaning arms read `e.project_key = $2`, where a project is named, and the unscoped one,
-// whose arms carry no project predicate, where none is. Search picks between the same two
-// shapes the same way (runMeaningSearch); meaningProjectScope argues why there are two.
-func relatedMeaningStatementFor(project string) relatedStatement {
-	if project == "" {
+// relatedMeaningStatementFor is the meaning statement for a check of project, filled being what
+// embeddingProjectKeysFilled answered in the check's own transaction: the unscoped one, whose
+// arms carry no project predicate, where no project is named; the scoped one, whose meaning
+// arms read `e.project_key = $2`, where one is named and the fill has labelled the rows stored
+// before that column; and the joined one, whose arms read the owner each of them joins, until
+// it has - which is the only one of the three a row the fill has not reached can answer.
+// Search picks among the same three the same way (meaningStatementFor); meaningProjectScope
+// argues why there are three statements rather than one predicate.
+func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
+	switch {
+	case project == "":
 		return relatedMeaningStatement
+	case filled:
+		return relatedMeaningScopedStatement
+	default:
+		return relatedMeaningJoinedStatement
 	}
-	return relatedMeaningScopedStatement
 }
 
 // relatedSearch runs one of the check's two statements with the parameters search passes its own

@@ -33,11 +33,12 @@
 -- different batches rather than the same one: the fill reads this row `for update`, so the
 -- second waits for the first's batch to commit and then reads the cursor it moved.
 --
--- Rolling deploy. The column is nullable and this release alone reads it, so a database that
--- has this migration and not the fill behaves exactly as the release before it did: an
--- unlabelled row is returned by an unscoped meaning search, which reads no project predicate
--- at all, and left out of a scoped one, which is what that search did with it before this
--- release shipped. The pass only ever moves rows from the second case to the first.
+-- Rolling deploy. The column is nullable, so until this pass has run an unlabelled row is
+-- invisible to the statement that reads `e.project_key = $2` - worse than the release before
+-- this one, which found that row through the owner each meaning arm joins. So a project-scoped
+-- meaning search is answered by that older, joined predicate, and by the column's own only
+-- once the done below reads true (api/search.go, meaningProjectScope): done is the one column
+-- of this row a search reads, and the pass is what retires the older shape.
 --
 -- This migration creates one table and inserts its one row. It reads no large table, takes no
 -- lock that grows with any table, and commits in milliseconds; its census answers 0.

@@ -115,14 +115,23 @@ func meaningPlanOf(
 }
 
 // TestTheScopedMeaningStatementReadsTheProjectIndex is the other half of the pair above, and
-// the reason there are two statements rather than one predicate (meaningProjectScope). A
+// the reason there are three statements rather than one predicate (meaningProjectScope). A
 // project-scoped search carries `e.project_key = $2` inside every candidate CTE, and for a
 // project holding few of a kind's rows the plan that answers it is an exact read of those rows
 // through embeddings_kind_project (migration 20261109120000) and a sort of them, not a walk of
 // embeddings_cosine filtered down to them: on the load-test deployment that is 800 of 800
 // windows in 13.7 ms against 2 of 800 in 225 ms (INFRA-988). The unscoped statement's own plan
 // is the test above, which reads embeddings_cosine for all five arms; one "$2 is empty, or it
-// matches" predicate would have to be planned once for both and can lose either.
+// matches" predicate would have to be planned once for all of them and can lose any.
+//
+// It is also the switch's other side. The statement explained is the one the read path itself
+// picks for this project (meaningStatementFor) over the flag it itself reads
+// (embeddingProjectKeysFilled), so what the plan says is what a scoped search runs: with the
+// fill's row recorded done that is the column's own predicate and this index, and with the
+// same row not done it is the joined statement, whose comment candidates carry no project
+// predicate at all. A search before the fill finishes is answered by the owner each arm joins
+// (TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling); this exact read is what
+// finishing the pass buys.
 //
 // The fixture is the shape the measurement was taken on: one small project beside a crowd of
 // another project's windows, analyzed so the planner's statistics hold the difference.
@@ -144,8 +153,9 @@ func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 		t.Fatalf("analyze embeddings: %v", err)
 	}
 
-	root, planJSON := meaningPlanOf(t, database, embedder, searchQueryMeaningScoped, "SARM",
-		"set local enable_seqscan = off")
+	recordEmbeddingProjectKeyFill(t, database, true)
+	root, planJSON := meaningPlanOf(t, database, embedder, meaningStatementAsSearchPicksIt(t, database, "SARM"),
+		"SARM", "set local enable_seqscan = off")
 	leg := root.find(func(node planNode) bool { return node.Alias == "meaning_comment_candidates" })
 	if leg == nil {
 		t.Fatalf("the plan has no node for meaning_comment_candidates:\n%s", planString(t, planJSON))
@@ -158,6 +168,41 @@ func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 	if !strings.Contains(scan.Filter+scan.IndexCond, "project_key") {
 		t.Errorf("the scoped comment arm's scan of embeddings_kind_project carries no project_key condition:\n%s", planString(t, planJSON))
 	}
+
+	// The other side, on the same fixture: with the row back as a running fill leaves it, the
+	// statement the read path picks cuts its comment candidates by nothing but kind and model,
+	// because the project it is scoped to is read above that limit off the comment's own issue
+	// and document (searchMeaningCommentArm).
+	recordEmbeddingProjectKeyFill(t, database, false)
+	joined := meaningStatementAsSearchPicksIt(t, database, "SARM")
+	root, planJSON = meaningPlanOf(t, database, embedder, joined, "SARM", "set local enable_seqscan = off")
+	leg = root.find(func(node planNode) bool { return node.Alias == "meaning_comment_candidates" })
+	if leg == nil {
+		t.Fatalf("the plan has no node for meaning_comment_candidates:\n%s", planString(t, planJSON))
+	}
+	if cut := leg.find(func(node planNode) bool {
+		return strings.Contains(strings.Join(node.conditions(), " "), "project_key")
+	}); cut != nil {
+		t.Errorf("before the fill records itself done the comment arm still cuts its candidates by project_key, so the read path did not change statement with the flag:\n%s",
+			planString(t, planJSON))
+	}
+}
+
+// meaningStatementAsSearchPicksIt is the meaning statement a scoped search of project runs on
+// this database right now: the read path's own choice (meaningStatementFor) over the read
+// path's own reading of the fill's progress row (embeddingProjectKeysFilled), in a transaction
+// of its own as a search reads it. A plan test explains what a search sends rather than a
+// statement named by hand, so the switch between the two scoped shapes is under test with
+// them.
+func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, project string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin a transaction to read the fill's progress in: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx))
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a

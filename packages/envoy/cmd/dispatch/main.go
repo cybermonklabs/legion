@@ -705,9 +705,12 @@ func main() {
 	// In the background, where the document_search fill above blocks the boot: each row carries
 	// a 1,536-float vector, so the pass is about an hour on a deployment of a million of them
 	// (INFRA-988), and a boot that waited for it would outlast any rollout. What waiting would
-	// buy is nothing: an unlabelled row costs a project-scoped search exactly what it cost that
-	// search in the release before this one, and every batch can only add rows such a search
-	// finds. A failure is logged and the process serves on, for the same reason.
+	// buy is nothing a search needs: an unlabelled row is invisible to the column's own
+	// predicate, which is worse than the release before this one, so a project-scoped meaning
+	// search is answered by the owner each arm joins, as that release answered it, until this
+	// pass records itself done (api/search.go, meaningProjectScope), and every batch moves rows
+	// onto the faster predicate the pass exists for. A failure is logged and the process serves
+	// on, for the same reason.
 	//
 	// Here, among the loops, and not beside the document_search fill above, because it needs the
 	// lease pool, which is opened below that: one process of a roll fills and the other logs a
