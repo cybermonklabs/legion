@@ -1042,6 +1042,27 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The thread this reply joins and the block it names are read here, before the first
+	// statement that takes a row lock, so no document work runs while the transaction holds a
+	// transaction id (INFRA-636). Both are decided under the comment's owner lock, which
+	// lockedCommentForDelivery took and which assigns no transaction id (store.LockOwner), so
+	// they read what they read below it. Their refusals are raised where they were raised,
+	// after the mention and the attempt have been checked, so no answer of this route moves,
+	// and the index the named block's comment may owe is written where it was written, with
+	// the reply's own writes.
+	var thread commentThreadTarget
+	var threadErr error
+	var blockRepair refs.ItemRepair
+	var block *namedBlock
+	var blockErr error
+	if input.Body != nil {
+		thread, threadErr = s.threadHeadOf(r.Context(), tx, ownerOf(comment.IssueKey, comment.ArtifactID), comment)
+		if input.ReplyToBlock != nil {
+			blockRepair, block, blockErr = s.planReplyBlock(
+				r.Context(), tx, refs.ItemComment, comment.ID, *input.ReplyToBlock, "reply_to_block", "INVALID_COMMENT",
+			)
+		}
+	}
 	rows, err := tx.Query(r.Context(), `
 		select target from comment_mentions where comment_id = $1 order by target for update
 	`, comment.ID)
@@ -1162,22 +1183,24 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// walks `reply_to` up to the head of the thread, so a reply anywhere under an ask stores
 	// that ask's `ask_id` - the column every ask read, the Inbox row and the ask card select
 	// on - instead of a bare `reply_to` none of them can see. The comment it answers is
-	// already loaded under its owner's lock, so the climb starts there rather than re-reading it.
-	thread, err := s.threadHeadOf(r.Context(), tx, ownerOf(comment.IssueKey, comment.ArtifactID), comment)
-	if err != nil {
-		s.writeHandlerError(w, err)
+	// already loaded under its owner's lock, so the climb starts there rather than re-reading
+	// it, and it is climbed above the locks, where its refusal is raised here.
+	if threadErr != nil {
+		s.writeHandlerError(w, threadErr)
 		return
 	}
 	// `reply_to_block` names a block of the comment this callback answers, the only item the
 	// request names, which lockedCommentForDelivery holds after its owner — never a part of the
 	// ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
-	var block *namedBlock
-	if input.ReplyToBlock != nil {
-		block, err = s.namedReplyBlock(r.Context(), tx, nil, refs.ItemComment, comment.ID, *input.ReplyToBlock)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	// The block was read above the locks too; the index that read found the comment owed is
+	// written here, before the reply's own writes, as refs.IndexItemIfOwed writes one.
+	if blockErr != nil {
+		s.writeHandlerError(w, blockErr)
+		return
+	}
+	if err := blockRepair.Write(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.

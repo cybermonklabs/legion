@@ -636,3 +636,138 @@ func TestXidWindowResultRecorded(t *testing.T) {
 		}))
 	})
 }
+
+// xidDeliverySessions is the fake listener's one live session, s1, the recipient every delivery
+// window test is measured on.
+const xidDeliverySessions = `[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}]`
+
+// newXidDeliveryFixture is the fixture on a server whose Envoy listener is a fake holding that
+// one live session, so a mention, a targeted message and a direct message all reach it and each
+// delivery route runs its whole path. The deliveries are on the fixture's issue, whose spec is
+// the harness's large one, so each route climbs and reads what it reads in production.
+func newXidDeliveryFixture(t *testing.T) *xidFixture {
+	t.Helper()
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+			writeSessionRecord(t, w, xidDeliverySessions, "s1")
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte(xidDeliverySessions))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			_, _ = w.Write([]byte(`{"event_id":"xid-envelope","recipient":"s1"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(listener.Close)
+	return newXidFixture(t, testServerOptions{envoyURL: listener.URL}, "")
+}
+
+// xidSessionReply is the mentioned session answering one delivery attempt, as its host answers
+// the frame it was handed.
+func xidSessionReply(t *testing.T, h http.Handler, path string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body["actor"] = map[string]any{"kind": "session", "id": "s1"}
+	return bearerRequest(t, h, http.MethodPost, path, body)
+}
+
+// A mentioned session answers its delivery with a reply naming a block of the comment it
+// answers. The mention hangs under one of the fixture's open asks, so the reply joins that ask's
+// thread as every reply under an ask does. The route writes as it goes, so its window holds its
+// statements rather than one batch, and everything the reply is decided on comes before the
+// first of them: the comment and its owner, taken under the advisory lock that assigns no
+// transaction id (store.LockOwner, lockedCommentForDelivery); the climb from it to the head of
+// its thread, the ask it hangs under (threadHeadOf); and the block the reply names, with the
+// index its comment may owe planned there and written with the reply's own writes
+// (planReplyBlock). Each refusal those two reads raise is raised where it was raised, after the
+// mention and the attempt have been checked, so the answers of this route are what they were.
+func TestXidWindowCommentDeliveryReply(t *testing.T) {
+	f := newXidDeliveryFixture(t)
+	comment := decodeMentionedComment(t, postMentionedComment(t, f.handler, f.issueKey, map[string]any{
+		"body":     "Does this still hold once the outbox is sharded?\n\nThe migration section is the one to read.",
+		"ask_id":   f.asks[0],
+		"mentions": []map[string]any{{"target": "session:s1"}},
+	}))
+	settledCommentDeliveries(t, f.database, comment.ID)
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(14,
+		"the mention row's lock, the attempt row's lock, the reply's insert, its author's follow of the ask "+
+			"it joins, the read and the write of its block index, the read and the write of its references, "+
+			"the attempt's update, the block the reply answers, the thread's logins, the batch appending "+
+			"comment.answered, the stamp of its references and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return xidSessionReply(t, h, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
+			"attempt": 1, "body": "It holds: the listener keeps its interests in the bucket.",
+			"reply_to_block": "b2",
+		})
+	})
+}
+
+// A session answers a targeted message with a reply naming a block of it. The window opens at
+// the parent message's lock, which the route takes in the order the accept route takes its own -
+// issue, message, attempt - and the block the reply names is read before it (planReplyBlock),
+// with the index that read finds the parent owes written under the lock, the order
+// refs.IndexItemIfOwed states. The issue's owner lock assigns no transaction id.
+func TestXidWindowMessageDeliveryReply(t *testing.T) {
+	f := newXidDeliveryFixture(t)
+	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{
+		"body":   "Can this ship?\n\nThe migration section is the one to read.",
+		"target": "session:s1", "delivery": "steer",
+	}, "alice")
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(14,
+		"the parent message's lock, the attempt row's lock, the reply's insert, the block it answers, the "+
+			"read and the write of its block index, the read and the write of its references, its thread, the "+
+			"thread's logins, the batch appending message.answered, the stamp of its references, the attempt's "+
+			"update and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return xidSessionReply(t, h, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
+			"attempt": 1, "body": "It can: the outbox keys each copy.",
+			"in_reply_to_block": "b2",
+		})
+	})
+}
+
+// A session takes a person's direct message as its own user turn. The route changes no code for
+// INFRA-636 and this test is what records why: its window is wider than one batch, and every
+// statement in it is a database statement - the message row's lock, the one read its ten checks
+// are judged by, the attempt's update and the batch appending message.accepted - with no
+// document work and no write advice among them. The event's owners are locked before the message
+// row (Events.LockOwners), and that lock assigns no transaction id.
+func TestXidWindowDeliveryAccepted(t *testing.T) {
+	f := newXidDeliveryFixture(t)
+	created := postAgentMessage(t, f.handler, "s1", map[string]any{
+		"body": "Read the migration section of the spec and tell me what it costs.", "delivery": "aside",
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("direct message to s1: status=%d body=%s", created.Code, created.Body.String())
+	}
+	root := decodeBody[model.Message](t, created)
+	f.measure(t, http.StatusOK, storetest.XidWindowOf(5,
+		"the message row's lock, the read its checks are judged by, the attempt's update, the batch "+
+			"appending message.accepted and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return xidSessionReply(t, h, "/api/v1/messages/"+root.ID+"/deliveries/1/accept", map[string]any{})
+	})
+}
+
+// A person retries the delivery of a targeted message that is itself a reply naming a block, so
+// the claim transaction builds the frame the send carries from the stored message: the block it
+// answers and the thread it belongs to. That route changes no code for INFRA-636 either, and
+// this test records why: those are database reads, and no document work or write advice runs
+// under the message row's lock. The request runs both of the delivery's transactions - the claim,
+// whose window the shape names, and the settle behind the send, whose window is the attempt's
+// update, the batch appending message.delivery and its COMMIT - and the listener call between
+// them holds neither. The issue is locked before the message row, the order
+// recordPendingMessageDelivery states, under the advisory lock that assigns no transaction id.
+func TestXidWindowPendingDeliveryRecorded(t *testing.T) {
+	f := newXidDeliveryFixture(t)
+	parent := createIssueMessage(t, f.handler, f.issueKey, map[string]any{
+		"body": "Status: the migration section is rewritten.\n\nThe outbox section stands as you read it.",
+	}, "alice")
+	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{
+		"body": "Can this ship?", "target": "session:s1", "delivery": "steer",
+		"in_reply_to": parent.ID, "in_reply_to_block": "b2",
+	}, "alice")
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(6,
+		"the message row's lock, the read of the pending attempt it would resume, the new attempt's insert, "+
+			"the block the message answers, its thread and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
+			map[string]any{"delivery": "aside"}, "alice")
+	})
+}

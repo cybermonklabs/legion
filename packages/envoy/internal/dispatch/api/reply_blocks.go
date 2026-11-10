@@ -71,11 +71,12 @@ func (s *server) ownerAddress(ctx context.Context, tx pgx.Tx, owner owner) (issu
 // planReplyBlock checks that blockID is a current block of item itemID — the comment or the
 // message a reply answers, or the ask a reply names, whose blocks are the parts of its question,
 // its options and its answer — and returns it with the index the item owes, which the caller
-// queues in its write phase. The caller holds the item's owner (when it has one) and, for a
-// message, the item row; an item an older build wrote, or wrote after its last index, is indexed
-// by the same transaction (refs.PlanItemIfOwed), so the block named is one the item holds now:
-// the repaired index is read from its plan, the stored one from the block rows. A block the item
-// does not hold now answers 400 with code, naming field and the block.
+// writes with its own writes. The caller holds the item's owner (when it has one), which
+// assigns no transaction id (store.LockOwner), and takes the item row of a message with the
+// index it writes, never with this read; an item an older build wrote, or wrote after its last
+// index, is indexed by the same transaction (refs.PlanItemIfOwed), so the block named is one
+// the item holds now: the repaired index is read from its plan, the stored one from the block
+// rows. A block the item does not hold now answers 400 with code, naming field and the block.
 //
 // The live write of this request is the reply, which its own route stamps; the item indexed here
 // is the parent, whose text an earlier write already carried an event for, so a block mention
@@ -102,11 +103,10 @@ func (s *server) planReplyBlock(
 }
 
 // replyBlockOf is planReplyBlock with the item's owed index queued on ledger, at the point the
-// reply reads the block, or run at once where the transaction queues no write phase (a nil
-// ledger: a route that writes as it goes, the delivery replies). A nil ledger has no queue to
-// hold the repair until a write phase that never comes, so the repair runs there as every
-// unqueued repair runs (refs.ItemRepair.Write), as a batch of its own before the reply's own
-// writes.
+// reply reads the block, for a route whose writes are one queued batch. A route that writes as
+// it goes - the delivery replies - plans the block itself above the row locks it takes and
+// writes the repair with its own writes (refs.ItemRepair.Write), so no index is planned while
+// its transaction holds a transaction id.
 func (s *server) replyBlockOf(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, blockID, field, code string,
 ) (*namedBlock, error) {
@@ -117,16 +117,10 @@ func (s *server) replyBlockOf(
 	if !repair.Owed() {
 		return block, nil
 	}
-	if ledger != nil {
-		return block, ledger.Queue(func(b *store.WriteBatch) error {
-			repair.Queue(b)
-			return nil
-		})
-	}
-	if err := repair.Write(ctx, tx); err != nil {
-		return nil, err
-	}
-	return block, nil
+	return block, ledger.Queue(func(b *store.WriteBatch) error {
+		repair.Queue(b)
+		return nil
+	})
 }
 
 // nodeID is the block's node id for replies_to_block, null for a reply naming no block.

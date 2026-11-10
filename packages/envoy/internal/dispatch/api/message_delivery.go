@@ -892,7 +892,19 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The block this reply names is read here, before the first statement that takes a row
+	// lock, so no document work runs while the transaction holds a transaction id (INFRA-636).
+	// Its refusal is raised in the branch that answers with it, where it was raised, and the
+	// index this read finds the parent owes is written there too, under the parent's lock,
+	// which is taken below: the order refs.IndexItemIfOwed states, and the one
+	// queueReplyParentMessageLock queues for a route with a write phase.
+	var parentRepair refs.ItemRepair
+	var block *namedBlock
+	var blockErr error
 	if input.InReplyToBlock != nil {
+		parentRepair, block, blockErr = s.planReplyBlock(
+			r.Context(), tx, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE",
+		)
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.
 		if err := lockReplyParentMessage(r.Context(), tx, message.ID); err != nil {
 			s.writeHandlerError(w, err)
@@ -916,6 +928,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	var response any
 	status := http.StatusOK
 	var events []model.Event
+	// handedBack is the stored answer a retry is given back with nothing written; its block is
+	// read after the commit.
+	var handedBack *model.Message
 	switch {
 	case attempt.ReplyID != nil:
 		if followUp && input.InReplyToBlock != nil {
@@ -934,13 +949,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
+		// That read is made after the commit, on the pool: this transaction holds a transaction
+		// id from the attempt row's lock, and it writes nothing here (INFRA-636).
 		if posted == nil {
-			if err := hydrateMessageReplyBlocks(r.Context(), tx, &read.Message); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
+			handedBack = &read.Message
 		}
-		response = read
+		response = &read
 		if posted != nil {
 			events = append(events, *posted)
 			status = http.StatusCreated
@@ -964,13 +978,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		response, events = updated, append(events, receipt)
 	default:
-		var block *namedBlock
-		if input.InReplyToBlock != nil {
-			block, err = s.replyBlockOf(r.Context(), tx, nil, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
+		if blockErr != nil {
+			s.writeHandlerError(w, blockErr)
+			return
+		}
+		if err := parentRepair.Write(r.Context(), tx); err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, *input.Body, block)
 		if err != nil {
@@ -991,6 +1005,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if handedBack != nil {
+		if err := hydrateMessageReplyBlocks(r.Context(), s.deps.Store.Pool, handedBack); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	s.publish(events...)
 	WriteJSON(w, status, response)
