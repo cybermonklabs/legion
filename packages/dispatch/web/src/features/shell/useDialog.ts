@@ -213,27 +213,40 @@ export function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-/** Closes an open overlay when the route changes under the reader; neither the mount render nor a
- *  `replace` closes it. Every `replace` this app makes is the address correcting itself, never the
- *  reader leaving the page the overlay was opened over: a route settling in place (`app.tsx`,
- *  `features/project/ProjectPage.tsx`, `features/issue/IssuePage.tsx`,
- *  `features/artifacts/ArtifactDocument.tsx`), or a filter or a selection writing itself into the
- *  address (`features/inbox/Inbox.tsx`, `features/inbox/pane-selection.ts`, `lib/query-param.ts`,
- *  `lib/url-array-params.ts`). React Router mints a fresh `location.key` for each, so closing on a
- *  key change alone shut the command bar a reader opened over a project page still redirecting its
- *  bare path (dispatch://INFRA-2452). A move the reader makes is a push or a pop - the palette's
- *  row activation, the Inbox drawer's links - and still closes the overlay. The key is recorded
- *  either way, so the next push is compared against the location the reader is on. */
+/** Closes an open overlay when the route changes under the reader. A push or a pop is the reader
+ *  moving and closes it; the mount render does not. A `replace` is two different things, which
+ *  the navigation type alone cannot tell apart, so the rule turns on the address. A replace that
+ *  moves the address is the page correcting itself under a reader who has not moved - a route
+ *  settling in place, a filter or a selection writing itself into the address - and leaves the
+ *  overlay open; closing on a key change alone shut the command bar a reader opened over a
+ *  project page still redirecting its bare path (dispatch://INFRA-2452). A replace that leaves
+ *  the address unchanged is the reader moving: React Router makes a `<Link>` click a replace
+ *  whenever the link's target equals the address already shown, as the Inbox drawer's owner link
+ *  to the issue being read is, and that click closes the overlay. Key and address are both
+ *  recorded on every run, so the next navigation is compared against the location the reader is
+ *  on. */
 export function useCloseOnNavigation(open: boolean, onClose: () => void): void {
   const lastLocationKey = useRef<string | undefined>(undefined);
+  const lastAddress = useRef<string | undefined>(undefined);
   const location = useLocation();
   const navigationType = useNavigationType();
   useEffect(() => {
+    const address = `${location.pathname}${location.search}${location.hash}`;
     const changed =
       lastLocationKey.current !== undefined && lastLocationKey.current !== location.key;
+    const moved = lastAddress.current !== address;
     lastLocationKey.current = location.key;
-    if (open && changed && navigationType !== NavigationType.Replace) {
+    lastAddress.current = address;
+    if (open && changed && !(navigationType === NavigationType.Replace && moved)) {
       onClose();
     }
-  }, [location.key, navigationType, onClose, open]);
+  }, [
+    location.hash,
+    location.key,
+    location.pathname,
+    location.search,
+    navigationType,
+    onClose,
+    open,
+  ]);
 }
