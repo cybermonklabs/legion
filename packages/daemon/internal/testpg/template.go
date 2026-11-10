@@ -63,8 +63,10 @@ func Clone(t testing.TB, prefix string) string {
 		t.Skip(testdb.SkipMessage)
 	}
 	shared.once.Do(func() { shared.err = prepare(dsn) })
-	if shared.err != nil {
-		t.Fatal(shared.err)
+	// A scratch change, on a pull request closed without merging: it rewrites the line an open
+	// alert of another tree stands on, so that line is inside this pull request's own diff.
+	if err := shared.err; err != nil {
+		t.Fatal(err)
 	}
 	name, err := testdb.RandomName(prefix)
 	if err != nil {
