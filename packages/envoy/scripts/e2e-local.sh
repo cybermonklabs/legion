@@ -18,7 +18,18 @@
 # (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
 # addr). E2E_NATS_PORT and E2E_PORT set a port explicitly; it is used as given, and one already in
 # use fails with "address already in use". The session opens no port of its own: it takes its
-# messages from its session consumer over NATS, as every shipped plugin does.
+# messages from its session consumer over NATS, as every shipped plugin does. It keeps the ledger
+# a real session keeps, writing a frame only when its stream sequence is above the highest it has
+# written of that stream.
+#
+# E2E_SESSION_ACK_DELAY_MS (0 by default) holds each session's `done` answer back by that many
+# milliseconds, which moves the consumer ack floor behind what the session has already written.
+# The clean stop below records that floor, and the registration that follows with no resume point
+# starts there, so the frames the session took and had not acked are offered again - at-least-once
+# above the floor, which is what keeps a session that comes back from losing anything. It is the
+# control over the ledger above: `E2E_SESSION_ACK_DELAY_MS=1500 bash scripts/e2e-local.sh` passes
+# with it and fails without it, the role lane tallying 5 frames and the agent lane 6 where 2 and 3
+# are wanted (dispatch://INFRA-771, the red at b76508ae).
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -405,6 +416,17 @@ start_session_standin() {
       // Every relay frame carries these; Envoy-Gap is left out because it marks only the first
       // frame after a retention gap, which a run that creates its own stream never has.
       const headers = ["Envoy-Subject", "Envoy-Stream-Seq", "Envoy-Stream-Id", "Envoy-Delivered", "Envoy-Stored-At"];
+      // The ledger a real session keeps (packages/envoy-client/src/consumer-delivery.ts): the
+      // highest stream sequence this session has written, per stream. A frame at or below it has
+      // been written once already and is answered without being written again, which is what
+      // makes "each exactly once" a statement about the session rather than about the transport:
+      // above the floor a delete recorded, the stream offers a frame the session took but had
+      // not acked a second time, deliberately, so that a session that comes back loses nothing
+      // (bus.SessionConsumers.Delete, create). A stand-in with no ledger counts those repeats and
+      // reads a correct delivery as a duplicate. Two distinct stores of one event still count
+      // twice, which is the duplicate these tallies exist to catch.
+      const written = new Map();
+      const ackDelayMs = Number(process.env.E2E_SESSION_ACK_DELAY_MS ?? "0");
       await connection.flush();
       process.stdout.write("ready\n");
       for await (const message of frames) {
@@ -413,16 +435,26 @@ start_session_standin() {
           if (!message.headers?.get(header)) throw new Error(`a relay frame carries no ${header} header`);
         }
         message.respond(codec.encode("received"));
-        appendFileSync(output, `${codec.decode(message.data)}\n`);
-        message.respond(codec.encode("done"));
-        // The resume point the ack just moved, held as the plugin holds it: the stream the frame
-        // names and the sequence it carries. It is written whole and renamed over the cursor file,
-        // so the script reading it between frames never reads half a point.
         const point = {
           stream_id: message.headers.get("Envoy-Stream-Id"),
           seq: Number(message.headers.get("Envoy-Stream-Seq")),
         };
-        writeFileSync(`${cursorFile}.tmp`, `${JSON.stringify(point)}\n`);
+        const highest = written.get(point.stream_id);
+        if (highest === undefined || point.seq > highest) {
+          appendFileSync(output, `${codec.decode(message.data)}\n`);
+          written.set(point.stream_id, point.seq);
+        }
+        // E2E_SESSION_ACK_DELAY_MS holds the answer that moves the consumer ack floor, so a run
+        // can put the floor behind what the session has written and drive the repeat above on
+        // purpose; 0, the default, answers at once as a session does.
+        if (ackDelayMs > 0) await Bun.sleep(ackDelayMs);
+        message.respond(codec.encode("done"));
+        // The resume point the ack just moved, held as the plugin holds it: the stream the frame
+        // names and the sequence it carries, never below the highest the ledger holds. It is written
+        // whole and renamed over the cursor file, so the script reading it between frames never
+        // reads half a point.
+        const resume = { stream_id: point.stream_id, seq: written.get(point.stream_id) ?? point.seq };
+        writeFileSync(`${cursorFile}.tmp`, `${JSON.stringify(resume)}\n`);
         renameSync(`${cursorFile}.tmp`, cursorFile);
       }
     ' >"$ready_fifo" 2>"$log_file"
@@ -598,11 +630,15 @@ wait_for_topic_count() {
 
 # wait_for_consumer_frame_count returns once a session has taken at least expected frames of its
 # consumer: one line of its frames file per frame it answered done. The file is the run's own
-# session's unless one is named, as the no-cursor window below names its own.
+# session's unless one is named, as the no-cursor window below names its own. The budget is 20
+# seconds and, under E2E_SESSION_ACK_DELAY_MS, one delay per frame on top: a run that holds each
+# answer back to drive the repeat above the recorded floor (the stand-in) takes that long to reach
+# the same count, and a budget that did not carry it would fail the run on its own injection.
 wait_for_consumer_frame_count() {
   local expected=$1
   local frames_file=${2:-$session_frames_file}
-  local deadline=$((SECONDS + 20))
+  local budget=$((20 + (expected * ${E2E_SESSION_ACK_DELAY_MS:-0}) / 1000))
+  local deadline=$((SECONDS + budget))
   local count
   while ((SECONDS < deadline)); do
     count="$(wc -l <"$frames_file")"
@@ -611,7 +647,7 @@ wait_for_consumer_frame_count() {
     fi
     sleep 0.25
   done
-  printf 'ERR: expected %s consumer frames in %s within 20 seconds.\n' "$expected" "$frames_file" >&2
+  printf 'ERR: expected %s consumer frames in %s within %s seconds.\n' "$expected" "$frames_file" "$budget" >&2
   return 1
 }
 
