@@ -1,7 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: these rows change selects and ranges and press chart segments, which user-event has no form for on this harness.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -266,7 +266,26 @@ async function renderSections(
   );
   const pipeline = spyOn(api, "getDeliveryPipeline").mockResolvedValue(PIPELINE);
   const measures = spyOn(api, "getDeliveryMeasures").mockResolvedValue(MEASURES);
-  spies.push(metrics, repos, delivery, pipeline, measures);
+  // The finished-issues grid joins its rows to the project's listing.
+  const listing = spyOn(api, "listIssues").mockResolvedValue([]);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const settings = spyOn(api, "listLegionSettings").mockResolvedValue([]);
+  spies.push(metrics, repos, delivery, pipeline, measures, listing, state, agents, settings);
+  // The unit DOM has no layout engine and the grid's rows are virtual: give its box a height.
+  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.testid === "issue-grid-scroll" ? 600 : (height?.get?.call(this) ?? 0);
+    },
+  });
+  spies.push({
+    mockRestore: () => {
+      if (height !== undefined)
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", height);
+    },
+  });
   const opened: string[] = [];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -277,7 +296,7 @@ async function renderSections(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await screen.findByRole("region", { name: "Where the finished issues' time went" });
+  await screen.findByRole("region", { name: "Time per phase" });
   return { measures, metrics, opened, pipeline };
 }
 
@@ -309,15 +328,23 @@ test("the sections come in one column, in the order a reader asks, each with its
     [...document.querySelectorAll("[data-legion-section]")].map((one) =>
       one.getAttribute("data-legion-section")
     )
-  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "delivery"]);
-  expect(headline("work_time")).toBe(
-    "2 issues finished · median 24.0h from first worker event to merge, less parked and queued time · p90 36.8h"
+  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "delivery", "finished"]);
+  // Each headline holds numbers with their units and nothing else.
+  expect(headline("work_time")).toBe("2 finished · median 24.0 h · p90 36.8 h");
+  expect(headline("phase_breakdown")).toBe(
+    "2 finished · 18.0 h in phases · 30.0 h roots waited on children"
   );
-  expect(headline("phase_breakdown")).toContain("each hour counted once");
-  expect(headline("phase_breakdown")).toContain("most of it planning: 56% (10.0h)");
-  expect(document.querySelector("[data-legion-children-wait]")?.textContent).toBe(
-    "Roots also waited 30.0h on their children, whose work is counted above."
-  );
+  // Each title is short, and carries its info button.
+  expect(
+    [...document.querySelectorAll("[data-legion-title]")].map((one) => one.firstChild?.textContent)
+  ).toEqual([
+    "Time per phase",
+    "Work time",
+    "Rework",
+    "Splitting",
+    "CI and deploys",
+    "Finished issues",
+  ]);
   expect(document.querySelector("[data-health-tile]")).toBeNull();
 });
 
@@ -329,37 +356,11 @@ test("the phase bar draws each part in the issues table's colour with its share"
     expect(part.className).toContain(one);
   }
   expect(part.textContent).toBe("Planning 56%");
-  expect(part.title).toBe("Planning: 10.0h, 56%");
+  expect(part.title).toBe("Planning: 10.0 h, 56%");
   expect(Number.parseFloat(part.style.flexBasis)).toBeCloseTo(55.56);
   expect(document.querySelector('[data-legion-phase-part="waiting_on_children"]')).toBeNull();
   expect(document.querySelector("[data-legion-phase-legend]")?.textContent).toContain(
-    "Planning10.0h56%"
-  );
-});
-
-test("the issues rank by work hours, or by the phase picked, and a key opens its timeline", async () => {
-  const { opened } = await renderSections(() => report());
-
-  const order = () =>
-    [...document.querySelectorAll("[data-legion-breakdown-issue]")].map((one) =>
-      one.getAttribute("data-legion-breakdown-issue")
-    );
-  expect(order()).toEqual(["ACME-6", "ACME-7"]);
-  expect(
-    document.querySelector('[data-legion-breakdown-issue="ACME-6"] [data-legion-breakdown-mostly]')
-      ?.textContent
-  ).toBe("mostly planning, 100% · also waited 30.0h on its children");
-  fireEvent.click(document.querySelector('[data-legion-phase-part="implementing"]') as HTMLElement);
-  expect(order()).toEqual(["ACME-7", "ACME-6"]);
-  fireEvent.click(screen.getByRole("button", { name: "ACME-6" }));
-  expect(opened).toEqual(["ACME-6"]);
-});
-
-test("with no observation, in a turn and CI wait are named once as not observed yet", async () => {
-  await renderSections(() => report());
-
-  expect(document.querySelector("[data-legion-turn-note]")?.textContent).toContain(
-    "Not observed yet: in a turn and CI wait."
+    "Planning10.0 h56%"
   );
 });
 
@@ -375,7 +376,7 @@ test("the work-time chart plots medians per day with axes and a legend; its tabl
     "hours, median",
     "hours, p90",
   ]);
-  const table = await openTable("Work time to merge");
+  const table = await openTable("Work time");
   expect(table.textContent).toContain("ACME-6");
   fireEvent.click(screen.getByRole("button", { name: "Show the issues of ACME-6" }));
   expect(opened).toEqual(["ACME-6"]);
@@ -389,7 +390,7 @@ test("splitting plots filings against finishes and lists the filings by class", 
     [...section.querySelectorAll('[data-chart-legend="window"]')].map((one) => one.textContent)
   ).toEqual(["Issues filed", "Issues finished"]);
   expect(section.querySelector("[data-legion-filing-classes]")?.textContent).toContain(
-    "In the filer's tree, while designing it1100%"
+    "Tree, at design1100%"
   );
 });
 
@@ -399,7 +400,7 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Roots" }));
-  await waitFor(() => expect(headline("work_time")).toStartWith("1 issues finished"));
+  await waitFor(() => expect(headline("work_time")).toStartWith("1 finished"));
   expect(metrics).toHaveBeenCalledWith(
     expect.objectContaining({ project: "ACME", scope: "roots" })
   );
@@ -411,15 +412,7 @@ test("a project whose repositories are not the deploy repository gets one line f
     repos: [mapping("ACME", "acme/widgets")],
   });
 
-  expect(
-    (
-      await waitFor(() => {
-        const line = document.querySelector('[data-legion-section="delivery"]');
-        if (line === null) throw new Error("no line");
-        return line;
-      })
-    ).textContent
-  ).toStartWith("CI and deploysNot measured for this project yet.");
+  await waitFor(() => expect(headline("delivery")).toBe("Not measured"));
   expect(document.querySelector('[data-legion-section="ci"]')).toBeNull();
   expect(pipeline).not.toHaveBeenCalled();
   expect(measures).not.toHaveBeenCalled();
@@ -436,7 +429,7 @@ test("a project that maps the deploy repository gets a CI and a deploys section"
   });
 
   await waitFor(() => expect(headline("deploys")).toContain("2.0 a day"));
-  expect(headline("ci")).toContain("75% succeeded");
+  expect(headline("ci")).toContain("75% passed");
   expect(pipeline).toHaveBeenCalledWith(
     expect.objectContaining({ repo: ["acme/deploy", "acme/widgets"] })
   );
@@ -469,21 +462,14 @@ test("when one tree holds a large share of the finished issues, a note under wor
     if (found === null) throw new Error("no note");
     return found;
   });
-  expect(note.textContent).toContain(
-    "2 of the 2 finished issues are in ACME-6's tree (A standing reviewer): median work time 1.2h against 16.6h for the rest."
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Leave out ACME-6's tree" }));
+  expect(note.textContent).toContain("Leave out ACME-6");
+  fireEvent.click(screen.getByRole("button", { name: "Leave out ACME-6" }));
   await waitFor(() =>
     expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }))
   );
   // The choice is in the address, so a shared link keeps it.
   expect(document.body.dataset.search).toBe("?exclude_tree=ACME-6");
-  await waitFor(() =>
-    expect(document.querySelector("[data-legion-tree-note]")?.textContent).toContain(
-      "Every number on this page leaves out ACME-6's tree."
-    )
-  );
-  expect(screen.getByRole("button", { name: "Count ACME-6's tree again" })).toBeDefined();
+  await screen.findByRole("button", { name: "Count ACME-6 again" });
 });
 
 test("a shared link with exclude_tree leaves that tree out from the first read", async () => {
@@ -493,5 +479,36 @@ test("a shared link with exclude_tree leaves that tree out from the first read",
   );
 
   expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }));
-  await screen.findByRole("button", { name: "Count ACME-6's tree again" });
+  await screen.findByRole("button", { name: "Count ACME-6 again" });
+});
+
+test("the finished issues are the Issues tab's table, with a phase bar on one scale or as shares", async () => {
+  await renderSections(() => report());
+
+  const table = screen.getByRole("region", { name: "Finished issues" });
+  await waitFor(() => expect(table.querySelector('[data-issue-row="ACME-6"]')).not.toBeNull());
+  // Most work time first; the key opens the issue's timeline.
+  expect(
+    [...table.querySelectorAll("[data-issue-row]")].map((one) => one.getAttribute("data-issue-row"))
+  ).toEqual(["ACME-6", "ACME-7"]);
+  expect(
+    table.querySelector('[data-issue-row="ACME-6"] [data-issue-link]')?.getAttribute("href")
+  ).toBe("/projects/ACME/legion/ACME-6");
+  const bar = (key: string) =>
+    table.querySelector(`[data-issue-row="${key}"] [data-phase-hours-bar] > span`) as HTMLElement;
+  // Hours: one scale, the longest issue full length.
+  expect(bar("ACME-6").style.width).toBe("100%");
+  expect(bar("ACME-7").style.width).toBe("80%");
+  fireEvent.click(within(table).getByRole("button", { name: "Share" }));
+  await waitFor(() => expect(bar("ACME-7").style.width).toBe("100%"));
+});
+
+test("a section's rule is behind its info button, not on the page", async () => {
+  await renderSections(() => report());
+
+  expect(document.body.textContent).not.toContain("first worker event");
+  fireEvent.click(screen.getByRole("button", { name: "About work time" }));
+  expect(document.body.textContent).toContain(
+    "Work time is the time from the first worker event to the merge. It does not include parked time or queued time."
+  );
 });

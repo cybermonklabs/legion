@@ -490,14 +490,13 @@ function filledSpan(series: readonly ChartSeries[]): { from: number; to: number;
   while (to > from && !filled(to - 1)) to--;
   if (from >= to) return { from: 0, to: rows.length, note: "" };
   const parts: string[] = [];
-  if (from > 0) parts.push(`${tickLabel(rows[0] ?? "")} to ${tickLabel(rows[from - 1] ?? "")}`);
+  if (from > 0) parts.push(`${tickLabel(rows[0] ?? "")}–${tickLabel(rows[from - 1] ?? "")}`);
   if (to < rows.length)
-    parts.push(`${tickLabel(rows[to] ?? "")} to ${tickLabel(rows[rows.length - 1] ?? "")}`);
+    parts.push(`${tickLabel(rows[to] ?? "")}–${tickLabel(rows[rows.length - 1] ?? "")}`);
   return {
     from,
     to,
-    note:
-      parts.length === 0 ? "" : `Nothing measured ${parts.join(" or ")}; those days are not drawn.`,
+    note: parts.length === 0 ? "" : `No data ${parts.join(", ")}.`,
   };
 }
 
@@ -761,7 +760,7 @@ function Graph({
   return (
     <div className="flex min-w-0 flex-col gap-1" data-chart-graph>
       {drawn.length === 0 ? (
-        <p className={noteClass}>Nothing measured in this range.</p>
+        <p className={noteClass}>No data in this range.</p>
       ) : (
         units.map((unit) => {
           const members = drawn.filter(({ one }) => (one.unit ?? one.label) === unit);
@@ -797,7 +796,7 @@ function Graph({
         )}
         {span.note === "" ? null : <span data-chart-trimmed>{span.note}</span>}
         {empty.length === 0 ? null : (
-          <span data-chart-empty>{`Nothing in this range: ${empty.join(", ")}.`}</span>
+          <span data-chart-empty>{`No data: ${empty.join(", ")}.`}</span>
         )}
       </div>
     </div>

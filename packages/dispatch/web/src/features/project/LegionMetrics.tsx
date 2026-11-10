@@ -16,17 +16,17 @@ import { DAY_MS, liveWindow, type WindowChoice } from "../delivery/lib/window";
  *  "152m"), whole hours from 100 on. */
 export const formatHours = (value: number): string =>
   value >= 100
-    ? `${Math.round(value).toLocaleString("en-US")}h`
+    ? `${Math.round(value).toLocaleString("en-US")} h`
     : value >= 1
-      ? `${value.toFixed(1)}h`
-      : formatDuration(value * 60);
+      ? `${value.toFixed(1)} h`
+      : `${Math.round(value * 60)} min`;
 
 /** The four classes of filing, in the order the splitting chart lists them. */
 const CLASSES: readonly { readonly key: LegionFilingClass; readonly label: string }[] = [
-  { key: "in_tree_at_design", label: "In the filer's tree, while designing it" },
-  { key: "in_tree_later", label: "In the filer's tree, later" },
-  { key: "out_of_tree", label: "Outside the filer's tree" },
-  { key: "by_the_controller", label: "By the controller" },
+  { key: "in_tree_at_design", label: "Tree, at design" },
+  { key: "in_tree_later", label: "Tree, later" },
+  { key: "out_of_tree", label: "Other tree" },
+  { key: "by_the_controller", label: "Controller" },
 ];
 
 /** The range the metrics route reads for a window choice: a custom range as named, and a preset
@@ -105,7 +105,7 @@ function closedByDay(report: LegionMetricsResponse): Map<string, LegionWorkTimeI
 }
 
 /** A value axis in hours: round numbers, each with its unit. */
-const hourTicks = (value: number): string => `${value.toLocaleString("en-US")}h`;
+const hourTicks = (value: number): string => `${value.toLocaleString("en-US")} h`;
 
 /** Work time's graph: each UTC day's median and p90 work time of the issues that closed that day.
  *  The p90 runs about six times the median, so each is drawn on its own value axis. */

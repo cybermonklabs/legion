@@ -327,7 +327,5 @@ test("a series with nothing in the range is left out and named once", () => {
   render(<Chart label="Time" range={WINDOW} series={[deploys, nothing]} />);
 
   expect(document.querySelector('[data-chart-series="In a turn"]')).toBeNull();
-  expect(document.querySelector("[data-chart-empty]")?.textContent).toBe(
-    "Nothing in this range: In a turn."
-  );
+  expect(document.querySelector("[data-chart-empty]")?.textContent).toBe("No data: In a turn.");
 });
