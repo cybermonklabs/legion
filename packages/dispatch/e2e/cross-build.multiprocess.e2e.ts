@@ -197,9 +197,13 @@ for (const pageProcess of dispatchProcesses) {
       const page = await context.newPage();
       const live = watchLiveSocket(page);
 
-      // The project's issue list, and the issue from it.
+      // The project's issue list, and the issue from it. Each build's list renders exactly one
+      // link carrying `data-issue-link` per issue, and that is what this names: a list row of a
+      // build before #2988 is itself that link, and the table of a build from #2988 on gives it
+      // the title cell beside a second link holding the key alone, which a name read of the key
+      // would match as well.
       await page.goto("/projects/XB/issues");
-      await page.getByRole("link", { name: new RegExp(issue.key) }).click();
+      await page.locator(`a[data-issue-link][href="/issues/${issue.key}"]`).click();
       await expect(documentEditor(page)).toContainText("Written before the edit.");
 
       // A comment, which the other build's server lists.
