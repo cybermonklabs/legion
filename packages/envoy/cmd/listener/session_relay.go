@@ -204,8 +204,8 @@ type sessionRelays struct {
 
 	// relays is each session's current relay; only the loop reads or writes it.
 	relays map[string]*relayRun
-	// listed holds, by session id, the consumers listed for the relays that gaining the durable
-	// binding starts together (listConsumers), until each relay's start takes its own; nil
+	// listed holds, by session id, the consumers listed for the relays that the receive term's
+	// start starts together (listConsumers), until each relay's start takes its own; nil
 	// otherwise. listedAt is the mark taken before that list. listRefusedLogged is set once a list
 	// refused for want of the grant is logged. Only the loop reads or writes them.
 	listed            map[string]*jetstream.ConsumerInfo
@@ -236,17 +236,17 @@ const (
 	// run or of the set leaves behind; the word keeps the log field readable rather than empty.
 	relayCancelUnknown relayCancelReason = iota
 	// relayCancelNotOurs: the session is no longer this listener's to relay, because it registered
-	// again through another listener, its entry left consumer delivery, or this task lost its
-	// machine's durable binding.
+	// again through another listener, its entry left consumer delivery, or this machine's receive
+	// term ended.
 	relayCancelNotOurs
 	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
 	// floor replaced this one.
 	relayCancelNewEpoch
 	// relayCancelListenerStopping: this listener is stopping, so every relay stops with it.
 	relayCancelListenerStopping
-	// relayCancelBindingLost: this task lost its machine's durable binding, so it relays nothing
-	// until it holds the binding again.
-	relayCancelBindingLost
+	// relayCancelTermEnded: this machine's receive term ended, so this task relays nothing until
+	// it serves a term again.
+	relayCancelTermEnded
 )
 
 // String is the word the log line carries for the reason.
@@ -258,8 +258,8 @@ func (r relayCancelReason) String() string {
 		return "new_epoch"
 	case relayCancelListenerStopping:
 		return "listener_stopping"
-	case relayCancelBindingLost:
-		return "binding_lost"
+	case relayCancelTermEnded:
+		return "term_ended"
 	default:
 		return "unknown"
 	}
@@ -565,7 +565,7 @@ func (m *sessionRelays) loop() {
 		m.eventsMu.Unlock()
 		if ownershipChanged {
 			if !m.owned.Load() {
-				m.stopAll(relayCancelBindingLost)
+				m.stopAll(relayCancelTermEnded)
 				continue
 			}
 			entries, err := m.sessions.List()
@@ -622,9 +622,9 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 	}
 }
 
-// stopAll stops every relay, each cancelled for reason: the listener is stopping, or the machine's
-// durable binding went. Each caller names its own, so the line a stopped run writes says which
-// happened.
+// stopAll stops every relay, each cancelled for reason: the listener is stopping, or the
+// machine's receive term ended. Each caller names its own, so the line a stopped run writes says
+// which happened.
 func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	for sessionID, run := range m.relays {
 		run.cancel(reason)
@@ -879,19 +879,16 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		return outcome
 	}
 	// A run whose context was cancelled lost its session: the session moved to another listener,
-	// the machine's durable binding was lost, the listener is stopping, or a new epoch replaced
-	// the run. Such a run returns everything it holds; one that ended for a reason of its own
+	// the machine's receive term ended, the listener is stopping, or a new epoch replaced the
+	// run. Such a run returns everything it holds; one that ended for a reason of its own
 	// leaves it where it is.
 	defer func() {
-		// The frames the run still has out are ended first, and the end a term's end earns is a
-		// settle: the stopped relay goes on hearing the session's replies for relaySettleGrace
-		// and acks each frame answered done inside it, so a frame the session took is never sent
-		// again (endFrames, session_relay_settle.go). What that grace leaves unanswered is in
-		// doubt, named by one line each, and handed back here to go to the server with the rest,
-		// so the successor is delivered it at once rather than after the consumer's ack wait.
-		// A frame leaves the run once and under framesMu (forget, onReply), so no frame is both
-		// acked and naked, and a message returned here reaches the session at most once more,
-		// under its own event id.
+		// The frames the run still has out are ended first: a term's end settles them and hands
+		// back what the settle leaves unanswered, any other end forgets them (endFrames, and
+		// settleStoppedFrames' doc in session_relay_settle.go for the rule). What comes back is
+		// named by one line each and goes to the server here with the rest, so the successor is
+		// delivered it at once rather than after the consumer's ack wait. A frame leaves the run
+		// once and under framesMu (forget, onReply), so no frame is both acked and naked.
 		dropped := m.endFrames(ctx, run)
 		if ctx.Err() == nil {
 			pull.Stop()
@@ -1038,7 +1035,7 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 // delivered again only once its ack wait has passed, or at the next restart at the ack floor.
 // That is right for a run that ended for a reason of its own; a run that was cancelled gives
 // what it dropped back to the server instead (release), and a run a term's end stopped settles
-// first (endFrames).
+// first (settleStoppedFrames, whose doc has that rule).
 //
 // A frame leaves the run here or at the done or nak that ends it (onReply), under framesMu and
 // once, so a frame this returns has not been acked and will not be.
@@ -1068,8 +1065,8 @@ func (m *sessionRelays) outstanding(run *relayRun) int {
 // release returns the message of every frame in dropped to the server, so the session's next
 // owner is delivered them at once rather than after their ack wait (bus.SessionConsumerAckWait).
 // dropped is what ending the run's frames left (endFrames): everything the run had out, or, on a
-// term's end, what the settle grace ended with the session's reply still out. A nak is safe to
-// repeat as far as the server goes, since the session consumer sets MaxDeliver = -1
+// term's end, what the settle left unanswered (settleStoppedFrames, whose doc has that rule). A
+// nak is safe to repeat as far as the server goes, since the session consumer sets MaxDeliver = -1
 // (internal/bus/session_consumers.go:471): a message returned here spends no server redelivery
 // budget. Each delivery still raises the message's delivery count, which the session's client
 // counts toward the attempts it allows a frame its host fails (RELAY_ATTEMPTS_BEFORE_FAILED,

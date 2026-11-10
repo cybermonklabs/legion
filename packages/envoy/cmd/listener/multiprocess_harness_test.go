@@ -1146,8 +1146,7 @@ func (p *mpPublisher) quiesce(t *testing.T, serving *mpNATSSession, fault func()
 		if !serving.tookAll(sent) {
 			return false
 		}
-		info, err := p.client.JS().ConsumerInfo(bus.Stream, p.consumer)
-		if err != nil || info.NumAckPending != 0 {
+		if p.ackPending() != 0 {
 			return false
 		}
 		for _, sessionID := range sessions {
@@ -1525,7 +1524,7 @@ func (j *mpJournal) answers(receipts []mpReceipt) string {
 	}
 	answers := make([]string, len(receipts))
 	for index, receipt := range receipts {
-		answers[index] = fmt.Sprintf("took it %s (%s)", j.into(receipt.at), receipt.answer)
+		answers[index] = fmt.Sprintf("answered %s (%s)", j.into(receipt.at), receipt.answer)
 	}
 	return strings.Join(answers, ", ")
 }

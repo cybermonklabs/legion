@@ -21,11 +21,8 @@ const (
 	// done is in doubt (relayFrameInDoubtLine), whether or not the session answered it received:
 	// received says the client decoded the frame, not that its host wrote the message, so only
 	// done says the session took it and no done is coming. Each frame left in doubt goes back to
-	// the server at once, with the rest of what the run held (sessionRelays.release), so the
-	// successor is delivered it as soon as it pulls rather than after the consumer's ack wait.
-	// The successor then sends again every frame above the ack floor, each under its own event
-	// id: the one in doubt, and any the session answered done above a frame still held (the
-	// README's "When a session can see a message twice").
+	// the server at once, with the rest of what the run held (settleStoppedFrames, whose doc has
+	// that rule).
 	//
 	// The pod taking a released holder's lease over waits relayFormerSettle, this grace and a
 	// margin, before it restarts a session's consumer at its ack floor (sessionRelays.relay),
@@ -50,10 +47,9 @@ const (
 )
 
 // endFrames ends the frames one pull left outstanding and hands them back to its caller. A relay
-// the term's end stopped settles them first (settleStoppedFrames); any other end - a retry, a
-// pause, a reconnect - forgets them at once, since the relay itself goes on and restarts at the
-// session's ack floor. A cancelled run gives what this returns back to the server
-// (sessionRelays.release); one that ended for a reason of its own leaves it to its ack wait.
+// the term's end stopped settles them first and hands back what the settle leaves unanswered
+// (settleStoppedFrames, whose doc has that rule); any other end - a retry, a pause, a reconnect -
+// forgets them at once, since the relay itself goes on and restarts at the session's ack floor.
 func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) []*relayFrame {
 	if ctx.Err() != nil && !m.owned.Load() {
 		return m.settleStoppedFrames(run)
@@ -71,12 +67,13 @@ func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) []*relayFr
 //
 // It takes those frames off the run and hands them back, for the run to return to the server
 // (sessionRelays.release): the successor is delivered each of them at once rather than after the
-// consumer's ack wait, and each under its own event id, so a message in doubt is seen at most
-// once more (the README's "When a session can see a message twice"). A frame answered done
-// inside the grace left the run at that answer (onReply), so it is acked and not among these:
-// no frame is both acked and naked. The pod taking over waits relayFormerSettle, which is this
-// grace and a margin, before it restarts the consumer, so it pulls only once the grace has
-// ended and what the grace returned is waiting for it.
+// consumer's ack wait. A frame answered done inside the grace left the run at that answer
+// (onReply), so it is acked and not among these: no frame is both acked and naked. The pod
+// taking over waits relayFormerSettle, which is this grace and a margin, before it restarts the
+// consumer, so it pulls only once the grace has ended and what the grace returned is waiting
+// for it. The successor then sends again every frame above its ack floor, the one in doubt and
+// any the session answered done above a frame still held, each under its own event id; see
+// cmd/listener/README.md, "When a session can see a message twice".
 func (m *sessionRelays) settleStoppedFrames(run *relayRun) []*relayFrame {
 	deadline := time.Now().Add(relaySettleGrace)
 	for m.outstanding(run) > 0 && time.Now().Before(deadline) {

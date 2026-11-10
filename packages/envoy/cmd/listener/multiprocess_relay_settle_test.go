@@ -351,8 +351,8 @@ func TestTwoPodsARelayedFrameAnsweredInsideTheGraceOfAReceiveLostReleaseIsTakenO
 // whenever the stopping pod logged no in-doubt line for the frame, the session must have taken
 // it exactly once and the pod's hand-over line must be the whole one: INFO, nothing returned.
 // Where the grace ended with the session's reply still out, the frame is in doubt, goes back
-// with the rest, and reaches the session at most once more, under its own event id, as the rows
-// above hold.
+// with the rest, and the successor sends it again under its own event id, as the rows above
+// hold.
 //
 // Giving the settled frames back as well fails it: the relay naks a message it has already
 // acked, which nats.go refuses (`nats: message was already acknowledged`), so the run writes the

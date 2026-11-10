@@ -1297,8 +1297,8 @@ func main() {
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
 	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role messages a claim's drain dropped unforwarded, the stream having held them longer than the keep window")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
-	// The CI summary loop runs only beside the GitHub webhook route (Phase 6b2), so only a listener
-	// that mounts it carries the gauge the loop sets.
+	// The CI summary loop runs only beside the GitHub webhook route (holderLoops starts it), so
+	// only a listener that mounts it carries the gauge the loop sets.
 	var ciLegacyHeld *metrics.Gauge
 	if webhookCfg.GitHub != nil {
 		ciLegacyHeld = met.NewGauge("envoy_ci_legacy_records_held", "CI records a head-gated listener left unsettled that the summary loop's last pass held back")

@@ -673,7 +673,10 @@ func TestAPullEndsAtOnceWhenItsConnectionReconnects(t *testing.T) {
 // overlapping set reaching the server costs this repository no duplicate delivery on 2.15; what
 // it would cost is a consumer 2.10 refuses to create, and a filter set larger than the subjects
 // it stands for. Ensure asks for neither: it reduces the set first (ReduceFilterSubjects), which
-// this row keeps pinned on the server that no longer enforces it.
+// this row keeps pinned. The server's refusal is narrowed rather than gone - v2.10.29 refused any
+// collision (server/consumer.go:611, SubjectsCollide), v2.15.1 refuses one filter that is a
+// subset of another (server/consumer.go:909, subjectIsSubsetMatch) - so the reduction is still
+// what keeps the sets this code asks for past it.
 func TestTheServerTakesOverlappingFiltersAndEnsureReducesThemAnyway(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()

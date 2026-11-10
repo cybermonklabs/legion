@@ -24,8 +24,8 @@ import (
 )
 
 // relayRig is a listener's /v1 routes over the in-process server, its session consumers relayed as
-// main relays them, by a listener holding its machine's durable binding (relays, which a test that
-// orders the paths itself hands the binding to when it chooses).
+// main relays them, by a listener serving its machine's receive term (relays, which a test that
+// orders the paths itself gives the term to when it chooses).
 type relayRig struct {
 	*sessionConsumerRig
 	relays *sessionRelays
@@ -51,8 +51,8 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 	return rig
 }
 
-// newRelayRigUnowned bounds the same backoff, for a task that does not hold its machine's durable
-// binding yet: it relays nothing, and no relay starts, until the test calls
+// newRelayRigUnowned bounds the same backoff, for a task that does not serve its machine's receive
+// term yet: it relays nothing, and no relay starts, until the test calls
 // rig.relays.setOwned(true). A test that must run the durable path before any relay orders them
 // this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
@@ -73,7 +73,7 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 		defer cancel()
 		relays.stop(ctx)
 	})
-	// Set before the first relay starts, which gaining the binding is what does.
+	// Set before the first relay starts, which the term's start is what does.
 	relays.pauseFirst, relays.pauseMax = first, max
 	return &relayRig{sessionConsumerRig: rig, relays: relays, url: url}
 }
@@ -682,7 +682,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
-	// Losing the machine's durable binding cancels the run that holds the message
+	// The machine's receive term ending cancels the run that holds the message
 	// (sessionRelays.stopAll). A session moving to another listener cancels it through
 	// sessionRelays.apply instead; both end in the run's one deferred release, which is what this
 	// row exercises. The cancelled run returns the frame it holds, so the session's next owner --
@@ -810,7 +810,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
 	defer pull.Stop()
-	// Losing the machine's durable binding cancels the run that holds the frames
+	// The machine's receive term ending cancels the run that holds the frames
 	// (sessionRelays.stopAll), as a session moving to another listener does through
 	// sessionRelays.apply; both end in the run's one deferred hand-over, which is what this row
 	// exercises.
