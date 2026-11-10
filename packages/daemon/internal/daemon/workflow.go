@@ -62,9 +62,14 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
-	conn            *nats.Conn
-	consumers       *intake.Consumers
-	outbox          *outbox
+	// conn is the Envoy NATS connection, held atomically because two goroutines reach it: connect
+	// writes it on the boot's goroutine, and run reads it on its own, after awaitStop has returned,
+	// to close it at the stop's budget (closeNATS). internal/daemon runs under the race detector in
+	// CI (.github/workflows/ci.yaml, the step "Test the concurrent packages under the race
+	// detector").
+	conn      atomic.Pointer[nats.Conn]
+	consumers *intake.Consumers
+	outbox    *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
@@ -460,11 +465,11 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}
-	w.conn = conn
+	w.conn.Store(conn)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		conn.Close()
-		w.conn = nil
+		w.conn.Store(nil)
 		return fmt.Errorf("open Envoy JetStream: %w", natsauth.WithLastError(err, conn))
 	}
 	w.log.Info("legion workflow boot stage", "stage", "intake")
@@ -472,7 +477,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
 		conn.Close()
-		w.conn = nil
+		w.conn.Store(nil)
 		return err
 	}
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
@@ -483,7 +488,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	})
 	if err != nil {
 		conn.Close()
-		w.conn = nil
+		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -1046,7 +1051,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	group.Go(func() error {
 		if err := w.consumers.Run(running, w.handlers...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).
-			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn))
+			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
 		}
 		return nil
 	})
@@ -1088,7 +1093,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		// A notice the listener accepted but could not forward is queued again (outbox.rehold).
-		sub, err := subscribeNoticeExceptions(w.conn, func(data []byte) {
+		sub, err := subscribeNoticeExceptions(w.conn.Load(), func(data []byte) {
 			if err := w.outbox.rehold(running, data); err != nil {
 				w.log.Error("role-lane exception not re-held", "error", err)
 			}
@@ -1262,7 +1267,7 @@ type connStatus interface {
 // instead of just the one disconnect line a reconnect that keeps failing never reaches a
 // reconnected or a closed line to follow.
 func (w *workflowRuntime) reconnectWatchdog(ctx context.Context) {
-	w.reconnectWatchdogWith(ctx, w.conn)
+	w.reconnectWatchdogWith(ctx, w.conn.Load())
 }
 
 func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connStatus) {
@@ -1442,16 +1447,27 @@ func (w *workflowRuntime) releaseReadied(ctx context.Context) {
 	}
 }
 
-// stop closes the workflow's connections and ends every token_command its token manager still runs
-// (appauth.Manager.Close), waiting for each to exit, so a command waiting on a person's approval
-// does not outlive the daemon.
+// closeNATS closes the workflow's Envoy NATS connection and nothing else, so run can close it at
+// the stop's budget without waiting for the rest of stop. It is safe on a nil runtime, as stop is,
+// and safe to call more than once and from any goroutine: nats.Conn.Close is idempotent, and the
+// connection is read through an atomic pointer.
+func (w *workflowRuntime) closeNATS() {
+	if w == nil {
+		return
+	}
+	if conn := w.conn.Load(); conn != nil {
+		conn.Close()
+	}
+}
+
+// stop closes the workflow's connections (closeNATS) and ends every token_command its token
+// manager still runs (appauth.Manager.Close), waiting for each to exit, so a command waiting on a
+// person's approval does not outlive the daemon.
 func (w *workflowRuntime) stop() {
 	if w == nil {
 		return
 	}
-	if w.conn != nil {
-		w.conn.Close()
-	}
+	w.closeNATS()
 	if closer, ok := w.tokens.(interface{ Close() }); ok {
 		closer.Close()
 	}

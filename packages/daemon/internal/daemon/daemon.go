@@ -514,6 +514,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		lived <- err
 	}()
 	liveErr := s.awaitStop(lived, failed, bootID)
+	// awaitStop can return through its deadline arm while the goroutine above is still inside
+	// supervision.stop, whose wait is unbounded (stop's own comment), so the connection the stop
+	// asked workflowRuntime.stop to close is still open when run returns, and the daemon dials
+	// under natsauth.ReconnectForever, which never gives a connection up by itself. Only the
+	// connection is closed here, not the whole of workflowRuntime.stop: that also closes the token
+	// manager, whose Close waits for every running token_command with no bound
+	// (internal/appauth/tokencommand.go, Manager.Close), while the daemon's stop contract is that
+	// it returns at most stopBudget+stampTimeout+storeCloseTimeout (22 s) after its stop begins,
+	// inside a pod's 30 s grace. The close is harmless when the goroutine later reaches
+	// workflowRuntime.stop, because closing the connection is idempotent.
+	workflow.closeNATS()
 
 	// The stop cancelled store queries in flight, and a pooled connection one of them ran on can
 	// still carry the read deadline that cancellation set, which failed the stamp with `stop boot N:
