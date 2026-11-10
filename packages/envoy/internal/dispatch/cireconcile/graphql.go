@@ -17,7 +17,7 @@ const (
 	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch maps: the
 	// largest head Legion has run carries 32 runs over 7 suites, and twenty of those is about
 	// 200 KiB of JSON. A page that does come back past the limit is read over REST instead
-	// (walk.restOfRepository), so the size is a budget rather than a promise.
+	// (walk.restPage), so the size is a budget rather than a promise.
 	pullsPerQuery = 20
 
 	// suitesPerQuery and runsPerQuery are the check suites of one head, and the check runs of
@@ -63,13 +63,15 @@ const (
 //
 // `rateLimit` costs nothing and is charged nothing, and is read in the same answer rather than
 // in a query of its own: the pass's line reports the points its queries spent, and a point count
-// read a query later would be a different query's.
+// read a query later would be a different query's. The cost is the whole of what it asks for,
+// since that is the whole of what the pass reads: what the budget has left and when it resets
+// are GitHub's to answer when it refuses a query (githubapp.GraphQLRateLimit).
 //
 // The three page sizes are the constants above, written into the document once each by
 // Sprintf: a GraphQL document takes its `first` as a literal, and a literal spelled out here
 // beside the constant the pass reads its own answers by is a literal that can disagree with it.
 var headsQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $after: String) {
-  rateLimit { cost remaining resetAt }
+  rateLimit { cost }
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: %d, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
@@ -258,7 +260,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 			// name it to read over REST on its own. This page is a page the query could not
 			// answer, exactly as a refusal of the repository is, and its heads are read over
 			// REST from the listing, which answers every number and every head commit
-			// (walk.restOfRepository). The alternative is a head no read of either kind reaches
+			// (walk.restPage). The alternative is a head no read of either kind reaches
 			// and no line ever names.
 			return page, fmt.Errorf("GitHub answered no readable pull request at node %d of the page for %s/%s: %s",
 				index, repository.owner, repository.repo, errorText(answer.Errors))
@@ -317,11 +319,11 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 		}
 		runs += len(suite.CheckRuns.Nodes)
 	}
-	// The loop above walks every suite and every run of the head to validate it, so what the
-	// two slices come to is known before either is built: a head of 7 suites and 32 runs grew
-	// them through a dozen allocations and as many copies, once for every head of every page.
-	// A head GitHub answered no object for keeps both slices as they are, nil, which is what
-	// such a head carries.
+	// The loop above walks every suite and every run of the head to validate it, so each slice
+	// is made at the size it will hold: a head of 7 suites and 32 runs is two allocations and
+	// no copy, where an appended slice takes a dozen of each for every head of every page. A
+	// head GitHub answered no object for keeps both slices nil, which is what such a head
+	// carries.
 	if len(commit.CheckSuites.Nodes) > 0 {
 		head.suites = make([]object, 0, len(commit.CheckSuites.Nodes))
 	}

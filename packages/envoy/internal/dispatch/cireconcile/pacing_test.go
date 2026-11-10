@@ -708,6 +708,117 @@ func TestAPassCutShortInsideAPageStopsAtTheHeadItWasWriting(t *testing.T) {
 	}
 }
 
+// The bound falling during the writes of a page's last head is the pass ending there, as it is
+// at any other head of the page. Those writes go to a context that is already dead: they fail,
+// the pass drops what it held of the head, and the head is read again -- by the next pass,
+// which the cursor leaves standing at it, rather than by the next cycle, a whole sweep of the
+// order away. The pass's own line and its row say the bound ended it, where a pass that read on
+// to the end of the order would record that it completed.
+func TestABoundThatFallsOnAPagesLastHeadEndsThePassThere(t *testing.T) {
+	// The second mapped repository, which sorts after the first: the pass reaches it only once
+	// it has read the first whole, so a cursor left in the first repository is a cursor the
+	// next pass takes up there.
+	const (
+		laterRow        = "acme/zinc"
+		laterRepository = "Acme/Zinc"
+		laterID         = 4343
+	)
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.mapRepository(laterRow)
+	h.github.setRepository(laterRow, laterRepository, laterID)
+	// One page each, so the bound falls on the last head of the first repository's only page.
+	first, later := heads(3), heads(2)
+	h.listHeads(first...)
+	for _, pull := range first {
+		h.github.setCheckRuns(gitHubRepository, pull.sha,
+			atHead(gitHubRepository, pull.sha, checkRun(100+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+		)
+	}
+	h.github.setPullRequests(laterRepository, later...)
+	for _, pull := range later {
+		h.github.setCheckRuns(laterRepository, pull.sha,
+			atHead(laterRepository, pull.sha, checkRun(200+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:02:00Z")),
+		)
+	}
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+	h.reconciler.PassTimeout = 2 * time.Second
+	// The bucket takes the third head's write -- the last of the first repository's page --
+	// past what the pass has left.
+	h.holdWriteUntilTheBoundFalls(3)
+
+	h.pass()
+
+	line := h.passLine()
+	if line["deadline_reached"] != true {
+		t.Fatalf("the pass reports deadline_reached = %v, want true: its bound fell on the page's last head: %v", line["deadline_reached"], line)
+	}
+	pass := recent(t, h.pool)[0]
+	if pass.State != outcomeDeadline {
+		t.Fatalf("the pass recorded %q, want %q: the bound ended it on the last head of the page: %+v", pass.State, outcomeDeadline, pass)
+	}
+	if pass.Cursor == nil || pass.Cursor.Repository != rowRepository || pass.Cursor.Number != 3 {
+		t.Fatalf("the pass's cursor is %+v, want the head it was writing when the bound fell", pass.Cursor)
+	}
+	if state := h.recordOf(head(3), 3); state != nil {
+		t.Fatalf("the head the bound fell on has a record: its writes went to a dead context, %+v", state.Checks)
+	}
+
+	// The pass after it reads that head, rather than the repositories after it alone.
+	h.reconciler.PassTimeout = 0
+
+	h.pass()
+
+	state := h.recordOf(head(3), 3)
+	if state == nil {
+		t.Fatal("the pass after the bound recorded nothing for the head the cursor named: it waits a whole cycle for the head the pass before it failed to write")
+	}
+	if _, held := state.Checks["ci-ok"]; !held {
+		t.Errorf("the record of that head holds %+v, want the run the cut pass never wrote", state.Checks)
+	}
+	if h.passLine()["cycle_complete"] != true {
+		t.Errorf("the pass after the bound did not close the cycle: %v", h.passLine())
+	}
+}
+
+// The same bound on the last head of the last repository of the order. Nothing follows that
+// head, so a pass with no check after its writes reads the order out and records that it
+// completed -- and closes the cycle, which forgets nothing it should but leaves the head whose
+// writes failed to the cycle after.
+func TestABoundThatFallsOnTheLastHeadOfTheOrderIsNoCompletePass(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	all := heads(3)
+	h.listHeads(all...)
+	for _, pull := range all {
+		h.github.setCheckRuns(gitHubRepository, pull.sha,
+			atHead(gitHubRepository, pull.sha, checkRun(100+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+		)
+	}
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+	h.reconciler.PassTimeout = 2 * time.Second
+	h.holdWriteUntilTheBoundFalls(len(all))
+
+	h.pass()
+
+	line := h.passLine()
+	if line["deadline_reached"] != true {
+		t.Fatalf("the pass reports deadline_reached = %v, want true: its own bound ended it on the last head of the order: %v", line["deadline_reached"], line)
+	}
+	if line["cycle_complete"] != false {
+		t.Errorf("the pass reports cycle_complete = %v, want false: the head it was writing was never read whole: %v", line["cycle_complete"], line)
+	}
+	pass := recent(t, h.pool)[0]
+	if pass.State != outcomeDeadline {
+		t.Fatalf("the pass recorded %q, want %q: a pass its bound cut short is no pass that finished: %+v", pass.State, outcomeDeadline, pass)
+	}
+	if pass.Cursor == nil || pass.Cursor.Number != 3 {
+		t.Fatalf("the pass's cursor is %+v, want the head it was writing when the bound fell", pass.Cursor)
+	}
+}
+
 // The heads a repository is known to have are counted once a cycle, however many passes the
 // cycle takes. A page two passes share -- the first cut short inside it, the second taking it
 // up at the cursor -- is one page of heads, and a count that both passes added would have the
@@ -749,5 +860,63 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 	if got := number(t, line, "heads_known"); got != len(all) {
 		t.Fatalf("the cycle reports %d heads known, want the %d open heads of the repository: the page the two passes shared was counted twice: %v",
 			got, len(all), line)
+	}
+}
+
+// A cycle that reads a repository both ways counts each of its pages once. A page is counted by
+// the pass that first lists it, and that rule is the same whether the page came from a query or
+// from the REST listing a refused query sends the pass to: a cycle that counted the heads of
+// one page twice would have the line report more heads open than the repository has, which is
+// the number an operator reads the pass's progress against, and a cycle that counted none of
+// them would report fewer. Every head is read once too, however the passes of the cycle split
+// the pages between them.
+func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	// Forty-five heads are three pages of a query, and three windows of the REST listing.
+	all := heads(45)
+	h.listHeads(all...)
+	for _, pull := range all {
+		h.github.setCheckRuns(gitHubRepository, pull.sha,
+			atHead(gitHubRepository, pull.sha, checkRun(100+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+		)
+	}
+	// GitHub will not answer the query for the repository's first page, so the first pass reads
+	// it and the pages after it from the REST listing instead.
+	h.github.refusePage(gitHubRepository, 0)
+	h.reconciler.PassTimeout = 3 * time.Second
+	// GitHub is slower than the first pass has left at the second head of the second page.
+	h.github.stall(runsOf(head(22)), time.Minute)
+
+	h.pass()
+
+	first := h.passLine()
+	if first["deadline_reached"] != true {
+		t.Fatalf("the first pass reports deadline_reached = %v, want true: %v", first["deadline_reached"], first)
+	}
+	if got := number(t, first, "heads_known"); got > len(all) {
+		t.Fatalf("the first pass reports %d heads known, more than the %d the repository has: %v", got, len(all), first)
+	}
+
+	// GitHub answers that page's query again, and nothing stalls: the pass after the bound
+	// reads the repository out, whichever way it reaches each page.
+	h.github.stall(runsOf(head(22)), 0)
+	h.github.allowPage(gitHubRepository, 0)
+	h.reconciler.PassTimeout = 0
+
+	h.pass()
+
+	line := h.passLine()
+	if line["cycle_complete"] != true {
+		t.Fatalf("the second pass did not reach the end of the order: %v", line)
+	}
+	if got := number(t, line, "heads_known"); got != len(all) {
+		t.Fatalf("the cycle reports %d heads known, want the %d open heads of the repository: a page the two passes read was counted twice, or none of them: %v",
+			got, len(all), line)
+	}
+	for _, pull := range all {
+		if state := h.recordOf(pull, pull.number); state == nil {
+			t.Fatalf("head %d has no record: the cycle left a head behind where the two passes met", pull.number)
+		}
 	}
 }

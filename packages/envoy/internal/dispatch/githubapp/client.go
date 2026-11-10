@@ -264,14 +264,19 @@ func InstallationScope(id int64) string { return "installation:" + strconv.Forma
 // (GraphQLRateLimit).
 //
 // It is one scope for the App rather than one for each installation, where the REST scopes are
-// two. A limit on GraphQL must leave every REST call going -- a GraphQL budget spent says
-// nothing about the REST budget of the installation whose token spent it, and the Dispatch
-// processes read far more over REST than they query -- which is what a scope of its own buys.
-// Within GraphQL the App is held whole: the secondary limits a batched read trips (points a
-// minute, concurrent queries) are the App's rather than one installation's, GitHub warns that
-// requests sent inside a limit may get an integration banned, and a process that meets the
-// limit under one installation can name this scope before it has a token for any of them, so
-// every process stops querying at once rather than each finding the limit for itself.
+// two, because the budget it stands for is the App's: GitHub charges the App's GraphQL points
+// whichever installation's token spends them. A primary limit on it leaves every REST call
+// going -- a spent GraphQL budget says nothing about the REST budget of the installation whose
+// token spent it, and the Dispatch processes read far more over REST than they query -- which
+// is what a scope of its own buys, and it stops every process's queries at once rather than
+// leaving each to find the limit for itself. A process that meets it can name this scope before
+// it holds a token for any installation.
+//
+// A secondary limit is not recorded here. GitHub shares its secondary limits between REST and
+// GraphQL for the installation whose token met one, so a query that meets one is recorded under
+// that installation's scope, where it holds that installation's REST reads as well as its
+// queries (recordGraphQLLimit). Only a limit met with a token this client did not mint, which
+// names no installation, falls back to this scope.
 const GraphQLScope = "graphql"
 
 // Option configures a Client New builds.

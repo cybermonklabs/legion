@@ -21,11 +21,17 @@ import (
 // after is GitHub's own cursor for the page -- the end cursor of the page before it, empty for
 // a repository's first page -- which is the only way to ask GitHub for a page again, and page
 // is that page's position in the repository, counting from zero, which is what names the heads
-// of it in a REST listing when the query for it is refused. number is the first head of the
-// page the pass did not finish, and zero is the whole page: a head below it was read by the
-// pass that left the cursor. counted says the heads of that page have already been counted
-// among the repository's known heads: the pass taking the cursor up reads the page again, and
-// counting it again would have the line report more open heads than the repository has.
+// of it in a REST listing when the query for it is refused. rest says the page is named by that
+// position alone: GitHub gave the pass that fell back to the listing no cursor for the pages
+// after the one it refused, so the pass taking this cursor up reads the repository on from the
+// listing rather than asking a query for a page it holds no cursor for. The cycle after it
+// begins the repository at its first page and queries it again.
+//
+// number is the first head of the page the pass did not finish, and zero is the whole page: a
+// head below it was read by the pass that left the cursor. counted says the heads of that page
+// have already been counted among the repository's known heads: the pass taking the cursor up
+// reads the page again, and counting it again would have the line report more open heads than
+// the repository has. It is the one page it names, whichever way that page was read.
 //
 // It lives in this process's memory beside the ETags the Reconciler keeps, and is written
 // nowhere. A restart loses it and deliberately begins a new cycle at the first head of the
@@ -38,6 +44,7 @@ type cursor struct {
 	page       int
 	number     int64
 	counted    bool
+	rest       bool
 }
 
 // ending is a walk of the order that stopped before the end of what it was given: where the
@@ -64,6 +71,11 @@ type walk struct {
 	// reading, and the head of that page it is at. It is what the next pass takes up, so it
 	// moves only as the walk finishes with a head or a page.
 	here cursor
+	// listing is this repository's open pull requests as one REST listing, read once for the
+	// walk and only by a walk that fell back to it, which is a walk GitHub refused a query of
+	// (walk.restPage). Its pages are windows of it, so the listing is read once however many
+	// pages the walk takes from it.
+	listing []githubapp.PullRequestHead
 }
 
 // cut is the ending the pass's own bound, or its caller's cancellation, makes; stopped is the
@@ -231,7 +243,11 @@ func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cu
 //
 // The pages are GitHub's own: a query answers twenty open pull requests and the cursor the page
 // after them begins at, so the pass asks for one page, reads its heads, and asks for the next
-// with that cursor until GitHub says there is no next page.
+// with that cursor until GitHub says there is no next page. A page GitHub will not answer a
+// query for comes from the repository's REST listing instead, windowed into pages of that same
+// twenty (walk.page), so the two ways of reading a repository share this one loop: one rule for
+// what a page adds to the heads the repository is known to have, one check of the pass's bound
+// between a page's heads, and one cursor advance.
 func (w *walk) sweep(ctx context.Context) *ending {
 	r, c := w.r, w.c
 	if _, held := r.listed[w.repository.id]; !held || (w.here.page == 0 && !w.here.counted) {
@@ -244,28 +260,9 @@ func (w *walk) sweep(ctx context.Context) *ending {
 		if r.cutShort(ctx, c) {
 			return w.cut()
 		}
-		if at := r.limited(ctx, w.repository.queryScopes...); at != nil {
-			return w.stopped(at)
-		}
-		page, err := r.query(ctx, w.repository, w.here.after, c)
-		if at := stopAt(err, githubapp.GraphQLScope); at != nil {
-			// A rate limit is the pass ending, never a page to read another way: reading this
-			// page's heads over REST would be exactly the requests GitHub has just asked this
-			// App to stop sending.
-			return w.stopped(at)
-		}
-		if err != nil {
-			if r.cutShort(ctx, c) {
-				// The pass's own ending killed the query, which says nothing about the page.
-				return w.cut()
-			}
-			// GitHub refused the query, gave up on it, or answered past what githubapp reads.
-			// The cursor of the page after this one comes only in the answer the pass did not
-			// get, so there is no next page to ask for: the rest of this repository, from this
-			// page's own heads onwards, is read over REST.
-			r.Logger.Warn("ci reconcile read a repository over REST: GitHub did not answer the query",
-				"repository", w.repository.owner+"/"+w.repository.repo, "page", w.here.page, "error", err)
-			return w.restOfRepository(ctx)
+		page, end, ok := w.page(ctx)
+		if !ok {
+			return end
 		}
 		if !w.here.counted {
 			// The heads of a page are counted when a pass of this cycle first lists them and
@@ -294,12 +291,106 @@ func (w *walk) sweep(ctx context.Context) *ending {
 				return end
 			}
 		}
+		// The bound can fall during the writes of the page's last head, which no check above
+		// sees: the loop's own check runs before a head, and the one at the top of this loop is
+		// reached only by a pass that goes on to another page. Without it the cursor would move
+		// past a head whose writes the dead context failed -- a head the next pass skips and
+		// the cycle after it reads -- and a pass cut on the last head of the order would record
+		// that it completed.
+		if r.cutShort(ctx, c) {
+			return w.cut()
+		}
 		if !page.hasNextPage {
 			return nil
 		}
-		w.here = cursor{repository: w.here.repository, after: page.endCursor, page: w.here.page + 1}
+		w.here = cursor{repository: w.here.repository, after: page.endCursor, page: w.here.page + 1, rest: w.here.rest}
 	}
 }
+
+// page is the page of open pull requests the walk stands at. ok is false for a walk that reads
+// this repository no further, and the ending beside it is then the pass's own -- a rate limit,
+// or its bound -- or nil for a repository GitHub would answer neither a query nor a listing
+// for, which the pass passes over having said so once.
+//
+// It comes from the query while GitHub answers the queries, and from the repository's REST
+// listing from the page GitHub refuses a query for onwards (restPage). The pass reads from
+// there to the end of the repository rather than that page alone, since the pages after a page
+// it did not get are pages it cannot ask for.
+func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
+	r, c := w.r, w.c
+	if w.here.rest {
+		// A pass before this one fell back to the listing within this repository and was cut
+		// short there, and the cursor it left names its page by position alone (cursor.rest).
+		return w.restPage(ctx)
+	}
+	if at := r.limited(ctx, w.repository.queryScopes...); at != nil {
+		return queryPage{}, w.stopped(at), false
+	}
+	page, err := r.query(ctx, w.repository, w.here.after, c)
+	if at := stopAt(err, githubapp.GraphQLScope); at != nil {
+		// A rate limit is the pass ending, never a page to read another way: reading this
+		// page's heads over REST would be exactly the requests GitHub has just asked this
+		// App to stop sending.
+		return queryPage{}, w.stopped(at), false
+	}
+	if err != nil {
+		if r.cutShort(ctx, c) {
+			// The pass's own ending killed the query, which says nothing about the page.
+			return queryPage{}, w.cut(), false
+		}
+		// GitHub refused the query, gave up on it, or answered past what githubapp reads.
+		// The cursor of the page after this one comes only in the answer the pass did not
+		// get, so there is no next page to ask for: this page and the pages after it are read
+		// from the listing instead, and the cursor says so from here on.
+		r.Logger.Warn("ci reconcile read a repository over REST: GitHub did not answer the query",
+			"repository", w.repository.owner+"/"+w.repository.repo, "page", w.here.page, "error", err)
+		w.here.rest = true
+		return w.restPage(ctx)
+	}
+	return page, nil, true
+}
+
+// restPage is the page the walk stands at taken from the repository's open pull requests as one
+// REST listing: the window of twenty the page's position names, each head of it marked to be
+// read over REST, and whether a page follows it.
+//
+// The heads of a refused page are named by where the page sits in the repository because
+// GitHub's own order for the query and the order this listing is sorted into are both the pull
+// request number ascending, so the page counting from zero holds the heads at those positions
+// of the listing. The listing is read once for the walk, page by page and each page conditional
+// on its own ETag, and every head it names is read as every other head a query could not answer
+// is (visitHeadOverREST).
+func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
+	r, c, repository := w.r, w.c, w.repository
+	if w.listing == nil {
+		pulls, at, err := r.openPullRequests(ctx, repository.id, repository.owner, repository.repo, repository.token, repository.scope, c)
+		if at != nil {
+			return queryPage{}, w.stopped(at), false
+		}
+		if err != nil {
+			if r.cutShort(ctx, c) {
+				return queryPage{}, w.cut(), false
+			}
+			c.mappingsSkipped++
+			r.Logger.Warn("ci reconcile read no open pull requests of a repository",
+				"repository", repository.owner+"/"+repository.repo, "error", err)
+			return queryPage{}, nil, false
+		}
+		w.listing = pulls
+	}
+	from := min(w.here.page*pullsPerQuery, len(w.listing))
+	to := min(from+pullsPerQuery, len(w.listing))
+	page := queryPage{heads: make([]queryHead, 0, to-from), hasNextPage: to < len(w.listing)}
+	for _, pull := range w.listing[from:to] {
+		page.heads = append(page.heads, queryHead{number: pull.Number, sha: pull.HeadSHA, overflow: refusedPage})
+	}
+	return page, nil, true
+}
+
+// refusedPage is why a head of a page GitHub would not answer the query for is read over REST,
+// which the head's own line carries beside the reasons one query could not answer a head whole
+// (queryHead.overflow).
+const refusedPage = "GitHub did not answer the query for the head's page"
 
 // visitHead reads and records one head of a page: from the query's own answer where it could
 // answer the head whole, and over REST where it could not. The ending it answers is the pass
@@ -341,9 +432,9 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 
 // visitHeadOverREST reads and records one head over REST: paged, and conditional on the ETags
 // the pass kept of it. Both the heads one query could not answer whole (visitHead) and every
-// head of a page GitHub would not answer the query for at all (restOfRepository) are read here,
-// and why names which of the two the head's own line reports. The ending it answers is the pass
-// ending at this head, as visitHead's is.
+// head of a page GitHub would not answer the query for at all (restPage) are read here, and why
+// names which of the two the head's own line reports. The ending it answers is the pass ending
+// at this head, as visitHead's is.
 func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string) *ending {
 	r, c := w.r, w.c
 	// These reads are budgeted under the installation rather than under GraphQL, so the shared
@@ -367,56 +458,6 @@ func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string)
 	}
 	c.restHeads++
 	c.mark(pull)
-	return nil
-}
-
-// restOfRepository reads one repository's open pull requests over REST and every head of it
-// from the refused page onwards, which is what a pass does with a page GitHub would not answer
-// the query for: the repository's open pull requests page by page, each conditional on its own
-// ETag, and each head's check runs and check suites the same way.
-//
-// The heads of the refused page are named by where the page sits in the repository: GitHub's
-// own order for the query and the order this listing is sorted into are both the pull request
-// number ascending, so the page counting from zero holds the heads at those positions of the
-// listing. The pass reads from there to the end of the repository rather than that page alone,
-// since the pages after a page it did not get are pages it cannot ask for.
-func (w *walk) restOfRepository(ctx context.Context) *ending {
-	r, c, repository := w.r, w.c, w.repository
-	pulls, at, err := r.openPullRequests(ctx, repository.id, repository.owner, repository.repo, repository.token, repository.scope, c)
-	if at != nil {
-		return w.stopped(at)
-	}
-	if err != nil {
-		if r.cutShort(ctx, c) {
-			return w.cut()
-		}
-		c.mappingsSkipped++
-		r.Logger.Warn("ci reconcile read no open pull requests of a repository",
-			"repository", repository.owner+"/"+repository.repo, "error", err)
-		return nil
-	}
-	window := min(w.here.page*pullsPerQuery, len(pulls))
-	pulls = pulls[window:]
-	if !w.here.counted {
-		// Every head from the refused page to the end of the repository, which is what this
-		// read covers and what the pass that first reaches them counts. A pass taking the
-		// cursor up reads them again and counts none of them again (cursor.counted).
-		r.listed[repository.id] += countPullHeads(pulls)
-		w.here.counted = true
-	}
-	for _, pull := range pulls {
-		if pull.HeadSHA == "" || pull.Number < w.here.number {
-			// A pull request the listing answered with no head commit is no head to read, and
-			// one below the cursor was read by the pass that left the cursor.
-			continue
-		}
-		w.here.number = pull.Number
-		end := w.visitHeadOverREST(ctx, repository.head(pull.Number, pull.HeadSHA),
-			"GitHub did not answer the query for the head's page")
-		if end != nil {
-			return end
-		}
-	}
 	return nil
 }
 

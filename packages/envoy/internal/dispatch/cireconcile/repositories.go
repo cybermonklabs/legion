@@ -36,8 +36,9 @@ type reconciled struct {
 	scope      string
 	headScopes []string
 	// queryScopes is headScopes with GraphQL's own scope beside them, which is what the limits
-	// before a query are read under. It is built once with the repository rather than appended
-	// to headScopes at each page, which allocated a slice for every query the pass asked.
+	// before a query are read under: a query is budgeted under the App's GraphQL points as well
+	// as under the token's own scopes. It is built once with the repository, so the pages of a
+	// repository share the one slice however many queries the pass asks.
 	queryScopes []string
 	reconcile   bool
 }

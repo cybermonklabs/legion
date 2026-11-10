@@ -4,10 +4,11 @@
 // GitHub budgets the App and each installation, not a process, and warns that requests sent while
 // limited may get the integration banned. So a limit one process meets is recorded here, and every
 // process reads it before it sends anything under that scope: githubapp.Client through the Limits
-// it is given (Wait and Record), and the webhook redelivery sweep for its own doubling backoff
-// (Strike, InForce, Get and Clear). The database's now() is the one clock both processes read, as
-// embeddings_rate_limit's is (migration 0078), so they agree on when a limit ends whatever their
-// hosts' clocks say.
+// it is given (Wait and Record, and Strike for a secondary limit, which GitHub shares between an
+// installation's REST calls and its GraphQL queries), and the webhook redelivery sweep for its own
+// doubling backoff (Strike, InForce, Get and Clear). The database's now() is the one clock both
+// processes read, as embeddings_rate_limit's is (migration 0078), so they agree on when a limit
+// ends whatever their hosts' clocks say.
 package ratelimit
 
 import (
@@ -37,7 +38,8 @@ type Limit struct {
 	// Wait is Until less the database's now() when the row was read or written: how long the limit
 	// had left then, zero or less once it has passed.
 	Wait time.Duration
-	// Strikes counts the limits Strike recorded with no Clear in between.
+	// Strikes counts the limits Strike recorded with no Clear and no StrikeReset of quiet in
+	// between: the run the doubling wait is taken from.
 	Strikes int
 	// updatedAt is the database's now() at the row's last write (every Record and Strike), which
 	// Clear matches so it deletes only the row as read, and which Wait answers as the limit's
@@ -139,20 +141,28 @@ const StrikeReset = time.Hour
 // strike is Strike's statement: one more strike, and the latest of now() plus GitHub's wait, one
 // minute doubled for each strike before this one (up to 64 minutes), and a limit already recorded.
 //
-// A row untouched for StrikeReset starts again: its count goes to one and its wait to a minute,
-// exactly as the insert writes a scope that has no row at all. The clock is the row's own
-// updated_at, which is when this scope's limit was last recorded by any process. That is the
-// last strike for every scope Strike is used on -- the webhook redelivery sweep's own
-// (redeliver.redeliveryScope), which nothing else writes -- while Record writes the App's and
-// each installation's, which nothing strikes; a scope both wrote would have its run of strikes
-// held open by a primary limit, and there is no such scope.
+// A scope whose last strike is older than StrikeReset starts again: its count goes to one and
+// its wait to a minute, exactly as the insert writes a scope that has no row at all. The clock
+// is struck_at (migration 20261110132532), which Strike alone writes, rather than updated_at,
+// which every write of the row moves. The two part on a scope that is both struck and recorded:
+// an installation's scope holds the secondary limits its queries meet, which are struck because
+// GitHub shares them with that installation's REST calls (githubapp.Client.recordGraphQLLimit),
+// and every ordinary REST limit of that installation, which Record writes. Read from updated_at,
+// a busy installation's REST limits would hold its run of strikes open for ever, and a secondary
+// limit days after the one before it would wait the full 64 minutes for limits unrelated to it.
+// The reset is an hour with no strike, which is what StrikeReset says it is.
+//
+// A row struck before that migration carries no struck_at, and the first strike after it starts
+// that scope's run again: nothing backfilled the column, and a run restarted costs one shorter
+// wait, which the strike after it doubles again.
 const strike = `
-	insert into github_rate_limits as l (scope, until, strikes, updated_at)
-	values ($1, now() + greatest(make_interval(secs => $2), interval '1 minute'), 1, now())
+	insert into github_rate_limits as l (scope, until, strikes, struck_at, updated_at)
+	values ($1, now() + greatest(make_interval(secs => $2), interval '1 minute'), 1, now(), now())
 	on conflict (scope) do update set
-		strikes = case when l.updated_at < now() - make_interval(secs => $3) then 1 else l.strikes + 1 end,
+		strikes = case when l.struck_at is null or l.struck_at < now() - make_interval(secs => $3) then 1 else l.strikes + 1 end,
 		until = greatest(l.until, now() + greatest(make_interval(secs => $2),
-			interval '1 minute' * power(2, case when l.updated_at < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
+			interval '1 minute' * power(2, case when l.struck_at is null or l.struck_at < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
+		struck_at = now(),
 		updated_at = now()
 	returning ` + columns
 

@@ -21,7 +21,7 @@
 // query asks for, a head one of whose suites has more check runs than one query asks for, a
 // head whose Checks fields GitHub refused or answered null, and every head of a page GitHub
 // refused, gave up on, or answered past githubapp's 1 MiB response limit (walk.sweep,
-// walk.restOfRepository).
+// walk.restPage).
 //
 // An object read either way maps through contracts.GithubCIObservation, the mapping the
 // webhook's own body goes through, so a pass over a run the listener already recorded changes
@@ -50,9 +50,11 @@
 // has not changed the page; and the shared rate limits every Dispatch process obeys
 // (githubapp/ratelimit) are read before the pass starts, before each repository, before each
 // query and before each head, with a limit in force ending the pass where it stands. GitHub
-// budgets GraphQL apart from REST and answers a GraphQL limit in its own way, so a limit a query
-// meets is recorded under githubapp.GraphQLScope and leaves every REST read of every process
-// going (githubapp.GraphQLRateLimit).
+// budgets GraphQL apart from REST and answers a GraphQL limit in its own way, so a primary
+// limit a query meets -- the App's GraphQL points spent -- is recorded under
+// githubapp.GraphQLScope and leaves every REST read of every process going, while a secondary
+// limit, which GitHub shares between an installation's REST calls and its queries, is recorded
+// under that installation's own scope and holds both (githubapp.GraphQLRateLimit).
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
 // ends before the pass after it is due and always logs its one line. The pass walks one stable
@@ -149,16 +151,18 @@ type Reconciler struct {
 	// pulls is each repository's open pull request pages as the last pass read them over REST,
 	// keyed by the id GitHub gave the repository, so two rows naming one repository share one
 	// listing. Only a repository a query was refused a page of is listed over REST at all
-	// (walk.restOfRepository), so most repositories hold no entry here.
+	// (walk.restPage), so most repositories hold no entry here.
 	pulls map[int64][]pageOf[githubapp.PullRequestHead]
-	// listed is how many open heads each repository's queries answered with, keyed by the id
+	// listed is how many open heads each repository's listings answered with, keyed by the id
 	// GitHub gave the repository: what the pass's line reports as the heads it knows there are,
-	// and what a pass that reads no head of a repository still knows of it. It is built up as a
-	// repository's pages are read, over however many passes the cursor takes them, and reset
-	// where a pass begins that repository at its first page.
+	// and what a pass that reads no head of a repository still knows of it. A page counts here
+	// whether a query or the REST listing answered it, by the one rule (countHeads). It is
+	// built up as a repository's pages are read, over however many passes the cursor takes
+	// them, and reset where a pass begins that repository at its first page.
 	listed map[int64]int
-	// heads is what the last pass kept of each head it read over REST (pullHead.key): a head a
-	// query answered whole costs no REST request and so holds no ETag of its own.
+	// heads is what the last pass kept of each head it read: the ETags of a head read over REST
+	// (pullHead.key), and for a head a query answered whole, which costs no REST request and so
+	// holds no ETag, the fingerprint of the objects that answer carried (headState).
 	heads map[string]headState
 	// resume is where the next pass starts: the first page or REST head the last pass did not
 	// finish, and the zero cursor -- the start of the order -- after a pass that reached the end

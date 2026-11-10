@@ -14,13 +14,15 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // since that is the only caller Strike has.
 const scope = "redelivery"
 
-// quiet moves a scope's last write back by age, which is how these tests reach an hour ago
-// without waiting an hour. It writes updated_at alone, exactly as a strike of that age would
-// have left it, and leaves until where it is.
+// quiet moves a scope's last strike back by age, which is how these tests reach an hour ago
+// without waiting an hour. It writes struck_at and updated_at, exactly as a strike of that age
+// and nothing since would have left them, and leaves until where it is.
 func quiet(t *testing.T, store *Store, age time.Duration) {
 	t.Helper()
 	tag, err := store.pool.Exec(t.Context(), `
-		update github_rate_limits set updated_at = now() - make_interval(secs => $2) where scope = $1
+		update github_rate_limits
+		set struck_at = now() - make_interval(secs => $2), updated_at = now() - make_interval(secs => $2)
+		where scope = $1
 	`, scope, age.Seconds())
 	if err != nil {
 		t.Fatalf("age the row of %s: %v", scope, err)
@@ -102,6 +104,33 @@ func TestAStrikeInsideTheHourKeepsTheCountGoing(t *testing.T) {
 	}
 	if third.Wait < 3*time.Minute+55*time.Second || third.Wait > 4*time.Minute+5*time.Second {
 		t.Fatalf("the third strike waits %s, want about four minutes", third.Wait)
+	}
+}
+
+// The reset is an hour with no strike, not an hour with no write of any kind: a limit Record
+// wrote on the scope meanwhile does not keep the run of strikes going. One scope takes both
+// writes -- an installation's, where a secondary limit its queries meet is struck because
+// GitHub shares that limit with its REST calls, and where every ordinary REST limit of that
+// installation is recorded -- so a busy installation's REST limits would have held its run open
+// for ever, and a secondary limit days later would have waited the full 64 minutes for limits
+// unrelated to it.
+func TestARecordedLimitDoesNotKeepTheStrikeCountGoing(t *testing.T) {
+	store := New(storetest.Open(t).Pool)
+	strikeNow(t, store)
+	quiet(t, store, StrikeReset+time.Minute)
+	// An ordinary REST limit of that scope, recorded an hour after the strike and a moment
+	// before the next one.
+	if err := store.Record(t.Context(), scope, time.Minute); err != nil {
+		t.Fatalf("record a limit of %s: %v", scope, err)
+	}
+
+	again := strikeNow(t, store)
+	if again.Strikes != 1 {
+		t.Fatalf("the strike after %s of strike quiet recorded %d strikes, want 1: the limit recorded in between is no strike",
+			StrikeReset+time.Minute, again.Strikes)
+	}
+	if again.Wait < 55*time.Second || again.Wait > 65*time.Second {
+		t.Fatalf("that strike waits %s, want about the minute a run's first strike takes", again.Wait)
 	}
 }
 

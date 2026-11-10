@@ -1,10 +1,6 @@
 package cireconcile
 
-import (
-	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-)
+import "time"
 
 // counts is what one pass did, as its one log line reports it.
 type counts struct {
@@ -89,24 +85,14 @@ func (c *counts) mark(head pullHead) {
 }
 
 // countHeads is the open pull requests of one page that have a head commit to read, which is
-// what the pass's line reports as the heads it knows there are.
+// what the pass's line reports as the heads it knows there are. A page the REST listing
+// answered is counted here too, its pull requests carried in the same shape (walk.restPage), so
+// the heads the pass says it knows there are mean the same thing whichever way the page was
+// read.
 func countHeads(heads []queryHead) int {
 	known := 0
 	for _, head := range heads {
 		if head.sha != "" {
-			known++
-		}
-	}
-	return known
-}
-
-// countPullHeads is countHeads for the REST listing's own shape: the open pull requests of it
-// that have a head commit to read. The two listings are counted by the one rule, so the heads
-// the pass says it knows there are mean the same thing whichever way the page was read.
-func countPullHeads(pulls []githubapp.PullRequestHead) int {
-	known := 0
-	for _, pull := range pulls {
-		if pull.HeadSHA != "" {
 			known++
 		}
 	}

@@ -213,6 +213,10 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
 	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
 	wording := `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`
+	// GitHub answers a secondary limit at 403 with its REST-shaped body as readily, the wording
+	// in the top-level message and no retry-after of any kind, which its documentation says may
+	// be absent.
+	restWording := `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"}`
 	cases := []struct {
 		name      string
 		answer    graphQLAnswer
@@ -230,6 +234,10 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 	}, {
 		name:      "a secondary limit worded alone, at 403",
 		answer:    graphQLAnswer{status: http.StatusForbidden, body: wording},
+		secondary: true,
+	}, {
+		name:      "a secondary limit in the body's own message, at 403",
+		answer:    graphQLAnswer{status: http.StatusForbidden, body: restWording},
 		secondary: true,
 	}}
 	for _, shape := range cases {

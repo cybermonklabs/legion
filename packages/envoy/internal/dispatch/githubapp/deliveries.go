@@ -169,57 +169,56 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 	return &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
 }
 
-// GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells four
-// different ways and none of them the way it spells a rate-limited REST call, and says which of
-// GitHub's two limits it is. A query past the App's primary GraphQL budget is answered HTTP 200
-// with an `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status
-// alone sees a good answer and a caller reading `data` alone sees an empty one. The request that
+// GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells several
+// ways and none of them the way it spells a rate-limited REST call, and says which of GitHub's
+// two limits it is. A query past the App's primary GraphQL budget is answered HTTP 200 with an
+// `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status alone
+// sees a good answer and a caller reading `data` alone sees an empty one. The request that
 // spends the last point is answered with its data and `x-ratelimit-remaining: 0`. A secondary
 // limit -- too many points a minute, too many queries at once -- is answered either 200 or 403,
-// with a `retry-after` header, or with a message about exceeding a secondary rate limit and no
-// header at all.
+// with a `retry-after` header, or with GitHub's wording about a secondary rate limit and no
+// header at all. That wording comes in an `errors` entry, and at 403 in the REST-shaped body
+// whose top-level `message` carries it, which GitHub answers a query with as readily as it
+// answers a REST call with one (graphQLLimitErrors).
 //
-// All four are read here, at either status: an `errors` entry of type RATE_LIMITED, no requests
-// remaining, a `retry-after`, or a secondary-limit message in an errors entry. The wait is
-// Retry-After's seconds when GitHub gives them, else the time until x-ratelimit-reset when no
-// requests remain, else the minute GitHub asks for when it gives neither. Every other status is
-// read as RateLimit reads it on a REST path, a 429 among them, and the envelope and the headers
-// then say which limit that answer is.
+// Every one of them is read here, at either status, and the wait is Retry-After's seconds when
+// GitHub gives them, else the time until x-ratelimit-reset when no requests remain, else the
+// minute GitHub asks for when it gives neither.
+//
+// RateLimit reads the answer first: it covers the two statuses GitHub answers a REST-style
+// limit with, 403 and 429, and answers nil at every other status, 200 among them. What it
+// cannot see is a limit GitHub spells in the envelope alone -- the RATE_LIMITED entry, or the
+// secondary wording with no header beside it -- so the error is built here, once, for an answer
+// it read as no limit that the query's own signals say is one. A header alone counts only at
+// 200, the status GitHub answers the query itself with: at any other status GitHub is refusing
+// the request rather than answering it, and the headers on that refusal say nothing about the
+// budget.
 //
 // Nothing here is read from a repository's own data. The answer to a query is the data GitHub
 // holds, and that data is the names people give their check runs and their pull requests: a body
 // searched whole for GitHub's secondary-limit wording calls a perfectly good page of a
 // repository that holds a check run of that name a rate limit, every pass, so the cursor never
-// moves past that page and the heads behind it are never reconciled. The entries of `errors` and
-// the response headers are GitHub's own envelope and are the whole of what is read.
+// moves past that page and the heads behind it are never reconciled. GitHub's own envelope is
+// the entries of `errors`, the top-level `message` of the REST-shaped body it refuses a request
+// with, and the response headers, and those are the whole of what is read.
 //
 // secondary tells the two limits apart, which the caller records under different scopes
 // (Client.GraphQL): GitHub budgets the App's GraphQL points apart from its REST calls, while the
-// secondary limits are shared between the two. GitHub's own wording decides it where the answer
-// carries it, since GitHub writes that sentence for nothing else; then the two statements that
-// the primary budget is spent, the RATE_LIMITED entry and no requests remaining; and a
+// secondary limits are shared between the two. GitHub's own wording decides it wherever the
+// answer carries it, since GitHub writes that sentence for nothing else; then the two statements
+// that the primary budget is spent, the RATE_LIMITED entry and no requests remaining; and a
 // `retry-after`, or the 429 GitHub answers too many requests with, where neither of those says
 // the budget is spent.
 func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *RateLimitError, secondary bool) {
 	spent, worded := graphQLLimitErrors(body)
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
 	retryAfter := header.Get("Retry-After") != ""
-	switch {
-	case status == http.StatusOK:
-		if !spent && !worded && !exhausted && !retryAfter {
+	limited = RateLimit(status, header, body)
+	if limited == nil {
+		if !spent && !worded && (status != http.StatusOK || (!exhausted && !retryAfter)) {
 			return nil, false
 		}
 		limited = &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
-	default:
-		limited = RateLimit(status, header, body)
-		if limited == nil && (spent || worded) {
-			// A limit GitHub answered as GraphQL answers one -- a 403 carrying the error entry
-			// or the wording and no header at all -- which the REST reader does not see.
-			limited = &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
-		}
-		if limited == nil {
-			return nil, false
-		}
 	}
 	switch {
 	case worded:
@@ -231,29 +230,35 @@ func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *Rat
 	}
 }
 
-// graphQLLimitErrors reads a GraphQL answer's `errors` for the two things GitHub says a rate
-// limit with there: an entry of type RATE_LIMITED, which is the App's GraphQL budget spent, and
-// an entry whose message carries GitHub's secondary-limit wording, "You have exceeded a
-// secondary rate limit", which is all a secondary limit gives when it comes with no header and
-// no error type. The message is matched on the phrase alone, since GitHub has worded the rest of
-// the sentence more than one way.
+// graphQLLimitErrors reads a GraphQL answer for the two things GitHub says a rate limit with in
+// its own envelope: an entry of `errors` whose type is RATE_LIMITED, which is the App's GraphQL
+// budget spent, and GitHub's secondary-limit wording, "You have exceeded a secondary rate
+// limit", which is all a secondary limit gives when it comes with no header and no error type.
+// The wording is read from an entry's message and from the body's own top-level `message`,
+// because GitHub answers a secondary limit at 403 with the REST-shaped body that carries it
+// there and no `errors` at all, and a reader of the entries alone takes such an answer for the
+// App's spent GraphQL budget and records it under the wrong scope. It is matched on the phrase
+// alone, since GitHub has worded the rest of the sentence more than one way.
 //
-// A body that is not the envelope at all -- which cannot be a 200 from GitHub's GraphQL endpoint
-// -- holds no such entry and is no limit: the caller's own decode then reports it as the
-// malformed answer it is.
+// `data` is a repository's own, and is read for neither: a body that is not the envelope at all
+// -- which cannot be a 200 from GitHub's GraphQL endpoint -- holds no such entry and no such
+// message, and is no limit, so the caller's own decode reports it as the malformed answer it is.
 //
-// The bytes are searched for the two before the body is parsed at all. Every good answer comes
-// through here, and a good answer is a page of up to the megabyte this client reads: parsing
-// each of them whole to look for entries almost none of them carries was the cost of the one
-// that does. A body neither of them is anywhere in holds no such entry, and a body one of them
-// is in is parsed, since only the entries of `errors` say whether GitHub wrote it or a
-// repository did.
+// The bytes are searched for the two before the body is parsed at all, because every good
+// answer comes through here and a good answer is a page of up to the megabyte this client
+// reads. A body neither of them is anywhere in holds no such entry and no such message, and a
+// body one of them is in is parsed, since only GitHub's own envelope says whether GitHub wrote
+// the words or a repository did.
 func graphQLLimitErrors(body []byte) (spent, secondary bool) {
 	if !bytes.Contains(body, graphQLRateLimitedType) && !containsFold(body, secondaryRateLimitPhrase) {
 		return false, false
 	}
 	var answer struct {
-		Errors []struct {
+		// Message is the top-level message of the body GitHub refuses a request with, which no
+		// answer to a query carries: a repository's own data is under `data` and is read here
+		// for nothing.
+		Message string `json:"message"`
+		Errors  []struct {
 			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"errors"`
@@ -261,10 +266,11 @@ func graphQLLimitErrors(body []byte) (spent, secondary bool) {
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return false, false
 	}
+	// The message and the entries of one answer are a handful of short strings, which this
+	// copies to search; the megabyte of data beside them is what the check above spares.
+	secondary = containsFold([]byte(answer.Message), secondaryRateLimitPhrase)
 	for _, entry := range answer.Errors {
 		spent = spent || entry.Type == "RATE_LIMITED"
-		// The entries of one answer are a handful of short messages, which this copies to
-		// search; the megabyte of data beside them is what the check above spares.
 		secondary = secondary || containsFold([]byte(entry.Message), secondaryRateLimitPhrase)
 	}
 	return spent, secondary

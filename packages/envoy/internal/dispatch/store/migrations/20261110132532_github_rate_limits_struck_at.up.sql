@@ -1,0 +1,32 @@
+-- 20261110132532_github_rate_limits_struck_at.up.sql
+--
+-- INFRA-1179: when a scope was last struck, which is the clock the doubling backoff resets by
+-- (internal/dispatch/githubapp/ratelimit, StrikeReset).
+--
+--   struck_at   the database's now() at the scope's last Strike, and null for a scope no strike
+--               has been recorded for. A strike within ratelimit.StrikeReset of it goes on the
+--               run -- one minute, two, four, up to 64 -- and one after that quiet hour is the
+--               first of a new run, at one minute again.
+--
+-- The reset read updated_at, the row's last write by anything, until this column. That was the
+-- last strike only while a scope was struck and recorded by nothing else, and from this
+-- release's change to GitHub's secondary limits an installation's scope is both: a secondary
+-- limit a GraphQL query meets is struck there, because GitHub shares that limit with the
+-- installation's REST calls, while every ordinary REST limit of that installation is recorded
+-- there with Record. Record refreshes updated_at, so the ordinary REST limits of a busy
+-- installation held its run of strikes open for ever, and a secondary limit days after the last
+-- one waited up to 64 minutes for it. The count now resets by an hour with no strike, which is
+-- what StrikeReset says it is, rather than by an hour with no write of any kind.
+--
+-- A row struck before this migration carries null here, so the first strike after the deploy
+-- starts that scope's run again: no backfill writes the column, since a census that rewrites a
+-- row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy census"), and a run restarted is
+-- the safe direction -- it costs at most one shorter wait, which the next strike doubles again.
+--
+-- A plain nullable add with no default is a catalog change that rewrites no row, so it holds
+-- github_rate_limits (one row per scope, of which a deployment has a handful) ACCESS EXCLUSIVE
+-- for milliseconds. The release before this one neither reads nor writes the column, and its
+-- own Strike leaves it null while it keeps striking by updated_at, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). Rolling back past it is an image rollback
+-- alone; the column left behind is read by nothing.
+alter table github_rate_limits add column struck_at timestamptz;

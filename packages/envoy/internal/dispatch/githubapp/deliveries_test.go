@@ -186,6 +186,18 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 		secondary: true,
 		wait:      time.Minute,
 	}, {
+		// GitHub answers a secondary limit at 403 with its REST-shaped body, whose top-level
+		// message carries the wording and whose `errors` carry nothing, and its documentation
+		// says the retry-after may be absent. Read as the App's spent GraphQL budget, such an
+		// answer would leave the installation's REST reads going inside a limit GitHub shares
+		// with them, which is what it warns may get an integration banned.
+		name:      "a 403 whose body's own message carries the wording, with no retry-after",
+		status:    http.StatusForbidden,
+		body:      `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"}`,
+		limited:   true,
+		secondary: true,
+		wait:      time.Minute,
+	}, {
 		name:      "a 403 with a retry-after",
 		status:    http.StatusForbidden,
 		header:    http.Header{"Retry-After": {"30"}},
