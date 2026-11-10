@@ -612,46 +612,72 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 	for _, toKind := range nodeKinds {
 		ids := viewBacklinkTargets(t, fixture.database.Pool, toKind)
 		for _, exclusions := range backlinkExclusionCases(toKind) {
-			statement, ok := backlinkCountSQL(toKind, exclusions)
-			if !ok {
-				t.Fatalf("no arms declared for %s, the kind nodeLoaders resolves", toKind)
-			}
-			// The acting credential rides as $3, as backlinkCountStatement binds it: an author
-			// who proves none, so every arm's predicate is the shape a reader of the project
-			// runs, and the plan is the one every count pays for.
-			seen := VisibilityArg(model.Actor{})
-			args := []any{ids, nodeKinds, seen}
-			types := []string{"text[]", "text[]", "jsonb"}
-			literals := []string{textArrayLiteral(ids), textArrayLiteral(nodeKinds), "null"}
-			if len(exclusions) > 0 {
-				args = append(args, exclusions)
-				types = append(types, "text[]")
-				literals = append(literals, textArrayLiteral(exclusions))
-			}
-			prepared++
-			name := fmt.Sprintf("backlink_count_%d", prepared)
-			for mode, plan := range map[string]json.RawMessage{
-				"custom": customPlan(t, connection, statement, args),
-				"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
-					types, literals, planSettings...),
-			} {
-				if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
-					t.Errorf("the %s backlink count excluding %v reads %s under its %s plan, which no index serves:\n%s",
-						toKind, exclusions, strings.Join(unkeyed, ", "), mode, plan)
+			// Both shapes the count binds its addresses in: the array of every address, and
+			// the one address a read of a single node's page counts, which is a statement of
+			// its own (backlinkCountStatement). An arm that lost its index in one of them
+			// would be unkeyed for half the counts Dispatch runs.
+			for _, shape := range backlinkAddressShapes(ids) {
+				statement, ok := backlinkCountSQL(toKind, exclusions, shape.one)
+				if !ok {
+					t.Fatalf("no arms declared for %s, the kind nodeLoaders resolves", toKind)
 				}
-				// Carrying an index condition is not the same as being served by the index: a
-				// scan whose qual names a column the index does not lead with reads the whole
-				// index and filters it. Take the index off ask_followers.session_id and the
-				// check above still passes, because the planner then reads the table through
-				// ask_followers_pkey, (ask_id, session_id), as a full index scan with the
-				// session_id qual in its Index Cond. So every scan is held to its index's own
-				// first key column, the one column an index narrows on; a scan carrying no
-				// condition at all is the check above's to name.
-				firstKeys.RequireIndexKeyed(t, plan, explaintest.AnyIndex,
-					fmt.Sprintf("the %s backlink count excluding %v under its %s plan", toKind, exclusions, mode),
-					explaintest.CondOptional)
+				// The acting credential rides as $3, as backlinkCountStatement binds it: an
+				// author who proves none, so every arm's predicate is the shape a reader of
+				// the project runs, and the plan is the one every count pays for.
+				seen := VisibilityArg(model.Actor{})
+				args := []any{shape.addresses, nodeKinds, seen}
+				types := []string{shape.sqlType, "text[]", "jsonb"}
+				literals := []string{shape.literal, textArrayLiteral(nodeKinds), "null"}
+				if len(exclusions) > 0 {
+					args = append(args, exclusions)
+					types = append(types, "text[]")
+					literals = append(literals, textArrayLiteral(exclusions))
+				}
+				prepared++
+				name := fmt.Sprintf("backlink_count_%d", prepared)
+				for mode, plan := range map[string]json.RawMessage{
+					"custom": customPlan(t, connection, statement, args),
+					"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
+						types, literals, planSettings...),
+				} {
+					if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+						t.Errorf("the %s backlink count over %s excluding %v reads %s under its %s plan, which no index serves:\n%s",
+							toKind, shape.name, exclusions, strings.Join(unkeyed, ", "), mode, plan)
+					}
+					// Carrying an index condition is not the same as being served by the index: a
+					// scan whose qual names a column the index does not lead with reads the whole
+					// index and filters it. Take the index off ask_followers.session_id and the
+					// check above still passes, because the planner then reads the table through
+					// ask_followers_pkey, (ask_id, session_id), as a full index scan with the
+					// session_id qual in its Index Cond. So every scan is held to its index's own
+					// first key column, the one column an index narrows on; a scan carrying no
+					// condition at all is the check above's to name.
+					firstKeys.RequireIndexKeyed(t, plan, explaintest.AnyIndex,
+						fmt.Sprintf("the %s backlink count over %s excluding %v under its %s plan", toKind, shape.name, exclusions, mode),
+						explaintest.CondOptional)
+				}
 			}
 		}
+	}
+}
+
+// backlinkAddressShape is one way the count binds the addresses it counts for, as
+// backlinkCountStatement binds them: the argument, the type a prepared statement declares for
+// it and the literal a generic plan is read under.
+type backlinkAddressShape struct {
+	name      string
+	one       bool
+	addresses any
+	sqlType   string
+	literal   string
+}
+
+// backlinkAddressShapes are both of them, over the addresses a fixture holds.
+func backlinkAddressShapes(ids []string) []backlinkAddressShape {
+	return []backlinkAddressShape{
+		{name: "every address", addresses: ids, sqlType: "text[]", literal: textArrayLiteral(ids)},
+		{name: "one address", one: true, addresses: ids[0], sqlType: "text",
+			literal: `'` + strings.ReplaceAll(ids[0], `'`, `''`) + `'::text`},
 	}
 }
 

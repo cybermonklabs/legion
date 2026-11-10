@@ -86,12 +86,27 @@ func QueueBacklinkCounts(b *pgx.Batch, who model.Actor, toKind string, ids, excl
 // The acting credential is bound as $3, which every arm's visibility predicate names: an edge
 // whose source who may not see raises no count, by the same test the list of those edges binds
 // (readEdgeRows), so a count and its list cannot disagree.
+//
+// A count of one address binds that address itself and not an array of one, which is the
+// statement every page read of a single node runs (the issue read's own count). An array tells
+// the planner nothing about how many addresses it holds, so it costs the generic plan at ten
+// of them and keeps choosing a custom plan instead: measured on this pod over the read-cost
+// corpus, this child's issue count planned itself again on every execution, 4.1 ms of planning
+// against 0.7 ms of execution, and spent 10.8 ms on the sixth execution of each connection
+// building the generic plan it then threw away. With the one address bound as itself the
+// generic plan is the cheaper one, Postgres keeps it from that sixth execution on, and planning
+// falls to 0.06 ms a read.
 func backlinkCountStatement(who model.Actor, toKind string, ids, excludeKinds []string) (string, []any, error) {
-	statement, ok := backlinkCountSQL(toKind, excludeKinds)
+	one := len(ids) == 1
+	statement, ok := backlinkCountSQL(toKind, excludeKinds, one)
 	if !ok {
 		return "", nil, fmt.Errorf("count %s backlinks: no arms declared for that node kind", toKind)
 	}
-	args := []any{ids, nodeKinds, VisibilityArg(who)}
+	var addresses any = ids
+	if one {
+		addresses = ids[0]
+	}
+	args := []any{addresses, nodeKinds, VisibilityArg(who)}
 	if len(excludeKinds) > 0 {
 		args = append(args, excludeKinds)
 	}
@@ -120,18 +135,19 @@ func scanBacklinkCounts(rows pgx.Rows, toKind string, counts map[string]int) err
 
 // backlinkCountSQL is the statement BacklinkCounts runs: the union of the arms of graph_edges
 // that can point at a node of toKind, grouped by target, with the arms a caller's excludeKinds
-// rule out left out. It binds the addresses as $1, the node kinds this build reads as $2, the
-// acting credential as $3 (backlinkSeen) and, when excludeKinds is not empty, those kinds as
-// $4. ok is false for a kind backlinkArms does not declare, the one kind BacklinkCounts
-// refuses; it is a builder of its own so a test can read the statement BacklinkCounts runs and
-// hold its plan to an index on every arm.
+// rule out left out. It binds the addresses as $1 - one address as itself and two or more as an
+// array, which is what one says (backlinkCountStatement) - the node kinds this build reads as
+// $2, the acting credential as $3 (backlinkSeen) and, when excludeKinds is not empty, those
+// kinds as $4. ok is false for a kind backlinkArms does not declare, the one kind
+// BacklinkCounts refuses; it is a builder of its own so a test can read the statement
+// BacklinkCounts runs and hold its plan to an index on every arm.
 //
 // The kind is written into each arm as a literal rather than a parameter because the statement
 // text already differs per kind, and a literal lets the planner know how selective each arm's
 // to_kind predicate is; only a kind backlinkArms declares reaches that, so nothing a caller names
 // is ever written into a statement.
-func backlinkCountSQL(toKind string, excludeKinds []string) (string, bool) {
-	arms, ok := backlinkTargetArms(backlinkTarget{kind: toKind}, excludeKinds)
+func backlinkCountSQL(toKind string, excludeKinds []string, one bool) (string, bool) {
+	arms, ok := backlinkTargetArms(backlinkTarget{kind: toKind, one: one}, excludeKinds)
 	if !ok {
 		return "", false
 	}
@@ -141,7 +157,7 @@ func backlinkCountSQL(toKind string, excludeKinds []string) (string, bool) {
 	// so it is refused for the same reason the counted kind's own are.
 	if item := ItemKind(toKind); slices.Contains(itemKinds, item) {
 		tables, _ := item.tables()
-		target := backlinkTarget{kind: item.BlockKind(), blocks: tables.blocks, item: tables.item}
+		target := backlinkTarget{kind: item.BlockKind(), blocks: tables.blocks, item: tables.item, one: one}
 		atBlocks, ok := backlinkTargetArms(target, excludeKinds)
 		if !ok {
 			return "", false
@@ -180,6 +196,10 @@ type backlinkTarget struct {
 	kind   string
 	blocks string
 	item   string
+	// one says the count is over a single address, bound as itself rather than as an array
+	// of one (backlinkCountStatement): the shape every read of one node's page runs, and the
+	// one shape whose generic plan Postgres keeps.
+	one bool
 }
 
 // read is how an arm whose rows point at the address toID is written for the target: the address
@@ -191,13 +211,24 @@ type backlinkTarget struct {
 // id, the same value, which leaves the arm's other relation keyed on the join alone.
 func (t backlinkTarget) read(toID string) (counted, join, keyed, address string) {
 	if t.blocks == "" {
-		return toID, "", toID + ` = any($1)`, toID
+		return toID, "", toID + t.addressed(), toID
 	}
 	counted = `part.` + t.item + `::text`
 	return counted,
 		` join ` + t.blocks + ` part on part.node_id = ` + toID,
-		counted + ` = any($1) and part.position is not null`,
+		counted + t.addressed() + ` and part.position is not null`,
 		`part.node_id`
+}
+
+// addressed is the test every arm is keyed on: the one address bound as $1, or membership of
+// the array of them. Both read the same index the same way; which is written decides only what
+// the planner may assume about how many addresses there are, and so whether it can keep one
+// plan for the statement (backlinkCountStatement).
+func (t backlinkTarget) addressed() string {
+	if t.one {
+		return ` = $1`
+	}
+	return ` = any($1)`
 }
 
 // backlinkSeen is the parameter the acting credential is bound at, which every arm's

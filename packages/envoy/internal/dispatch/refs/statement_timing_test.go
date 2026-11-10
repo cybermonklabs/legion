@@ -47,7 +47,7 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: closureQuery, Args: []any{subjects.Issue}})
 
 	// The issue read's count: one issue's inbound edges, the number its page carries.
-	issueCount, ok := backlinkCountSQL("issue", nil)
+	issueCount, ok := backlinkCountSQL("issue", nil, false)
 	if !ok {
 		t.Fatal("backlinkArms declares no arm for an issue, so the issue read's count has no statement")
 	}
@@ -62,7 +62,7 @@ func TestStatementTimings(t *testing.T) {
 	// heavily linked issue the other readings bind is linked by children and blockers, and
 	// carries no ask.
 	askIDs := askPageSubject(t, runner)
-	askCount, ok := backlinkCountSQL("ask", AskBacklinkExclusions)
+	askCount, ok := backlinkCountSQL("ask", AskBacklinkExclusions, false)
 	if !ok {
 		t.Fatal("backlinkArms declares no arm for an ask, so the ask page's count has no statement")
 	}

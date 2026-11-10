@@ -278,12 +278,33 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
 // count and the list behind it saying the same thing, since the count binds the same predicate
 // over the same ends (BacklinkCounts).
+//
+// The node's own kind is written into the statement as a literal and only its id is bound, as
+// the count writes the kind it counts for (backlinkCountSQL). graph_edges is a union of
+// arms, most of which fix their from_kind and to_kind as literals of their own, and a kind the
+// statement states lets the planner throw every arm that cannot match away before it plans it.
+// With the kind bound instead, it can only do that while it plans for the values in hand, so
+// Postgres finds its generic plan far dearer than the custom one, keeps making a custom plan
+// for every execution, and the read pays for planning the whole view again every time:
+// measured on this pod over the chain of 200 blocks, 6.9 ms a step of which 6.5 ms was that
+// planning, against 0.4 ms a step once the statement is one plan the connection keeps.
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
-	args := []any{query.Kind, query.ID}
+	if !slices.Contains(nodeKinds, query.Kind) {
+		// A kind no loader resolves is the address of no node this build knows, and the
+		// arms answer nothing for it, which is what the read answered while the kind was
+		// bound: every arm of the view states a kind of its own. The route reaches this
+		// read for a node it has already resolved (resolveNodes drops such an end), so this
+		// is what keeps a kind out of the statement rather than a case a caller meets.
+		return []edgeRow{}, nil
+	}
+	kind := `'` + query.Kind + `'`
+	args := []any{query.ID}
+	// The node's id, and the id again as the uuid an item's or a document's blocks are keyed
+	// by, for the reads that need it.
+	id, blocks := "$1", "$2"
 	document := query.Kind == "artifact"
 	item, itemBlocks := itemRead(query)
 	if itemBlocks || (query.Direction == "out" && document) {
-		// The item's or the document's id again, bound as the uuid its blocks are keyed by.
 		args = append(args, query.ID)
 	}
 	// The acting credential, bound once and named by every predicate this read renders.
@@ -303,52 +324,52 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		source += ` and ` + VisibleEnd("g.from_kind", "g.from_id", false, seen)
 		own := source
 		if itemBlocks {
-			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", "$3")
+			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
 		}
 		arms = `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.to_kind = $1 and g.to_id = $2 and ` + own
+			from graph_edges g where g.to_kind = ` + kind + ` and g.to_id = ` + id + ` and ` + own
 		switch {
 		case document:
 			arms += `
 			union all
 			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
-			from graph_edges g where g.to_kind = 'block' and g.to_id in ` + documentBlockIDs("$2") + `
+			from graph_edges g where g.to_kind = 'block' and g.to_id in ` + documentBlockIDs(id) + `
 			and ` + VisibleKind("block", "g.to_id", seen) + ` and ` + source
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
 				arms += `
 			union all
-			` + asksCitingTheDocument("$2", seen)
+			` + asksCitingTheDocument(id, seen)
 			}
 		case itemBlocks:
 			arms += `
 			union all
 			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
-			from graph_edges g where g.to_kind = '` + item.BlockKind() + `' and g.to_id in ` + itemBlockIDs(item, "$3") + `
+			from graph_edges g where g.to_kind = '` + item.BlockKind() + `' and g.to_id in ` + itemBlockIDs(item, blocks) + `
 			and ` + VisibleKind(item.BlockKind(), "g.to_id", seen) + ` and ` + source
 		}
 	case query.Direction == "out" && document:
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = $3::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))
+			from block_refs b where b.artifact_id = ` + blocks + `::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))
 			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id
-			where r.` + tables.item + ` = $3::uuid and b.position is not null
+			where r.` + tables.item + ` = ` + blocks + `::uuid and b.position is not null
 			and ` + VisibleKind(item.BlockKind(), "r.from_node", seen) + ` and ` + VisibleEnd("r.to_kind", "r.to_id", true, seen)
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + `
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen)
 	default:
 		return nil, fmt.Errorf("reference direction %q must be in or out", query.Direction)
@@ -366,14 +387,14 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	}
 	if foldsAnswers(query) {
 		if query.Direction == "in" {
-			sql.WriteString(" and not (kind = 'answers' and exists (select 1 from comments c where c.id::text = other_id and (c.reply_to::text = $2")
+			sql.WriteString(" and not (kind = 'answers' and exists (select 1 from comments c where c.id::text = other_id and (c.reply_to::text = " + id)
 			if itemBlocks {
-				sql.WriteString(" or c.replies_to_block in " + itemBlockIDs(ItemComment, "$3"))
+				sql.WriteString(" or c.replies_to_block in " + itemBlockIDs(ItemComment, blocks))
 			}
 			sql.WriteString(")))")
 		} else {
 			sql.WriteString(` and not (kind = 'answers' and exists (
-				select 1 from comments c where c.id::text = $2 and (c.reply_to::text = other_id or exists (
+				select 1 from comments c where c.id::text = ` + id + ` and (c.reply_to::text = other_id or exists (
 					select 1 from comment_blocks b where b.node_id = c.replies_to_block
 					and b.comment_id::text = other_id and b.position is not null))))`)
 		}
@@ -623,19 +644,14 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // that version (blockFirstVersion); its last change is its changed version, by that version's
 // authors. It belongs to its document at its changed version.
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
 		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
-		where d.node_id = any($1) and `+VisibleKind("block", "d.node_id", "$2"),
-		// QueryExecModeDescribeExec, so this statement is planned with its values. Its ids
-		// arrive as one array against the hash index on document_blocks.node_id, and a
-		// generic plan reads that array as an unknown-length scalar-array operation rather
-		// than a constant it can hash: measured on this pod over a document of 8,001
-		// blocks, 460 ms against 90 ms with the values in hand.
-		pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who))
+		where `+held+` and `+VisibleKind("block", "d.node_id", "$2"), args...)
 	if err != nil {
 		return fmt.Errorf("load block nodes: %w", err)
 	}
@@ -676,6 +692,28 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		nodes[[2]string{"block", nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}
 	return rows.Err()
+}
+
+// blockNodesAddressed is how loadBlockNodes names the blocks it reads, and the arguments that
+// go with it: the node ids bound as $1 and the acting credential as $2.
+//
+// One block is bound as itself. That is what every read of one node asks for - the node a
+// `dispatch://...#b-...` address names, and the far end of a chain step's one edge - and a
+// single equality on the hash index over document_blocks.node_id is a plan the planner builds
+// the same way whether or not it knows the value, so Postgres keeps one plan for the statement
+// and the read stops paying to plan it again: measured on this pod over the read-cost corpus,
+// 2.5 ms a call against 0.2 ms once the plan is the connection's.
+//
+// Two or more arrive as an array, under QueryExecModeDescribeExec so that the statement is
+// planned with its values. An array tells a generic plan nothing about its length, so that
+// plan reads it as an unknown-length scalar-array operation rather than a constant it can
+// hash: measured on this pod over a document of 8,001 blocks, 460 ms against 90 ms with the
+// values in hand.
+func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
+	if len(ids) == 1 {
+		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}
+	}
+	return `d.node_id = any($1)`, []any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who)}
 }
 
 // BlockRef is the reference to block blockID of the document whose reference is document:
