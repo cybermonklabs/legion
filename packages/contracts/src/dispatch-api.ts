@@ -5125,6 +5125,54 @@ export interface LegionFiledIssue {
  *  With no `project` it answers the first project that names a daemon, and a deployment where
  *  none does answers an empty report rather than a refusal. The Go mirror is `metrics.Report` in
  *  packages/envoy/internal/dispatch/legion/metrics/compute.go. */
+/** One stretch of an issue's Legion timeline: a phase, a segment (on `bar`), a role's turn, a CI
+ *  wait, an ask or a parked span, with its hours and where it came from. */
+export interface LegionTimelineSpan {
+  readonly name: string;
+  readonly bar?: string;
+  readonly from: string;
+  readonly to: string;
+  readonly hours: number;
+  readonly source: "observed" | "status_history" | "asks";
+}
+
+/** One child of a timeline's issue, with its phases. */
+export interface LegionTimelineChild {
+  readonly key: string;
+  readonly title: string;
+  readonly phases: readonly LegionTimelineSpan[];
+  readonly source: "observed" | "status_history";
+}
+
+/** `GET /api/v1/legion/issues/{key}/timeline`: one issue's Legion timeline, computed by the
+ *  metrics route's own rules over the same stored events. `columns` names the board column each
+ *  phase is drawn as, so a page draws it with the issues table's label and colour. */
+export interface LegionIssueTimeline {
+  readonly key: string;
+  readonly title: string;
+  readonly project: string;
+  readonly root: string;
+  readonly source: "observed" | "status_history";
+  readonly started_at: string | null;
+  readonly ended_at: string;
+  readonly closed: boolean;
+  readonly work_hours: number;
+  readonly parked_hours: number;
+  readonly queued_hours: number;
+  readonly segment_hours: LegionSegments;
+  readonly phases: readonly LegionTimelineSpan[];
+  readonly segments: readonly LegionTimelineSpan[];
+  readonly turns: readonly LegionTimelineSpan[];
+  readonly ci_waits: readonly LegionTimelineSpan[];
+  readonly asks: readonly LegionTimelineSpan[];
+  readonly parked: readonly LegionTimelineSpan[];
+  readonly children: readonly LegionTimelineChild[];
+  readonly review_rounds: number;
+  readonly sent_back: boolean;
+  readonly columns: Readonly<Record<string, { readonly id: LegionBoardColumnID; readonly label: string }>>;
+  readonly computed_at: string;
+}
+
 export interface LegionMetricsResponse {
   readonly project: string;
   readonly from: string;

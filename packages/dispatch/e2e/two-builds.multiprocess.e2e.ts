@@ -458,6 +458,17 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/projects/CORE/issues",
     },
     {
+      // CORE names no Legion daemon, so its Legion dashboard says so.
+      route: "/projects/:key/legion",
+      shows: (page) => [page.locator("#project-legion-panel [data-legion-dashboard]")],
+      url: "/projects/CORE/legion",
+    },
+    {
+      route: "/projects/:key/legion/:issue",
+      shows: (page) => [page.locator("#project-legion-panel [data-legion-dashboard]")],
+      url: `/projects/CORE/legion/${seed.issue}`,
+    },
+    {
       route: "/projects/:key/documents",
       shows: (page) => [
         page.locator("#project-documents-panel").getByRole("listitem", { name: "handbook.md" }),

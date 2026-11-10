@@ -118,9 +118,9 @@ type issueView struct {
 // split shares a phase's spans between the segments, each span's time going to the first rule of
 // the precedence that holds through it and the rest to idle.
 //
-// Waiting on a person is read from Dispatch's own asks and holds through every hour. The other
-// rules read the daemon's observations, so outside the hours the daemon reported on (observedOf)
-// an hour no ask claimed is unknown, never idle.
+// Waiting on a person (Dispatch's asks) and waiting on children (the children's own timelines)
+// hold through every hour. In a turn and CI wait read the daemon's observations, so outside the
+// hours the daemon reported on (observedOf) an hour no rule claimed is unknown, never idle.
 func (v *issueView) split(spans []Span) Segments {
 	var segments Segments
 	for segment, taken := range v.splitSpans(spans) {
@@ -140,7 +140,9 @@ func (v *issueView) splitSpans(spans []Span) map[Segment][]Span {
 			break
 		}
 		claim := v.claims(index)
-		if rule.Segment != SegmentWaitingOnPerson {
+		// A turn and a CI wait are the daemon's to report; an ask and a child's work are
+		// Dispatch's own records and hold through every hour.
+		if rule.Segment == SegmentInATurn || rule.Segment == SegmentCIWait {
 			claim = intersect(claim, observed)
 		}
 		held := intersect(rest, claim)

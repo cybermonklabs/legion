@@ -1,5 +1,5 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { LegionBoardResponse, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
@@ -279,31 +279,7 @@ export function useIssueTableColumns(
                   },
                   cell: ({ row }) =>
                     row.original.legion ? (
-                      <span
-                        className="flex flex-col gap-1"
-                        data-legion-phase={row.original.legion.id}
-                      >
-                        <span>{row.original.legion.label}</span>
-                        <span
-                          className={`text-xs ${textMutedOnCanvas}`}
-                          data-legion-fact="phase-time"
-                          title={row.original.legion.card.phase_since ?? "Phase entry time unknown"}
-                        >
-                          {formatPhaseTime(row.original.legion.card.phase_since, Date.now())} in
-                          phase
-                        </span>
-                        {row.original.legion.card.blocked_by.length > 0 ? (
-                          <span className="text-xs" data-legion-fact="blocked-by">
-                            Blocked by {row.original.legion.card.blocked_by.join(", ")}
-                          </span>
-                        ) : null}
-                        {row.original.legion.card.waiting_on ? (
-                          <span className="text-xs" data-legion-fact="waiting-on">
-                            Waiting on {row.original.legion.card.waiting_on.kind}
-                            {row.original.legion.card.waiting_on.answered_at ? "; answered" : ""}
-                          </span>
-                        ) : null}
-                      </span>
+                      <LegionPhaseCell phase={row.original.legion} />
                     ) : (
                       <span className={textMutedOnCanvas}>No Legion phase</span>
                     ),
@@ -454,4 +430,33 @@ export function useIssueTableColumns(
     [userState, compact, hasLegion, board]
   );
   return columns;
+}
+
+/** A Legion phase as the issues table writes it: the board column's label, the time in phase,
+ *  what blocks it and what it waits on. The table's phase column, the project board's cards and
+ *  the Legion dashboard all draw a phase through this one cell (dispatch://INFRA-979). */
+export function LegionPhaseCell({ phase }: { phase: NonNullable<Item["legion"]> }): ReactNode {
+  return (
+    <span className="flex flex-col gap-1" data-legion-phase={phase.id}>
+      <span>{phase.label}</span>
+      <span
+        className={`text-xs ${textMutedOnCanvas}`}
+        data-legion-fact="phase-time"
+        title={phase.card.phase_since ?? "Phase entry time unknown"}
+      >
+        {formatPhaseTime(phase.card.phase_since, Date.now())} in phase
+      </span>
+      {phase.card.blocked_by.length > 0 ? (
+        <span className="text-xs" data-legion-fact="blocked-by">
+          Blocked by {phase.card.blocked_by.join(", ")}
+        </span>
+      ) : null}
+      {phase.card.waiting_on ? (
+        <span className="text-xs" data-legion-fact="waiting-on">
+          Waiting on {phase.card.waiting_on.kind}
+          {phase.card.waiting_on.answered_at ? "; answered" : ""}
+        </span>
+      ) : null}
+    </span>
+  );
 }

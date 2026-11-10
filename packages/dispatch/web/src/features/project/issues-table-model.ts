@@ -93,6 +93,21 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   if (hours < 24) return `${hours} h ${minutes % 60} m`;
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
+/** Each board card's Legion phase as the table draws it: the card, its column's id and label,
+ *  and the column's place on the board. One reading of the board for the table, the project
+ *  board's cards and the Legion dashboard (LegionPhaseCell). */
+export function legionPhases(
+  board: LegionBoardResponse | null | undefined
+): Map<string, NonNullable<Item["legion"]>> {
+  const legion = new Map<string, NonNullable<Item["legion"]>>();
+  board?.columns.forEach((column, order) => {
+    for (const card of column.cards) {
+      legion.set(card.key, { card, id: column.id, label: column.label, order });
+    }
+  });
+  return legion;
+}
+
 export type EpicAncestor = Pick<IssueSummary, "key" | "parent" | "status" | "labels" | "title">;
 export function buildItems(
   issues: readonly IssueSummary[],
@@ -104,15 +119,14 @@ export function buildItems(
   const byKey = new Map<string, EpicAncestor>(
     [...ancestors, ...issues].map((issue) => [issue.key, issue])
   );
-  const legion = new Map<string, NonNullable<Item["legion"]>>();
+  const legion = legionPhases(board);
   const positions = new Map<string, number>();
   if (board !== undefined) {
-    board?.columns.forEach((column, order) => {
-      column.cards.forEach((card, index) => {
-        legion.set(card.key, { card, id: column.id, label: column.label, order });
-        if (column.id === "queue") positions.set(card.key, index + 1);
+    board?.columns
+      .find((column) => column.id === "queue")
+      ?.cards.forEach((card, index) => {
+        positions.set(card.key, index + 1);
       });
-    });
   } else {
     // Rank's alphabet is byte-ordered, not locale-ordered.
     issues

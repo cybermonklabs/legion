@@ -1,10 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  legionSettingsQuery,
+  projectArchitectureSourcesQuery,
+  projectsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import {
@@ -29,12 +34,12 @@ import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
-import { selectIssues } from "./issues-table-model";
-import { LegionHealthPanel } from "./LegionHealthPanel";
+import { LegionTab } from "./LegionTab";
 
-type ProjectTab = "architecture" | "issues" | "documents";
+type ProjectTab = "architecture" | "issues" | "documents" | "legion";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
+const legionTab: TabDefinition<ProjectTab> = { id: "legion", label: "Legion" };
 const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
@@ -54,7 +59,6 @@ const issueViewLabels: Record<IssueView, string> = {
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const [, setSearchParams] = useSearchParams();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
     (stored) => (stored === "board" ? stored : "list"),
@@ -89,6 +93,8 @@ export function ProjectPage(): ReactNode {
     enabled: projectKey !== undefined,
   });
   const hasSource = (sources.data?.length ?? 0) > 0;
+  const legionSettings = useQuery(legionSettingsQuery());
+  const hasLegion = (legionSettings.data ?? []).some((setting) => setting.project === projectKey);
   useKeymapScope("project");
   useKeymap("project", [
     {
@@ -166,7 +172,11 @@ export function ProjectPage(): ReactNode {
 
   const activeTab: ProjectTab = route.kind;
   const selectTab = (tab: ProjectTab) => {
-    navigate(buildProjectPath({ kind: tab, project: route.project }));
+    navigate(
+      tab === "legion"
+        ? buildProjectPath({ kind: "legion", project: route.project })
+        : buildProjectPath({ kind: tab, project: route.project })
+    );
   };
 
   return (
@@ -208,7 +218,11 @@ export function ProjectPage(): ReactNode {
             compact
             idPrefix="project"
             onSelect={selectTab}
-            tabs={hasSource ? [architectureTab, ...tabs] : tabs}
+            tabs={[
+              ...(hasSource ? [architectureTab] : []),
+              ...tabs,
+              ...(hasLegion || activeTab === "legion" ? [legionTab] : []),
+            ]}
           />
         </div>
         {activeTab === "issues" ? (
@@ -279,15 +293,18 @@ export function ProjectPage(): ReactNode {
         {activeTab === "issues" ? (
           issueView === "list" ? (
             <>
-              {/* The project's health numbers, above the table's status bar (dispatch://INFRA-979).
-                  A number the person clicks narrows the table to the issues behind it. */}
-              <LegionHealthPanel
-                key={`health-${route.project}`}
-                onSelectIssues={(keys, label) =>
-                  setSearchParams((current) => selectIssues(current, keys, label))
-                }
-                project={route.project}
-              />
+              {/* The project's Legion numbers are its Legion tab's (dispatch://INFRA-979). */}
+              {hasLegion ? (
+                <p className="mb-2 text-sm">
+                  <Link
+                    className="underline"
+                    data-legion-dashboard-link
+                    to={buildProjectPath({ kind: "legion", project: route.project })}
+                  >
+                    Legion efficiency: slots, waiting line, where the time goes →
+                  </Link>
+                </p>
+              ) : null}
               <IssuesTable key={route.project} project={route.project} />
             </>
           ) : (
@@ -298,6 +315,20 @@ export function ProjectPage(): ReactNode {
           )
         ) : null}
       </div>
+      {activeTab === "legion" ? (
+        <div
+          aria-labelledby="project-legion-tab"
+          className="mt-3"
+          id="project-legion-panel"
+          role="tabpanel"
+        >
+          <LegionTab
+            issue={route.kind === "legion" ? route.issue : undefined}
+            key={route.project}
+            project={route.project}
+          />
+        </div>
+      ) : null}
       <div
         aria-hidden={activeTab !== "documents"}
         aria-labelledby="project-documents-tab"

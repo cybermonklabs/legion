@@ -443,6 +443,13 @@ export const repoProjectsQuery = () =>
     queryFn: () => api.listRepoProjects(),
   });
 
+/** One issue's Legion timeline, by GET. */
+export const legionTimelineQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["legion", "timeline", key],
+    queryFn: () => api.getLegionIssueTimeline(key),
+  });
+
 /** Every project's Legion setting, by project key, read once for the whole app: the Issues page's
  *  view selector asks it whether this project has a Legion view. `[]` is a deployment where no
  *  project names a daemon, not a failure. */

@@ -89,6 +89,7 @@ import type {
   IssueReferences,
   IssueSummary,
   ItemBlocks,
+  LegionIssueTimeline,
   LegionMetricsResponse,
   LegionMetricsScope,
   LegionSetting,
@@ -1660,6 +1661,11 @@ export class DispatchApiClient {
       }
       throw error;
     }
+  }
+
+  /** One issue's Legion timeline, from the metrics' own computation. */
+  getLegionIssueTimeline(key: string): Promise<LegionIssueTimeline> {
+    return this.json<LegionIssueTimeline>(`/api/v1/legion/issues/${pathSegment(key)}/timeline`);
   }
 
   /** The Delivery page's Legion section: the four metrics over the issues of `project` that

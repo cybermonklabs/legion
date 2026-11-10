@@ -208,11 +208,14 @@ export type LegionMetricKey = "work_time" | "phase_time" | "rework" | "splitting
 export function LegionCard({
   compare,
   metric,
+  onOpenIssue,
   onSelectIssues,
   report,
 }: {
   compare?: ChartCompareSource<LegionMetricsResponse>;
   metric: LegionMetricKey;
+  /** Where given, a row that is one issue opens its timeline rather than filtering to it. */
+  onOpenIssue?: (key: string) => void;
   onSelectIssues?: (keys: string[], label: string) => void;
   report: LegionMetricsResponse;
 }): ReactNode {
@@ -231,11 +234,18 @@ export function LegionCard({
   const figureKeys = (keys: string[], label: string) =>
     onSelectIssues === undefined ? undefined : () => onSelectIssues(keys, label);
   const { rework, splitting, phase_time: phase } = report;
-  const chart = (label: string, rows: ChartRows, pick: Parameters<typeof on>[0]) => (
+  const chart = (
+    label: string,
+    rows: ChartRows,
+    pick: Parameters<typeof on>[0],
+    oneIssue = false
+  ) => (
     <Chart
       compare={chartCompare(compare, compared)}
       label={label}
-      onSelect={on(pick)}
+      onSelect={
+        oneIssue && onOpenIssue !== undefined ? (row: string) => onOpenIssue(row) : on(pick)
+      }
       range={range}
       rows={rows}
       series={series}
@@ -258,7 +268,7 @@ export function LegionCard({
           metric="work_time"
           title="Work time to merge"
         >
-          {chart("Work time to merge", byIssue, (row) => [[row], `Work time: ${row}`])}
+          {chart("Work time to merge", byIssue, (row) => [[row], `Work time: ${row}`], true)}
         </MetricCard>
       );
     case "phase_time":
@@ -277,7 +287,7 @@ export function LegionCard({
         >
           <p className={`text-xs ${textMutedOnSurface}`} data-legion-unknown-note>
             {phase.observed_hours === 0
-              ? `The daemon reported nothing of these issues in this range, so in a turn, CI wait, waiting on children and idle are unknown: all ${hours(phase.unknown_hours)} not waiting on a person are booked as unknown, not as idle.`
+              ? `The daemon reported nothing of these issues in this range, so in a turn, CI wait and idle are unknown: the ${hours(phase.unknown_hours)} neither waiting on a person nor on children are booked as unknown, not as idle.`
               : `${hours(phase.unknown_hours)} fall before the daemon reported on their issue, so whether a role was in a turn, CI was running or nothing happened is unknown; they are booked as unknown, not as idle.`}
           </p>
           {chart(
@@ -301,7 +311,7 @@ export function LegionCard({
           metric="rework"
           title="Rework"
         >
-          {chart("Rework", byIssue, (row) => [[row], `Rework: ${row}`])}
+          {chart("Rework", byIssue, (row) => [[row], `Rework: ${row}`], true)}
         </MetricCard>
       );
     case "splitting":

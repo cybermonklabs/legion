@@ -13,10 +13,24 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 
-import { projectIssuesQuery, userStateQuery } from "../../api/queries";
+import {
+  legionBoardQuery,
+  legionSettingsQuery,
+  projectIssuesQuery,
+  userStateQuery,
+} from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
@@ -71,6 +85,8 @@ import {
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { LegionPhaseCell } from "./issues-table-columns";
+import { type Item, legionPhases } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -106,6 +122,33 @@ function columnAround(node: Element | null): HTMLElement | null {
  * names it for them. dnd-kit's default drag attributes would make the card a `button`; it stays
  * an `article` so nothing interactive is nested in a control.
  */
+/** Each issue's Legion phase on the project's board route, live, for the cards
+ *  (dispatch://INFRA-979); empty for a project with no Legion setting. */
+const LegionCardPhases = createContext<ReadonlyMap<string, NonNullable<Item["legion"]>>>(new Map());
+
+/** A card's Legion line: its phase as the issues table writes it (LegionPhaseCell), its slot and
+ *  the roles in a turn. */
+function CardLegion({ issueKey }: { issueKey: string }): ReactNode {
+  const phase = useContext(LegionCardPhases).get(issueKey);
+  if (phase === undefined) return null;
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-1 text-xs"
+      data-board-legion={issueKey}
+    >
+      <LegionPhaseCell phase={phase} />
+      <span data-legion-fact="slot">
+        {phase.card.slot === null ? "No slot" : `Slot ${phase.card.slot}`}
+      </span>
+      <span data-legion-fact="roles">
+        {phase.card.roles.length === 0
+          ? "Nobody in a turn"
+          : `${phase.card.roles.join(", ")} in a turn`}
+      </span>
+    </div>
+  );
+}
+
 function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
   const {
     attributes,
@@ -155,6 +198,7 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
         <span className="self-start font-semibold">{issue.key}</span>
         <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
       </Link>
+      <CardLegion issueKey={issue.key} />
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {unread ? <UnreadDot /> : null}
         <PriorityControl
@@ -325,6 +369,13 @@ export function IssueBoard({
   });
   const issues = labels.length === 0 ? allIssues : labelledIssues;
   const userState = useQuery(userStateQuery());
+  const legionSettings = useQuery(legionSettingsQuery());
+  const hasLegion = (legionSettings.data ?? []).some((setting) => setting.project === project);
+  const legionBoard = useQuery({
+    ...legionBoardQuery({ kind: "legion", project }),
+    enabled: hasLegion,
+  });
+  const cardPhases = useMemo(() => legionPhases(legionBoard.data), [legionBoard.data]);
   /** The strip's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
   const isVisible = useCallback(
@@ -676,75 +727,80 @@ export function IssueBoard({
   }
 
   return (
-    <section aria-label="Project board" className="min-w-0" ref={boardRef}>
-      {error === undefined ? null : (
-        <div
-          aria-live="assertive"
-          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-          role="alert"
-        >
-          {error}
-        </div>
-      )}
-      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-        {announcement}
-      </p>
-      {issues.data.length === 0 ? (
-        // The active query is the label-filtered list, so an empty answer under a label filter
-        // means "nothing matches", not "empty project" - the same copy the List shows.
-        labels.length === 0 ? (
-          <EmptyState label="Empty project board" message="No issues in this project." />
-        ) : (
-          <EmptyState label="No matching project issues" message="No issues match these filters." />
-        )
-      ) : (
-        <DndContext
-          accessibility={{
-            screenReaderInstructions: {
-              draggable:
-                "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
-            },
-          }}
-          collisionDetection={boardCollisionDetection}
-          onDragCancel={landCard}
-          onDragEnd={onDragEnd}
-          onDragStart={liftCard}
-          sensors={sensors}
-        >
-          {lanes ? (
-            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-              {boardLanes.map((boardLane) => (
-                <BoardLaneRow
-                  boardLane={boardLane}
-                  dragging={dragging}
-                  isCollapsed={isCollapsed}
-                  key={laneKey(boardLane.lane)}
-                  userState={userState.data}
-                />
-              ))}
-            </div>
+    <LegionCardPhases.Provider value={cardPhases}>
+      <section aria-label="Project board" className="min-w-0" ref={boardRef}>
+        {error === undefined ? null : (
+          <div
+            aria-live="assertive"
+            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+            role="alert"
+          >
+            {error}
+          </div>
+        )}
+        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+          {announcement}
+        </p>
+        {issues.data.length === 0 ? (
+          // The active query is the label-filtered list, so an empty answer under a label filter
+          // means "nothing matches", not "empty project" - the same copy the List shows.
+          labels.length === 0 ? (
+            <EmptyState label="Empty project board" message="No issues in this project." />
           ) : (
-            <div
-              className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-              data-testid="board-scroll-container"
-            >
-              <div className="flex w-max items-stretch gap-4">
-                {columns.map((column) =>
-                  isCollapsed(column.status) ? (
-                    <CollapsedColumn column={column} key={column.status} />
-                  ) : (
-                    <BoardColumnView
-                      column={column}
-                      key={column.status}
-                      userState={userState.data}
-                    />
-                  )
-                )}
+            <EmptyState
+              label="No matching project issues"
+              message="No issues match these filters."
+            />
+          )
+        ) : (
+          <DndContext
+            accessibility={{
+              screenReaderInstructions: {
+                draggable:
+                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+              },
+            }}
+            collisionDetection={boardCollisionDetection}
+            onDragCancel={landCard}
+            onDragEnd={onDragEnd}
+            onDragStart={liftCard}
+            sensors={sensors}
+          >
+            {lanes ? (
+              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+                {boardLanes.map((boardLane) => (
+                  <BoardLaneRow
+                    boardLane={boardLane}
+                    dragging={dragging}
+                    isCollapsed={isCollapsed}
+                    key={laneKey(boardLane.lane)}
+                    userState={userState.data}
+                  />
+                ))}
               </div>
-            </div>
-          )}
-        </DndContext>
-      )}
-    </section>
+            ) : (
+              <div
+                className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+                data-testid="board-scroll-container"
+              >
+                <div className="flex w-max items-stretch gap-4">
+                  {columns.map((column) =>
+                    isCollapsed(column.status) ? (
+                      <CollapsedColumn column={column} key={column.status} />
+                    ) : (
+                      <BoardColumnView
+                        column={column}
+                        key={column.status}
+                        userState={userState.data}
+                      />
+                    )
+                  )}
+                </div>
+              </div>
+            )}
+          </DndContext>
+        )}
+      </section>
+    </LegionCardPhases.Provider>
   );
 }

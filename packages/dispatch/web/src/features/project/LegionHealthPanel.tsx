@@ -117,6 +117,16 @@ function notMeasured(error: unknown): boolean {
 /** Which card is open under the tile row. */
 type CardKey = LegionMetricKey | "ci" | "deploy";
 
+/** Every card, in the tiles' order. */
+const CARDS: readonly CardKey[] = [
+  "work_time",
+  "phase_time",
+  "rework",
+  "splitting",
+  "ci",
+  "deploy",
+];
+
 /** A number's change against the compare range, signed, in the number's own format; empty while
  *  either is unknown. */
 function delta(
@@ -137,11 +147,18 @@ function filedPerWeek(report: LegionMetricsResponse): number {
 }
 
 export function LegionHealthPanel({
+  layout = "tiles",
+  onOpenIssue,
   onSelectIssues,
   project,
 }: {
   readonly project: string;
+  /** `tiles`: one row of tiles, a click opening one card under it. `dashboard`: the tiles, and
+   *  every card open under them in a grid, a tile's click scrolling to its card. */
+  readonly layout?: "tiles" | "dashboard";
   readonly onSelectIssues?: (keys: string[], label: string) => void;
+  /** Called with one issue's key where a card's row is one issue, to open its timeline. */
+  readonly onOpenIssue?: (key: string) => void;
 }): ReactNode {
   const headingId = useId();
   const [open, setOpen] = useState(true);
@@ -216,7 +233,64 @@ export function LegionHealthPanel({
   const ciBefore = compare === null ? undefined : comparedPipeline.data?.pr_checks.run.total;
   const deploys = measures.data?.measures;
   const deploysBefore = compare === null ? undefined : comparedMeasures.data?.measures;
-  const toggle = (key: CardKey) => setCard(card === key ? null : key);
+  const toggle = (key: CardKey) => {
+    if (layout === "dashboard") {
+      document
+        .getElementById(`${headingId}-card-${key}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    setCard(card === key ? null : key);
+  };
+
+  const renderCard = (shown: CardKey): ReactNode =>
+    shown === "ci" || shown === "deploy" ? (
+      <DeliveryCard
+        failed={
+          shown === "ci" ? pipeline.isError && ciMeasured : measures.isError && deployMeasured
+        }
+        loading={
+          loadingDelivery ||
+          (measured && (shown === "ci" ? pipeline.isPending : measures.isPending))
+        }
+        measured={shown === "ci" ? ciMeasured : deployMeasured}
+        metric={shown}
+        none={
+          shown === "ci"
+            ? "No CI measured for this project yet."
+            : "No deploy measured for this project yet."
+        }
+        onRetry={() => void (shown === "ci" ? pipeline.refetch() : measures.refetch())}
+        title={shown === "ci" ? "PR CI" : "Deploys"}
+      >
+        {shown === "ci" && pipeline.data !== undefined ? (
+          <CiChart compare={source(comparedPipeline.data)} pipeline={pipeline.data} />
+        ) : shown === "deploy" && measures.data !== undefined ? (
+          <DeployChart compare={source(comparedMeasures.data)} measures={measures.data} />
+        ) : null}
+      </DeliveryCard>
+    ) : !hasLegion ? (
+      <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-health-unconfigured>
+        {project} names no Legion daemon, so there are no Legion numbers. The Settings page names
+        one.
+      </p>
+    ) : metrics.isError ? (
+      <QueryError
+        message="Couldn't load the Legion metrics."
+        onRetry={() => void metrics.refetch()}
+        retrying={metrics.isFetching}
+      />
+    ) : report === undefined ? (
+      <p className={`text-sm ${textMutedOnCanvas}`}>Loading the Legion metrics…</p>
+    ) : (
+      <LegionCard
+        compare={source(comparedMetrics.data)}
+        metric={shown}
+        onOpenIssue={onOpenIssue}
+        onSelectIssues={onSelectIssues}
+        report={report}
+      />
+    );
 
   return (
     <section aria-labelledby={headingId} className={`mb-3 ${CARD}`} data-legion-health={project}>
@@ -378,51 +452,18 @@ export function LegionHealthPanel({
               )}
             </Tile>
           </fieldset>
-          {card === null ? null : card === "ci" || card === "deploy" ? (
-            <DeliveryCard
-              failed={
-                card === "ci" ? pipeline.isError && ciMeasured : measures.isError && deployMeasured
-              }
-              loading={
-                loadingDelivery ||
-                (measured && (card === "ci" ? pipeline.isPending : measures.isPending))
-              }
-              measured={card === "ci" ? ciMeasured : deployMeasured}
-              metric={card}
-              none={
-                card === "ci"
-                  ? "No CI measured for this project yet."
-                  : "No deploy measured for this project yet."
-              }
-              onRetry={() => void (card === "ci" ? pipeline.refetch() : measures.refetch())}
-              title={card === "ci" ? "PR CI" : "Deploys"}
-            >
-              {card === "ci" && pipeline.data !== undefined ? (
-                <CiChart compare={source(comparedPipeline.data)} pipeline={pipeline.data} />
-              ) : card === "deploy" && measures.data !== undefined ? (
-                <DeployChart compare={source(comparedMeasures.data)} measures={measures.data} />
-              ) : null}
-            </DeliveryCard>
-          ) : !hasLegion ? (
-            <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-health-unconfigured>
-              {project} names no Legion daemon, so there are no Legion numbers. The Settings page
-              names one.
-            </p>
-          ) : metrics.isError ? (
-            <QueryError
-              message="Couldn't load the Legion metrics."
-              onRetry={() => void metrics.refetch()}
-              retrying={metrics.isFetching}
-            />
-          ) : report === undefined ? (
-            <p className={`text-sm ${textMutedOnCanvas}`}>Loading the Legion metrics…</p>
-          ) : (
-            <LegionCard
-              compare={source(comparedMetrics.data)}
-              metric={card}
-              onSelectIssues={onSelectIssues}
-              report={report}
-            />
+          {layout === "dashboard" ? (
+            <div className="@container">
+              <div className="grid min-w-0 grid-cols-1 gap-3 @min-[64rem]:grid-cols-2">
+                {CARDS.map((key) => (
+                  <div className="min-w-0 scroll-mt-4" id={`${headingId}-card-${key}`} key={key}>
+                    {renderCard(key)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : card === null ? null : (
+            renderCard(card)
           )}
         </div>
       ) : null}
