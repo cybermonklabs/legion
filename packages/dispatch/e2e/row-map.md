@@ -272,6 +272,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/margin-thread-reply.e2e.ts` | margin replies in flight with server refusals |
 | `e2e/margin.e2e.ts` | two contexts, live document marks, suggestion accepts |
 | `e2e/mention-composer.e2e.ts` | delivery through the fake Envoy and the listener's own refusals |
+| `e2e/mention-reference.e2e.ts` | each row sends a comment and reads the stored record back - the party set the server reads out of the body, its delivery rows and the frames the fake Envoy listener took - and the refusals are the server's own |
 | `e2e/mermaid.e2e.ts` | the edit lands and is re-read; each draws the diagram inside the live document editor |
 | `e2e/message-agent.e2e.ts` | mention targets posted and their delivery failures |
 | `e2e/nav.e2e.ts` | the sidebar's badges are counts the server computes over the issues and asks the row seeds, and the row asserts the exact set of requests the page makes of that server |
@@ -293,6 +294,9 @@ such a row loses is feedback on the pull request itself.
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |
 | `e2e/recipients-claim.e2e.ts` | claims and routes the server computes, with live card updates |
 | `e2e/reference-cards.e2e.ts` | opens the spec's live editor and its margin thread |
+| `e2e/reference-kinds.e2e.ts` | each pick is read back from the stored record, whose text and resolved name the server writes, and the party rows drive the fake registry and the fake Envoy listener |
+| `e2e/reference-naming.e2e.ts` | a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it |
+| `e2e/reference-picker.e2e.ts` | the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects |
 | `e2e/reference-titles.e2e.ts` | asserts drawn titles inside the live editor |
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |
 | `e2e/refetch-budget.e2e.ts` | writes after load, counted reads and the server's event feed |
@@ -316,3 +320,4 @@ such a row loses is feedback on the pull request itself.
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |
 | `e2e/writes.e2e.ts` | a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned |
+| `e2e/writing-surfaces.e2e.ts` | it walks every covered writing box, the document's live editor and the agent live conversation among them, and each delivering box's row is read back from the write the server stored and the frame the fake Envoy listener took |

@@ -159,6 +159,8 @@ export const realStackReasons: Record<string, string> = {
   "margin-thread-reply.e2e.ts": "margin replies in flight with server refusals",
   "margin.e2e.ts": "two contexts, live document marks, suggestion accepts",
   "mention-composer.e2e.ts": "delivery through the fake Envoy and the listener's own refusals",
+  "mention-reference.e2e.ts":
+    "each row sends a comment and reads the stored record back - the party set the server reads out of the body, its delivery rows and the frames the fake Envoy listener took - and the refusals are the server's own",
   "mermaid.e2e.ts":
     "the edit lands and is re-read; each draws the diagram inside the live document editor",
   "message-agent.e2e.ts": "mention targets posted and their delivery failures",
@@ -186,6 +188,12 @@ export const realStackReasons: Record<string, string> = {
   "project.e2e.ts": "the reference closure is the server's graph walk",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
+  "reference-kinds.e2e.ts":
+    "each pick is read back from the stored record, whose text and resolved name the server writes, and the party rows drive the fake registry and the fake Envoy listener",
+  "reference-naming.e2e.ts":
+    "a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it",
+  "reference-picker.e2e.ts":
+    "the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects",
   "reference-titles.e2e.ts": "asserts drawn titles inside the live editor",
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
@@ -216,4 +224,6 @@ export const realStackReasons: Record<string, string> = {
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":
     "a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned",
+  "writing-surfaces.e2e.ts":
+    "it walks every covered writing box, the document's live editor and the agent live conversation among them, and each delivering box's row is read back from the write the server stored and the frame the fake Envoy listener took",
 };
