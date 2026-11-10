@@ -28,6 +28,9 @@ test("the question mark opens the panel, which says what ! does, where a command
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     const said = panel.textContent ?? "";
     expect(said).toContain("! at the start of a message runs the rest as a shell command");
+    expect(said).toContain(
+      "runs in the session's own working directory, the one the row under the message box shows"
+    );
     expect(said).toContain("A BTW runs nothing");
     expect(said).toContain("/ at the start of a message runs one of the session's own commands");
     expect(said).toContain("A command runs nowhere else.");

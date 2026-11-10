@@ -65,8 +65,9 @@ export function MessageBoxHelp({ onOpenChange, open }: MessageBoxHelpProps): Rea
           <ul className={`mt-1 space-y-1 text-xs ${textSecondaryOnSurface}`}>
             <li>
               <Prefix>!</Prefix> at the start of a message runs the rest as a shell command in this
-              session, and its output lands in the conversation. A BTW runs nothing: the session
-              answers it.
+              session, and its output lands in the conversation. The command runs in the session's
+              own working directory, the one the row under the message box shows. A BTW runs
+              nothing: the session answers it.
             </li>
             <li>
               <Prefix>/</Prefix> at the start of a message runs one of the session's own commands,

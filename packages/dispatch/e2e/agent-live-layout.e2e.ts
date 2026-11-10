@@ -298,9 +298,11 @@ test("the line under the box reads nothing at rest and carries a refused press's
   }
 });
 
-// R6. The question mark is where the three rules the page used to print now live: what `!` does,
-// where a command runs, and that the session's turns are relayed while the page is open and not
-// stored, while the messages sent through Dispatch and its replies are kept. Escape closes it.
+// R6. The question mark is where the rules the page used to print now live: what `!` does and
+// where its command runs - in this session, in the session's own working directory, which the
+// row under the message box shows - and that the session's turns are relayed while the page is
+// open and not stored, while the messages sent through Dispatch and its replies are kept.
+// Escape closes it.
 // SLOW(>=2s): a live view opened on the session's replay before the panel is opened and read.
 test("the question mark opens a panel naming what ! does, where a command runs and what is kept", async ({
   browser,
@@ -319,6 +321,12 @@ test("the question mark opens a panel naming what ! does, where a command runs a
     await question.click();
     await expect(panel).toBeVisible();
     await expect(panel).toContainText("runs the rest as a shell command in this session");
+    // Where that command runs, which is what a person needs before they type one: the session's
+    // own working directory, and the row under the box is where the panel says it is shown.
+    await expect(panel).toContainText(
+      "runs in the session's own working directory, the one the row under the message box shows"
+    );
+    await expect(footer(page).getByTestId("agent-footer-dir")).toBeVisible();
     await expect(panel).toContainText("at the session itself");
     await expect(panel).toContainText("relayed while this page is open and are not stored");
     await expect(panel).toContainText("Messages sent to it through Dispatch, and its Dispatch");

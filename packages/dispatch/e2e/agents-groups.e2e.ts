@@ -36,7 +36,8 @@ import { asUser } from "./users";
  * box of its own, and the selection and the broadcast composer are the ones the page had before.
  *
  * The windowed list of six hundred sessions is `agents-window.e2e.ts`, and the time that list
- * takes to paint is `agent-workspace-timing.e2e.ts` (D14).
+ * takes to paint is `agent-workspace-timing.e2e.ts` (D14). How tall one of those rows is, which
+ * is what the six hundred cost in room, is the last row of this file.
  */
 
 /** The sessions these rows read, by id. Each is a UUID, which Dispatch's agent routes require. */
@@ -50,6 +51,26 @@ const ENDED = "01a0e812-0c07-7000-8000-000000000006";
 /** How long the registry's silence has to run before a session is `Quiet` (`agent-groups.ts`'s
  *  `QUIET_AFTER_MS`), which the rows below seed either side of. */
 const QUIET_AFTER_MS = 10 * 60_000;
+
+/** How tall a row of the page is, by the width it is read at. 46 is the figure the spec's
+ *  Design records for the row the page drew before this change ("its row is 42 pixels against
+ *  today's 46"), and the row this change draws measures the same 46 at a laptop width. 126 is
+ *  this change's own reading at 390, where the directory takes a line of its own and the
+ *  controls wrap to lines a thumb can hit: the Design records no phone figure, so there is
+ *  none to read against there. */
+const ROW_HEIGHT_PX = { laptop: 46, phone: 126 };
+
+/** One element's box on screen, in whole pixels: what a reader sees, rather than a fraction of
+ *  a pixel the layout engine carries. */
+async function boxOf(locator: Locator): Promise<{ bottom: number; height: number; top: number }> {
+  const box = await locator.boundingBox();
+  if (box === null) throw new Error("the element is not laid out");
+  return {
+    bottom: Math.round(box.y + box.height),
+    height: Math.round(box.height),
+    top: Math.round(box.y),
+  };
+}
 
 /** A live session for a row to group. `last_seen` is taken when the row seeds, never at this
  *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
@@ -398,8 +419,9 @@ test("the machine filter narrows forty machines to the ones typed, and two picks
 // R7. What a row carries, and what pinning from it does. The row names the session's state, the
 // session itself, how long ago Dispatch heard from it and where it is working, and carries the
 // pin; the pin is the person's, so the agent is in the rail on every page from that press. The
-// row's two shapes, and its height against the row the page drew before this change, are
-// `agents.e2e.ts`'s own rows at both widths.
+// row's two shapes, and the long-name row's height against the heights the page before this
+// change measured with those same long fixtures, are `agents.e2e.ts`'s own rows at both widths;
+// an ordinary row's height against the figure the spec's Design records is the last row here.
 // SLOW(>=2s): a session seeded with Dispatch activity, one page load, then a pin waited on
 // until it reaches the rail.
 test("an agent row carries its state, its name, its age, its directory and its pin, which reaches the rail", async ({
@@ -492,6 +514,60 @@ test("ticking two rows reads two selected, the composer names them, and a pill r
     await expect(
       agentRow(page, DOZING).getByRole("checkbox", { name: "Select Dozing" })
     ).not.toBeChecked();
+  } finally {
+    await context.close();
+  }
+});
+
+// R7. How tall a row is, which is what six hundred of them cost a reader in room. The spec's
+// Design records the pair this reads against: "its row is 42 pixels against today's 46"
+// (dispatch://INFRA-812/spec, Design), measured on the prototype at a laptop width. The row the
+// page draws here is 46 pixels at 1440 - today's figure exactly, not the prototype's 42 - so it
+// is no taller than the row the page drew before this change, with nothing to spare. At 390 the
+// directory takes a line of its own and the controls wrap to lines a thumb can hit, which is
+// the shape the page drew before this change at that width; the Design records no figure there,
+// so the 126 pixels below were measured on this change and are what a taller row is caught
+// against. The long-name row at both widths, against the heights the page before this change
+// measured with those same fixtures, is `agents.e2e.ts`'s two-shape row.
+// SLOW(>=2s): one session seeded, one page load, then the row and two of its parts measured.
+test("an agent row stands at the height recorded for its width @phone", async ({
+  browser,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  await setLiveSessions([session(TALKER, "Talker")]);
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    // The width the Design's figures were read at; the phone project is 390 pixels already.
+    if (!isPhone) await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/agents");
+    const row = agentRow(page, TALKER);
+    await expect(row).toBeVisible();
+
+    const rowBox = await boxOf(row);
+    const name = await boxOf(row.locator("[data-agent-toggle]"));
+    const directory = await boxOf(row.locator("[data-agent-dir]"));
+    const recorded = isPhone ? ROW_HEIGHT_PX.phone : ROW_HEIGHT_PX.laptop;
+    expect(
+      rowBox.height,
+      `the row is ${rowBox.height}px tall at ${isPhone ? 390 : 1440}px, against the ${recorded}px ` +
+        "recorded for that width"
+    ).toBeLessThanOrEqual(recorded);
+    // A row drawn with nothing in it would pass a ceiling on its own, so the reading has a floor
+    // as well: the row carries the state mark, the name, the age, the directory and the pin.
+    expect(rowBox.height).toBeGreaterThan(24);
+
+    // The shape each figure belongs to. From `md` the directory shares the name's line, so the
+    // row is one line; at a phone it is on a line of its own under the name, which is why the
+    // figure there is the taller one.
+    if (isPhone) {
+      expect(directory.top, "the directory is on a line under the name").toBeGreaterThanOrEqual(
+        name.bottom
+      );
+    } else {
+      expect(directory.top, "the directory is on the name's line").toBeLessThan(name.bottom);
+    }
   } finally {
     await context.close();
   }
