@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every frame the shim and the daemon exchange, as the shipped TypeScript writes it on the wire
@@ -147,6 +148,41 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1"},
 		},
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
+		{
+			// The ack that hands the launcher its trimmer settings. An ack with no volumeTrim is
+			// the row above, and the one thing that means this daemon runs no trimmer here
+			// (TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem).
+			"launcher_hello_ack with trimmer settings",
+			`{"type":"launcher_hello_ack","volumeTrim":{"highPercent":85,"lowPercent":70,"minAgeMinutes":120,"intervalSeconds":60}}`,
+			LauncherHelloAck{VolumeTrim: &LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}},
+		},
+		{
+			// One sweep as the trimmer reports it, every member set: the episode and what raised
+			// it, the volume before and after, the sizes of the directories two levels under the
+			// root, and the faults that have now stopped the trimmer itself.
+			"launcher_volume_report",
+			`{"type":"launcher_volume_report","trimmer":"trim-9f3c","episode":2,"raisedBy":"rise","usedBytes":48318382080,"freeBytes":5368709120,"freedBytes":10737418240,` +
+				`"stopReason":"the reading fell below the low mark","refusedReads":["1842 role-init"],` +
+				`"sizes":[{"path":"/legion/go/build","bytes":32212254720,"bytesOverHour":21474836480,"bytesOverDay":10737418240},` +
+				`{"path":"/legion/scratch/tmp","bytes":16106127360,"bytesOverHour":8589934592,"bytesOverDay":0}],` +
+				`"sizesAt":"2026-11-10T04:05:06Z","sizesPartial":true,"sizesMissing":["/legion/uv"],` +
+				`"faults":["panic: the size walk read a path that went away (goroutine 42)"],"switchedOff":true}`,
+			LauncherVolumeReport{
+				Trimmer: "trim-9f3c", Episode: 2, RaisedBy: VolumeEpisodeRise,
+				UsedBytes: 48_318_382_080, FreeBytes: 5_368_709_120, FreedBytes: 10_737_418_240,
+				StopReason:   "the reading fell below the low mark",
+				RefusedReads: []string{"1842 role-init"},
+				Sizes: []LauncherVolumeSize{
+					{Path: "/legion/go/build", Bytes: 32_212_254_720, BytesOverHour: 21_474_836_480, BytesOverDay: 10_737_418_240},
+					{Path: "/legion/scratch/tmp", Bytes: 16_106_127_360, BytesOverHour: 8_589_934_592},
+				},
+				SizesAt:      time.Date(2026, 11, 10, 4, 5, 6, 0, time.UTC),
+				SizesPartial: true,
+				SizesMissing: []string{"/legion/uv"},
+				Faults:       []string{"panic: the size walk read a path that went away (goroutine 42)"},
+				SwitchedOff:  true,
+			},
+		},
 		{
 			"launcher_state",
 			`{"type":"launcher_state","child":{"generation":7,"pid":42},"lastExit":{"generation":6,"code":143,"signal":"terminated"}}`,
@@ -391,9 +427,10 @@ func TestALineThatIsNotAJSONObjectIsRefused(t *testing.T) {
 	}
 }
 
-// The two frames the shipped code refuses when their fields are malformed, because in each case
-// the sender is the only writer and a malformed one is a bug to name: the hello
-// (worker-stream-listener.ts:140-148) and the daemon's adoption request (worker-shim.ts:171-180).
+// Every frame the shipped code refuses when its fields are malformed, because in each case the
+// sender is the only writer and a malformed one is a bug to name: the hello
+// (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180),
+// and the frames this daemon validates of its own.
 func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T) {
 	if err := (Hello{BootToken: "boot-1"}).Validate(); err != nil {
 		t.Fatalf("Hello.Validate: %v", err)
@@ -448,6 +485,23 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		{"a branch a refspec misreads", RescueUnpushed{ID: "r5", Branch: "legion/x:refs/heads/main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
 		{"no workspace bound", RescueUnpushed{ID: "r5", Branch: rescue.Branch, TimeoutMs: 2}},
 		{"a workspace bound above the whole", RescueUnpushed{ID: "r5", Branch: rescue.Branch, WorkspaceTimeoutMs: 3, TimeoutMs: 2}},
+	} {
+		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
+		}
+	}
+	// The volume report is the trimmer's own, and the daemon counts its notice bounds per
+	// trimmer and per episode: a report naming neither is one it could not count.
+	report := LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst}
+	if err := report.Validate(); err != nil {
+		t.Fatalf("LauncherVolumeReport.Validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		frame LauncherVolumeReport
+	}{
+		{"no trimmer", LauncherVolumeReport{Episode: 1, RaisedBy: VolumeEpisodeFirst}},
+		{"an episode below the first", LauncherVolumeReport{Trimmer: report.Trimmer, RaisedBy: VolumeEpisodeFirst}},
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
@@ -572,5 +626,50 @@ func TestTokenFramesRoundTrip(t *testing.T) {
 		if decoded.FrameType() != frame.FrameType() || !reflect.DeepEqual(decoded, frame) {
 			t.Fatalf("decoded %#v from %s, want %#v", decoded, line, frame)
 		}
+	}
+}
+
+// An ack with no volumeTrim is the one thing that says "run no trimmer": the empty object every
+// daemon built before INFRA-2009 writes, and the ack a deployment that turned the trimmer off
+// writes, are the same line. Settings whose numbers are all zero are not that line — they are
+// settings, and a launcher that read them as an absence would run no trimmer where it was told
+// to run one — which is why the member is a pointer (LauncherHelloAck.VolumeTrim).
+func TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem(t *testing.T) {
+	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
+	if err != nil {
+		t.Fatalf("Decode the old empty ack: %v", err)
+	}
+	ack, ok := decoded.(LauncherHelloAck)
+	if !ok {
+		t.Fatalf("Decode the old empty ack = %#v, want a LauncherHelloAck", decoded)
+	}
+	if ack.VolumeTrim != nil {
+		t.Fatalf("the old empty ack decoded VolumeTrim = %#v, want nil", ack.VolumeTrim)
+	}
+	decoded, err = Decode([]byte(`{"type":"launcher_hello_ack","volumeTrim":{}}`))
+	if err != nil {
+		t.Fatalf("Decode an ack carrying zeroed settings: %v", err)
+	}
+	ack, ok = decoded.(LauncherHelloAck)
+	if !ok {
+		t.Fatalf("Decode an ack carrying zeroed settings = %#v, want a LauncherHelloAck", decoded)
+	}
+	if ack.VolumeTrim == nil {
+		t.Fatal("an ack carrying zeroed settings decoded VolumeTrim = nil, want settings a launcher can read")
+	}
+	if *ack.VolumeTrim != (LauncherVolumeTrim{}) {
+		t.Fatalf("an ack carrying zeroed settings decoded VolumeTrim = %#v, want the zero settings it carried", *ack.VolumeTrim)
+	}
+}
+
+// A report whose walk measured nothing still writes `sizes` as an array: a strict reader refuses
+// a null, which is why record.UpdateStalled.MarshalJSON keeps `waiting` one the same way.
+func TestAVolumeReportWithNoSizesEncodesAnEmptyArray(t *testing.T) {
+	line, err := json.Marshal(LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst})
+	if err != nil {
+		t.Fatalf("Marshal a report with no sizes: %v", err)
+	}
+	if !bytes.Contains(line, []byte(`"sizes":[]`)) || bytes.Contains(line, []byte(`"sizes":null`)) {
+		t.Fatalf("Marshal a report with no sizes = %s, want its sizes as an empty array", line)
 	}
 }
