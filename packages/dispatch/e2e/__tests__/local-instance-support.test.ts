@@ -105,12 +105,18 @@ describe("Supervisor.stop", () => {
   });
 
   test("ends a foreground step that a stop interrupts", async () => {
+    const pidFile = join(makeDirectory(), "step.pid");
     const made = supervisor();
-    const step = made.run(["sleep", "60"], "/");
+    const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; sleep 60`], "/");
+    const leader = await pidFrom(pidFile);
     made.interrupt();
     await expect(step).rejects.toBeInstanceOf(Interrupted);
     // The force-kill delay is far above this row's limit, as in the row above.
     await made.stop(BEYOND_THE_ROW_MS);
+    // `run` removes the step from the supervisor's children only on a clean exit, so after the
+    // interrupt it is `stop` that ends this process: what this catches is a `stop` that returned
+    // having killed nothing.
+    expect(groupAlive(leader)).toBe(false);
   });
 });
 

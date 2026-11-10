@@ -30,6 +30,14 @@ const playwright = fileURLToPath(new URL("../../node_modules/.bin/playwright", i
 // configuration or credential of the developer's own can change what a case here proves.
 const home = temporaryDirectory("harness-lanes-home");
 
+/** The per-test limit of every row below that spawns a process. Such a row's cost follows the
+ *  machine rather than the work: measured on this pod - 2 CPUs, 8 runs under 6 busy loops
+ *  (3 x nproc) - the worst reading was 8.92 s, and 30 s is about three times that worst reading.
+ *  It is a limit sized from measurement rather than a hang guard, though a row that hangs is
+ *  ended by it. Bun's unwritten 5 s default is under the worst reading, so a busy machine read
+ *  as a defect of whatever change was under test. */
+const SPAWN_TEST_MS = 30_000;
+
 async function run(argv: string[], env: Record<string, string>) {
   const child = Bun.spawn(argv, {
     cwd: dispatchPackage,
@@ -155,30 +163,34 @@ test("a run of more than one lane refuses every variable one lane owns", () => {
   expect(() => refuseLaneConflicts(2, {})).not.toThrow();
 });
 
-test("e2e/run.ts refuses each of them before it starts anything", async () => {
-  const conflicts: Record<string, string> = {
-    DATABASE_URL: "postgres://x",
-    DISPATCH_E2E_PROCESSES: "2",
-    DISPATCH_E2E_REUSE_SERVERS: "1",
-    FAKE_ENVOY_PORT: "9021",
-    PLAYWRIGHT_BASE_URL: "http://127.0.0.1:1",
-  };
-  for (const [variable, value] of Object.entries(conflicts)) {
-    const refused = await run(["bun", runScript, "--", "true"], {
-      DISPATCH_E2E_WORKERS: "2",
-      [variable]: value,
-    });
-    expect(refused.code).not.toBe(0);
-    expect(refused.stderr).toContain(`e2e/run.ts: DISPATCH_E2E_WORKERS=2 runs 2 lanes`);
-    expect(refused.stderr).toContain(`${variable} must not be set`);
-  }
-  // With no conflict and no provider, the refusal is the missing Postgres, and still before a
-  // server starts.
-  const noProvider = await run(["bun", runScript, "--", "true"], { DISPATCH_E2E_WORKERS: "2" });
-  expect(noProvider.code).not.toBe(0);
-  expect(noProvider.stderr).toContain("DISPATCH_E2E_PG_IMAGE");
-  expect(noProvider.stderr).toContain("DISPATCH_E2E_PG_BIN");
-});
+test(
+  "e2e/run.ts refuses each of them before it starts anything",
+  async () => {
+    const conflicts: Record<string, string> = {
+      DATABASE_URL: "postgres://x",
+      DISPATCH_E2E_PROCESSES: "2",
+      DISPATCH_E2E_REUSE_SERVERS: "1",
+      FAKE_ENVOY_PORT: "9021",
+      PLAYWRIGHT_BASE_URL: "http://127.0.0.1:1",
+    };
+    for (const [variable, value] of Object.entries(conflicts)) {
+      const refused = await run(["bun", runScript, "--", "true"], {
+        DISPATCH_E2E_WORKERS: "2",
+        [variable]: value,
+      });
+      expect(refused.code).not.toBe(0);
+      expect(refused.stderr).toContain(`e2e/run.ts: DISPATCH_E2E_WORKERS=2 runs 2 lanes`);
+      expect(refused.stderr).toContain(`${variable} must not be set`);
+    }
+    // With no conflict and no provider, the refusal is the missing Postgres, and still before a
+    // server starts.
+    const noProvider = await run(["bun", runScript, "--", "true"], { DISPATCH_E2E_WORKERS: "2" });
+    expect(noProvider.code).not.toBe(0);
+    expect(noProvider.stderr).toContain("DISPATCH_E2E_PG_IMAGE");
+    expect(noProvider.stderr).toContain("DISPATCH_E2E_PG_BIN");
+  },
+  SPAWN_TEST_MS
+);
 
 // The database a lane reads is the psql it starts, so the case that proves which one it picked
 // needs psql and a live database to answer; without either it would prove nothing and is
@@ -198,28 +210,35 @@ if (withoutDatabase) {
   );
 }
 
-test.skipIf(withoutDatabase)("psql reads its own lane's database", async () => {
-  // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
-  // resolves the database once, when it starts its psql.
-  const resolve = [
-    "bun",
-    "-e",
-    `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
-  ];
-  const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
-  // Lane 1's database answers; the plain name, which lane 1 must not read, is a dead port.
-  const lane = await run(resolve, {
-    DATABASE_URL: dead,
-    DISPATCH_E2E_LANE_1_DATABASE_URL: live,
-    DISPATCH_E2E_LANES: "2",
-    TEST_PARALLEL_INDEX: "1",
-  });
-  expect(`${lane.stderr}${lane.stdout}`).toBe("");
-  expect(lane.code).toBe(0);
-  // The same environment without the lane's index is lane 0, which reads the plain name.
-  const plain = await run(resolve, { DATABASE_URL: dead, DISPATCH_E2E_LANE_1_DATABASE_URL: live });
-  expect(plain.code).not.toBe(0);
-});
+test.skipIf(withoutDatabase)(
+  "psql reads its own lane's database",
+  async () => {
+    // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
+    // resolves the database once, when it starts its psql.
+    const resolve = [
+      "bun",
+      "-e",
+      `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
+    ];
+    const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
+    // Lane 1's database answers; the plain name, which lane 1 must not read, is a dead port.
+    const lane = await run(resolve, {
+      DATABASE_URL: dead,
+      DISPATCH_E2E_LANE_1_DATABASE_URL: live,
+      DISPATCH_E2E_LANES: "2",
+      TEST_PARALLEL_INDEX: "1",
+    });
+    expect(`${lane.stderr}${lane.stdout}`).toBe("");
+    expect(lane.code).toBe(0);
+    // The same environment without the lane's index is lane 0, which reads the plain name.
+    const plain = await run(resolve, {
+      DATABASE_URL: dead,
+      DISPATCH_E2E_LANE_1_DATABASE_URL: live,
+    });
+    expect(plain.code).not.toBe(0);
+  },
+  SPAWN_TEST_MS
+);
 
 test("psql names both variables when neither its lane nor the plain name has a database", async () => {
   const refused = await run(
@@ -270,5 +289,5 @@ test.skipIf(withoutPlaywright)(
       "This run has 3 lanes, each a harness of its own, so --workers 2 would not match"
     );
   },
-  30_000
+  SPAWN_TEST_MS
 );
