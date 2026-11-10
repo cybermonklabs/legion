@@ -40,6 +40,7 @@ Read each by its `skill://` link: a read by path stops at 300 lines.
 | You reply on, list or resolve review threads, or judge a bot's finding | `skill://legion-worker/references/review-threads.md` |
 | A conflict, a need only the base meets, a retarget, a parent's last round, comparing heads after a forward merge, or rewriting a pushed commit | `skill://legion-worker/references/conflicts-and-rewrites.md` |
 | You review or approve, build READY, or take a look of a closed issue's production check | `skill://legion-worker/references/merge-gate.md` |
+| A check is red at the head of the pull request, in the phase the role holds | `skill://legion-worker/references/red-at-the-head.md` |
 | The issue renames a repository, package, or URL across the codebase | `skill://legion-worker/references/systematic-rename.md` |
 | The issue deletes code, a command, or documentation | `skill://legion-worker/references/cleanup-deletion.md` |
 | Before you read a shared database, a session store or another role's transcript among them; before you run a build or a test suite in your pod; you need a tool the image may not carry, before you install anything; before you measure Oh My Pi's binary; or a test fails in your pod or needs a database | `skill://legion-worker/references/tools.md` |
