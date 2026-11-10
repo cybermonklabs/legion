@@ -133,13 +133,12 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 }
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
-// with the relaunch half of every phase-worker start left out. A start of a worker is two rows
-// now (workflow.StartOrOwe): the relaunch, which carries the role's phase and no task and brings
-// its session back at once, and the row that carries the task and waits for the issue's
-// admission slot. These assertions are about the row that carries the task, as the workflow
-// package's own helpers are (its superviseRequests and assertOutboxCount). A start that names no
-// phase is no phase worker's — the architect start promotion makes, the production check's look
-// — and is left in.
+// with every task-less phase start left out. A phase worker's start is one row, which carries
+// the task and waits for the issue's admission slot (workflow.StartOrOwe); a start that names a
+// phase and carries no task is a role admission brings back beside it, which asks that role
+// nothing. These assertions are about the starts that carry work, as the workflow package's own
+// helpers are. A start that names no phase is no phase worker's — the architect start promotion
+// makes, the production check's look — and is left in.
 //
 // A supervise start carries an assignment the workflow mints fresh at each start
 // (record.SuperviseRequest.Assignment), so two runs of the same events never write the

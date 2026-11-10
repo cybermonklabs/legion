@@ -371,8 +371,11 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 	if _, counted := ndoc["astrolab"]; counted {
 		t.Fatalf("statistics %v count 'astrolab', which only the older version holds", ndoc)
 	}
-	if ndoc["sextant"] != 1 || ndoc["altitud"] != 1 {
-		t.Fatalf("statistics %v, want 'sextant' and 'altitud' in the one latest version", ndoc)
+	// Two of the project's items hold the latest version's words: the document, and the issue,
+	// whose own vector carries its primary document's text (20261105145242). The title's word is
+	// the issue's alone, which is what tells the two items apart in the counts.
+	if ndoc["sextant"] != 2 || ndoc["altitud"] != 2 || ndoc["instrument"] != 1 {
+		t.Fatalf("statistics %v, want 'sextant' and 'altitud' in the issue and the one latest version, and 'instrument' in the issue alone", ndoc)
 	}
 }
 
@@ -393,7 +396,7 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 	if term, _ := pickedTerm(picked, "walrus"); term.Surface != "Walruses" {
 		t.Fatalf("walrus's surface = %q, want the text's own 'Walruses'", term.Surface)
 	}
-	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, ""),
+	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, ""),
 		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK)
 	if err != nil {
 		t.Fatalf("run the keyword body under the related q: %v", err)

@@ -7550,6 +7550,83 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/going/catalogue": {
+      "get": {
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "operationId": "getApiV1GoingCatalogue",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingCatalogueBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again.",
+            "headers": {
+              "Retry-After": {
+                "style": "simple",
+                "description": "how many seconds to wait before sending the request again",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again.",
+            "headers": {
+              "Retry-After": {
+                "style": "simple",
+                "description": "how many seconds to wait before sending the request again",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/going/requests": {
       "post": {
         "description": "Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
@@ -16938,7 +17015,7 @@
     },
     "/api/v1/search": {
       "get": {
-        "description": "Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: each kind ranked on its own and merged by reciprocal rank fusion, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each kind's best 100); a q over 1000 characters is 400 CAP_EXCEEDED, and a project that is not a project key is 400 INVALID_PROJECT.",
+        "description": "Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY.",
         "operationId": "getApiV1Search",
         "parameters": [
           {
@@ -16953,6 +17030,41 @@
             "in": "query",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "number_project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "keywords_only",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -17043,7 +17155,7 @@
     },
     "/api/v1/search/coverage": {
       "get": {
-        "description": "Meaning search's coverage {identity, place, model, total, kinds}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks).",
+        "description": "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total.",
         "operationId": "getApiV1SearchCoverage",
         "parameters": [
           {
@@ -17375,6 +17487,163 @@
           }
         },
         "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/settings/new-issue": {
+      "get": {
+        "description": "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.",
+        "operationId": "getApiV1SettingsNewIssue",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewIssueSettings"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again.",
+            "headers": {
+              "Retry-After": {
+                "style": "simple",
+                "description": "how many seconds to wait before sending the request again",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again.",
+            "headers": {
+              "Retry-After": {
+                "style": "simple",
+                "description": "how many seconds to wait before sending the request again",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/settings/new-issue/_test": {
+      "post": {
+        "description": "Test hook: {label, session} replaces, on the process the call lands on, the new-issue label and session GET /api/v1/settings/new-issue answers from its environment; an empty value is none.",
+        "operationId": "postApiV1SettingsNewIssueTest",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewIssueSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewIssueSettings"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again.",
+            "headers": {
+              "Retry-After": {
+                "style": "simple",
+                "description": "how many seconds to wait before sending the request again",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
         "x-write-scope": "deployment"
       }
     },
@@ -24722,6 +24991,49 @@
         ],
         "type": "object"
       },
+      "GoingAction": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "example": {},
+          "relations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request": {
+            "items": {
+              "$ref": "#/components/schemas/ToolField"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRoute"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "description",
+          "routes",
+          "request",
+          "example"
+        ],
+        "type": "object"
+      },
       "GoingCapability": {
         "properties": {
           "model_configured": {
@@ -24730,6 +25042,27 @@
         },
         "required": [
           "model_configured"
+        ],
+        "type": "object"
+      },
+      "GoingCatalogueBody": {
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/GoingAction"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "actions"
         ],
         "type": "object"
       },
@@ -24763,6 +25096,21 @@
           "words",
           "created_at",
           "ends_at"
+        ],
+        "type": "object"
+      },
+      "GoingRoute": {
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "pattern"
         ],
         "type": "object"
       },
@@ -27647,6 +27995,36 @@
         ],
         "type": "object"
       },
+      "NewIssueSettings": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "session"
+        ],
+        "type": "object"
+      },
+      "NewIssueSettingsInput": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "session"
+        ],
+        "type": "object"
+      },
       "OpenAsk": {
         "properties": {
           "age_seconds": {
@@ -28845,6 +29223,15 @@
               "string"
             ]
           },
+          "not_indexed": {
+            "items": {
+              "$ref": "#/components/schemas/SearchCoverageNotIndexed"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "place": {
             "type": [
               "null",
@@ -28860,7 +29247,8 @@
           "place",
           "model",
           "total",
-          "kinds"
+          "kinds",
+          "not_indexed"
         ],
         "type": "object"
       },
@@ -28925,6 +29313,39 @@
         ],
         "type": "object"
       },
+      "SearchCoverageNotIndexed": {
+        "properties": {
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "items"
+        ],
+        "type": "object"
+      },
+      "SearchFilters": {
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_since": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "SearchIssue": {
         "properties": {
           "key": {
@@ -28980,16 +29401,43 @@
         ],
         "type": "object"
       },
+      "SearchQueryReading": {
+        "properties": {
+          "broadened": {
+            "type": "boolean"
+          },
+          "operators": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "operators",
+          "broadened"
+        ],
+        "type": "object"
+      },
       "SearchResponse": {
         "properties": {
           "degraded": {
             "type": "string"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/SearchFilters"
           },
           "limit": {
             "type": "integer"
           },
           "offset": {
             "type": "integer"
+          },
+          "query": {
+            "$ref": "#/components/schemas/SearchQueryReading"
           },
           "reachable": {
             "type": "integer"
@@ -29017,7 +29465,9 @@
           "reachable",
           "limit",
           "offset",
-          "took_ms"
+          "took_ms",
+          "query",
+          "filters"
         ],
         "type": "object"
       },
@@ -29487,6 +29937,44 @@
           "pane_id",
           "pane_index",
           "zoomed"
+        ],
+        "type": "object"
+      },
+      "ToolField": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ToolField"
+            },
+            "type": "array"
+          },
+          "item": {
+            "$ref": "#/components/schemas/ToolField"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nullable": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind"
         ],
         "type": "object"
       },

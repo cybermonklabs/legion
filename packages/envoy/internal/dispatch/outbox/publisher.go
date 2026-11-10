@@ -103,6 +103,13 @@ type Deps struct {
 	// listener's sweep, which is what this package's tests that publish through a stand-in with
 	// no stream behind it leave it to.
 	KeptLanes KeptLaneReader
+	// receiptWait is how long a role forward waits for its holder's answer, and zero is
+	// roleReceiptTimeout, which is what cmd/dispatch runs. A test sets it longer than its own run
+	// so that a holder that never answers stays unanswered for the whole test: then what the test
+	// reads is the order of two events rather than a duration, which a loaded machine changes. It
+	// is unexported, so only this package sets it and no importer can shorten the wait
+	// cmd/dispatch runs.
+	receiptWait time.Duration
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -116,6 +123,15 @@ type Deps struct {
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
 	// leaves none out of its read and takes no lock.
 	lanes *lanes
+}
+
+// receiptTimeout is the wait this outbox's role forwards give their holder's answer
+// (roleForward.forward), from receiptWait.
+func (d Deps) receiptTimeout() time.Duration {
+	if d.receiptWait > 0 {
+		return d.receiptWait
+	}
+	return roleReceiptTimeout
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

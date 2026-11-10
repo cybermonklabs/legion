@@ -48,19 +48,20 @@ func (s *server) getRelated(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	// keywords_only is read as search's own ?keywords_only= is (parseQueryBool), in the reading
+	// this route has always given it: the first value as it stands, untrimmed, and no value or a
+	// blank one asks for the check both legs make.
+	keywordsOnly, present, valid := parseQueryBool(query, "keywords_only", false, true)
+	if present && !valid {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "keywords_only must be true or false")
+		return
+	}
 	request := relatedRequest{
 		Title:         query.Get("title"),
 		Text:          query.Get("text"),
 		ExcludeIssue:  query.Get("exclude_issue"),
 		ExcludeIssues: query["exclude_issues"],
-	}
-	switch query.Get("keywords_only") {
-	case "", "false":
-	case "true":
-		request.KeywordsOnly = true
-	default:
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "keywords_only must be true or false")
-		return
+		KeywordsOnly:  keywordsOnly,
 	}
 	if length := itemblocks.Units16(request.checkText()); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("title and text", length, contracts.SearchQueryMax)
