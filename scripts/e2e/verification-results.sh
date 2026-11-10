@@ -112,11 +112,6 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 begin prerequisites
 [ -n "$database_url" ] ||
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
