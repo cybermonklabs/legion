@@ -50,7 +50,8 @@ test.describe("a bare web address is a link in a document written through the AP
   // 42334783358), 2,545 ms at the merge base's merge-group run. Nine paragraphs, each a bare
   // address, asserted twice - once in the Conversation and once in the document editor - which
   // is ten link lookups per surface.
-  test("after punctuation or an escaped scheme colon", async ({ browser }) => {
+  // @pr: The bare-address family's one row on the real stack: a link written through the API must read as a link in the document and in a comment.
+  test("after punctuation or an escaped scheme colon @pr", async ({ browser }) => {
     await createProject({ key: "CORE", name: "Core" });
     const issue = await createIssue({
       project: "CORE",
