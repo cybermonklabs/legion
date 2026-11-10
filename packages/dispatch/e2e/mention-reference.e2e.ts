@@ -243,3 +243,97 @@ test("a party reference inside a fenced code block names nobody and sends nothin
     await alice.close();
   }
 });
+
+// SLOW(>=2s): a send, the record read back, and the listener watched after it.
+test("a party reference inside a code span names nobody and sends nothing", async ({ browser }) => {
+  await setLiveSessions([plannerSession]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A span address names nobody" });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+
+    // A code span is the fence's inline twin: the address is shown as characters inside one
+    // sentence. The browser reads the draft as the server reads the body, so the box lists no
+    // party before the send and the record holds none after it.
+    await commentField(page).fill(`Write \`${plannerMention}\` to reach them.`);
+    await expect(page.getByRole("list", { name: "Mention targets" })).toHaveCount(0);
+
+    const answer = await send(page, issue.key);
+    expect(answer.status()).toBe(201);
+    expect(await answer.json()).toMatchObject({ mentions: [] });
+    expect(await listComments(issue.key)).toMatchObject([{ deliveries: [], mentions: [] }]);
+    expect(await getSentMessages()).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): a send, the record read back, and the listener watched after it.
+test("a party reference inside an indented code block names nobody and sends nothing", async ({
+  browser,
+}) => {
+  await setLiveSessions([plannerSession]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "An indented address names nobody" });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+
+    // The third code context: four spaces after a blank line, which is a code block as much as
+    // a fence is and is drawn as one. The four spaces an ordinary nested bullet carries are no
+    // such block, which `packages/contracts`'s shared table holds both readers to.
+    await commentField(page).fill(`How a mention is written:\n\n    ${plannerMention}\n`);
+    await expect(page.getByRole("list", { name: "Mention targets" })).toHaveCount(0);
+
+    const answer = await send(page, issue.key);
+    expect(answer.status()).toBe(201);
+    expect(await answer.json()).toMatchObject({ mentions: [] });
+    expect(await listComments(issue.key)).toMatchObject([{ deliveries: [], mentions: [] }]);
+    expect(await getSentMessages()).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): a send, the record read back, and the delivery the fake listener takes after it.
+test("a party a draft names outside code is delivered to once, whatever the same draft writes in code", async ({
+  browser,
+}) => {
+  await setLiveSessions([plannerSession]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Code beside a mention" });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+
+    // The boundary the two rows above stand on: one draft naming the same party twice, once as
+    // a mention and once as the characters of a fenced block. Code hides the party written in
+    // it and nothing else, so the party is listed once, delivered to once, and sent one frame.
+    const fence = "```";
+    await commentField(page).fill(
+      `${plannerMention} please look.\n\n${fence}\n${plannerMention}\n${fence}`
+    );
+    await expect(page.getByRole("list", { name: "Mention targets" })).toHaveText(
+      `session:${plannerSession.session_id}`
+    );
+
+    const answer = await send(page, issue.key);
+    expect(answer.status()).toBe(201);
+    await expect
+      .poll(() => listComments(issue.key))
+      .toMatchObject([{ mentions: [{ target: `session:${plannerSession.session_id}` }] }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: plannerSession.session_id }]);
+    expect(await getSentMessages()).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
+});

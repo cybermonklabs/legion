@@ -15,6 +15,14 @@ import { readTextReferences } from "./text-references";
  * command, and the request Send makes - asks here, and this asks the one reader of what a text
  * cites (`readTextReferences`), the twin of the server's own. What the writer is told and what
  * the server will read can therefore never be two readings of the same draft.
+ *
+ * A party reference a code context holds - a fenced code block, an indented code block or a code
+ * span (`TextReference.inCode`) - names nobody, as the server reads it
+ * (`api.commentPartiesOf`): a draft writing one is showing the address rather than addressing
+ * its party, which is how every renderer of the record draws it. So it is no target, it makes no
+ * draft one that names somebody, and the composer leaves a typed `/btw` in front of it the
+ * reader's own first word. The same party named outside code is named by that occurrence, and a
+ * worded link's address (`[Planner](dispatch://agent/...)`) is no code context at all.
  */
 
 /** Whether a reference names a party: an agent's session, a role, or a person. */
@@ -66,14 +74,15 @@ export interface DraftParties {
   readonly named: boolean;
 }
 
-/** The parties `body` names. */
+/** The parties `body` names, each as the reference naming it stands in the text: a party
+ *  written in a code context names nobody and is neither. */
 export function draftParties(body: string): DraftParties {
   const targets: string[] = [];
   const seen = new Set<string>();
   let named = false;
   for (const found of readTextReferences(body).references) {
     const route = found.route;
-    if (route === undefined || !isPartyRoute(route)) continue;
+    if (found.inCode || route === undefined || !isPartyRoute(route)) continue;
     named = true;
     const target = deliveryTargetOf(route);
     if (target === undefined || seen.has(target)) continue;
@@ -99,14 +108,22 @@ function linkAround(body: string, start: number, end: number): { end: number; st
 }
 
 /** Where `body` first mentions the party at `target`, taken whole - the link's words with its
- *  address - or undefined where it never does. */
+ *  address - or undefined where it never does. A reference a code context holds mentions
+ *  nobody, so none is found there: the one caller takes the mention it finds out of the draft
+ *  (`seededDraft`), and the text inside a fence is the reader's own, not an address this
+ *  channel owes. */
 export function partyMentionSpan(
   body: string,
   target: string
 ): { end: number; start: number } | undefined {
   for (const found of readTextReferences(body).references) {
     const route = found.route;
-    if (route === undefined || !isPartyRoute(route) || deliveryTargetOf(route) !== target) {
+    if (
+      found.inCode ||
+      route === undefined ||
+      !isPartyRoute(route) ||
+      deliveryTargetOf(route) !== target
+    ) {
       continue;
     }
     return linkAround(body, found.start, found.end);

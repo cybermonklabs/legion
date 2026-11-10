@@ -267,3 +267,110 @@ func TestCommentEditChangesWhoItNamesAndSendsNothing(t *testing.T) {
 		t.Fatalf("sends after the edit = %#v, want none", sends())
 	}
 }
+
+// A party reference a code context holds names nobody: the body is showing the address rather
+// than naming its party, which is how every renderer of the record draws it. The three contexts
+// are a fenced code block, an indented code block and a code span; nothing is listed, nothing is
+// resolved and nothing is sent for any of them.
+func TestCommentBodyMentionInCodeIsNeverDelivered(t *testing.T) {
+	listener, sends := partyListener(t)
+	defer listener.Close()
+	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Party in code", "before")
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"a fenced code block", "Run this:\n\n```\ndispatch://agent/s1\n```"},
+		{"an indented code block", "Run this:\n\n    dispatch://agent/s1\n"},
+		{"a code span", "The address `dispatch://agent/s1` names the planner."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key,
+				map[string]any{"body": tc.body}))
+			if len(created.Mentions) != 0 || len(created.Deliveries) != 0 {
+				t.Fatalf("%s = %#v / %#v, want neither", tc.name, created.Mentions, created.Deliveries)
+			}
+			if read := decodeBody[mentionedCommentRead](t, dispatchRequest(t, handler,
+				http.MethodGet, "/api/v1/comments/"+created.ID, nil, "alice")); len(read.Deliveries) != 0 {
+				t.Fatalf("%s deliveries = %#v, want none", tc.name, read.Deliveries)
+			}
+		})
+	}
+	if len(sends()) != 0 {
+		t.Fatalf("sends = %#v, want none", sends())
+	}
+}
+
+// A body whose only party is in code names nobody at all, so a delivery mode beside it is the
+// refusal a body naming nobody has always earned - for a person written there as well, a person
+// in prose being somebody named.
+func TestCommentBodyMentionInCodeNamesNobodyForDelivery(t *testing.T) {
+	listener, _ := partyListener(t)
+	defer listener.Close()
+	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Code and delivery", "before")
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"an agent in a fenced block", "```\ndispatch://agent/s1\n```"},
+		{"a role in a code span", "Write `dispatch://role/reviewer` here."},
+		{"a person in a code span", "Write `dispatch://person/alice@example.com` here."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := postMentionedComment(t, handler, issue.Key,
+				map[string]any{"body": tc.body, "delivery": "btw"})
+			if response.Code != http.StatusBadRequest ||
+				!strings.Contains(response.Body.String(), `"code":"MENTION_INPUT"`) ||
+				!strings.Contains(response.Body.String(), "delivery requires mentions") {
+				t.Fatalf("%s: status=%d body=%s", tc.name, response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+// A party in code does not count toward the cap either: eleven party references with one of them
+// in a code span is ten delivering parties.
+func TestCommentBodyMentionInCodeDoesNotCountTowardTheCap(t *testing.T) {
+	listener, _ := partyListener(t)
+	defer listener.Close()
+	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Code and the cap", "before")
+
+	words := []string{"`dispatch://role/spelled-out`"}
+	for index := range 10 {
+		words = append(words, fmt.Sprintf("[r%d](dispatch://role/r%d)", index, index))
+	}
+	response := postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": strings.Join(words, " "),
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("ten parties and one in code: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// The same party written in code and outside it is named by the occurrence outside: the code one
+// decides nothing but its own delivery, and the worded link is the ordinary mention it always was.
+func TestCommentBodyMentionOutsideCodeStillDelivers(t *testing.T) {
+	listener, sends := partyListener(t)
+	defer listener.Close()
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Code and prose", "before")
+
+	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": "The address is `dispatch://agent/s1`, so [planner](dispatch://agent/s1) please look.",
+	}))
+	if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" {
+		t.Fatalf("code and prose = %#v, want one mention of session:s1", created.Mentions)
+	}
+	attempts := settledCommentDeliveries(t, database, created.ID)
+	if len(attempts) != 1 || attempts[0].Target != "session:s1" || attempts[0].State != "sent" {
+		t.Fatalf("code and prose deliveries = %#v, want one sent attempt of session:s1", attempts)
+	}
+	if len(sends()) != 1 {
+		t.Fatalf("sends = %#v, want one", sends())
+	}
+}

@@ -97,11 +97,17 @@ type Ref struct {
 	Pin      int
 }
 
-// Located is a parsed reference and the byte offset of its first character in the body it
-// was extracted from.
+// Located is a parsed reference, the byte offset of its first character in the body it
+// was extracted from, and whether that body writes it in a code context.
 type Located struct {
 	Ref
 	Offset int
+	// InCode says the reference sits in a code context - a fenced code block, an indented code
+	// block or a code span, the three codeRanges reads - where it names nobody: a party
+	// reference there is delivered to no one and joins no party set
+	// (api.commentPartiesOf), while the reference itself is read and indexed as every other
+	// one is.
+	InCode bool
 }
 
 // Extract parses Dispatch links from body. Links outside serverURL stay URL
@@ -134,7 +140,10 @@ func ExtractAt(body, serverURL string) []Located {
 // only which references text indexes, so a node whatever the length of its name, and a block
 // whatever the length of its id, is read by its own reference (a block no index keys is simply
 // no node). value names a reference when it starts with one and holds no other, as Extract would
-// find it in text; an external URL or a dashboard URL that names no page is none.
+// find it in text; an external URL or a dashboard URL that names no page is none. It answers a
+// Ref and never the code fact: a request parameter is no markdown, and the one reference it
+// names starts at its first byte, which every code context would have taken for a fence, an
+// indent or a backtick.
 func ParseRef(value, serverURL string) (Ref, bool) {
 	located := extractAt(value, serverURL, false)
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind == "url" {
@@ -146,14 +155,18 @@ func ParseRef(value, serverURL string) (Ref, bool) {
 // extractAt is ExtractAt, holding what each reference names to the bounds the index keys when
 // bounded (Extract's reading of text, inBound) and not when not (ParseRef's of a request).
 func extractAt(body, serverURL string, bounded bool) []Located {
-	return extractSpans(body, serverURL, referencePattern.FindAllStringIndex(body, -1), bounded)
+	located, _ := extractSpans(body, serverURL, referencePattern.FindAllStringIndex(body, -1), bounded)
+	return located
 }
 
 // extractSpans is extractAt over spans, body's reference spans (referencePattern) already found,
 // so a reader that walks the gaps between them as well - Mentions, reading what a text writes
-// bare - scans body for them once.
-func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located {
+// bare - scans body for them once. It reads body's code contexts once here too (codeRanges),
+// marking each reference that sits in one, and hands them back for that same reader to mark what
+// it finds in the gaps: no consumer reads them a second time.
+func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Located, []codeRange) {
 	refs := []Located{}
+	code := codeRanges(body)
 	var base *url.URL
 	baseParsed := false
 	for _, span := range spans {
@@ -161,9 +174,11 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located
 		if raw == "" {
 			continue
 		}
+		located := Located{Offset: span[0], InCode: inCode(code, span[0])}
 		if strings.HasPrefix(raw, "dispatch://") {
 			if ref, ok := parseDispatch(strings.TrimPrefix(raw, "dispatch://")); ok && (!bounded || inBound(ref)) {
-				refs = append(refs, Located{Ref: ref, Offset: span[0]})
+				located.Ref = ref
+				refs = append(refs, located)
 			}
 			continue
 		}
@@ -176,13 +191,15 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located
 				ref, ok = pageInBound(ref)
 			}
 			if ok {
-				refs = append(refs, Located{Ref: ref, Offset: span[0]})
+				located.Ref = ref
+				refs = append(refs, located)
 				continue
 			}
 		}
-		refs = append(refs, Located{Ref: Ref{Kind: "url", ID: raw}, Offset: span[0]})
+		located.Ref = Ref{Kind: "url", ID: raw}
+		refs = append(refs, located)
 	}
-	return refs
+	return refs, code
 }
 
 // pageInBound is what a dashboard page cites in text: what the page names while it is in bound

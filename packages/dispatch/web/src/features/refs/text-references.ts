@@ -1,6 +1,7 @@
 import { isIdPrefix } from "@legion/contracts";
 
 import { itemOfBlock } from "./block-reference";
+import { codeRanges, isInCode } from "./code-ranges";
 import { referenceSpans } from "./reference-spans";
 import {
   buildDispatchReference,
@@ -48,6 +49,12 @@ export interface TextReference {
    *  those characters, which stay the author's own text. Absent where the reference needs every
    *  character it was written with. */
   readonly named?: number;
+  /** Whether a code context holds the reference - a fenced code block, an indented code block
+   *  or a code span, read from the text itself (`code-ranges.ts`), as the server reads it
+   *  (`text.Located.InCode`). It is read and cited as every other reference is, and a renderer
+   *  links none of them there; what the fact decides is who a write is delivered to, and
+   *  nothing else: a party written in code names nobody (`draftParties`). */
+  readonly inCode: boolean;
   /** Whether what it names is still open: an unknown key, an unknown question, or a prefix no
    *  item has been resolved for. A caller that has asked the server nothing sees every candidate
    *  unresolved. */
@@ -522,6 +529,10 @@ function readAddress(
  * reference-shaped spans are read first, as the server reads them, and a bare key or `#id` only
  * in the gaps between them, so a key inside an address is part of that address and never a
  * mention of its own.
+ *
+ * The text's code contexts are read once here, by that same pass (`codeRanges`), and every
+ * reference - an address and a bare candidate alike, as the server marks both - carries whether
+ * one holds it. No consumer reads them a second time.
  */
 export function readTextReferences(text: string, facts: TextReferenceFacts = {}): TextReading {
   const origin = facts.origin ?? window.location.origin;
@@ -537,6 +548,9 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   // The kind of every item a prefix resolved to, read on the first address that writes a short
   // id and kept for the rest of the text.
   const items = () => (kinds ??= itemKinds(facts.items ?? {}, origin));
+  // Where this text writes code, read once for the whole of it: a reference is marked by where
+  // its first character stands, which is how the server marks one.
+  const code = codeRanges(text);
 
   const spans = referenceSpans(text);
   let from = 0;
@@ -564,6 +578,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: span.start + span.value.length,
       form: "address",
+      inCode: isInCode(code, span.start),
       named,
       reference: address.reference,
       route: address.route,
@@ -586,6 +601,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
       references.push({
         end: candidate.end,
         form: "key",
+        inCode: isInCode(code, candidate.start),
         reference: exists ? `dispatch://${key}` : undefined,
         route: exists ? { key, kind: "issue" } : undefined,
         start: candidate.start,
@@ -609,6 +625,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: candidate.end,
       form: "question",
+      inCode: isInCode(code, candidate.start),
       named,
       reference,
       route: reference === undefined ? undefined : referenceRouteFromHref(reference, origin),

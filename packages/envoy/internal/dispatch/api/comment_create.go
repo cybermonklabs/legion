@@ -90,6 +90,13 @@ func partyTarget(ref text.Ref) (string, bool) {
 // here, before any rule reads the set. The array's own two rules are applied as it is read,
 // since they are about what the caller sent rather than about who is named: a target of no
 // known form, and a target the array repeats.
+//
+// A party reference a code context holds names nobody (text.Located.InCode): a body that writes
+// one inside a fenced block, an indented block or a code span is showing the address rather than
+// naming its party, which is how every renderer of the record draws it, so the party is not
+// delivered to, not listed and not counted toward the cap. It is still a reference the graph
+// indexes. The same party the body also names outside code is named by that occurrence, and a
+// worded link's address (`[Planner](dispatch://agent/...)`) is no code context at all.
 func commentPartiesOf(input commentInput, body []text.Located) (commentParties, error) {
 	parties := commentParties{targets: make([]string, 0, len(input.Mentions)+len(body))}
 	seen := make(map[string]struct{}, len(input.Mentions)+len(body))
@@ -104,6 +111,9 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		parties.targets = append(parties.targets, mention.Target)
 	}
 	for _, located := range body {
+		if located.InCode {
+			continue
+		}
 		if located.Kind == "person" {
 			parties.person = true
 			continue

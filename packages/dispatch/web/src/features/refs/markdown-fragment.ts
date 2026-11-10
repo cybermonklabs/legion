@@ -5,11 +5,15 @@
  * the half it leaves renders as its characters. The balancer below drops exactly the delimiters
  * that CommonMark would have paired had the cut not happened and nothing else: a run the parser
  * would read as literal text anyway (`Use ** for bold`, `2 * 3`, `snake_case`) is the author's
- * and stays, and nothing inside a code span is ever a delimiter.
+ * and stays, and nothing inside a code span is ever a delimiter. Where a code span begins is
+ * read from the one decider of that (`code-ranges.ts`), which the reader of what a text cites
+ * reads too, so a backtick run cannot open a span here and not there.
  */
 
 import { classifyCharacter } from "micromark-util-classify-character";
 import { constants } from "micromark-util-symbol";
+
+import { type CodeRange, codeSpans, isInCode } from "./code-ranges";
 
 /** How many words a search hit's snippet holds when `ts_headline` cut the body to its window
  *  (`headlineOptions` in packages/envoy/internal/dispatch/api/search.go: `MaxWords=24`). A
@@ -75,50 +79,16 @@ function codePointBefore(text: string, end: number): number | null {
   );
 }
 
-/** The spans of `text` that are code spans, as CommonMark reads them: a backtick run and the
- *  next run of the same length close it; a run with no closer is literal text. */
-function codeSpans(text: string): Array<[number, number]> {
-  const spans: Array<[number, number]> = [];
-  let i = 0;
-  while (i < text.length) {
-    if (text[i] !== "`") {
-      i += 1;
-      continue;
-    }
-    let runEnd = i;
-    while (text[runEnd] === "`") {
-      runEnd += 1;
-    }
-    const fence = text.slice(i, runEnd);
-    let close = text.indexOf(fence, runEnd);
-    while (close !== -1 && text[close + fence.length] === "`") {
-      // A longer run is not this span's closer; skip past it.
-      let past = close;
-      while (text[past] === "`") {
-        past += 1;
-      }
-      close = text.indexOf(fence, past);
-    }
-    if (close === -1) {
-      i = runEnd;
-      continue;
-    }
-    spans.push([i, close + fence.length]);
-    i = close + fence.length;
-  }
-  return spans;
-}
-
 /** CommonMark's delimiter runs of `*`, `_` and `~` outside code spans, each with whether it can
  *  open or close emphasis (the left- and right-flanking rules, with `_`'s word-internal
  *  restriction). A run that can do neither is literal text and is never a candidate. */
-function delimiterRuns(text: string, code: Array<[number, number]>): DelimiterRun[] {
+function delimiterRuns(text: string, code: readonly CodeRange[]): DelimiterRun[] {
   const runs: DelimiterRun[] = [];
   let i = 0;
   while (i < text.length) {
-    const inCode = code.find(([start, end]) => i >= start && i < end);
-    if (inCode !== undefined) {
-      i = inCode[1];
+    const span = code.find((range) => i >= range.start && i < range.end);
+    if (span !== undefined) {
+      i = span.end;
       continue;
     }
     const char = text[i];
@@ -232,7 +202,7 @@ export function balanceCutMarkdown(fragment: string): string {
   const lastRun = /`+(?!.*`)/su.exec(text);
   if (
     lastRun !== null &&
-    !closed.some(([start, end]) => lastRun.index >= start && lastRun.index < end) &&
+    !isInCode(closed, lastRun.index) &&
     !/\s\S+\s\S/u.test(text.slice(lastRun.index + lastRun[0].length))
   ) {
     text = text.slice(0, lastRun.index) + text.slice(lastRun.index + lastRun[0].length);

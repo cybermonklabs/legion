@@ -16,7 +16,10 @@
     "refs": [
       "dispatch://CORE-1"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
   },
   {
     "body": "_dispatch://CORE-1/spec_, ~~dispatch://CORE-2~~ and __dispatch://CORE-3/ask/22222222-2222-4222-8222-222222222222__.",
@@ -32,7 +35,11 @@
       "dispatch://CORE-5",
       "dispatch://CORE-6"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-5",
+      "dispatch://CORE-6"
+    ]
   },
   {
     "body": "See [dispatch://CORE-7/spec](dispatch://CORE-7/spec).",
@@ -121,7 +128,10 @@
     "refs": [
       "dispatch://CORE-1/comment/44444444-4444-4444-8444-444444444444"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/44444444-4444-4444-8444-444444444444"
+    ]
   },
   {
     "body": "Pairs part at & alone: https://dispatch.test/issues/CORE-1/spec?comment=c1;c2, https://dispatch.test/issues/CORE-1/artifacts/notes-md?v=2;3 and https://dispatch.test/issues/CORE-2/spec?ask=a1;x&comment=c1.",
@@ -247,6 +257,139 @@
   {
     "body": "No party: dispatch://agent, dispatch://role and dispatch://person here.",
     "refs": []
+  },
+  {
+    "body": "Pasted from the handbook:\n\n    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Ask [the reviewer](dispatch://role/reviewer) to run:\n\n```sh\ndispatch send-to-agent dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n```\n",
+    "refs": [
+      "dispatch://role/reviewer",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ],
+    "links": [
+      "dispatch://role/reviewer"
+    ],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Run `dispatch message --to dispatch://role/reviewer` before the deploy.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- step one\n    - ask dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1. step one\n\n    more about dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "-   See this:\n\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "-     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1.  step one\nlazy line\n\n    more about dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> ```\n> dispatch://role/reviewer\n> ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> > ```\n> > dispatch://role/reviewer\n> > ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> See this:\n>\n>     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Run this:\n\n  ```\n  dispatch://role/reviewer\n  ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Ask:\n\n  > ```\n  > dispatch://role/reviewer\n  > ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> ```\n> text\n\ndispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "***\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
   },
   {
     "body": "Owned by dispatch://CORE/component/dispatch-server here.",
@@ -1326,6 +1469,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1337,6 +1483,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1348,6 +1497,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1359,6 +1511,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1370,6 +1525,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1381,6 +1539,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1392,6 +1553,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1403,6 +1567,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1414,6 +1581,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1425,6 +1595,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1436,6 +1609,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1447,6 +1623,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1458,6 +1637,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1469,6 +1651,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1480,6 +1665,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1491,6 +1679,9 @@
       "dispatch://XCORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://XCORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1504,6 +1695,10 @@
       "dispatch://ACME-12"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1",
+      "dispatch://ACME-12"
+    ],
     "grammar": true
   },
   {
@@ -1515,6 +1710,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1526,6 +1724,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1537,6 +1738,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1548,6 +1752,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1559,6 +1766,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1572,6 +1782,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1585,6 +1798,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1598,6 +1814,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1611,6 +1830,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1624,6 +1846,9 @@
       "dispatch://CORE-1/ask/66666666-6666-4666-8666-666666666666"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/66666666-6666-4666-8666-666666666666"
+    ],
     "grammar": true
   },
   {
@@ -1638,6 +1863,9 @@
       "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
+    ],
     "grammar": true
   },
   {
@@ -1652,6 +1880,9 @@
       "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
+    ],
     "grammar": true
   },
   {
@@ -1666,6 +1897,9 @@
       "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
+    ],
     "grammar": true
   },
   {
@@ -1680,6 +1914,9 @@
       "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
+    ],
     "grammar": true
   },
   {
@@ -1694,6 +1931,9 @@
       "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
+    ],
     "grammar": true
   },
   {
@@ -1708,6 +1948,9 @@
       "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
+    ],
     "grammar": true
   },
   {
@@ -1722,6 +1965,9 @@
       "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
+    ],
     "grammar": true
   },
   {
@@ -1736,6 +1982,9 @@
       "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
+    ],
     "grammar": true
   },
   {
@@ -1750,6 +1999,9 @@
       "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
+    ],
     "grammar": true
   },
   {
@@ -1764,6 +2016,9 @@
       "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
+    ],
     "grammar": true
   },
   {
@@ -1778,6 +2033,9 @@
       "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
+    ],
     "grammar": true
   },
   {
@@ -1792,6 +2050,9 @@
       "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
+    ],
     "grammar": true
   },
   {
@@ -1800,20 +2061,30 @@
       "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
       "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
+    ]
   },
   {
     "body": "Waiting on `dispatch://role/reviewer` today.",
     "refs": [
       "dispatch://role/reviewer"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
   },
   {
     "body": "Asked `dispatch://person/alice@example.com` today.",
     "refs": [
       "dispatch://person/alice@example.com"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://person/alice@example.com"
+    ]
   }
 ]
