@@ -12,7 +12,8 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("an open Spec suggestion decoration shows its replacement without object-valued DOM attributes", async ({
+// @pr: The live document: an open Spec suggestion draws its replacement, and its decoration writes no object-valued DOM attribute.
+test("an open Spec suggestion decoration shows its replacement without object-valued DOM attributes @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "SUGG", name: "Suggestion decoration" });

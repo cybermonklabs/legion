@@ -8,9 +8,18 @@
 #
 # live_daemon_proof LABEL SLUG TEST EVIDENCE runs four checks, each printing `== <check>`, what it
 # observed and `ok <check> (<s>s)`; the first that fails prints `FAIL <check>: <why>` and ends the
-# run non-zero. prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs
-# on, which nothing here starts or prints, go and awk, and a nats-server: LEGION_E2E_NATS_BIN's, or
-# the pinned one installed with `go install` into a GOBIN of the run's own. broker starts that
+# run non-zero. Exit 2 is an input of the caller's the run refuses. Exit 1 is every other failure.
+# prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
+# nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, and a
+# nats-server: LEGION_E2E_NATS_BIN's, or the pinned one installed with `go install`. It refuses
+# two inputs with exit 2, before the driver is built and before the broker starts: a
+# LEGION_TEST_PG_DSN that is unset, and one whose host is not loopback, which
+# lib/loopback-dsn.sh's require_loopback_dsn reads. Exit 2 covers one fault of the host as well:
+# lib/loopback-dsn.py refuses every DSN where this machine has no libpq, the parser it asks which
+# host a DSN names, and this file answers that refusal as it answers the other two. The refusal
+# line tells that case apart, and names libpq and the package to install. The status does not:
+# the helper answers every refusal with one status, so a status of its own here would need this
+# file to read the helper's wording, or to ask for libpq a second time. broker starts that
 # nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
 # `-tags e2e` test binary. proof runs the one test TEST against them and holds that it passed.
 #
@@ -25,6 +34,10 @@
 
 # shellcheck source-path=SCRIPTDIR source=transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
+# lib/loopback-dsn.sh holds require_loopback_dsn, the guard prerequisites reads LEGION_TEST_PG_DSN
+# with. It needs nothing of this file's.
+# shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
+. "$root/scripts/e2e/lib/loopback-dsn.sh"
 
 # The nats-server the run installs when the caller names none: the 2.10 line the daemon's own NATS
 # tests pin (packages/daemon/internal/testnats/nats.go).
@@ -45,6 +58,9 @@ check_started=''
 begin() { check=$1; check_started=$SECONDS; echo "== $check"; }
 note() { echo "   $*"; }
 pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
+# refuse is for an input of the caller's (exit 2); fail is for the box the run is on, or a step
+# that did not hold (exit 1).
+refuse() { echo "FAIL $check: $*" >&2; exit 2; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
 cleanup() {
@@ -62,7 +78,7 @@ cleanup() {
 }
 
 live_daemon_proof() {
-  local slug=$2 test_name=$3 tool nats_bin
+  local slug=$2 test_name=$3 tool nats_bin db_host
   proof_label=$1
   evidence=${4:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug-evidence.XXXXXXXX")}
   mkdir -p "$evidence"
@@ -76,10 +92,15 @@ live_daemon_proof() {
 
   begin prerequisites
   [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
-    fail "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
-  for tool in go awk; do
+    refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
+  for tool in go awk python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
+  # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
+  # these three, and why the call comes after the tool check above.
+  unset PGHOSTADDR PGSERVICE PGSERVICEFILE
+  require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
+    refuse "$db_host"
   note "go $(go version | awk '{print $3}'), store LEGION_TEST_PG_DSN (set; not printed)"
   nats_bin=${LEGION_E2E_NATS_BIN:-}
   if [ -z "$nats_bin" ]; then
