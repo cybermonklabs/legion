@@ -1389,11 +1389,7 @@ SCRIPT_TEST_GATES = [
     harness("check_ci_tools_test", "Test the tool manifest check", f"{SCRIPTS}/check-ci-tools.test.sh", [
         (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
         (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and "
-                                     "check-ci-tools.test.sh:100 links it into every fixture"),
-        (".github/ci-tools.yaml", "check-ci-tools.test.sh:1733 runs the gate over this repository's own tree"),
-        (f"{DAEMON}/docker/worker.Dockerfile",
-         "check-ci-tools.test.sh:1733 runs the gate over that same tree, where it holds the mise, jj and uv "
-         "rows of .github/ci-tools.yaml to this file's ARG MISE_VERSION, ARG JJ_TOOL and ARG UV_VERSION"),
+                                     "check-ci-tools.test.sh:103 links it into every fixture"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),

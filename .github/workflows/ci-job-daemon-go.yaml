@@ -203,8 +203,10 @@ jobs:
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
       # slowest run.
       #
-      # The -skip is the plugin-pack job's three tests, the tests of internal/daemon that load a
-      # plugin on the real Oh My Pi: they run in .github/workflows/ci-job-plugin-pack.yaml, so
+      # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
+      # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
+      # on the real Oh My Pi and staying in this step: they run in
+      # .github/workflows/ci-job-plugin-pack.yaml, so
       # that their reads — bun.lock and skills/ among them — are that job's inputs and not this
       # suite's, and a test run twice is a test whose second run tells nobody anything. The names
       # are written in .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which builds this

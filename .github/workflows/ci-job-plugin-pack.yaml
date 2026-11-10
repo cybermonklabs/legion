@@ -7,7 +7,9 @@ name: CI job plugin-pack
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# What runs here is internal/daemon's three tests that load a plugin on the real Oh My Pi:
+# What runs here is the three tests of internal/daemon that .github/scripts/ci_job_reads.py's
+# PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin on the real Oh My Pi
+# and staying in daemon-go:
 # TestTheRealPluginsOnTheRealOhMyPi, which packs packages/pi-envoy and packages/pi-legion with
 # `bun pm pack` — each pack running that package's prepack, which reads bun.lock and builds the
 # bundle from the installed workspace — installs the two tarballs on the real Oh My Pi and reads
