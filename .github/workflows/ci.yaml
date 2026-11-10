@@ -2486,30 +2486,6 @@ jobs:
       - name: Stage the correct bytes of every row a case serves, before the fault
         run: .github/scripts/ci-tools-proof.sh stage
 
-      # The stand-in curl every step after this one runs, which shortens only a fetch this job
-      # arranged to fail. Every case of this job is a refusal this rig arranged, and each of
-      # those refusals rode a retry ladder nobody reads: job 129743677408 ran 1994 s and spent
-      # 1952 s in the steps that pay for them.
-      # Every other fetch keeps the pinned ladder, so that ladder still rides out a flap of
-      # npm, PyPI, get.pulumi.com or the local origin, each of which this job reaches through
-      # the fault proxy and none of which it faults. No reading of this job counts requests or
-      # durations, so a shortened ladder takes no statement away: what a case proves is which
-      # source served its bytes and that the digest held, and the stand-in changes neither.
-      # One case keeps the pinned ladder, the head's own install-crane below, and the
-      # ladder-report step at the end of this job reads what that one measured. That install
-      # carries no seam, so its primary is the real faulted host and its second source the real
-      # package copy, and it drives the whole claim the shortened cases give up: a real ladder,
-      # then a second source, then the digest check. The negative controls cannot be that case,
-      # because a control ends in failure and proves no fall-through. The head's installs
-      # cannot move above the controls either, because .github/actions/setup-bun takes its
-      # existing-install branch when a Bun of the pinned version is already on the runner,
-      # which is exactly what the base-bun control must not find.
-      # It runs here, straight after `stage`, because `stage` fetches about 165 MB from the
-      # real sources while the network is whole and must keep the pinned ladder for them, and
-      # because $GITHUB_PATH reaches the steps after this one and not this one.
-      - name: Shorten the ladder of every fetch this job arranges to fail
-        run: .github/scripts/ci-tools-proof.sh shorten-ladder
-
       - id: origin
         name: Start the origin that stands in for all four sources
         run: .github/scripts/ci-tools-proof.sh origin-start
@@ -2560,6 +2536,47 @@ jobs:
       # whose later steps run what this job installed.
       - name: Take mise's install away again, so the faulted install must read the copy
         run: rm -rf "$HOME/.local/share/mise"
+
+      # The stand-in curl every step after this one runs, which shortens only a fetch this job
+      # arranged to fail. Every case of this job is a refusal this rig arranged, and each of
+      # those refusals rode a retry ladder nobody reads: job 129743677408 ran 1994 s and spent
+      # 1952 s in the steps that pay for them.
+      # Every other fetch keeps the pinned ladder, so that ladder still rides out a flap of
+      # npm, PyPI, get.pulumi.com or the local origin, each of which this job reaches through
+      # the fault proxy and none of which it faults. No reading of this job counts requests or
+      # durations, so a shortened ladder takes no statement away: what a case proves is which
+      # source served its bytes and that the digest held, and the stand-in changes neither.
+      # One case keeps the pinned ladder, the head's own install-crane below, and the
+      # ladder-report step at the end of this job reads what that one measured. That install
+      # carries no seam, so its primary is the real faulted host and its second source the real
+      # package copy, and it drives the whole claim the shortened cases give up: a real ladder,
+      # then a second source, then the digest check. The negative controls cannot be that case,
+      # because a control ends in failure and proves no fall-through. The head's installs
+      # cannot move above the controls either, because .github/actions/setup-bun takes its
+      # existing-install branch when a Bun of the pinned version is already on the runner,
+      # which is exactly what the base-bun control must not find.
+      # It runs here, immediately before the fault comes up, and the window it may run in is
+      # the one between `stage` and that step. It cannot run above `stage`, because `stage`
+      # fetches about 165 MB from the real sources while the network is whole and must keep
+      # the pinned ladder for them, and because $GITHUB_PATH reaches the steps after the step
+      # that writes it and not that step itself.
+      # It cannot stay straight after `stage` either, which is where it ran before: the
+      # jj-primary case runs in that window, and its install-jj makes a real fetch of
+      # github.com through mise which succeeds. github.com is one of the hosts this rig
+      # faults, so a stand-in installed above that case shortened a fetch this job means to
+      # succeed and took the pinned ladder off it, while the fault that makes the shortening
+      # true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
+      # step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
+      # pinned ladder gives 7 over 63 s, so one short failure of github.com would redden this
+      # required job where the pinned ladder rode it out.
+      # The step after this one starts the fault, so every fetch made from here goes through
+      # it and no fetch this job did not arrange to fail is ever shortened. The ladder-report
+      # step refuses the job for exactly that reading — a fetch that was shortened and then
+      # served the bytes — which is what holds this step at this position.
+      # The remedy is the position and not a guard in the stand-in on a state file the fault
+      # writes: a position cannot drift out of the truth it states, while such a guard can.
+      - name: Shorten the ladder of every fetch this job arranges to fail
+        run: .github/scripts/ci-tools-proof.sh shorten-ladder
 
       # The fault, and the routing of every later step through it, in one step: the rig starts
       # .github/scripts/ci-fault-proxy.py over the release hosts its own FAULT_HOSTS names, and

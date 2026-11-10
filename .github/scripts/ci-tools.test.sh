@@ -590,15 +590,38 @@ nothing_at() { [ -e "$1" ] && echo false || echo true; }
 # temporary_files: what the helper left under RUNNER_TEMP, which is nothing on every path.
 temporary_files() { find "$runner_temp" -mindepth 1 | sort; }
 
-# recorded_ladder: the first nine arguments the stand-in curl was handed by the call that ran
-# last, one per line. It is read inside `is` and never printed: a call carries credentials among
-# its arguments, and the helper passes them that way so that they reach no log line.
-recorded_ladder() { head -n 9 -- "$curl_arguments"; }
+# What `recorded_ladder` writes in place of the tenth argument, which is the file this run's own
+# mktemp named. That one word is the only word of the record this file cannot write down, since
+# it is another on every run; every other word is pinned by the helper, the manifest or the seam.
+RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
 
-# pinned_ladder <max_time>: those same nine, as ci_tools_curl pins them, with that row's own
-# bound in place. The words after the ninth are the run's own and no part of the ladder.
+# recorded_ladder: every argument the stand-in curl was handed by the call that ran last, one per
+# line, with the tenth replaced by that placeholder. The whole record is held, and so is its
+# length, which is what catches a word appended anywhere, after the URL included: curl reads the
+# last word on --retry-max-time, so one appended word there takes the bound off every fetch this
+# repository makes. It is read inside `is` and never printed: a call carries credentials among
+# its arguments, and the helper passes them that way so that they reach no log line.
+recorded_ladder() {
+  local argument number=0
+  while IFS= read -r argument; do
+    number=$((number + 1))
+    [ "$number" -ne 10 ] || argument=$RECORDED_TEMPORARY_FILE
+    printf '%s\n' "$argument"
+  done < "$curl_arguments"
+}
+
+# pinned_ladder <max_time>: the nine words ci_tools_curl pins before the file it writes, with
+# that row's own bound in place.
 pinned_ladder() {
   printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$1" -o
+}
+
+# whole_record <max_time> <url>: the eleven words ci_tools_curl hands curl for a row whose fetch
+# carries no argument of its own — those nine, then the temporary file the placeholder above
+# stands in for, then the URL the seam built.
+whole_record() {
+  pinned_ladder "$1"
+  printf '%s\n' "$RECORDED_TEMPORARY_FILE" "$2"
 }
 
 echo "case: github-release — the primary serves the bytes"
@@ -626,12 +649,12 @@ ladder=$(recorded_ladder)
 check "the fetch exits 0, so the record is that primary's own call" "$(is "$status" 0)"
 run ci_tools_field tarred max_time
 bound=$out
-# Nine words, because the tenth is the temporary file a mktemp of this run named and the
-# eleventh is the URL the seam built: neither is pinned, and both change from run to run. The
-# nine before them are the ladder, and this assertion is an exact one so that an edit of any one
-# of those words fails here.
-check "the first nine arguments are the pinned ladder, with the row's own bound" \
-  "$(is "$ladder" "$(pinned_ladder "$bound")")"
+# Eleven words, because the tenth is the temporary file a mktemp of this run named and the
+# eleventh is the URL the seam built from the row's own `primary`. The record is held whole, with
+# that one unpredictable word standing in for itself, so that a changed flag, a changed bound, a
+# changed URL and a word appended anywhere — after the URL as well — each fail here.
+check "the whole record is the pinned ladder with the row's own bound, this run's temporary file and the URL the seam built" \
+  "$(is "$ladder" "$(whole_record "$bound" "$base/$ASSET_PATH")")"
 dest="$work/dest/curl-ladder-other-bound"
 run ci_tools_fetch plugin "$dest"
 other_ladder=$(recorded_ladder)
@@ -641,8 +664,8 @@ run ci_tools_field plugin max_time
 other_bound=$out
 check "that row's bound is another than the first row's" \
   "$(is "$(is "$other_bound" "$bound")" false)"
-check "and its ladder carries that bound, so --max-time follows the row" \
-  "$(is "$other_ladder" "$(pinned_ladder "$other_bound")")"
+check "and its record carries that bound and that row's own URL, so --max-time follows the row" \
+  "$(is "$other_ladder" "$(whole_record "$other_bound" "$base/$PLUGIN_ASSET_PATH")")"
 check "and neither fetch left a temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: ghcr-mirror — the primary refuses and the copy serves the bytes"

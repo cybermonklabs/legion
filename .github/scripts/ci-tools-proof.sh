@@ -43,6 +43,10 @@
 #       Writes a stand-in curl to $RUNNER_TEMP/ci-tools-proof/bin/curl and puts that directory
 #       on this job's PATH through $GITHUB_PATH, so every step after it runs that one rather
 #       than the runner's.
+#       The `tool-fallback` job calls it with the fault about to come up, and not before its
+#       own honest fetches: `stage` and that job's jj-primary case each fetch a host the job
+#       faults, and each must succeed on the pinned ladder, so the stand-in goes on PATH
+#       after them and in front of the fault.
 #       The stand-in runs the real curl with the arguments it was handed, and appends
 #       `--retry-max-time 1` to them where the request is one this job arranged to fail: a host
 #       FAULT_HOSTS holds, the dead address DEAD_ADDRESS below, or a dead proxy. curl reads the
@@ -273,13 +277,20 @@ DEAD_ADDRESS="127.0.0.1:1"
 
 # The window in seconds the one case that keeps the pinned ladder must measure inside.
 # The pinned flags are `--retry 7 --retry-all-errors --retry-max-time 60` against a source that
-# refuses at once, whose back-off is 1+2+4+8+16+32 = 63 s; job 129743677408 measured that case
-# at 64 s. The floor is those 63 s less the headroom a slow runner needs, and the ceiling is the
-# worst the bound allows: a minute in which a new attempt may still start, and one last attempt
-# of the row's own `max_time` of 60 s, with headroom on top.
-# The largest honest fetch of that same run is the 107 MB Bun tarball from npm, at about 30 s,
-# which the floor stays above. A fetch that merely rode out a flap of its source reads as the
-# warning `ladder-report` prints below and not as a refusal.
+# refuses at once, whose back-off is 1+2+4+8+16+32 = 63 s; job 129841257239, whose stand-in
+# measured every fetch of the job, read that case at 63 s. The floor is those 63 s less the
+# headroom a slow runner needs, and the ceiling is the worst the bound allows: a minute in
+# which a new attempt may still start, and one last attempt of the row's own `max_time` of
+# 60 s, with headroom on top.
+# Job 129743677408 ran without the stand-in, so it measured no fetch at all and can say
+# nothing about how long a fetch takes. Job 129841257239 did measure them: the npm fetch of
+# the 107 MB Bun tarball reads 1 s there, and of the 36 fetches of that job which kept the
+# pinned ladder the only one above 1 s is the kept case at 63 s. A reading of about 30 s for
+# that tarball is a step duration and no fetch: setup-bun measured 37 s, 32 s and 28 s in that
+# job, and that step is the Node action and the unpack around the fetch.
+# So the floor stands about 44 s above the largest honest fetch measured, and not about 15 s.
+# A fetch that merely rode out a flap of its source reads as the warning `ladder-report` prints
+# below and not as a refusal.
 LADDER_FLOOR=45
 LADDER_CEILING=150
 
