@@ -7,193 +7,154 @@ Rules for this repository's tests that the code under test does not show.
 Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
 Each bullet says what the helper does not do, so a site that must keep its own body is not folded into it.
 
-- A test that captures a log takes its buffer from the module's own: `packages/daemon/internal/testlog`'s `Buffer`, and `packages/envoy/internal/logtest`'s, which lives beside that package's default-logger swap and carries `Lines`, the logged lines holding a substring.
+- A test that captures a log takes its buffer from the module's own:
+  `packages/daemon/internal/testlog`'s `Buffer`, and `packages/envoy/internal/logtest`'s, which lives beside that package's default-logger swap and carries `Lines`, the logged lines holding a substring.
   `packages/envoy/internal/cmdtest`'s `LockedBuffer` and `storetest`'s `LockedLog` are both aliases of it, so either name reaches the same body.
-  It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
+  It is a mutex around a byte sink and nothing else:
+  a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink
+  — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
 
 - A bounded wait is the module's `internal/testwait`.
-  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
-  A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
+  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for;
+  `WithinPolling` takes a bound and a pace of its own;
+  `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up;
+  and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  A loop that is not a wait-for keeps its body:
+  one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
-  `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
-  `InitBare`, `InitWorkTree` and `JJInit` build the whole argv, and the semantic axes stay the call site's: bare or not, the initial branch, and colocation, with only the quiet spelling normalised.
+  `Runner` holds the test and the child's whole environment
+  — `Isolated(t, home)` is the usual one — and runs one command four ways:
+  `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
+  `InitBare`, `InitWorkTree` and `JJInit` build the whole argv, and the semantic axes stay the call site's:
+  bare or not, the initial branch, and colocation, with only the quiet spelling normalised.
   The runner chooses no binary — `argv[0]` does, so a fixture that runs a pinned git or jj passes that path itself.
   `packages/envoy` has no Go git or jj fixture runner, so this one is the daemon module's alone.
 
-- A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
+- A fake GitHub server is the module's `internal/githubtest`:
+  `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
   `Spec` carries the opt-in bearer gate and the opt-in request recorder.
-  The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
-  A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
-  A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
+  The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves:
+  a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
+  A server that is no fake GitHub keeps its body, whatever it mentions:
+  the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
+  A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way;
+  it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
-- An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
-  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
-  A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
+- An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`:
+  `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure;
+  the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`:
+  `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
 
 ## Bun tests
 
-`bun test` runs every file of a package in one process, so what one file leaves behind is what the
-next file reads: a directory, an environment variable, a port, a container, a cache. These rules are
-how a file leaves nothing behind. `@legion/test-fixtures` holds the shared pieces, and nine
-packages depend on it: broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy,
-pi-legion, pi-shared and proof-editor. The one Bun package that does not is the fixture package
-itself, whose tests import its sources by relative path.
+`bun test` runs every file of a package in one process, so what one file leaves behind is what the next file reads:
+a directory, an environment variable, a port, a container, a cache.
+These rules are how a file leaves nothing behind.
+`@legion/test-fixtures` holds the shared pieces, and nine packages depend on it:
+broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared and proof-editor.
+The one Bun package that does not is the fixture package itself, whose tests import its sources by relative path.
 
-- Take a temporary directory from `@legion/test-fixtures/temporary-directories`, never from an
-  `mkdtemp` with a cleanup of your own. One directory for a whole file or `describe` is
-  `temporaryDirectory(prefix)`: call it at the test file's module scope, or in the body of a
-  `describe`, never inside a test body. It reserves the path at the call and returns it, and
-  registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
-  called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
-  places, which returns a maker that makes a directory at each call and removes every one of them in
-  its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
-  makes its directory at the call, and its `afterEach` removes it after the scope's first row, so
-  one a `beforeAll` made is gone for every later row. A directory a whole file or `describe` shares
-  is `temporaryDirectory`, which makes nothing until its hook runs. `bun:test` takes a hook's scope
-  from the point of the call, and Bun 1.4.4 evaluates a module body and a `describe` body in three
-  cases where it then runs no hook that body registered: a `bun test -t <pattern>` that selects no
-  row of the file, one that selects no row of the `describe`, and `describe.skipIf(true)`. Nothing
-  catches what such a run leaves: under `bun test` neither `process.once("exit")` nor `"beforeExit"`
-  runs. So anything a file creates, sets or writes at module scope or in a `describe` body survives
-  a filtered run, and a directory must be made where the hooks run. Write into a reserved directory
-  from a test body, or from a hook registered below the reservation, since nothing is at the path
-  until that `beforeAll` has run and Bun runs a scope's hooks in the order they were registered. A
-  `describe` whose rows are each `.skip` runs both its `beforeAll` and its `afterAll`, so a
-  directory reserved in its body is made and removed as usual; `describe.skipIf(true)` runs neither,
-  so that directory is never made (`packages/test-fixtures/src/temporary-directories.test.ts` holds
-  both, and `filtered-run.test.ts` runs a file under a filter that selects nothing and reads its
-  `TMPDIR` afterwards). The fixture's own module body registers no hook, and cannot: Bun evaluates
-  an imported module once per process, so a hook there would take the scope of whichever test file
-  imported the fixture first, and every other file's directories would outlive their tests.
-  `temporaryTmpdir(prefix)` (`@legion/test-fixtures/temporary-tmpdir`) is the same shape for a whole
-  file's `TMPDIR`: it reserves one root, and makes it and points `TMPDIR` at it in a `beforeAll`
-  whose `afterAll` puts the name back and removes the root. Anything staged under that root is
-  staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
-  Both forms take `root`, the directory the temporary one is made in, for a test that needs another
-  filesystem, such as `/dev/shm` for a rename that must cross one. Both remove a tree a test left
-  read-only: the removal chmods `u+rwX` down the tree first, following no symlink out of it and
-  leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444
-  files a Go module cache writes, and because a file in such a tree can be a hard link to one
-  outside it.
+- Take a temporary directory from `@legion/test-fixtures/temporary-directories`, never from an `mkdtemp` with a cleanup of your own.
+  One directory for a whole file or `describe` is `temporaryDirectory(prefix)`:
+  call it at the test file's module scope, or in the body of a `describe`, never inside a test body.
+  It reserves the path at the call and returns it, and registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is called.
+  A directory per test is `temporaryDirectories(prefix)`, registered in those same two places, which returns a maker that makes a directory at each call and removes every one of them in its `afterEach`.
+  Call that maker from a test body or a `beforeEach`, never from a `beforeAll`:
+  it makes its directory at the call, and its `afterEach` removes it after the scope's first row, so one a `beforeAll` made is gone for every later row.
+  A directory a whole file or `describe` shares is `temporaryDirectory`, which makes nothing until its hook runs.
+  `bun:test` takes a hook's scope from the point of the call, and Bun 1.4.4 evaluates a module body and a `describe` body in three cases where it then runs no hook that body registered:
+  a `bun test -t <pattern>` that selects no row of the file, one that selects no row of the `describe`, and `describe.skipIf(true)`.
+  Nothing catches what such a run leaves: under `bun test` neither `process.once("exit")` nor `"beforeExit"` runs.
+  So anything a file creates, sets or writes at module scope or in a `describe` body survives a filtered run, and a directory must be made where the hooks run.
+  Write into a reserved directory from a test body, or from a hook registered below the reservation, since nothing is at the path until that `beforeAll` has run and Bun runs a scope's hooks in the order they were registered.
+  A `describe` whose rows are each `.skip` runs both its `beforeAll` and its `afterAll`, so a directory reserved in its body is made and removed as usual;
+  `describe.skipIf(true)` runs neither, so that directory is never made (`packages/test-fixtures/src/temporary-directories.test.ts` holds both, and `filtered-run.test.ts` runs a file under a filter that selects nothing and reads its `TMPDIR` afterwards).
+  The fixture's own module body registers no hook, and cannot:
+  Bun evaluates an imported module once per process, so a hook there would take the scope of whichever test file imported the fixture first, and every other file's directories would outlive their tests.
+  `temporaryTmpdir(prefix)` (`@legion/test-fixtures/temporary-tmpdir`) is the same shape for a whole file's `TMPDIR`:
+  it reserves one root, and makes it and points `TMPDIR` at it in a `beforeAll` whose `afterAll` puts the name back and removes the root.
+  Anything staged under that root is staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
+  Both forms take `root`, the directory the temporary one is made in, for a test that needs another filesystem, such as `/dev/shm` for a rename that must cross one.
+  Both remove a tree a test left read-only:
+  the removal chmods `u+rwX` down the tree first, following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a tree can be a hard link to one outside it.
 
-- Put a variable back with `restoreEnvironment` or `captureEnvironment`
-  (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
-  no value is captured as unset and the restore deletes it again; setting it to the empty string
-  instead would leave the next reader a value its caller never had. A file that loads a plugin entry
-  captures the names that entry writes above the import that loads it:
-  `packages/pi-envoy/extensions/envoy.ts` puts its own `bin/` first on `PATH`, sets `DISPATCH_HOST`
-  and picks `ENVOY_CONFIG_FILE` when its module loads, and a capture below that import would put
-  back what the entry wrote rather than what the caller had. Never restore by replacing the whole
-  object (`process.env = { ...saved }`): that swaps the runtime's environment for a plain one, and
-  after it `process.env !== Bun.env`, a write reaches neither `Bun.env` nor a child process the test
-  spawns, and the names the test deleted stay deleted in the real environment. Under `--parallel`,
-  which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the
-  damage shows only where it is hardest to read.
+- Put a variable back with `restoreEnvironment` or `captureEnvironment` (`@legion/test-fixtures/environment`), which set and delete the names themselves.
+  A name that held no value is captured as unset and the restore deletes it again;
+  setting it to the empty string instead would leave the next reader a value its caller never had.
+  A file that loads a plugin entry captures the names that entry writes above the import that loads it:
+  `packages/pi-envoy/extensions/envoy.ts` puts its own `bin/` first on `PATH`, sets `DISPATCH_HOST` and picks `ENVOY_CONFIG_FILE` when its module loads, and a capture below that import would put back what the entry wrote rather than what the caller had.
+  Never restore by replacing the whole object (`process.env = { ...saved }`):
+  that swaps the runtime's environment for a plain one, and after it `process.env !== Bun.env`, a write reaches neither `Bun.env` nor a child process the test spawns, and the names the test deleted stay deleted in the real environment.
+  Under `--parallel`, which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the damage shows only where it is hardest to read.
 
-- `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
-  of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
-  later file of the process reads the mocked module (`packages/pi-shared/test/host-registry.ts` says
-  what that costs the suites that mock the host package). Prefer a seam the code under test exposes,
-  set in a `beforeAll` and cleared in the matching `afterAll`, as `setNatsConnectForTests` and
-  `resetNatsConnectForTests` in `packages/pi-envoy/extensions/envoy.ts` are.
+- `mock.module` at module scope outlives the file that wrote it:
+  a filtered run that selects no row of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every later file of the process reads the mocked module (`packages/pi-shared/test/host-registry.ts` says what that costs the suites that mock the host package).
+  Prefer a seam the code under test exposes, set in a `beforeAll` and cleared in the matching `afterAll`, as `setNatsConnectForTests` and `resetNatsConnectForTests` in `packages/pi-envoy/extensions/envoy.ts` are.
 
-- A suite that runs jj or git takes its isolation from `versionControlEnvironment`
-  (`@legion/test-fixtures/version-control-environment`): a home of the suite's own with a jj
-  configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`,
-  `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as. So neither the
-  developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a
-  result. A suite whose code under test starts jj with the process's own environment puts those
-  names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next
-  file finds its own again.
+- A suite that runs jj or git takes its isolation from `versionControlEnvironment` (`@legion/test-fixtures/version-control-environment`):
+  a home of the suite's own with a jj configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as.
+  So neither the developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result.
+  A suite whose code under test starts jj with the process's own environment puts those names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next file finds its own again.
 
-- Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
-  listener from the moment it binds, so nothing else on the machine can take the port between the
-  question and the row that asks it (`stubBroker` in
-  `packages/envoy-client/src/__tests__/broker-credential.test.ts`). Never write a port number into a
-  test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
-  is port 0, one that is set is used as given, and two variables naming one port are refused where
-  the ports resolve rather than by whichever listener loses the race (`harnessPort` and
-  `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
+- Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that listener from the moment it binds, so nothing else on the machine can take the port between the question and the row that asks it (`stubBroker` in `packages/envoy-client/src/__tests__/broker-credential.test.ts`).
+  Never write a port number into a test.
+  The Dispatch e2e harness is the same rule at the scale of a run:
+  a port variable left unset is port 0, one that is set is used as given, and two variables naming one port are refused where the ports resolve rather than by whichever listener loses the race (`harnessPort` and `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
 
-- A suite that needs a program this host may not have skips with that program's name. Call
-  `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
-  `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
-  and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test
-  would print that line per test. A suite that needs a service does the same with the variable that
-  names it, and makes a database of its own rather than reading the one it finds
-  (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
-  both builds the two halves into a single list and prints one line, rather than calling
-  `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-lanes.test.ts`).
+- A suite that needs a program this host may not have skips with that program's name.
+  Call `skipWithout("docker")` once, at the file's module scope, and hand the answer to every `describe.skipIf` and `test.skipIf` of the file:
+  it prints one line naming the missing programs and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test would print that line per test.
+  A suite that needs a service does the same with the variable that names it, and makes a database of its own rather than reading the one it finds (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`).
+  One that needs both builds the two halves into a single list and prints one line, rather than calling `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both (`hostTool` with the variable, in that file and in `harness-lanes.test.ts`).
 
-- Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
-  not once the whole start has succeeded: a start that throws half-way has already made the
-  container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
+- Start a container with `docker run --rm` and register its removal the moment `docker run` returns, not once the whole start has succeeded:
+  a start that throws half-way has already made the container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`).
+  Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
-- Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 116 MiB a pin, are
-  hardlinked into each test's fresh HOME from one copy per binary at
-  `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
-  `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
-  `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
-  `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
-  cache that exists to be shared by both languages and either fills for the other. The Go build and
-  module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane`
-  (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
-  `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed
-  `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
-  scripts/e2e/lib` (`.github/workflows/ci.yaml`). The condition is the rename: `fillNativesCache` in
-  `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
-  directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
-  it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
-  own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
-  `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+- Two caches stay where their tool puts them, under the user's cache directory, and this is the one rule here that holds only under a condition.
+  Oh My Pi's native modules, about 116 MiB a pin, are hardlinked into each test's fresh HOME from one copy per binary at `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
+  `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a cache that exists to be shared by both languages and either fills for the other.
+  The Go build and module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane` (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason:
+  CI's `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
+  scripts/e2e/lib` (`.github/workflows/ci.yaml`).
+  The condition is the rename: `fillNativesCache` in `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in it.
+  So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its own volume, which Legion's runtime does for every role (`/legion/scratch/cache`).
+  With `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
 
 ## Unix sockets in Go tests
 
-A unix socket path must be 107 bytes or shorter. Linux's `sun_path` holds 108 bytes with the
-terminating zero, and Go refuses a longer path with `invalid argument` at `bind`, `listen` or
-`dial`. A tmux server socket has the same limit (`Filename too long`). `t.TempDir()` puts the
-test's name, cut to 64 bytes, in its path, under `GOTMPDIR` or else `TMPDIR`. With a long test name
-and a socket under it, or under a directory made from it (an `XDG_RUNTIME_DIR`, `HOME` or state
-directory a test sets to `t.TempDir()`), a temporary directory of about 20 bytes is enough to pass
-the limit, as on a dev box whose `TMPDIR` is on a data disk.
+A unix socket path must be 107 bytes or shorter.
+Linux's `sun_path` holds 108 bytes with the terminating zero, and Go refuses a longer path with `invalid argument` at `bind`, `listen` or `dial`.
+A tmux server socket has the same limit (`Filename too long`).
+`t.TempDir()` puts the test's name, cut to 64 bytes, in its path, under `GOTMPDIR` or else `TMPDIR`.
+With a long test name and a socket under it, or under a directory made from it (an `XDG_RUNTIME_DIR`, `HOME` or state directory a test sets to `t.TempDir()`), a temporary directory of about 20 bytes is enough to pass the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
-- Take a test's socket directory from the module's `internal/testtmp`, the one helper every test
-  that binds a socket calls (`packages/daemon/internal/testtmp`, and the same file in
-  `packages/envoy`). `testtmp.Dir(t, longest)` is a fresh directory of the test's own, removed
-  when the test ends, where `longest` is the longest path the test puts inside it, written
-  relative to the directory (`"g9/.s.PGSQL.5432"`); `testtmp.Socket(t, name)` is the path of a
-  socket named `name` in such a directory. `Dir` makes the directory under `TMPDIR` and measures
-  what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds no
-  directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does. Each
-  module's `internal/testtmp` keeps a test that fails a new `os.TempDir()`, or a new
-  `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that
-  module's tests. It reads no other shape: a directory named by a variable or a constant, or an
-  `os.CreateTemp`, is left to review.
+- Take a test's socket directory from the module's `internal/testtmp`, the one helper every test that binds a socket calls (`packages/daemon/internal/testtmp`, and the same file in `packages/envoy`).
+  `testtmp.Dir(t, longest)` is a fresh directory of the test's own, removed when the test ends, where `longest` is the longest path the test puts inside it, written relative to the directory (`"g9/.s.PGSQL.5432"`);
+  `testtmp.Socket(t, name)` is the path of a socket named `name` in such a directory.
+  `Dir` makes the directory under `TMPDIR` and measures what `longest` would come to there;
+  only when that passes 107 bytes, or `TMPDIR` holds no directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does.
+  Each module's `internal/testtmp` keeps a test that fails a new `os.TempDir()`, or a new `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that module's tests.
+  It reads no other shape: a directory named by a variable or a constant, or an `os.CreateTemp`, is left to review.
+
 - Two kinds of site keep a directory of their own on purpose.
-  `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long
-  one, as long as the `TMPDIR` a Legion role is told, so that its test proves sockets still bind
-  where a role runs; a short directory would take the proof away. The once-per-binary
-  directories a package's `TestMain` owns (the build directories of `internal/daemon`,
-  `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of
-  `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon
-  module; the sign-in secret directory of `internal/broker/config` and the certificate directory
-  of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget,
-  and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
-  `TestMain`.
-- A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test
-  that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`,
-  never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the process held when the
-  test ends, and Go refuses it in a parallel test or under a parallel parent, while a parallel
-  test runs only beside other parallel tests, so no test can read a value another test changed.
+  `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long one, as long as the `TMPDIR` a Legion role is told, so that its test proves sockets still bind where a role runs;
+  a short directory would take the proof away.
+  The once-per-binary directories a package's `TestMain` owns (the build directories of `internal/daemon`, `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon module;
+  the sign-in secret directory of `internal/broker/config` and the certificate directory of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget, and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that `TestMain`.
+
+- A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`, never a bare `os.Setenv` or `os.Unsetenv`.
+  `t.Setenv` puts back what the process held when the test ends, and Go refuses it in a parallel test or under a parallel parent, while a parallel test runs only beside other parallel tests, so no test can read a value another test changed.
   A bare call has neither fence.
-- Before you call a test that binds a socket done, run it with a temporary directory of about 64
-  bytes. A pass under `/tmp` does not show that the test works under a longer one. Set `GOTMPDIR`
-  as well, since `t.TempDir()` reads it first:
+
+- Before you call a test that binds a socket done, run it with a temporary directory of about 64 bytes.
+  A pass under `/tmp` does not show that the test works under a longer one.
+  Set `GOTMPDIR` as well, since `t.TempDir()` reads it first:
 
   ```sh
   L=/tmp/a-deliberately-long-tmpdir-for-unix-socket-path-tests-0001 && mkdir -p "$L"
@@ -202,65 +163,45 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
 ## A test that calls `t.Parallel()`
 
-The tests of a Go package run one at a time unless they call `t.Parallel()`, and most of this
-repository's do call it: `packages/envoy` alone has about 3,700 such calls, which is what keeps
-CI's `envoy-go` job inside its limit (dispatch://INFRA-1075).
+The tests of a Go package run one at a time unless they call `t.Parallel()`, and most of this repository's do call it:
+`packages/envoy` alone has about 3,700 such calls, which is what keeps CI's `envoy-go` job inside its limit (dispatch://INFRA-1075).
 A test may call it only when it reads and writes nothing the whole process shares.
 
-Four kinds of test must not, and each of them has already been found by the failure of a
-different test rather than of itself:
+Four kinds of test must not, and each of them has already been found by the failure of a different test rather than of itself:
 
 - **One that swaps process-wide state**:
-  `t.Setenv`, `t.Chdir`, `slog.SetDefault` or `internal/logtest`'s capture,
-  `pmdoc.SetBlockIDGenerator`, `pmdoctest.UseBlockSchema`, or a package-level `var` a test
-  assigns.
+  `t.Setenv`, `t.Chdir`, `slog.SetDefault` or `internal/logtest`'s capture, `pmdoc.SetBlockIDGenerator`, `pmdoctest.UseBlockSchema`, or a package-level `var` a test assigns.
 
-  The victim is whatever ran beside it: a parse against another test's block schema, a log line
-  another test was counting, a query through another test's SQL.
+  The victim is whatever ran beside it: a parse against another test's block schema, a log line another test was counting, a query through another test's SQL.
 
-- **One that measures the process**:
-  `runtime.ReadMemStats`, a goroutine dump, a CPU window (`internal/cputest`), or a bound on how
-  long something took.
+- **One that measures the process**: `runtime.ReadMemStats`, a goroutine dump, a CPU window (`internal/cputest`), or a bound on how long something took.
 
   Every other parallel test's allocations, goroutines and CPU count against it.
 
 - **One that shares a database, a NATS subject, a stream or a durable name with another test.**
 
-  `internal/dispatch/store/storetest` and `internal/broker/store/storetest` give each test a
-  database of its own, so this is about what a test names for itself.
+  `internal/dispatch/store/storetest` and `internal/broker/store/storetest` give each test a database of its own, so this is about what a test names for itself.
 
 - **One whose document is so large that two at once pass a race job's memory bound.**
 
-  `packages/envoy/internal/dispatch/docs` builds a million-item ygo document in three tests
-  (`TestRebuildDocumentRestoresDocumentThatCannotLoad`,
-  `TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge`,
-  `TestAnUndecodableHistoryLoadsAsDocumentUnloadable`) and documents of hundreds of kilobytes in
-  `TestAMarginWriteMatchesTheWholeDocumentWrite`, and the race detector shadows about four bytes
-  a byte. Two of the million-item three at once took `envoy-go-race-docs` to 8,939,044 kB against
-  `race_memory.py`'s bound of 8,388,608 kB (run 42397241249); the five rebuild tests alone at
-  `-parallel 2` peaked at 9,207,356 kB and serialised at 5,311,220 kB. This is the one kind
-  measured rather than reasoned: the job's sampler names the tests that were running at its
-  highest sample, and a test is made serial only once a run of that family on its own has shown
-  the peak.
+  `packages/envoy/internal/dispatch/docs` builds a million-item ygo document in three tests (`TestRebuildDocumentRestoresDocumentThatCannotLoad`, `TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge`, `TestAnUndecodableHistoryLoadsAsDocumentUnloadable`) and documents of hundreds of kilobytes in `TestAMarginWriteMatchesTheWholeDocumentWrite`, and the race detector shadows about four bytes a byte.
+  Two of the million-item three at once took `envoy-go-race-docs` to 8,939,044 kB against `race_memory.py`'s bound of 8,388,608 kB (run 42397241249);
+  the five rebuild tests alone at `-parallel 2` peaked at 9,207,356 kB and serialised at 5,311,220 kB.
+  This is the one kind measured rather than reasoned:
+  the job's sampler names the tests that were running at its highest sample, and a test is made serial only once a run of that family on its own has shown the peak.
 
 Find them through the helpers, not line by line:
-every one of those found so far reached its swap through a helper two or three calls away, and a
-file-by-file read missed them.
-Where a test stays serial, say in a comment beside it which of the four it is, so the next pass
-over the package does not undo it.
+every one of those found so far reached its swap through a helper two or three calls away, and a file-by-file read missed them.
+Where a test stays serial, say in a comment beside it which of the four it is, so the next pass over the package does not undo it.
 
 Prefer the cause to the exclusion.
-A package-level `var` a test assigns becomes a field of the thing under test, defaulted from the
-constant it replaces, which the test then sets on its own instance;
-that is how `internal/dispatch/docs`'s drain budget and room cap, `internal/bus`'s drain-hook
-reserve and `cmd/listener`'s retry delays stopped forbidding parallelism.
+A package-level `var` a test assigns becomes a field of the thing under test, defaulted from the constant it replaces, which the test then sets on its own instance;
+that is how `internal/dispatch/docs`'s drain budget and room cap, `internal/bus`'s drain-hook reserve and `cmd/listener`'s retry delays stopped forbidding parallelism.
 
 ## Go's package deadline
 
-`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
-which reads as a failure of the change under test. `packages/envoy/internal/dispatch/api` alone
-takes close to that, about 600 s on a workstation, so every command that runs that package, on its
-own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m`:
+`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
+`packages/envoy/internal/dispatch/api` alone takes close to that, about 600 s on a workstation, so every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m`:
 
 ```sh
 cd packages/envoy
@@ -269,29 +210,19 @@ go test -timeout 20m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI's `envoy-go` job gives the whole module that deadline in one `go test` call
-(`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by
-itself, gives it 30 minutes; `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI's `envoy-go` job gives the whole module that deadline in one `go test` call (`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by itself, gives it 30 minutes;
+`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own.
-The packages used to be run apart because each test cloned and dropped a database of its own, and
-those cleanups queued on one Postgres checkpointer; every job's Postgres now runs with `fsync`,
-`full_page_writes` and `synchronous_commit` off, where a forced checkpoint writes nothing
-durable, so they run together.
-On a small machine `api` and `docs` each overran the default when they ran beside the module's
-other Postgres-backed packages
-(`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
+The packages used to be run apart because each test cloned and dropped a database of its own, and those cleanups queued on one Postgres checkpointer;
+every job's Postgres now runs with `fsync`, `full_page_writes` and `synchronous_commit` off, where a forced checkpoint writes nothing durable, so they run together.
+On a small machine `api` and `docs` each overran the default when they ran beside the module's other Postgres-backed packages (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test
-job now runs it only under the race detector, in its race step, once per job; the plain step
-("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still
-compiles it without the detector. On CI's runners, while the plain step still ran it, it took
-at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
-733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
-to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
-measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
-takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
-package, alone or in a pattern that includes it, passes `-timeout 30m`:
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package.
+The test job now runs it only under the race detector, in its race step, once per job;
+the plain step ("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector.
+On CI's runners, while the plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job 125688799071).
+Under `-race` it took up to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709 measured, on main and on pull requests, and ran go test's own ten minutes out on main at job 125691048644 of run 41562777668; the race step gives it 30 minutes.
+On a busy machine it takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 30m`:
 
 ```sh
 cd packages/daemon
@@ -308,7 +239,8 @@ The runtime keeps a cleanup's closure and its argument alive for as long as the 
 In `packages/envoy/internal/dispatch/docs` the object is a room's live document, and two closures held the service and one of its listings, each of which reaches every resident document through ygo's room table:
 every room the tests loaded then stayed in memory with its replica and its trees, which is what took the `envoy-go-race-docs` job over its runner's memory (dispatch://INFRA-1085).
 
-Hold the owner through a `weak.Pointer` instead, and do nothing when its `Value()` is nil, as that package's `keepInstance` (`roomcursor.go`) and `listResident` (`tree.go`) do: the cleanup drops its entry while the owner is alive, and an owner that is gone has no map left to drop it from.
+Hold the owner through a `weak.Pointer` instead, and do nothing when its `Value()` is nil, as that package's `keepInstance` (`roomcursor.go`) and `listResident` (`tree.go`) do:
+the cleanup drops its entry while the owner is alive, and an owner that is gone has no map left to drop it from.
 Hold weakly what the argument would carry as well, and pass `struct{}{}`, which reaches nothing, as `keepInstance` does with the room load its cleanup once took as its argument.
 A pointer to a field of the owner counts as the owner, since a field and the value holding it are one allocation.
 `weak.Make` takes such an interior pointer and that weak pointer dies with the whole allocation, which is how `listResident` holds the listing it was given, `Service.instances` or `Service.replicas`.
@@ -321,9 +253,11 @@ GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
-The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
+The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect:
+the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
-`GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
+`GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one:
+with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
 It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
@@ -338,94 +272,66 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 
 ## A parallel test's cleanup lets go of what it held
 
-A test cleanup of `packages/envoy/internal/dispatch/docs` is registered through that package's `cleanupAndRelease` (`service_test.go`), never through `t.Cleanup` directly: it registers the function and drops its reference to it the moment the function has run.
+A test cleanup of `packages/envoy/internal/dispatch/docs` is registered through that package's `cleanupAndRelease` (`service_test.go`), never through `t.Cleanup` directly:
+it registers the function and drops its reference to it the moment the function has run.
 The testing package holds a cleanup for as long as the test's own `*testing.T`, which for a parallel test is longer than the test.
 `testing.common.runCleanup` takes the last function off `common.cleanups` and shortens the slice, leaving the element it ran in the backing array, and `testing.T.Parallel` appends the test to `parent.sub`, which holds it until the parent ends - for a top-level test, until `m.Run` returns.
 A cleanup closing over a `*Service` therefore holds that service, every room it had loaded and each room's document for the rest of the binary's run, however cleanly that cleanup shut the service down.
 Every cleanup of the package goes through the helper rather than the ones whose closure looks heavy, so no test has to judge what its own closure reaches, and a closure that grows a service later is right without being revisited.
 
 That is what this package's test binary did once its tests ran in parallel (dispatch://INFRA-1075).
-`go test -run TestRenderReuse` built 45 services and held 38 of them at once, peaking at 4,021,096 kB resident with 3,108,906 kB live after two forced collections; through `cleanupAndRelease` the same run holds at most 3, peaks at 717,396 kB resident and 456,587 kB live.
-The leak line above answers nothing here: it runs once `m.Run` has returned, when the root `*testing.T` and every cleanup it held are themselves unreachable, so it read `0 still alive` in both runs.
+`go test -run TestRenderReuse` built 45 services and held 38 of them at once, peaking at 4,021,096 kB resident with 3,108,906 kB live after two forced collections;
+through `cleanupAndRelease` the same run holds at most 3, peaks at 717,396 kB resident and 456,587 kB live.
+The leak line above answers nothing here:
+it runs once `m.Run` has returned, when the root `*testing.T` and every cleanup it held are themselves unreachable, so it read `0 still alive` in both runs.
 What reads the retention is a sample taken while the tests run - two `runtime.GC()` calls, then `runtime.ReadMemStats` and the package's own `liveServices` - or a heap profile written at the same moment, where the retained bytes stand under `crdt.decodeItem` and `crdt.NewYXmlElement` from `websocket.(*Server).loadRoom`.
 
 ## A database a Go test creates
 
-A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
-both `storetest` harnesses (`packages/envoy/internal/dispatch/store/storetest`,
-`packages/envoy/internal/broker/store/storetest`) and both modules' `internal/testpg` do. Without
-it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
-4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's
-migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log. A file
-copy writes a few hundred bytes. `storetest`'s own test fails when a clone writes more than a
-hundredth of its template's size, and each module's `internal/testpg` test
-`TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
-database's creation in a string without `strategy file_copy` on the same line.
+A Go test that creates a Postgres database writes `create database … strategy file_copy`, as both `storetest` harnesses (`packages/envoy/internal/dispatch/store/storetest`, `packages/envoy/internal/broker/store/storetest`) and both modules' `internal/testpg` do.
+Without it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
+4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log.
+A file copy writes a few hundred bytes.
+`storetest`'s own test fails when a clone writes more than a hundredth of its template's size, and each module's `internal/testpg` test `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a database's creation in a string without `strategy file_copy` on the same line.
 
-A test that needs the schema takes a clone of a template its package migrated once, rather than
-running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's
-URL, `ClonePool` an open `pgxpool` on it and `CloneStore` the opened store, each dropped when the
-test ends, and the package's
-`TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and
-composes with the `TestMain` a package already has
-(`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
-`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
-schema.
-`testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
-apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
-clone would not let them do.
-`internal/store`'s own tests take that same `Database`, from the leaf package
-`packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
-to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
-`internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
-imports nothing of the module and so is open to every package of it.
-A package whose tests migrate into the database their DSN names, rather than taking one each,
-takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
-`testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
-database they are given).
+A test that needs the schema takes a clone of a template its package migrated once, rather than running the migrations itself:
+`packages/daemon/internal/testpg`'s `Clone` answers the clone's URL, `ClonePool` an open `pgxpool` on it and `CloneStore` the opened store, each dropped when the test ends, and the package's `TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and composes with the `TestMain` a package already has (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
+`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's schema.
+`testdb.Database` is still there for a test that wants an empty database:
+`internal/record`'s own tests apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated clone would not let them do.
+`internal/store`'s own tests take that same `Database`, from the leaf package `packages/daemon/internal/testpg/testdb` that holds it:
+`internal/testpg` imports `internal/store` to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which imports nothing of the module and so is open to every package of it.
+A package whose tests migrate into the database their DSN names, rather than taking one each, takes one database for its whole run instead:
+`testdb.RunDatabaseMain` from its `TestMain`, and `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the database they are given).
 
-A test that needs one of envoy's binaries takes it from
-`packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
-process and removes the directory when `testbuild.Main` ends the run.
+A test that needs one of envoy's binaries takes it from `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test process and removes the directory when `testbuild.Main` ends the run.
 
-A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
-`DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
-`packages/envoy/scripts/dev-postgres.sh`'s container.
+A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`):
+the server `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on `packages/envoy/scripts/dev-postgres.sh`'s container.
 
-Each test's database is dropped when that test ends, and no database is handed from one test to
-another. A file copy forces a checkpoint before the copy and another
-after it, and a `drop database` forces one more, so a run pays three forced checkpoints a test;
-what makes that affordable is the server, not the harness. Every CI job that runs a Postgres
-service runs a container deleted with the job, with `fsync`, `full_page_writes` and
-`synchronous_commit` off, where a forced checkpoint writes nothing durable
-(dispatch://INFRA-1075).
+Each test's database is dropped when that test ends, and no database is handed from one test to another.
+A file copy forces a checkpoint before the copy and another after it, and a `drop database` forces one more, so a run pays three forced checkpoints a test;
+what makes that affordable is the server, not the harness.
+Every CI job that runs a Postgres service runs a container deleted with the job, with `fsync`, `full_page_writes` and `synchronous_commit` off, where a forced checkpoint writes nothing durable (dispatch://INFRA-1075).
 
-Each test's database is dropped by the harness itself, on every server: one left behind is one
-nothing else knows to drop. **The one database that is deliberately left behind is the template**,
-and it is the single exception to that rule.
+Each test's database is dropped by the harness itself, on every server: one left behind is one nothing else knows to drop.
+**The one database that is deliberately left behind is the template**, and it is the single exception to that rule.
 
-Both harnesses clone from one migrated template, and the template stays. Applying 210 Dispatch
-migrations, each in its own committed transaction, cost about 21 s of every test process that
-wanted a database (measured on a two-core pod: `internal/dispatch/events` ran in 60 s building a
-template and 39 s cloning one already there), and a lane runs about twenty packages on the
-Dispatch harness and thirteen on the broker's. The template is named
-`dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint is 32
-hex characters digesting the migration set the build embeds (`store.MigrationsFingerprint`): the
-first process to want it builds it under a cluster-wide advisory lock, under a
-`…_building_<random>` name it is renamed out of only once every migration is applied, and every
-process after it clones what is already there.
+Both harnesses clone from one migrated template, and the template stays.
+Applying 210 Dispatch migrations, each in its own committed transaction, cost about 21 s of every test process that wanted a database (measured on a two-core pod:
+`internal/dispatch/events` ran in 60 s building a template and 39 s cloning one already there), and a lane runs about twenty packages on the Dispatch harness and thirteen on the broker's.
+The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint is 32 hex characters digesting the migration set the build embeds (`store.MigrationsFingerprint`):
+the first process to want it builds it under a cluster-wide advisory lock, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.
 
-No process drops it. The test processes of one run start minutes apart - a lane runs eight
-package binaries at a time - so a process that dropped the template on its way out would take it
-from the processes still cloning it, and there is no moment at which a process can know it is the
-last. A developer or operator who finds a `dispatch_template_…` or `broker_template_…` database
-on a server is looking at that: a read-only, connection-refusing copy of one migration set's
-schema, holding no row any test wrote, left for the next test process.
+No process drops it.
+The test processes of one run start minutes apart - a lane runs eight package binaries at a time - so a process that dropped the template on its way out would take it from the processes still cloning it, and there is no moment at which a process can know it is the last.
+A developer or operator who finds a `dispatch_template_…` or `broker_template_…` database on a server is looking at that:
+a read-only, connection-refusing copy of one migration set's schema, holding no row any test wrote, left for the next test process.
 
-A set that gains, loses or edits a migration gets a template of its own, so no run clones a stale
-schema; what a stale template costs is 13 MB on a server that outlives the run. CI's Postgres is
-a container deleted with the job. On a long-lived server, such as
-`packages/envoy/scripts/dev-postgres.sh`'s, reclaim them by hand:
+A set that gains, loses or edits a migration gets a template of its own, so no run clones a stale schema;
+what a stale template costs is 13 MB on a server that outlives the run.
+CI's Postgres is a container deleted with the job.
+On a long-lived server, such as `packages/envoy/scripts/dev-postgres.sh`'s, reclaim them by hand:
 
 ```sh
 psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
@@ -433,34 +339,69 @@ psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
   xargs -r -n1 -I{} psql "$DISPATCH_TEST_DATABASE_URL" -c 'drop database "{}"'
 ```
 
+## A test Postgres's five settings
+
+Every CI job that runs a Postgres service starts it with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command` in `.github/workflows/ci.yaml`):
+
+```sh
+postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
+  -c max_connections=500 -c max_prepared_transactions=20
+```
+
+Each of those servers is a container deleted with the job, so nothing it holds has to survive a crash:
+with `fsync`, `full_page_writes` and `synchronous_commit` off a forced checkpoint writes nothing durable, which is what makes the three forced checkpoints a test's database costs affordable (above).
+`max_connections` is 500 against the image's default of 100, which a module's package binaries at once exhaust (`FATAL: sorry, too many clients already`):
+eight binaries (`go test -p 8`), each running its tests at the runner's four cores, each test store bounded at 16 connections (`testPoolSize`, `packages/envoy/internal/dispatch/store/storetest`).
+`max_prepared_transactions` is 20, against the image's default of 0, because a server that can prepare no transaction makes `TestNoPreparedTransactionHoldsAnEventIDAndTheFloorTrailsOneAnyway` (`packages/envoy/internal/dispatch/api`) skip, and a skip is a pass that proves nothing.
+
+A developer's throwaway test server is run the same way and for the same reason, its data dying with it:
+
+```sh
+cd packages/envoy
+./scripts/dev-postgres.sh --throwaway
+```
+
+That starts a PostgreSQL cluster of its own under `TMPDIR`, from this host's server binaries, on port 55433 unless the command names another, with `-c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20`, and prints the `DATABASE_URL` it serves, its data directory and the pid to stop it by.
+A `kill` of that pid and an `rm -rf` of that directory take the server and everything it held away.
+The container that same script starts with no argument is the other case and keeps its durability:
+it outlives the run and holds the local Dispatch's databases, which is why a test changes no server setting either (above).
+
+Two of this repository's learnings are about these settings, and this is what each holds today.
+
+`docs/solutions/database-issues/an-index-only-scan-test-depends-on-the-visibility-map-and-asynchronous-commit-leaves-it-empty-pr2376.md` found that a plan test asserting an `Index Only Scan` is also asserting that the table's pages are marked all-visible:
+the planner costs that scan by `relallvisible/relpages`, so a table whose visibility map is empty is read by a bitmap heap scan over the same index, and the test fails as if the index or the query were wrong.
+That half holds, and so does its first move, which is to read `select relallvisible, relpages from pg_class where relname = '<table>'` before changing the index or the query.
+Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every job's Postgres now runs with the three off.
+What replaced it is that the test states the planner input it is making a claim about rather than taking it from a vacuum:
+`packages/envoy/internal/dispatch/sessionanswers/sessionanswers_test.go` calls `pg_restore_relation_stats(…, 'relallvisible', c.relpages)` inside the transaction its two `EXPLAIN`s run in, and that transaction is rolled back when the test ends, so the harness hands the database on as it found it.
+The cause recorded there is wider than the learning's inference, too:
+a page is marked all-visible only once every transaction on the whole server is past the rows on it, and this module's packages run eight binaries at a time against one Postgres, so another package's open transaction left `relallvisible` at zero whatever the durability settings were.
+
+`docs/solutions/testing/a-load-recipes-dependency-settings-are-part-of-the-recipe-a-fast-postgres-closes-the-window-pr2517.md` holds as it stands, and these five settings are the server it is now about.
+Its finding is that a load recipe's dependency settings are part of the recipe:
+`TestTwoAnnouncersAtOnceAnnounceAndPublishOnce` (`packages/envoy/internal/dispatch/startup/started_test.go`) races a losing pass against the winner's announcing transaction, and against a Postgres with `fsync`, `full_page_writes` and `synchronous_commit` off the pre-fix binary passed 30 of 30 runs, while the same loop against the same server with its durability on failed 17 of 30.
+What has changed is where that fast server is:
+it is every CI job's and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
+Read it the other way too: a race of that kind the lane does report is one that survived these settings.
+
 ## A test that reads `GET /api/v1/references?since=` reads again
 
-A since read answers only the edges at or below the event log's safe horizon (`getReferences` and
-`sinceHorizon` in `packages/envoy/internal/dispatch/api/references.go`), and waits at most
-`referencesSinceWait`, one second, for a horizon above the events committed before the read. Past
-that wait it answers at the horizon it has and leaves the rest to a later read: the route defers,
-it never loses an edge. The horizon is instance-wide,
-so any transaction holding a transaction id on the Postgres instance holds it back, and in
-`packages/envoy/internal/dispatch/api` the holder is the test process itself: the writes of the
-tests running beside the read, and the harness's own `create database … template … strategy
-file_copy` and `drop database`, one of each a test
-(`packages/envoy/internal/dispatch/store/storetest/storetest.go`).
+A since read answers only the edges at or below the event log's safe horizon (`getReferences` and `sinceHorizon` in `packages/envoy/internal/dispatch/api/references.go`), and waits at most `referencesSinceWait`, one second, for a horizon above the events committed before the read.
+Past that wait it answers at the horizon it has and leaves the rest to a later read: the route defers, it never loses an edge.
+The horizon is instance-wide, so any transaction holding a transaction id on the Postgres instance holds it back, and in `packages/envoy/internal/dispatch/api` the holder is the test process itself:
+the writes of the tests running beside the read, and the harness's own `create database … template … strategy
+file_copy` and `drop database`, one of each a test (`packages/envoy/internal/dispatch/store/storetest/storetest.go`).
 
-So a read that answered within `referencesSinceWait` was not held back: what it listed is what it
-owed, and a wrong answer fails the test at once. Only a read held past that wait is read again,
-bounded by `eventFeedWait`. The helper is `awaitSinceRead`
-(`packages/envoy/internal/dispatch/api/references_test.go`), which takes the read as a function, so
-each call site keeps its own reader.
+So a read that answered within `referencesSinceWait` was not held back: what it listed is what it owed, and a wrong answer fails the test at once.
+Only a read held past that wait is read again, bounded by `eventFeedWait`.
+The helper is `awaitSinceRead` (`packages/envoy/internal/dispatch/api/references_test.go`), which takes the read as a function, so each call site keeps its own reader.
 
 A test that takes one read as final fails under a transaction someone else holds:
-`TestAnAnsweredAsksPartEdgesAreListedSince` failed about one run in six on main, 7 of 40 measured
-for dispatch://INFRA-592, and in this repository's own pod on 2026-11-02 it failed 15 of 40 runs
-with a transaction held 2 s of every 2.5 s; under that same pulse, reading again, it passed 40 of
+`TestAnAnsweredAsksPartEdgesAreListedSince` failed about one run in six on main, 7 of 40 measured for dispatch://INFRA-592, and in this repository's own pod on 2026-11-02 it failed 15 of 40 runs with a transaction held 2 s of every 2.5 s;
+under that same pulse, reading again, it passed 40 of
 40.
 
-Prove such a test under a loop that holds the state, as
-`docs/solutions/testing/code-that-waits-on-instance-wide-database-state-is-tested-under-a-loop-that-holds-that-state-pr2392.md`
-prescribes:
+Prove such a test under a loop that holds the state, as `docs/solutions/testing/code-that-waits-on-instance-wide-database-state-is-tested-under-a-loop-that-holds-that-state-pr2392.md` prescribes:
 
 ```sh
 while true; do
@@ -469,52 +410,56 @@ while true; do
 done
 ```
 
-The holder must release each transaction: one that never commits holds the horizon back for good,
-so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
+The holder must release each transaction:
+one that never commits holds the horizon back for good, so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
 
 ## A writer a test holds
 
-A test that needs a live socket's writer held, so that frames queue behind it while the test
-sends the socket more frames, holds the writer itself: it builds its rig on a `heldWrites`
-listener (`packages/envoy/internal/dispatch/api/live_socket_test.go`), calls `hold`, and waits
-with `waitHeld` until a write waits at the gate. Small TCP buffers and a page that reads nothing
-(`smallSendBuffers`, `smallReadDialer`) stall the writer only until the transport lets its write
-through, and the transport decides when that is. Under gVisor, the runtime of Legion's worker
-pods, a write blocked for a third of a second completed the moment the page sent its next frame.
-`TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already
-written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
-one whose queue overflows.
+A test that needs a live socket's writer held, so that frames queue behind it while the test sends the socket more frames, holds the writer itself:
+it builds its rig on a `heldWrites` listener (`packages/envoy/internal/dispatch/api/live_socket_test.go`), calls `hold`, and waits with `waitHeld` until a write waits at the gate.
+Small TCP buffers and a page that reads nothing (`smallSendBuffers`, `smallReadDialer`) stall the writer only until the transport lets its write through, and the transport decides when that is.
+Under gVisor, the runtime of Legion's worker pods, a write blocked for a third of a second completed the moment the page sent its next frame.
+`TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already written, and failed 8 of 300 runs.
+Those two helpers are for tests of a slow page itself, such as one whose queue overflows.
 
 ## A test that starts jj or git names a working directory
 
 jj searches upward from the directory it runs in for the closest `.jj` and opens that repository, and it has no ceiling option.
 `-R` names the workspace a command acts on, and the two that create a repository, `jj git clone` and `jj git init --colocate`, take no `-R` at all.
-`-R` does not keep jj off the repository its working directory sits in: jj 0.45.1 loads that repository's configuration before it applies `-R`, and `jj -R <b> log` run inside a repository `a` that still held a legacy `.jj/repo/config.toml` migrated it, writing `a/.jj/repo/config-id`.
-Every `-R` call site of `packages/daemon/internal/workspace` is safe because its `Dir` **is** its `-R` target, not because the flag fences jj in: `runCheckedOnClone`'s comment states that invariant, where the directory a command runs in is chosen.
+`-R` does not keep jj off the repository its working directory sits in:
+jj 0.45.1 loads that repository's configuration before it applies `-R`, and `jj -R <b> log` run inside a repository `a` that still held a legacy `.jj/repo/config.toml` migrated it, writing `a/.jj/repo/config-id`.
+Every `-R` call site of `packages/daemon/internal/workspace` is safe because its `Dir` **is** its `-R` target, not because the flag fences jj in:
+`runCheckedOnClone`'s comment states that invariant, where the directory a command runs in is chosen.
 A child process started with no working directory of its own inherits the test process's, which in a Legion issue pod is inside `$LEGION_WORKSPACE`, a jj workspace of the pod's real shared clone under `/legion/repos`.
 So a test whose jj child names no directory opens and writes that clone, and the same test is green on a GitHub runner, whose checkout is git-only with no `.jj` anywhere above it (dispatch://INFRA-623).
 
 - Set `Dir` on every `exec.Command` a test starts that runs `jj`, and on every one that runs `git`, to a directory the test made.
   A `--git-dir` is not enough on its own: it tells git which repository to act on and leaves the child standing wherever the test process stands, which is what the next reader of the command has to work out again.
-  `Dir` is not enough on its own either, and this is the step the rule stopped short of: an inherited `GIT_DIR` names the repository git acts on whatever directory the child stands in, so it outranks `Dir` and `-C` alike, and a Legion issue pod hands every process such a block.
-  So a test that starts git takes those variables out of the child's environment as well as placing it: `fixtureenv.Guard` in the package's `TestMain` for a child that inherits `os.Environ()`, or `fixtureenv.Isolated` for one given an environment of its own.
+  `Dir` is not enough on its own either, and this is the step the rule stopped short of:
+  an inherited `GIT_DIR` names the repository git acts on whatever directory the child stands in, so it outranks `Dir` and `-C` alike, and a Legion issue pod hands every process such a block.
+  So a test that starts git takes those variables out of the child's environment as well as placing it:
+  `fixtureenv.Guard` in the package's `TestMain` for a child that inherits `os.Environ()`, or `fixtureenv.Isolated` for one given an environment of its own.
 
 - The two probes that got this wrong were copies of one helper, now `testbin.RequireJJFilters` in `packages/daemon/internal/testbin`, each running `jj config list` with no `Dir`.
   A probe is as much a jj child as a fixture is.
 
-- A test that drives `packages/daemon/internal/workspace` needs nothing of its own: `execRunner.Run` refuses a `Command` whose `Dir` is not absolute, and refuses a jj command that creates a repository when that directory, or any above it, holds a `.jj` directory (`refuseEnclosingWorkspace`).
+- A test that drives `packages/daemon/internal/workspace` needs nothing of its own:
+  `execRunner.Run` refuses a `Command` whose `Dir` is not absolute, and refuses a jj command that creates a repository when that directory, or any above it, holds a `.jj` directory (`refuseEnclosingWorkspace`).
   `TestProvisionLeavesTheEnclosingRepositoryUntouched` holds both on a runner, by provisioning from inside a decoy repository.
 
 - A test that builds a repository of its own puts it under `t.TempDir()`, and `TMPDIR` must sit inside no checkout.
-  Nothing refuses the fixtures' own `jj git init --colocate` (`runSetup`, `enclosingRepository`): it runs outside the runner, where `refuseEnclosingWorkspace` never sees it, so under a `TMPDIR` inside a checkout it would read that checkout's repository's configuration first, and migrate it when that repository still holds a legacy `.jj/repo/config.toml`.
+  Nothing refuses the fixtures' own `jj git init --colocate` (`runSetup`, `enclosingRepository`):
+  it runs outside the runner, where `refuseEnclosingWorkspace` never sees it, so under a `TMPDIR` inside a checkout it would read that checkout's repository's configuration first, and migrate it when that repository still holds a legacy `.jj/repo/config.toml`.
 
 ## A test that starts jj or git inherits no pod's environment
 
 A Legion issue pod hands every process its live workspace (`LEGION_WORKSPACE`), its git configuration (`GIT_CONFIG_*`), its GitHub credential, the deployment's own session store (`OMP_SESSION_SQL_DSN_FILE`, `OMP_SESSION_STORAGE`) and more.
-A test that let git or jj inherit them read and pushed the pod's own work: the shim's rescue test, run with no `LEGION_WORKSPACE` of its own, pushed the pod's workspace to the real origin as `legion/WIDGETS-42-rescue-…` branches.
+A test that let git or jj inherit them read and pushed the pod's own work:
+the shim's rescue test, run with no `LEGION_WORKSPACE` of its own, pushed the pod's workspace to the real origin as `legion/WIDGETS-42-rescue-…` branches.
 
 - A `packages/daemon` package whose tests run git or jj, as children or in-process through the code under test, calls `fixtureenv.MustGuard` in its `TestMain`, after any branch where the test binary runs as a helper child.
-  MustGuard is Guard with a `TestMain`'s only answer to a failure: it prints it and ends the process with status 1, which `packages/daemon/internal/fixtureenv`'s own test holds, with the guarantee Guard gives every package (`fixtureenv.RequireGuarded` stays for the test that needs the check in its own body).
+  MustGuard is Guard with a `TestMain`'s only answer to a failure:
+  it prints it and ends the process with status 1, which `packages/daemon/internal/fixtureenv`'s own test holds, with the guarantee Guard gives every package (`fixtureenv.RequireGuarded` stays for the test that needs the check in its own body).
   Such a package is also a line of `guardingPackages` in `packages/daemon/internal/fixtureenv/guardingpackages_test.go`, which fails when a listed package's `TestMain` calls no `MustGuard`, calls it only inside a branch, runs the tests before it, or runs them under a branch whose condition does not say a helper-child marker is set (`os.Getenv(<name>) != ""`, or `if _, ok := os.LookupEnv(<name>); ok`), since every ordinary run of the package takes such a branch too.
   It also fails a `TestMain` that a build constraint keeps out of the default `go test` build, and a package of the module whose `TestMain` calls `MustGuard` while the list does not hold it, so adding a package to the guard adds it to the list.
   No test can see another package's process, so that list is the one check of every package's guard.
@@ -522,7 +467,8 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   The session store a pod names holds the conversation of every agent of the deployment, so a test that opened it would read and write what those agents are reading and writing.
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
-  A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
+  A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point:
+  that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's, and an identity.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
@@ -530,20 +476,15 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
 
 ## Containers a test starts
 
-Every container a test or a proof script starts carries a CPU limit and a memory limit sized to its
-work, and is removed when the test stops, except kind's node containers (`scripts/e2e/README.md`
-says why) and the Pulumi containers of `packages/envoy/infra/host/live_test.go`, whose released
-`Listener` component has no CPU or memory inputs. Tests and the live proofs run on shared dev boxes
-as well as on CI runners, and an unlimited server can take every core and all the memory of a host
-that other work shares.
+Every container a test or a proof script starts carries a CPU limit and a memory limit sized to its work, and is removed when the test stops, except kind's node containers (`scripts/e2e/README.md` says why) and the Pulumi containers of `packages/envoy/infra/host/live_test.go`, whose released `Listener` component has no CPU or memory inputs.
+Tests and the live proofs run on shared dev boxes as well as on CI runners, and an unlimited server can take every core and all the memory of a host that other work shares.
 
 - In Go, set `Resources.NanoCPUs` and `Resources.Memory` in the container's host configuration:
-  through `testcontainers.WithHostConfigModifier` for a `Run`, or as the request's
-  `HostConfigModifier` for a `GenericContainer` (`packages/envoy/internal/testpg/testpg.go` is one).
-  `WithHostConfigModifier` replaces any modifier an earlier option set, so a test that needs a host
-  configuration of its own sets the limits in that same modifier.
-- In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
-  directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
-  lists each proof's containers and their limits.
-- Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images
-  declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
+  through `testcontainers.WithHostConfigModifier` for a `Run`, or as the request's `HostConfigModifier` for a `GenericContainer` (`packages/envoy/internal/testpg/testpg.go` is one).
+  `WithHostConfigModifier` replaces any modifier an earlier option set, so a test that needs a host configuration of its own sets the limits in that same modifier.
+
+- In a script, `docker run` takes `--cpus` and `--memory` before the image.
+  A Postgres whose data directory is a `tmpfs` mount counts that data against its memory limit.
+  `scripts/e2e/README.md` lists each proof's containers and their limits.
+
+- Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images declare a `VOLUME` that a plain `docker rm -f` leaves on the host.

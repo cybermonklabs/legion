@@ -13,6 +13,15 @@
 # image or major and needs no volume. This script never starts, stops, renames, removes or
 # recreates a stale container itself: the container can hold other work's databases, and moving it
 # is its owner's call.
+#
+# `--throwaway [port]` starts the other server this script knows, which is not that container: a
+# PostgreSQL cluster of its own under TMPDIR, from this host's server binaries, on port 55433
+# unless another is named, with the five settings every CI job's Postgres service runs with
+# (.github/workflows/ci.yaml). It prints the DATABASE_URL it serves, its data directory and the
+# pid to stop it by. Its data dies with it, so nothing it holds has to survive a crash, which is
+# what makes the forced checkpoints a Go test's database costs cheap, and what keeps those
+# settings off the container above, which holds the local Dispatch's databases and keeps its
+# durability (docs/testing.md, "A test Postgres's five settings").
 set -euo pipefail
 
 container="dispatch-pg"
@@ -42,6 +51,75 @@ quote() {
   done
   printf '%s' "${words[*]}"
 }
+
+if [ "${1:-}" = --throwaway ]; then
+  port="${2:-55433}"
+  # The binaries: DISPATCH_E2E_PG_BIN, the name the Dispatch e2e harness takes a directory
+  # holding initdb and pg_ctl by (packages/dispatch/e2e/harness-postgres.ts), else initdb on
+  # PATH, else the newest /usr/lib/postgresql/*/bin, which is where Debian and the GitHub
+  # runners put them.
+  bindir="${DISPATCH_E2E_PG_BIN:-}"
+  if [ -z "$bindir" ] && command -v initdb >/dev/null 2>&1; then
+    bindir="$(dirname "$(command -v initdb)")"
+  fi
+  if [ -z "$bindir" ]; then
+    while IFS= read -r candidate; do
+      if [ -x "${candidate}/initdb" ]; then
+        bindir="$candidate"
+        break
+      fi
+    done < <(printf '%s\n' /usr/lib/postgresql/*/bin | sort -V -r)
+  fi
+  if [ ! -x "${bindir}/initdb" ] || [ ! -x "${bindir}/postgres" ]; then
+    refuse "no PostgreSQL server binaries for a throwaway server: no initdb on PATH and none under /usr/lib/postgresql/*/bin." \
+      "Name the directory holding initdb and postgres in DISPATCH_E2E_PG_BIN, or run this script with no argument for the $container container instead."
+  fi
+  root="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-throwaway-pg.XXXXXX")"
+  # UTF8 whatever the host's locale is, since a C locale would otherwise give initdb SQL_ASCII.
+  # The collation stays the host's: it is the server's own locales that decide it, and a host
+  # with only C locales orders by bytes, which one api test refuses by its own message.
+  if ! "${bindir}/initdb" -D "${root}/data" -U postgres -A trust -E UTF8 >"${root}/initdb.log" 2>&1; then
+    refuse "initdb failed in ${root}; its output:" "$(cat "${root}/initdb.log")"
+  fi
+  # The five settings of every CI job's Postgres service, with their values
+  # (.github/workflows/ci.yaml): a server a run throws away keeps nothing a crash could cost, and
+  # with those three off a forced checkpoint writes nothing durable, while the connection and
+  # prepared-transaction limits are the ones a whole module's packages at once need.
+  "${bindir}/postgres" -D "${root}/data" -k "$root" -h 127.0.0.1 -p "$port" \
+    -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
+    -c max_connections=500 -c max_prepared_transactions=20 \
+    >"${root}/server.log" 2>&1 &
+  server_pid=$!
+  # Thirty seconds, asked over TCP, and no longer than the server itself lives: a postmaster that
+  # exits (a port already taken, a data directory it refuses) ends the wait at once.
+  ready=false
+  for _ in $(seq 60); do
+    if "${bindir}/pg_isready" -h 127.0.0.1 -p "$port" -U postgres -q; then
+      ready=true
+      break
+    fi
+    kill -0 "$server_pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [ "$ready" != true ]; then
+    kill "$server_pid" 2>/dev/null || true
+    refuse "the throwaway server did not answer on 127.0.0.1:${port}; its log:" "$(cat "${root}/server.log")"
+  fi
+  # The database the dev container's URL names too, so the two URLs differ in their port alone.
+  if ! "${bindir}/createdb" -h 127.0.0.1 -p "$port" -U postgres dispatch; then
+    kill "$server_pid" 2>/dev/null || true
+    refuse "the throwaway server on 127.0.0.1:${port} served no dispatch database; its log:" "$(cat "${root}/server.log")"
+  fi
+  printf '%s\n' \
+    "DATABASE_URL=postgres://postgres@127.0.0.1:${port}/dispatch?sslmode=disable" \
+    "PGDATA=${root}/data" \
+    "PID=${server_pid}" \
+    "# stop it and take its data with it: $(quote kill "$server_pid") && $(quote rm -rf "$root")"
+  exit 0
+fi
+if [ "$#" -gt 0 ]; then
+  refuse "unknown argument: $1" "usage: dev-postgres.sh [--throwaway [port]]"
+fi
 
 if ! docker container inspect "$container" >/dev/null 2>&1; then
   docker run "${run_flags[@]}" "$image" >/dev/null
