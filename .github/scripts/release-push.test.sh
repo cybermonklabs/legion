@@ -64,6 +64,17 @@
 # of the script whose pinned key GitHub does not hold. Those, and a comparison
 # of the pinned keys with `gh api meta`, print a SKIP line and count nothing
 # when the network or a gh sign-in is missing.
+# The `release`, `release-section` and `push-tag` cases all reach a write the
+# script under test guards with this repository's own private-name rules, so
+# every case here fills the seam that guard leaves, $RELEASE_PUSH_LEAK_ENGINE,
+# with a stand-in engine of its own and none reaches the network. One case
+# drives each of the six guarded writes twice, with a stand-in that finds the
+# invented MagicDNS host the case plants in what that write publishes and with
+# one that finds nothing: refused, the write never happens and the stub gh logs
+# no call for it; passing, it happens as it always did. One more case reads a
+# refusal and holds it to naming the write and carrying neither what matched
+# nor the class that matched it, and two drive the rule file itself, absent and
+# unparseable, each of which refuses the write as a setup failure of its own.
 # The `check-built` cases pack a tar as a build job packs it (`tar -cf … -C
 # <tree> dist legion`) from a tree each one may doctor, and run it from an
 # empty directory outside any repository with an empty TMPDIR, checking it
@@ -115,6 +126,54 @@ trap 'rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# The leak guard's engine seam. .github/scripts/release-push.sh runs this
+# repository's private-name rules over what each write to GitHub publishes,
+# through the gitleaks it fetches unless $RELEASE_PUSH_LEAK_ENGINE names an
+# engine to run instead. Every case fills that seam with this stand-in, so no
+# case fetches anything: it reads the flags the lane passes, exits 1 when the
+# rule file is missing or holds no `title =` line, as gitleaks exits 1 when it
+# cannot load its configuration, and otherwise exits the --exit-code value when
+# standard input holds $LEAK_REFUSE and 0 when it does not. It writes a line of
+# its own on stderr when it refuses, which no refusal of the lane's may repeat.
+# $leak_refuse is what the harness puts in LEAK_REFUSE for the next run; empty,
+# which is how every case but the leak-guard ones leaves it, passes everything.
+mkdir -p "$work/bin"
+cat > "$work/bin/leak-engine" <<'ENGINE'
+#!/usr/bin/env bash
+config='' code=1
+while [ $# -gt 0 ]; do
+  case $1 in
+    --config) config=$2; shift 2 ;;
+    --exit-code) code=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+material=$(cat)
+grep -q '^title = ' "$config" 2> /dev/null || exit 1
+if [ -n "${LEAK_REFUSE:-}" ] && [[ $material == *"$LEAK_REFUSE"* ]]; then
+  echo "the stand-in engine found something" >&2
+  exit "$code"
+fi
+exit 0
+ENGINE
+chmod +x "$work/bin/leak-engine"
+export RELEASE_PUSH_LEAK_ENGINE="$work/bin/leak-engine"
+leak_refuse=''
+# A Tailscale MagicDNS host the rule file refuses, invented and spelled in
+# pieces so no line of this file carries it whole, as
+# check-private-names.test.sh spells its own fixtures. The refusing cases plant
+# it in what a write publishes.
+tailnet_suffix="ts.net"
+leak_host="quartz-lantern.marble-otter.$tailnet_suffix"
+# The rule file the leak guard reads out of the checkout the script under test runs from, and
+# leak_rules_into <tree>, which puts a copy of it where a copy of that script at
+# <tree>/.github/scripts/release-push.sh looks for it, as a real checkout holds both.
+leak_rules_file="$script_dir/../../packages/daemon/internal/leakguard/private-names.toml"
+leak_rules_into() {
+  mkdir -p "$1/packages/daemon/internal/leakguard"
+  cp "$leak_rules_file" "$1/packages/daemon/internal/leakguard/private-names.toml"
+}
 
 identity() {
   git -C "$1" config user.name "release test"
@@ -788,8 +847,10 @@ echo "Case 11: release creates a missing release, publishes a draft, and reuses 
 # -q .isDraft` answers for $GH_TEST_RELEASE: none (exit 1, as gh does for a
 # missing release), draft or published (true or false), or odd (a value gh
 # never prints); `--json body -q .body` prints $GH_TEST_DIR/body.md, the
-# release's body as the case left it, for the release-section cases below. An
-# upload, edit or create fails when $GH_TEST_FAIL names it, and the file an
+# release's body as the case left it, for the release-section cases below, and
+# `--json name,body` prints $GH_TEST_DIR/name.md and that same body, the draft
+# the lane reads back before it publishes it. An upload, edit or create fails
+# when $GH_TEST_FAIL names it, and the file an
 # edit's --notes-file names is copied to $GH_TEST_DIR/edited.md, the body that
 # edit would write. Any other call fails as unexpected, so a call the command
 # should not make shows up as an error.
@@ -799,7 +860,9 @@ cat > "$work/bin/gh" <<'GH'
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
   "release view")
-    if [[ " $* " == *" --json body -q .body "* ]]; then
+    if [[ " $* " == *" --json name,body "* ]]; then
+      cat "$GH_TEST_DIR/name.md" "$GH_TEST_DIR/body.md"
+    elif [[ " $* " == *" --json body -q .body "* ]]; then
       cat "$GH_TEST_DIR/body.md"
     elif [[ " $* " == *" --json isDraft -q .isDraft "* ]]; then
       case $GH_TEST_RELEASE in
@@ -835,7 +898,7 @@ release_run() {
   : > "$work/calls"
   set +e
   out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE="$state" \
-    GH_TEST_FAIL="$fail" PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
+    GH_TEST_FAIL="$fail" LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
   rc=$?
   set -e
   calls=$(<"$work/calls")
@@ -845,6 +908,17 @@ argv() { printf '[%s]' "$@"; }
 view=$(argv release view pkg-v1.0.1 --repo example/repo --json isDraft -q .isDraft)
 upload=$(argv release upload pkg-v1.0.1 a.tgz b.tgz --repo example/repo --clobber)
 publish=$(argv release edit pkg-v1.0.1 --repo example/repo --draft=false)
+# The assets these cases name, as the files they are: the leak guard lists an
+# asset's members, and an asset it cannot list is a setup failure, not a pass.
+# The draft the lane reads back before publishing is $work/name.md and
+# $work/body.md, which the release-section cases below overwrite for their own.
+mkdir -p "$work/asset-tree/dist"
+printf 'built\n' > "$work/asset-tree/dist/index.js"
+tar -czf "$work/a.tgz" -C "$work/asset-tree" dist
+cp "$work/a.tgz" "$work/b.tgz"
+printf 'Pkg v1.0.1\n' > "$work/name.md"
+printf 'Pkg v1.0.1, built from the tag.\n' > "$work/body.md"
+draft_view=$(argv release view pkg-v1.0.1 --repo example/repo --json name,body -q '.name, .body')
 release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none: exits 0" "$(is "$rc" 0)"
 check "none: creates it from the pushed tag, with generated notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --generate-notes --verify-tag)")"
@@ -854,7 +928,7 @@ check "none, --notes: creates it with those notes" "$(is "$calls" "$view"$'\n'"$
 check "none, --notes: the notes reach gh as one argument" "$(contains "$calls" '\[--notes\]\[Fixed notes, in a few words\.\]\[')"
 release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "draft: exits 0" "$(is "$rc" 0)"
-check "draft: uploads this run's assets over its own, then publishes it" "$(is "$calls" "$view"$'\n'"$upload"$'\n'"$publish")"
+check "draft: uploads this run's assets over its own, reads the draft back, then publishes it" "$(is "$calls" "$view"$'\n'"$upload"$'\n'"$draft_view"$'\n'"$publish")"
 check "draft: says it published the draft" "$(contains "$out" '^Published the draft release pkg-v1\.0\.1 with this run.s assets$')"
 release_run published "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "published: exits 0" "$(is "$rc" 0)"
@@ -869,7 +943,7 @@ check "draft, upload fails: never publishes the draft" "$(is "$calls" "$view"$'\
 check "draft, upload fails: says the draft is left unpublished" "$(contains "$out" "^::error::Uploading this run's assets to the draft release pkg-v1\.0\.1 failed; the draft is left unpublished\.$")"
 release_run draft edit pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "draft, edit fails: exits 1" "$(is "$rc" 1)"
-check "draft, edit fails: uploaded, then tried to publish" "$(is "$calls" "$view"$'\n'"$upload"$'\n'"$publish")"
+check "draft, edit fails: uploaded, read the draft back, then tried to publish" "$(is "$calls" "$view"$'\n'"$upload"$'\n'"$draft_view"$'\n'"$publish")"
 check "draft, edit fails: says it is still a draft" "$(contains "$out" "^::error::Publishing the draft release pkg-v1\.0\.1 failed; it holds this run's assets and is still a draft\.$")"
 release_run none create pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none, create fails: exits non-zero" "$([ "$rc" != 0 ] && echo true || echo false)"
@@ -902,7 +976,7 @@ section_run() {
   : > "$work/calls"
   set +e
   out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE=published \
-    GH_TEST_FAIL='' PATH="$work/bin:$PATH" "$release_push" release-section pkg-v1.0.1 "$@" \
+    GH_TEST_FAIL='' LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release-section pkg-v1.0.1 "$@" \
     < "$work/section-stdin.md" 2>&1)
   rc=$?
   set -e
@@ -1036,7 +1110,8 @@ run_name_step() {
   calls=$(<"$work/calls")
 }
 mkdir -p "$work/wir-bare" "$work/wir-checkout/.github/scripts"
-ln -sf "$release_push" "$work/wir-checkout/.github/scripts/release-push.sh"
+cp "$release_push" "$work/wir-checkout/.github/scripts/release-push.sh"
+leak_rules_into "$work/wir-checkout"
 run_name_step "$work/wir-bare"
 check "with no checkout: the step exits 127, having called no gh, as every legion release did" \
   "$(is "$rc|$calls|$(contains "$out" 'release-push\.sh: No such file or directory')" "127||true")"
@@ -1230,6 +1305,159 @@ check "no GITHUB_REPOSITORY: exits non-zero, with an ::error:: naming it, making
   "$([ "$rc" != 0 ] && is "$(contains "$out" '^::error::release-push.sh push-tag: GITHUB_REPOSITORY')|$left" 'true|0' || echo false)"
 
 echo
+echo "Case: the leak guard refuses each of the six writes to GitHub, and lets a clean one through"
+# Each of the six writes runs this repository's own private-name rules over what it is about to
+# publish, through the engine $RELEASE_PUSH_LEAK_ENGINE names. Each write is driven twice over
+# the same material: once with a stand-in that finds $leak_host in it, as the rule file's
+# MagicDNS rule finds it, and once with the same stand-in finding nothing. Refused, the write
+# never reaches gh (or, for the tag push, origin), and nothing of the material is published.
+# An asset carrying it in a member name, one carrying it in its own file name and one that is no
+# archive at all, whose bytes are read, each stand for a release's assets: the four archives and
+# the SHA256SUMS a legion or envoy-infra release ships.
+mkdir -p "$work/leak-tree/dist"
+: > "$work/leak-tree/dist/$leak_host.txt"
+tar -czf "$work/leaky-member.tgz" -C "$work/leak-tree" dist
+cp "$work/a.tgz" "$work/$leak_host.tgz"
+printf 'd41d8cd98f00b204e9800998ecf8427e  legion-%s.tar.gz\n' "$leak_host" > "$work/SHA256SUMS"
+printf 'not a gzipped tar at all\n' > "$work/broken.tgz"
+leaky_member_upload=$(argv release upload pkg-v1.0.1 leaky-member.tgz --repo example/repo --clobber)
+leaky_name_upload=$(argv release upload pkg-v1.0.1 "$leak_host.tgz" --repo example/repo --clobber)
+# 1. The create: its tag, its title, its assets and the notes this lane writes itself.
+leak_refuse=$leak_host
+release_run none "" --notes "Fixed notes naming $leak_host." pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "the create, refused over its notes: exits 1, the stub logged the view alone and no create" \
+  "$(is "$rc|$calls" "1|$view")"
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1 for $leak_host" a.tgz
+check "the create, refused over its title: exits 1, the stub logged the view alone and no create" \
+  "$(is "$rc|$calls" "1|$view")"
+leak_refuse=''
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1 for $leak_host" a.tgz
+check "the create, a passing engine: created, with the title it was given" \
+  "$(is "$rc|$calls" "0|$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz --repo example/repo --title "Pkg v1.0.1 for $leak_host" --generate-notes --verify-tag)")"
+# 2. The upload to the draft: the asset names and the member names of each asset.
+leak_refuse=$leak_host
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" leaky-member.tgz
+check "the upload to the draft, refused over an asset's member name: exits 1, the stub logged the view alone" \
+  "$(is "$rc|$calls" "1|$view")"
+leak_refuse=''
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" leaky-member.tgz
+check "the upload to the draft, a passing engine: uploaded, read back and published" \
+  "$(is "$rc|$calls" "0|$view"$'\n'"$leaky_member_upload"$'\n'"$draft_view"$'\n'"$publish")"
+# 3. The draft publish: the title and body GitHub holds, read back before the publish.
+leak_refuse=$leak_host
+printf 'Pkg v1.0.1, as an earlier attempt left it, on %s\n' "$leak_host" > "$work/body.md"
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "the draft publish, refused over the body GitHub holds: exits 1, uploaded and read back but never published" \
+  "$(is "$rc|$calls" "1|$view"$'\n'"$(argv release upload pkg-v1.0.1 a.tgz --repo example/repo --clobber)"$'\n'"$draft_view")"
+printf 'Pkg v1.0.1, built from the tag.\n' > "$work/body.md"
+printf 'Pkg v1.0.1 for %s\n' "$leak_host" > "$work/name.md"
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "the draft publish, refused over the title GitHub holds: exits 1, never published" \
+  "$(is "$rc|$calls" "1|$view"$'\n'"$(argv release upload pkg-v1.0.1 a.tgz --repo example/repo --clobber)"$'\n'"$draft_view")"
+leak_refuse=''
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "the draft publish, a passing engine: published" \
+  "$(is "$rc|$calls" "0|$view"$'\n'"$(argv release upload pkg-v1.0.1 a.tgz --repo example/repo --clobber)"$'\n'"$draft_view"$'\n'"$publish")"
+printf 'Pkg v1.0.1\n' > "$work/name.md"
+# 4. The upload to a published release: its asset's own file name here.
+leak_refuse=$leak_host
+release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" "$leak_host.tgz"
+check "the upload to the published release, refused over an asset's file name: exits 1, the stub logged the view alone" \
+  "$(is "$rc|$calls" "1|$view")"
+leak_refuse=''
+release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" "$leak_host.tgz"
+check "the upload to the published release, a passing engine: uploaded" \
+  "$(is "$rc|$calls" "0|$view"$'\n'"$leaky_name_upload")"
+# An asset that is no archive this lane lists is read as the file it is, which is the SHA256SUMS
+# a legion and an envoy-infra release each ship; an asset it cannot list at all is a setup
+# failure, named by its position so the log carries no name of its own.
+leak_refuse=$leak_host
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1" SHA256SUMS
+check "an asset that is no archive: its bytes are read, and the create is refused" \
+  "$(is "$rc|$calls" "1|$view")"
+leak_refuse=''
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1" broken.tgz
+check "an asset the lane cannot list: refused as a setup failure, the stub logged the view alone" \
+  "$(is "$rc|$calls" "1|$view")"
+check "an asset the lane cannot list: the failure names its position, never its name" \
+  "$(is "$(contains "$out" 'asset 1 of 1 could not be listed as a gzipped tar')|$(contains "$out" 'broken\.tgz')" 'true|false')"
+# 5. The release-section write: the file whose bytes become the release's public body.
+printf 'Lead sentence.\n' > "$work/body.md"
+printf '### Added\n\n- an entry naming %s\n' "$leak_host" > "$work/leaky-entries.md"
+leak_refuse=$leak_host
+section_run '## Changelog' "$work/leaky-entries.md"
+check "the release-section write, refused over the body it would send: exits 1, viewing the body and editing nothing" \
+  "$(is "$rc|$calls|$edited" "1|$body_view|")"
+leak_refuse=''
+section_run '## Changelog' "$work/leaky-entries.md"
+check "the release-section write, a passing engine: viewed the body and edited it once" \
+  "$(is "$rc|$(one_edit)" '0|true')"
+printf 'Pkg v1.0.1, built from the tag.\n' > "$work/body.md"
+# 6. The tag push: the tag name, the only ref it writes.
+leak_tag="pkg-v1.0.3-$leak_host"
+git -C "$pt/a" tag "$leak_tag"
+push_tag "$leak_tag" LEAK_REFUSE="$leak_host"
+check "the tag push, refused over the tag name: exits 1" "$(is "$rc" 1)"
+check "the tag push, refused: no push reached origin, which holds no such tag" \
+  "$(is "$seen|$(git -C "$pt/origin.git" tag -l "$leak_tag")" "|")"
+check "the tag push, refused: nothing is left in TMPDIR, so no deploy key was ever written" \
+  "$(is "$left" 0)"
+push_tag "$leak_tag"
+check "the tag push, a passing engine: exits 0 and origin holds the tag" \
+  "$(is "$rc|$(git -C "$pt/origin.git" rev-parse -q --verify "refs/tags/$leak_tag")" "0|$(git -C "$pt/a" rev-parse "$leak_tag")")"
+
+echo
+echo "Case: a refusal names the write it refused and carries neither what matched nor the class"
+# A public repository's Actions log is world-readable, so a refusal says that it refused and
+# which write, and no more: not the line that matched, not the class that matched it, and not the
+# engine's own output, which carries both (the stand-in writes a line of its own to prove the
+# lane discards it).
+leak_refuse=$leak_host
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1 for $leak_host" a.tgz
+check "the refusal is an ::error:: of this command naming the write it refused" \
+  "$(contains "$out" '^::error::release-push\.sh release: this repository.s private-name rules refused the release create')"
+check "the refusal carries nothing of what matched" \
+  "$(is "$(contains "$out" "$leak_host")|$(contains "$out" 'quartz-lantern')|$(contains "$out" 'marble-otter')" 'false|false|false')"
+check "the refusal names no class and no rule of the rule file" \
+  "$(is "$(contains "$out" 'MagicDNS')|$(contains "$out" 'tailnet')|$(contains "$out" 'private host')" 'false|false|false')"
+check "the engine's own output is discarded" \
+  "$(is "$(contains "$out" 'the stand-in engine found something')" false)"
+check "the refusal says nothing was written" "$(contains "$out" 'so nothing was written')"
+leak_refuse=''
+
+echo
+echo "Case: a rule file that is absent, and one that does not parse, each refuse the write"
+# The rule file is read from the checkout, which is what makes these two reachable here: a copy
+# of the script under test in a tree holding no rule file at all, and one in a tree whose rule
+# file is no TOML. Each refuses the write as a setup failure of its own and says which it met.
+k7="$work/k7"
+mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts" "$k7/bad/packages/daemon/internal/leakguard"
+cp "$release_push" "$k7/none/.github/scripts/release-push.sh"
+cp "$release_push" "$k7/bad/.github/scripts/release-push.sh"
+printf 'this file is no TOML at all {{{\n' > "$k7/bad/packages/daemon/internal/leakguard/private-names.toml"
+# k7_run <tree>: the `release` create from that tree's copy of the script, against the stub gh.
+k7_run() {
+  : > "$work/calls"
+  set +e
+  out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE=none \
+    GH_TEST_FAIL='' LEAK_REFUSE='' PATH="$work/bin:$PATH" \
+    "$1/.github/scripts/release-push.sh" release pkg-v1.0.1 "Pkg v1.0.1" a.tgz 2>&1)
+  rc=$?
+  set -e
+  calls=$(<"$work/calls")
+}
+k7_run "$k7/none"
+check "the rule file absent: exits 1, the stub logged the view alone and no create" \
+  "$(is "$rc|$calls" "1|$view")"
+check "the rule file absent: says the guard could not run and names the file it did not find" \
+  "$(is "$(contains "$out" 'the leak guard could not run, so the release create is refused')|$(contains "$out" 'packages/daemon/internal/leakguard/private-names\.toml is not in this checkout')" 'true|true')"
+k7_run "$k7/bad"
+check "the rule file unparseable: exits 1, the stub logged the view alone and no create" \
+  "$(is "$rc|$calls" "1|$view")"
+check "the rule file unparseable: says the guard could not run and that the file does not parse" \
+  "$(is "$(contains "$out" 'the leak guard could not run, so the release create is refused')|$(contains "$out" 'does not parse')" 'true|true')"
+
+echo
 echo "Case: check-built accepts a build of the Claude Envoy plugin and refuses what no build holds, writing nothing"
 # The tars are made as a build job makes them (`tar -cf … -C <tree> dist legion`), from a tree
 # each case fills and may doctor. Each run is from an empty directory outside any repository,
@@ -1408,9 +1636,10 @@ if timeout 10 bash -c '</dev/tcp/github.com/22' 2>/dev/null; then
     "$([ "$rc" != 0 ] && contains "$out" 'Permission denied (publickey)' || echo false)"
   check "the pinned keys: nothing is left in TMPDIR" "$(is "$left" 0)"
   # A copy of the script whose only pinned key is one GitHub does not hold.
-  mkdir -p "$pt/swapped"
+  mkdir -p "$pt/swapped/.github/scripts"
+  leak_rules_into "$pt/swapped"
   ssh-keygen -q -t ed25519 -N '' -f "$pt/swapped/other"
-  python3 - "$release_push" "$pt/swapped/release-push.sh" "$(cut -d' ' -f2 "$pt/swapped/other.pub")" <<'PY'
+  python3 - "$release_push" "$pt/swapped/.github/scripts/release-push.sh" "$(cut -d' ' -f2 "$pt/swapped/other.pub")" <<'PY'
 import re
 import sys
 
@@ -1422,8 +1651,8 @@ text = re.sub(r"(?m)^github\.com ssh-ed25519 \S+$", "github.com ssh-ed25519 " + 
 text = re.sub(r"(?m)^github\.com (ecdsa-sha2-nistp256|ssh-rsa) \S+\n", "", text)
 open(target, "w").write(text)
 PY
-  chmod +x "$pt/swapped/release-push.sh"
-  github_push "$pt/swapped/release-push.sh"
+  chmod +x "$pt/swapped/.github/scripts/release-push.sh"
+  github_push "$pt/swapped/.github/scripts/release-push.sh"
   check "a swapped host key: exits non-zero, the host key refused before any login" \
     "$([ "$rc" != 0 ] && contains "$out" 'REMOTE HOST IDENTIFICATION HAS CHANGED\|Host key verification failed' || echo false)"
   check "a swapped host key: no login was tried" "$(is "$(contains "$out" 'Permission denied (publickey)')" false)"
@@ -2069,4 +2298,4 @@ orphans_run
 check "fold-orphans: no package directory is refused" \
   "$(is "$rc|$out|$(contains "$err" '^::error::release-push\.sh fold-orphans: no package directory given')" "1||true")"
 
-summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, check-built, extract-built, handed, no-credential, fold-notes, fold-check and fold-orphans, and release.yaml's worker_image_release step"
+summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, no-credential, fold-notes, fold-check and fold-orphans, and release.yaml's worker_image_release step"
