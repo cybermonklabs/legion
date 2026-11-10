@@ -393,6 +393,19 @@ func publishFailure(failure *string) string {
 	return *failure
 }
 
+// settledState is what the outbox has recorded of event id's sends: the attempts counted against
+// it, why its last attempt failed and whether it is published, as a line for a failure message,
+// and whether any of the three has been recorded at all. A forward still waiting for its holder's
+// receipt has none of them, which is what the two rows that read the order of two forwards assert
+// of the silent holder's event.
+func settledState(t *testing.T, database *store.Store, id int64) (settled bool, state string) {
+	t.Helper()
+	attempts, failure, _ := eventState(t, database, id)
+	published := publishedAt(t, database, id)
+	return attempts != 0 || failure != nil || published != nil,
+		fmt.Sprintf("attempts %d, publish error %s, published %t", attempts, publishFailure(failure), published != nil)
+}
+
 // dueNow makes a backed-off event due at once.
 func dueNow(t *testing.T, database *store.Store, id int64) {
 	t.Helper()

@@ -228,7 +228,7 @@ const (
 	// next pull at once rather than after its ack wait.
 	relayCancelNotOurs
 	// relayCancelSessionGone: the session has no record in the cache, so no listener relays it
-	// (sessionRelays.wanted). A clean stop (deleteSessionConsumer, cmd/listener/api.go) and the
+	// (sessionRelays.wanted). A clean stop (sessionDelivery.deleteAfterAnswer, api.go) and the
 	// session reaper (session.SessionReaper.DeleteConsumer) each delete the session's consumer
 	// with the record they delete, which is where most relays end, a clean stop being where most
 	// sessions end; the messages the run gives back are naked into a consumer the server no

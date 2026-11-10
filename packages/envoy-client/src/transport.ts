@@ -70,6 +70,10 @@ const DeliveryAnswerWireSchema = z.object({
   subject: z.string().min(1),
   stream_id: z.string(),
   gap: z.boolean(),
+  // The stream sequence the session's consumer starts at, which the session keeps as the floor
+  // of its resume point (`consumer-delivery`'s `answered`). Optional: a listener of an earlier
+  // release answers none, and such an answer must still parse.
+  consumer_start: z.number().int().nonnegative().optional(),
 });
 
 const SessionWireSchema = z.object({

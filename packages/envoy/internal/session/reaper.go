@@ -120,8 +120,10 @@ func (r *SessionRegistry) StartSessionReaper(ctx context.Context, interval time.
 // so a session's consumer lives as long as its session: a record kept, whether because the delete
 // was refused or because the session is live or unresponsive, keeps its consumer and the position
 // it holds. A session that registered again between this pass's record delete and that consumer
-// delete keeps one too: the deleter re-reads the record and gives back the consumer of a session
-// whose record is there again (cmd/listener's sessionDelivery.deleteConsumer), since the pass
+// delete keeps one too: the deleter confirms against the leader of the session bucket's stream
+// that no record stands before it removes anything, records the consumer's resume floor, and
+// after the delete reads the record again and gives the consumer back, at that floor, to a
+// session whose record is there (cmd/listener's sessionDelivery.deleteConsumer), since the pass
 // deleted the record of the session it judged gone and not of the one that registered after it.
 //
 // Nothing here fails the pass: an age it could not write, a bucket that did not answer a delete,

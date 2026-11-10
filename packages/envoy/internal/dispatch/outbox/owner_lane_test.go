@@ -34,7 +34,12 @@ func (r *roleRig) laterEvent(t *testing.T, key string, actor model.Actor) model.
 // An owner is given back as its own sends settle, not when its batch ends: an issue read in the
 // same batch as a stalled holder's, whose own forward the stream acknowledged, has its later
 // event - one committed while the stalled holder's forward is still waiting for an
-// acknowledgement that never comes - published at once.
+// acknowledgement that never comes - forwarded while that wait is still running.
+//
+// The verdict is the order of those two facts rather than a clock, because a clock measures the
+// machine as much as the outbox: this row bounded the later forward at 1 s, and under 48 busy
+// loops on this 2-CPU box that bound failed 10 of 20 runs with nothing wrong in any of them, the
+// slowest at 3.86 s.
 //
 // TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents covers two owners in
 // two batches; this covers two owners in one, which only a per-owner release reaches. Both
@@ -43,34 +48,44 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
-		within                     = time.Second
+		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
+		// It outlasts the whole test, so the wait is still running when the verdict below is read
+		// and a batch that held its owners until it ended could not end during this test at all,
+		// however slow the machine is.
+		stalledForwardWait = 10 * time.Minute
+		// A hang guard on each wait for a forward, not a bound this row measures anything
+		// against: a healthy run reaches every one of them in milliseconds, and a batch that
+		// holds its owners until it ends forwards the later event only after stalledForwardWait,
+		// ten times this.
+		hangGuard = 60 * time.Second
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	rig := newRoleRig(t)
 	rig.claim(t, stalledRole, stalledHolder, session.SessionEntry{SelfSubscribed: true})
 	rig.claim(t, liveRole, liveHolder, session.SessionEntry{SelfSubscribed: true})
 	// The stream stores and acknowledges the live holder's forwards alone, so the stalled
-	// holder's wait out their whole roleForwardAckTimeout.
+	// holder's wait out their whole acknowledgement wait.
 	rig.narrowAgentCapture(t, liveHolder)
-	silent := rig.receiver(t, stalledHolder)
+	stalled := rig.receiver(t, stalledHolder)
 	live := rig.receiver(t, liveHolder)
-	rig.routedEvent(t, "T-1", stalledRole, alice)
+	held := rig.routedEvent(t, "T-1", stalledRole, alice)
 	rig.routedEvent(t, "T-2", liveRole, alice)
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
+	deps.forwardAckWait = stalledForwardWait
 	stop := runDeps(t, deps, 15*time.Second)
 	defer stop()
 
 	select {
-	case <-silent.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the stalled holder never received its forward")
+	case <-stalled.arrived:
+	case <-time.After(hangGuard):
+		t.Fatalf("the stalled holder never received its forward within %s", hangGuard)
 	}
 	select {
 	case <-live.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the live holder never received its issue's first forward")
+	case <-time.After(hangGuard):
+		t.Fatalf("the live holder never received its issue's first forward within %s", hangGuard)
 	}
 
 	// The stalled holder's forward is still waiting for an acknowledgement, and every send of the
@@ -80,12 +95,22 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	rig.laterEvent(t, "T-2", alice)
 	select {
 	case <-live.arrived:
-		if waited := time.Since(committed); waited > within {
-			t.Fatalf("the live holder received its issue's later forward %s after its commit, want within %s: "+
-				"the owner was held in flight until its batch ended", waited.Round(time.Millisecond), within)
+		// The later forward counts only while the stalled holder's forward is still outstanding:
+		// one that arrived after its batch had settled would prove nothing about the release.
+		if settled, state := settledState(t, rig.database, held.ID); settled {
+			t.Fatalf("the stalled holder's event %d had been settled when the live holder's later "+
+				"forward arrived (%s), so the later forward followed its batch rather than overtaking it: "+
+				"the %s acknowledgement wait should still have been running",
+				held.ID, state, stalledForwardWait)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the live holder never received its issue's later forward")
+		// Logged, not asserted: how long the later forward took is as much a measure of the
+		// machine as of the outbox.
+		t.Logf("the live holder received its issue's later forward %s after its commit",
+			time.Since(committed).Round(time.Millisecond))
+	case <-time.After(hangGuard):
+		t.Fatalf("the live holder never received its issue's later forward within %s, while the "+
+			"stalled holder's %s acknowledgement wait was still running: the owner was held in "+
+			"flight until its batch ended", hangGuard, stalledForwardWait)
 	}
 }
 

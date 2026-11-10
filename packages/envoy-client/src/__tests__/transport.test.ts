@@ -277,6 +277,15 @@ describe("EnvoyClient", () => {
       updated_at: undefined,
       delivery: CONSUMER,
     });
+    // A listener of an earlier release answers no `consumer_start`, as CONSUMER above does, and
+    // one that carries it is read with it: the session keeps it as the floor of its resume point.
+    expect(
+      parseSubscribeAnswer({ ...interest, delivery: { ...CONSUMER, consumer_start: 42 } })
+    ).toEqual({
+      ...interest,
+      updated_at: undefined,
+      delivery: { ...CONSUMER, consumer_start: 42 },
+    });
     expect(() => parseSubscribeAnswer(interest)).toThrow(
       "the listener answered no delivery for ses_sender: it predates session consumers, and a session receives only what its own consumer holds"
     );

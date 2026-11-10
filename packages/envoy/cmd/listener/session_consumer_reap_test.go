@@ -63,13 +63,14 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	logger := logging.NewWithWriter("test", io.Discard)
-	delivery, err := connectSessionDelivery([]string{url}, logger)
+	delivery, err := connectSessionDelivery([]string{url},
+		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
 	delivery.relay = &recordingRelay{}
-	consumers, err := bus.ConnectSessionConsumers([]string{url})
+	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -141,7 +142,10 @@ func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 	defer cancel()
 	return rig.sessions.ReapSessions(ctx, session.SessionReaper{
 		DeleteConsumer: func(ctx context.Context, sessionID string) error {
-			return rig.delivery.deleteConsumer(ctx, rig.deps, sessionID)
+			rig.delivery.deleteConsumer(ctx, rig.deps, sessionID, func(ctx context.Context) error {
+				return rig.delivery.consumers.Delete(ctx, sessionID)
+			})
+			return nil
 		},
 	})
 }

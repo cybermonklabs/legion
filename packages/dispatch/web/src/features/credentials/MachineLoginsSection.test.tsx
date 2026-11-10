@@ -108,6 +108,7 @@ test("revoking a machine login refreshes Live grants", async () => {
   const grant: ApproverGrantResp = {
     approver: null,
     created_at: "2026-10-03T12:05:00Z",
+    decided_by: null,
     enrollment: { kind: "session", operator: "ada@example.com", runtime_id: "box-1", slot: null },
     expires_at: "2026-10-03T13:05:00Z",
     grant_id: "grant-1",

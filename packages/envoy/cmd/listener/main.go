@@ -835,6 +835,26 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 	})
 }
 
+// inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
+// this deployment's own windows derive it (bus.InactiveThresholdFor): main reads it before it
+// opens the session-consumer connection and gives it to that connection, so every consumer the
+// listener creates carries it (connectSessionDelivery, bus.ConnectSessionConsumers's
+// inactiveThreshold).
+//
+// It must stand above the sweep's worst bound - the session's record leaves the bucket, the
+// sweep's next pass deletes the consumer - because a consumer the server removes first takes
+// the session's position with it: the resume floor is recorded by the listener's own delete and
+// by nothing else, so a session whose consumer the server removed is created again at the
+// stream's end and loses every message stored while it was away.
+//
+// The record's life is the longer of the gone horizon and the bucket's maximum age, since
+// either can be what drops the record: the reaper deletes it a pass after the horizon, and the
+// bucket itself drops it at that age.
+func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweepInterval time.Duration) time.Duration {
+	_, goneHorizon := sessions.Windows()
+	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
+}
+
 func main() {
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
@@ -1094,6 +1114,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The session consumer sweep's period, the bound on how long a session that ended without
+	// deregistering keeps its consumer (startSessionConsumerSweep, session_consumer_sweep.go).
+	// It is neither reaper's: what it waits for is the state the session registry answers, and a
+	// pass of it frees a slot of the stream's consumer cap rather than taking anything away from
+	// a session.
+	sessionConsumerSweepInterval, err := envconf.PositiveDuration(logger.Slog(), os.LookupEnv, "ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL", defaultSessionConsumerSweepInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
 	sessions, err := session.OpenSessionRegistry(
 		client.Conn,
 		session.WithSessionReplicas(cfg.NATSReplicas),
@@ -1242,7 +1271,16 @@ func main() {
 	// answer frames on. There is nothing left to fall back to, so either failure ends the start:
 	// a listener that refuses every registration would stop at each session rather than at the
 	// rollout, where an operator learns of it at once.
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, logger)
+	//
+	// The threshold the server removes an idle session consumer after is derived from this
+	// deployment's own windows first and given to that connection, so every consumer the
+	// listener creates carries one that stands above its own sweep's worst bound: the session's
+	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
+	// records for longer than the default windows would otherwise have the server remove a
+	// consumer the listener's own delete had not reached, and with it the only record of where
+	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
+	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1376,12 +1414,20 @@ func main() {
 			Client:              client,
 			Reaped:              sessionsReaped,
 			StoredAfterLastSeen: sessionStoredAfterLastSeen,
-			// The pass runs in a loop of its own, and the delete reads the session's record
-			// and topics again from the stores /v1 is served from, so a session that
-			// registered between the pass's decision and its delete keeps the consumer that
-			// registration was answered with (sessionDelivery.deleteConsumer).
+			// The pass runs in a loop of its own, and the delete confirms the session is gone
+			// against the leader of the session bucket's stream before it removes anything,
+			// so a session that registered between the pass's decision and its delete keeps
+			// the consumer that registration was answered with; one that registered on
+			// another listener between that read and the delete is given its consumer back,
+			// at the floor the delete recorded, from the record and the interest row the
+			// bucket then holds (sessionDelivery.deleteConsumer, repairRegistered). A
+			// failure writes its own line there, so the pass is handed none: it deletes the
+			// records behind this one whatever became of this consumer.
 			DeleteConsumer: func(ctx context.Context, sessionID string) error {
-				return delivery.deleteConsumer(ctx, ready, sessionID)
+				delivery.deleteConsumer(ctx, ready, sessionID, func(ctx context.Context) error {
+					return delivery.consumers.Delete(ctx, sessionID)
+				})
+				return nil
 			},
 		}),
 	}
@@ -1394,6 +1440,25 @@ func main() {
 	// pass as the listener starts. It costs one stream read a pass while no role has a kept lane
 	// (startKeptRoleSweep, role_keep_sweep.go).
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, 5*time.Minute))
+
+	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
+	// holds. The deregistration route deletes the consumer of a registration it removed, and a
+	// session whose pane closed or whose box went deregisters nothing: this is the bound under
+	// which such a consumer goes, one pass after the session's record leaves the envoy_sessions
+	// bucket - the reaper's first pass past the gone horizon, or the bucket's maximum age,
+	// whichever comes first - since a pass deletes only on a bucket that answers for the session
+	// no longer. It is also what retires the consumers a hub already holds from before the sweep
+	// existed. A pass that found a cold or stale copy of the session bucket would read the whole
+	// fleet as gone, so it runs only on the task holding this machine's durable binding and only
+	// over a copy that is ready, servable and needs no read (startSessionConsumerSweep,
+	// session_consumer_sweep.go).
+	kvLoopsDone = append(kvLoopsDone, startSessionConsumerSweep(kvLoopsCtx, &sessionConsumerSweep{
+		delivery: delivery,
+		sessions: sessions,
+		deps:     ready,
+		relays:   relays,
+		logger:   logger,
+	}, sessionConsumerSweepInterval))
 
 	// Phase 6b1: Collect the interest bucket's delete markers, which the reaper above leaves one of
 	// per dead session on a key that is never reused and which nothing else removes, so every
@@ -1485,6 +1550,32 @@ func main() {
 	})
 }
 
+// startSweep runs pass every interval, and once as the listener starts, which is the loop every
+// backstop sweep of the listener runs: the kept role lanes' (startKeptRoleSweep) and the session
+// consumers' (startSessionConsumerSweep). It runs under the context the listener's other KV
+// loops run under and returns a channel closed once its goroutine has returned, as they do
+// (store.Registry.StartReaper), so the shutdown ends it and waits for a pass in flight
+// (listenerLoops.kvLoopsDone). A pass that is still running when ctx ends is not cut short by
+// this loop: each pass watches ctx itself and the shutdown waits for it, so a sweep ends
+// between two of its own calls rather than inside one.
+func startSweep(ctx context.Context, interval time.Duration, pass func(context.Context)) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			pass(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return done
+}
+
 // listenerLoops are the background loops main starts once the durable binds: stop ends them,
 // monitorDone is closed once the self-health monitor has returned, and each of kvLoopsDone once
 // one of the loops that list a KV bucket (the reapers and the interest marker collector) has. A
@@ -1536,6 +1627,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}
+	// A deregistration answers before its session consumer is deleted and leaves that delete
+	// running behind it (sessionDelivery.deleteAfterAnswer), so the stop waits for those still
+	// in flight once the server has stopped serving: a delete cut off here would leave its
+	// consumer for the sweep, and one started after the drain below would reach a closed
+	// connection.
+	parts.delivery.awaitDeletes(shutdownCtx)
 	// The session-consumer connection carries the consumer calls registrations make, which the HTTP
 	// server has stopped serving, and the relays' acks, which its drain lets reach the server,
 	// within what is left of the HTTP stop's budget.

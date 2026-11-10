@@ -793,17 +793,36 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // one the bus does not answer is the bus-unavailable 503 with Retry-After: 1 inside the caller's
 // attempt (writeStoreError).
 //
-// The session's consumer goes with the registration this route removed, as it goes with a record
-// the session reaper deletes: a clean stop is where most sessions end, so a consumer left behind
-// here stands until the stream's inactive threshold takes it, hours after the session it
-// delivered to. The unconditional delete removes the consumer every time, the conditional one
-// only for the entry it deleted; a registration that stayed keeps its consumer, since its session
-// is still there (deleteSessionConsumer). A session that registers again while this route deletes
-// its consumer keeps one too: the delete reads that session's record again from the bucket once
-// it has deleted, so a record the registration wrote restores the consumer, and a registration
-// on another listener, which this delete's lock does not reach, repairs the consumer from the
-// bucket's newest record and interest row after its own entry write
-// (sessionDelivery.deleteConsumer, sessionDelivery.confirmRegistered).
+// A registration this route removed takes its session consumer with it
+// (sessionDelivery.deleteAfterAnswer), so the consumer holds a slot of the stream's consumer
+// cap no longer: after the unconditional delete, and after a conditional one answered
+// session.EntryDeleted. The answer is written first and that delete runs after it, off this
+// handler's goroutine, because a handler holds its written response until it returns: the
+// delete waits on the session's lock with no bound of its own and then makes the bucket read
+// that confirms the session is gone, the consumer's floor read, the delete and the repair's own
+// calls under a budget of its own, after a KV delete that may already have spent sendRequestBudget,
+// so a deregistration that succeeded would read as failed to a caller whose attempt ends at 5 s
+// (LISTENER_CALL_TIMEOUT_MS). The shutdown waits for a delete still running before it drains
+// the connection it runs on, and one the listener was too late to start is logged and left to
+// the sweep (sessionDelivery.awaitDeletes).
+//
+// Which consumer that delete removes is settled under the session's lock rather than by the
+// outcome above: it reads the session bucket again there, from the leader of that bucket's
+// stream, and deletes only where the bucket holds no record at all
+// (sessionDelivery.deleteConsumer). So an outcome that keeps the entry keeps the consumer, a
+// live registration standing behind it — another client instance's, a later one's, or the one a
+// lost race read — and so does a registration that landed between this route's own delete and
+// that lock: the relaunch behind an if_not_registered_after stop, whose entry this route read
+// before the relaunch wrote its own. That registration's own write is what the read must see,
+// which is why it is the leader's: a direct get of a replicated bucket is answered by any copy
+// near enough to current, and one that has not applied the write yet would answer not found for
+// a session that is live. A registration another listener landed between that read and the
+// delete itself is given its consumer back there and then: the delete reads the record again
+// once it has removed the consumer and creates it for a session whose record is there, at the
+// floor it read before removing it (sessionDelivery.repairRegistered). The request answers
+// exactly as it did before whether that delete ran, stood down or failed: the entry is gone,
+// which is what the caller asked for, and the listener's sweep and the server's inactivity
+// threshold each reach a consumer left behind.
 //
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
@@ -836,13 +855,21 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
+		// The consumer's delete is made outside the request's own context, and after the
+		// answer: the entry is gone whatever the caller does next, a plugin that goes away as
+		// its deregistration answers - the shutdown this route mostly serves - must not leave
+		// the consumer behind for the sweep, and no caller waits on it.
+		deleting := context.WithoutCancel(r.Context())
 		if conditions == (session.DeleteConditions{}) {
+			// A session the registry no longer holds (nats.ErrKeyNotFound) is the success this
+			// route has always answered, and it leaves no registration standing either, so its
+			// consumer goes too.
 			if err := d.sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
 				writeStoreError(ctx, w, err, http.StatusInternalServerError)
 				return
 			}
-			deleteSessionConsumer(ctx, d, sessionID, logger)
 			w.WriteHeader(http.StatusOK)
+			d.consumers.deleteAfterAnswer(deleting, d, sessionID)
 			return
 		}
 		outcome, err := d.sessions.DeleteIf(ctx, sessionID, conditions)
@@ -852,8 +879,8 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 		}
 		switch outcome {
 		case session.EntryDeleted:
-			deleteSessionConsumer(ctx, d, sessionID, logger)
 			writeJSON(w, http.StatusOK, deleteSessionResponse{Deleted: true})
+			d.consumers.deleteAfterAnswer(deleting, d, sessionID)
 		case session.EntryKeptForAnotherInstance:
 			writeJSON(w, http.StatusOK, deleteSessionResponse{
 				Reason: "the registration belongs to another client instance",
@@ -875,31 +902,6 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 	}
 }
 
-// deleteSessionConsumer deletes sessionID's session consumer, which the route above does exactly
-// when it removed that session's registration (sessionDelivery.deleteConsumer). A listener built
-// without the session-consumer connection, which only a test is, holds no deleter and removes
-// nothing.
-//
-// It outlives the request (context.WithoutCancel), bounded by the consumer call's own timeout:
-// the caller of a clean stop is a session ending, and a plugin that sends its deregister and
-// exits drops the connection a moment later, which would cancel this call and leave behind
-// exactly the consumer this route exists to take. The record is already deleted by then, so
-// there is nothing the cancellation could protect.
-//
-// A delete that failed changes no answer, as the session reaper's does not
-// (session.SessionRegistry.ReapSessions): the registration is already gone, so the caller is told
-// the session is deleted and has nothing to retry, and the consumer's own inactive threshold is
-// the backstop that takes what this call left. The failure is logged with the session id and the
-// error, which is what an operator counting the stream's consumers needs.
-func deleteSessionConsumer(ctx context.Context, d *listenerDeps, sessionID string, logger *logging.Logger) {
-	if err := d.consumers.deleteConsumer(context.WithoutCancel(ctx), d, sessionID); err != nil {
-		logger.Warn("the session delete removed the registration and could not delete its session consumer",
-			slog.String("session_id", sessionID),
-			slog.String("error", err.Error()),
-		)
-	}
-}
-
 // deleteSessionResponse is what DELETE /v1/sessions/<session_id> answers a request that named a
 // condition (client_instance_id, if_not_registered_after): whether the registration is gone, and
 // for one that stayed why it did. A request that named none answers 200 with no body at all, as
@@ -910,7 +912,8 @@ type deleteSessionResponse struct {
 }
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead) and the listener's own kept lane, and sends the envelope. A role
+// instead) and the listener's own lanes, the kept one and the session resume one, and sends the
+// envelope. A role
 // topic is forwarded to its holder, answered once confirmed or when
 // publishDeliveryWindow from the request's arrival has passed (sendToRole in
 // confirmed.go); a topic the stream captures is answered once the stream
@@ -988,8 +991,19 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				"cannot publish to "+bus.LegionWakeTopic+"; the listener alone reports a Legion pod wake", "topic")
 			return
 		}
-		if strings.HasPrefix(request.Topic, bus.KeptTopicPrefix) {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to "+bus.KeptTopicPrefix+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder and the cursors of its drains")
+		// A lane of the listener's own is refused, and named in the refusal as the stream itself
+		// spells it, by the one call that covers every one of them (bus.ListenerOwnLaneOf), so a
+		// lane the stream gains is refused and named here with
+		// nothing written out a second time. What each holds says why: the kept lane holds the
+		// copies the listener keeps for a role's next holder and the cursors of its drains, so
+		// a bearer publishing there could rewind a role's drain or put a copy of its own on the
+		// lane; the resume lane holds its record of where a deleted session consumer stopped,
+		// which is where that session's consumer is created again, so one publishing there
+		// would choose where another session's delivery resumes and make it miss every message
+		// stored before that floor or read again what it has read.
+		if lane := bus.ListenerOwnLaneOf(request.Topic); lane != "" {
+			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+				"cannot publish to "+lane+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
 			return
 		}
 		message, field, bodyExpectsReply := validateMessageBody(request.messageBody)
@@ -2435,11 +2449,12 @@ func (d *listenerDeps) registerSession(
 // landing between the filter and the row would set the filter back to a row without the topic
 // this registration is answered 200 for, and every message published on that topic until the
 // session's next heartbeat would be skipped: the row write then matches its plan, so the loop
-// above ends content and nothing restores the message. A consumer delete made on this listener
-// runs under the same lock and re-reads the session's record under it
-// (sessionDelivery.deleteConsumer), so one landing between the consumer call and the entry that
-// says the session is registered would leave a session answered 200 with no consumer. Under the
-// lock both run wholly before this pass or wholly after it. A delete made on another listener
+// above ends content and nothing restores the message. The one consumer delete made on this
+// listener - a reaped record's, a deregistration's or the sweep's - runs under the same lock
+// and re-reads the session's record under it (sessionDelivery.deleteConsumer), so one landing
+// between the consumer call and the entry that says the session is registered would leave a
+// session answered 200 with no consumer. Under the
+// lock it runs wholly before this pass or wholly after it. A delete made on another listener
 // takes no lock of this process, and the bucket orders that one: it reads the record after its
 // own delete, and this pass reads the consumer after its entry write, so whichever of the two
 // acts last repairs.
@@ -2503,7 +2518,7 @@ func (d *listenerDeps) registerPass(
 	if outcome.relayed() {
 		// The write stands whatever the client does with the answer, so the consumer this
 		// entry promises is confirmed on a context the client's own cannot cancel, as the
-		// consumer delete of a clean stop is (deleteSessionConsumer).
+		// consumer delete of a deregistration is (sessionDelivery.deleteAfterAnswer).
 		d.consumers.confirmRegistered(context.WithoutCancel(registerCtx), d, body.SessionID, outcome.ackFloor)
 	}
 	return registered, true, nil, nil

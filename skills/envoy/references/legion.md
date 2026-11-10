@@ -2,7 +2,8 @@
 
 Read this in a Legion pane before you touch a role claim, or when a Legion role message fails.
 
-- The Legion plugin claims your assigned role at session start through a daemon-minted role token.
+- The Legion plugin claims your assigned role for you, through a daemon-minted role token:
+  it registers your session and reports it ready at session start, and takes the role at your first turn, or at a bound (30 s by default) when no turn comes first.
   Never call `envoy_role_set` and never subscribe to your role topic yourself, because the claim is already made (`packages/pi-shared/src/legion-claim-core.ts`).
 
 - Never build a role token from an issue number or title: only the daemon maps tokens to issues.

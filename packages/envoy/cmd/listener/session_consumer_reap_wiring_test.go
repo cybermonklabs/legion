@@ -35,7 +35,7 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	listener.waitHealthy(t)
 	// The test's own view of the session consumers, so what it reads of them is what the server
 	// holds and not what the listener believes.
-	consumers, err := bus.ConnectSessionConsumers([]string{uri})
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}

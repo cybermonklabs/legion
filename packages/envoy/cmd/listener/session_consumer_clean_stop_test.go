@@ -44,15 +44,25 @@ func stopSession(t *testing.T, mux *http.ServeMux, sessionID, query string) *htt
 	return recorder
 }
 
-// requireNoConsumer fails the test unless the stream holds no consumer for sessionID, when saying
-// when it was read.
+// requireNoConsumer fails the test unless the stream holds no consumer for sessionID, when
+// saying when it was read. It waits for a consumer that is still there rather than reading
+// once: the stop answers before its delete runs, off the handler's goroutine
+// (sessionDelivery.deleteAfterAnswer), so a read taken the moment the answer came is taken
+// before the delete.
 func (rig *sessionConsumerReapRig) requireNoConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if info, err := rig.consumers.Info(ctx, sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-		t.Fatalf("the consumer of %s %s: %+v, %v; want it deleted with the session's record",
-			sessionID, when, info, err)
+	for {
+		info, err := rig.consumers.Info(ctx, sessionID)
+		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the consumer of %s %s: %+v, %v; want it deleted with the session's record",
+				sessionID, when, info, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -80,39 +90,28 @@ func TestACleanStopDeletesTheStoppedSessionsConsumer(t *testing.T) {
 	rig.requireConsumer(t, "ses_still_here", "after another session's clean stop")
 }
 
-// A clean stop's own restore reports no filter left behind. The stop deletes the session's
-// record and then its consumer, and the restore that follows that delete finds no record on
-// its first pass: it plans nothing, writes nothing, and the line that names a filter standing
-// on the consumer of a session that is gone would name a filter nothing wrote
-// (deleteConsumer, repairRegistered, filterWriteSessionGone).
+// A clean stop leaves no report of a filter standing on the consumer of the session it took
+// away. The stop deletes the session's record and then its consumer, and that delete reads the
+// bucket under the session's lock and removes the consumer only where no record stands, so it
+// writes no filter of its own and the line that names a filter left on a session that is gone
+// would name one nothing wrote (deleteConsumer, filterWriteSessionGone).
 //
 // Every clean stop ends this way, and so does every reap, so the guard that line is written
 // under is what keeps a WARN off the ordinary end of a session: one logged here would have an
 // operator look for messages lost to an older row's filter on every session that ever stopped.
-func TestACleanStopsRestoreReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
+func TestACleanStopReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_clean_stop_restore"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", "notifications.dispatch.issue.CLEANSTOPRESTORE.>"))
-	// The passes of the restore alone: the registration's own repair is behind this hook.
-	passes := 0
-	rig.deps.consumers.beforeRepairPlan = func() { passes++ }
 
 	stopSession(t, rig.mux, sessionID, "")
 
-	rig.deps.consumers.beforeRepairPlan = nil
-	if passes != 1 {
-		t.Fatalf("the stop's restore made %d passes, want the one pass that finds the record the stop itself deleted", passes)
-	}
+	rig.awaitNoConsumer(t, sessionID)
 	if _, err := rig.deps.sessions.Refresh(context.Background(), sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
-		t.Fatalf("the bucket answers %v for %s's record, want no record at all: the restore's pass must have found it deleted", err, sessionID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if info, err := rig.consumers.Info(ctx, sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-		t.Fatalf("the consumer of %s after its clean stop: %+v, %v; want it deleted with the record, which is why its restore wrote no filter", sessionID, info, err)
+		t.Fatalf("the bucket answers %v for %s's record, want no record at all: the stop's delete removes the consumer only where it reads none", err, sessionID)
 	}
 	if logs := rig.harness.logs.String(); strings.Contains(logs, repairRecordGoneLine) {
-		t.Errorf("the clean stop of %s reports a filter of an older row left on its consumer; the restore wrote none, and this line on a stop that wrote nothing is a WARN on every clean stop and every reap:\n%s", sessionID, logs)
+		t.Errorf("the clean stop of %s reports a filter of an older row left on its consumer; it wrote none, and this line on a stop that wrote nothing is a WARN on every clean stop and every reap:\n%s", sessionID, logs)
 	}
 }
 
@@ -180,11 +179,10 @@ const keptStopSilence = 4 * relayRetryFirst
 //
 // Deleting a kept consumer and giving it back is not the same thing, which is why this row reads
 // the consumer's own creation and what the session receives rather than only whether a consumer
-// exists: a delete restores the consumer of every session whose record is in the bucket
-// (sessionDelivery.deleteConsumer), and a kept record is one, so a stop that deleted it leaves
-// a consumer behind it. The replacement is a new consumer created at the sequence after the ack
-// floor, so every frame the session holds unacked is sent to it again, and the relay pulling the
-// consumer that went relays nothing until its retry.
+// exists: a delete that ran would be followed by a create, from the registration this record
+// belongs to or from the relay's own restart, and the replacement is a new consumer created at
+// the sequence after the ack floor, so every frame the session holds unacked is sent to it
+// again, and the relay pulling the consumer that went relays nothing until its retry.
 func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) {
 	const storedInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	const stoppingInstance = "0b7a4c1e9d3f5a2b0b7a4c1e9d3f5a2b"
@@ -246,16 +244,16 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 
 // A clean stop deletes the consumer of a session whose caller hung up the moment its record was
 // gone. That caller is the ordinary one: a plugin sends its deregistration and exits, and the
-// connection it drops a moment later cancels the request's context. The consumer delete runs on a
 // context detached from the request for that reason (context.WithoutCancel in
-// deleteSessionConsumer), and the cancellation protects nothing by then: the record is already
-// deleted, so the session is gone whatever happens next, while a consumer left behind stands for
-// the whole of the stream's inactive threshold with no session to deliver to.
+// deleteSessionHandler, sessionDelivery.deleteAfterAnswer), and the cancellation protects
+// nothing by then: the record is already deleted, so the session is gone whatever happens next,
+// while a consumer left behind stands for the whole of the stream's inactive threshold with no
+// session to deliver to.
 //
 // The hang-up is placed rather than raced. The test holds the session's lock, which the consumer
-// delete takes before its first call (sessionDelivery.deleteConsumer), so the handler reaches that
-// lock only once it has deleted the record, and the request's context is cancelled there, between
-// the record delete and the consumer delete the route exists to make.
+// delete takes before its first call (sessionDelivery.deleteConsumer), so that delete reaches
+// the lock only once the handler has deleted the record, and the request's context is cancelled
+// there, between the record delete and the consumer delete the route exists to make.
 func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *testing.T) {
 	rig := newSessionConsumerReapRig(t)
 	const sessionID = "ses_hung_up"
@@ -287,7 +285,7 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 // A relay whose session was deregistered tells an operator that nobody is delivered the
 // messages it held, and never that they are delivered again at the consumer's next pull. The
 // stop deletes the session's record, which cancels the relay (sessionRelays.apply), and that
-// same stop deletes the session's consumer (deleteSessionConsumer), so the naks of the
+// same stop deletes the session's consumer (sessionDelivery.deleteAfterAnswer), so the naks of the
 // hand-over reach a consumer the server no longer holds and it drops them: a nak is a publish
 // the server answers nothing to, so every one of them is reported returned while nothing
 // delivers those messages, at once or after the consumer's ack wait. This is where most relays
@@ -321,9 +319,16 @@ func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if info, err := rig.consumers.Info(ctx, sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-		t.Fatalf("the consumer of %s after the stop: %+v, %v; want it deleted with the session's record, which is why nothing delivers the naked messages",
-			sessionID, info, err)
+	for {
+		info, err := rig.consumers.Info(ctx, sessionID)
+		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the consumer of %s after the stop: %+v, %v; want it deleted with the session's record, which is why nothing delivers the naked messages",
+				sessionID, info, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

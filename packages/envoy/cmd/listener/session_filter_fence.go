@@ -44,8 +44,8 @@ const (
 	// of it, so nothing of this listener's sets a filter this loop leaves, and the session
 	// registers no more. Only the repair of a session's consumer answers it (repairRegistered),
 	// and that repair runs inside the five-second budget of the act it follows
-	// (sessionConsumerCallTimeout): a clean stop and a reaper pass each delete the record
-	// before the consumer delete that the repair after a delete follows (deleteConsumer), and the
+	// (sessionConsumerCallTimeout): a reaper pass deletes the record before the consumer
+	// delete that the repair after a delete follows (deleteConsumer), and the
 	// record a registration wrote is gone to the repair after that registration only where such
 	// a delete ran after that write (confirmRegistered). The fence ends on it by logging what
 	// stands rather than on the line that leaves the filter to the next heartbeat, since this
@@ -145,8 +145,8 @@ const filterFenceAttempts = 5
 // consumer is the delete's to take - or, where the pass that landed created it after that
 // delete, the stream's inactive threshold's (deleteConsumer, confirmRegistered) - so the line
 // names where that filter stands instead of promising a heartbeat that never comes. A loop
-// that landed nothing logs nothing: every clean stop and every reap repairs the session its
-// own delete took the record of, and that repair's first pass finds the record gone with no
+// that landed nothing logs nothing: every reap repairs the session its own delete took the
+// record of, and that repair's first pass finds the record gone with no
 // write of this loop's behind it (filterWriteSessionGone).
 //
 // Both reads are direct gets, so with ENVOY_NATS_REPLICAS above 1 a copy one write behind the

@@ -27,7 +27,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +43,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // ---- the constants both proofs read --------------------------------------------------------------
@@ -212,18 +212,28 @@ func indentOutput(text string) string {
 // public` (SQLSTATE 42501). The database is dropped at the end of the run; that role also cannot
 // terminate another backend, so a drop a connection outlives is reported and not a failure, and the
 // database goes with the pod.
+//
+// The URL of that database is testdb.DatabaseURL's, made before the connection and the create,
+// so a DSN whose rewrite names another server is refused and the run leaves no database behind
+// either. Two frames hold this run to the server its caller named, and that helper's comment and
+// the comment above require_loopback_dsn in scripts/e2e/lib/loopback-dsn.sh are where the two
+// are written.
 func takeOwnDatabase(t *testing.T) {
 	t.Helper()
 	named := os.Getenv("LEGION_TEST_PG_DSN")
 	if named == "" {
 		return // newLiveProof's own testDSN skips the test, naming the variable.
 	}
+	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
+	own, err := testdb.DatabaseURL(named, database)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
 	ctx := context.Background()
 	server, err := pgx.Connect(ctx, named)
 	if err != nil {
 		t.Fatalf("connect the PostgreSQL LEGION_TEST_PG_DSN names: %v", err)
 	}
-	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
 	if _, err := server.Exec(ctx, "create database "+database+" strategy file_copy"); err != nil {
 		server.Close(ctx)
 		t.Fatalf("make this run's own database %s: %v", database, err)
@@ -231,12 +241,7 @@ func takeOwnDatabase(t *testing.T) {
 	if err := server.Close(ctx); err != nil {
 		t.Fatalf("close the connection the database was made on: %v", err)
 	}
-	own, err := url.Parse(named)
-	if err != nil {
-		t.Fatalf("read LEGION_TEST_PG_DSN as a URL: %v", err)
-	}
-	own.Path = "/" + database
-	t.Setenv("LEGION_TEST_PG_DSN", own.String())
+	t.Setenv("LEGION_TEST_PG_DSN", own)
 	fmt.Printf("   this run migrates into its own database %s on the server LEGION_TEST_PG_DSN names\n", database)
 	t.Cleanup(func() {
 		drop, err := pgx.Connect(context.Background(), named)

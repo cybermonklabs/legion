@@ -153,5 +153,5 @@ Every topic starts with `notifications.`.
 
 - How a role claim survives a resume, a fork or a dead process: `skill://envoy/references/roles.md`.
 
-- In a Legion pane, the plugin claims your role at session start;
+- In a Legion pane, the plugin claims your role for you, at your session's first turn;
   read `skill://envoy/references/legion.md` before you claim, release or publish to a role, or answer a role delivery failure there.

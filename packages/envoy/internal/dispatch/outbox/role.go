@@ -25,6 +25,8 @@ import (
 // and nothing else: the batch waiting on it settles and releases every other owner as their own
 // sends come in, and the batches beside it read and publish the owners it does not hold
 // (Outbox.scan, lanes).
+//
+// An outbox waits this long unless a test set Deps.forwardAckWait (Deps.forwardAckTimeout).
 const roleForwardAckTimeout = 5 * time.Second
 
 // errNoRoleReaders is a role route's holder resolved with no role-claim or session reader in Deps.
@@ -726,7 +728,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 	if f.keptFor != "" {
 		return f.keep(ctx, deps, sender, item, handed)
 	}
-	return f.forward(sender, item)
+	return f.forward(deps, sender, item)
 }
 
 // forward is the one request a role destination makes of its holder's agent subject, which the
@@ -751,12 +753,12 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // answer, and what counts the forward as having reached the holder, for every holder alike: a
 // holder is delivered its stored copy from its own consumer by the listener's relay and answers
 // the request with nothing (INFRA-771).
-func (f *roleForward) forward(sender bus.Sender, item contracts.Envelope) <-chan error {
+func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.AgentSubject(f.holder)
 	return sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
-		Timeout: roleForwardAckTimeout,
+		Timeout: deps.forwardAckTimeout(),
 	})
 }
 
@@ -918,7 +920,7 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	}
 	stamped := keptAt.UnixMilli()
 	item.KeptAt = &stamped
-	if err := <-handover.forward(sender, item); err != nil {
+	if err := <-handover.forward(deps, sender, item); err != nil {
 		return fmt.Errorf("forward role %s's kept copy of %s to %s: %w", role, item.EventID, handover.holder, err)
 	}
 	handed.handed(role, handover.holder, seq)
