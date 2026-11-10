@@ -600,10 +600,20 @@ const visualProjects = [
  * Recording (`DISPATCH_E2E_STUB_RECORD=1`) is the one run where these rows meet the real stack:
  * the project takes the harness's base URL, the static server is not started, and each row writes
  * what it fetched (e2e/stub/stub-test.ts).
+ *
+ * `retries: 0` on both, for two reasons of this layer's own. A stubbed row reaches no server,
+ * no database and no fake: its answers come from a committed file, so a row that fails once
+ * and passes once is not a flake to be retried past but a defect of the recording, the page or
+ * the row, and the lane should say so. And the dead-recording guard
+ * (`deadRecordingGuard`, e2e/stub/stub-test.ts) would otherwise be retried away: measured in
+ * this issue's pod, Playwright re-runs a row that called `test.skip` without running its
+ * fixtures at all, so the guard's refusal is raised on the first attempt and never on the
+ * retry, and the run reports the row flaky and exits 0.
  */
 const stubProjects = [
   {
     name: "stub",
+    retries: 0,
     testMatch: stubSpecs,
     testIgnore: [],
     use: {
@@ -621,6 +631,7 @@ const stubProjects = [
   // on the real stack too.
   {
     name: "stub-phone",
+    retries: 0,
     testMatch: stubSpecs,
     testIgnore: [],
     grep: phoneTagged,

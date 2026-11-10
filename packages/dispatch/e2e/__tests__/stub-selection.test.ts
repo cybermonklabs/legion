@@ -63,3 +63,31 @@ describe("which runs are the stubbed layer alone", () => {
     expect(selectionOf(["--project=visual"], env).onlyStub).toBe(true);
   });
 });
+
+describe("how `--project` is read, which is what the refusals rest on", () => {
+  test("one flag takes every value, as Playwright's variadic option does", () => {
+    // `--project stub chromium` names two projects. Read as one, the run would answer
+    // stub-only and waive the harness refusals and the preflight for the `chromium` rows
+    // beside it, which is the whole of what those refusals are for.
+    const both = selectionOf(["--project", "stub", "chromium"]);
+    expect(both.holdsStubRow).toBe(true);
+    expect(both.onlyStub).toBe(false);
+    // A value stops at the next option, so the grep is no project.
+    expect(selectionOf(["--project", "stub", "--grep", "@pr"]).onlyStub).toBe(true);
+  });
+
+  test("a name is matched without regard to case, as Playwright matches it", () => {
+    expect(selectionOf(["--project=STUB"]).onlyStub).toBe(true);
+    expect(selectionOf(["--project", "Stub-Phone"]).holdsStubRow).toBe(true);
+  });
+
+  test("a `*` pattern keeps everything, because this cannot say which projects it names", () => {
+    // Playwright expands it against the config's own projects, which this module does not
+    // see, so such a run may hold a stubbed row - it gets the server - and may hold a
+    // real-stack row - it keeps every refusal and the preflight.
+    const everything = selectionOf(["--project", "*"]);
+    expect(everything.holdsStubRow).toBe(true);
+    expect(everything.onlyStub).toBe(false);
+    expect(selectionOf(["--project=stub*"]).onlyStub).toBe(false);
+  });
+});

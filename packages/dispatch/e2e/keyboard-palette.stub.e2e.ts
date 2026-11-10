@@ -23,7 +23,8 @@ import { openIssue } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
- *  `g p` and `Go to project…` rows pick from. */
+ *  two rows that pick a project in the bar read: `g p`, and the one that also opens the
+ *  Keyboard shortcuts dialog. */
 const test = stubbed(async () => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Operations" });
@@ -161,15 +162,18 @@ test("g d opens the route's project Documents, from an issue key or a project pa
   await page.keyboard.press("p");
   const dialog = page.getByRole("dialog", { name: "Search" });
   const input = page.getByRole("combobox", { name: "Search" });
-  // `g p` opens the one bar, where a project is a row the reader types their way to. The bar
-  // searches by meaning now, so a word that names a project can also find an issue of this
-  // file's scene: the claim is the Projects group's own row, and the pick is that row rather
-  // than whatever Enter would highlight.
+  // `g p` opens the one bar, where a project is a row the reader types their way to, and
+  // Enter opens the row it highlights - main's own assertions. The count is the Projects
+  // group's rather than main's dialog-wide one, because this row runs in two modes: on replay
+  // the bar's search is aborted (no recording answers `/api/v1/search`) and `Operations` is
+  // the only row, while a recording run against the real harness also offers
+  // `Make a new issue from "operations"`, measured in this pod. The Projects group holds one
+  // row either way, which is the claim.
   await input.fill("operations");
   const projects = dialog.getByRole("group", { name: "Projects" });
   await expect(projects).toBeVisible();
   await expect(projects.getByRole("option")).toHaveCount(1);
-  await projects.getByRole("option").click();
+  await input.press("Enter");
   await expect(page).toHaveURL(/\/projects\/OPS\/issues/);
 
   // A project path names it outright. The heading is the page the key reads its route from.

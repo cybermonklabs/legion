@@ -57,8 +57,7 @@ function directoryIdentity(path: string): string {
 // fresh set is the caller's directory, and it must not be the same one: a recording compared
 // with itself can never differ, which is how the vanished-recording finding below went
 // unreachable until a review read it.
-const committedRoot = committedRecordings;
-if (directoryIdentity(fresh) === directoryIdentity(committedRoot)) {
+if (directoryIdentity(fresh) === directoryIdentity(committedRecordings)) {
   console.error(
     `${fresh} is the committed set itself, so every comparison would be a recording against ` +
       "itself. Point the re-recording at a directory of its own with " +
@@ -67,10 +66,10 @@ if (directoryIdentity(fresh) === directoryIdentity(committedRoot)) {
   process.exit(2);
 }
 
-const committedFiles = recordingsUnder(committedRoot);
+const committedFiles = recordingsUnder(committedRecordings);
 const freshFiles = recordingsUnder(fresh);
 if (committedFiles.length === 0) {
-  console.error(`${committedRoot} holds no recording, so there is nothing to compare`);
+  console.error(`${committedRecordings} holds no recording, so there is nothing to compare`);
   process.exit(2);
 }
 if (freshFiles.length === 0) {
@@ -88,7 +87,7 @@ for (const name of committedFiles) {
     gone.push(name);
     continue;
   }
-  for (const line of statusDrift(read(committedRoot, name), read(fresh, name))) {
+  for (const line of statusDrift(read(committedRecordings, name), read(fresh, name))) {
     moved.push(`  ${name}\n    ${line}`);
   }
 }
@@ -115,6 +114,9 @@ console.error(
     "packages/dispatch/e2e/__recordings__ with it - delete the directory first and put the " +
     "artifact in its place - and read the diff. A copy over the directory would leave behind " +
     "every recording named above as written by no row any more, and the next run would report " +
-    "them again."
+    "them again.\n\nRead the recording step first, because this comparison runs even where it " +
+    "failed. A row that threw wrote no recording, so it is named above as one no row writes " +
+    "any more while its committed copy is sound: fix the row and record again rather than " +
+    "replacing the directory, which would delete it."
 );
 process.exit(1);

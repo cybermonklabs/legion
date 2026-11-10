@@ -97,11 +97,10 @@ export const realStackReasons: Record<string, string> = {
   "going-handoff.e2e.ts":
     "the hand-off row is offered only while a live session holds the issue's claim, and approving it is a message the fake Envoy records",
   "going-key-forms.e2e.ts":
-    "each form of a key is resolved by the server, and the row reads the rows it answers back through psql",
+    "each form of a key is resolved by the server, and the row reads the rows it answers",
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
-  "going-operators.e2e.ts":
-    "each operator form and each chip narrows a list the server answers, read back through psql",
+  "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",

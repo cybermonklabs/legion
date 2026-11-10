@@ -93,9 +93,13 @@ const server = Bun.serve({
     const path = new URL(request.url).pathname;
     if (recordedRoutes.test(path)) {
       return new Response(
-        `${path} is answered by a row's recording, not by this server. A request that reaches ` +
-          "here is one no `routeFromHAR` caught: the row's fixture was not installed, or it " +
-          "was installed after the request was made.\n",
+        `${path} is the server's to answer and this one answers no API route. A row's own ` +
+          "recording answers `/api/v1/**` and `/auth/whoami` through `routeFromHAR`, so a " +
+          "request for one of those that reaches here is one no fixture caught: the row's " +
+          "fixture was not installed, or it was installed after the request was made. Every " +
+          "other path under `/api` or `/auth` - `/api/github/rest/...` among them - no " +
+          "recording answers at all, and a document in its place would be parsed as JSON " +
+          "somewhere far from this cause.\n",
         { headers: { "content-type": "text/plain; charset=utf-8" }, status: 404 }
       );
     }

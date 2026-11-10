@@ -1,6 +1,6 @@
 /** What a run of `e2e/playwright.config.ts` wants of the stubbed layer, read once.
  *
- *  Three questions, and the config asks each of them exactly once:
+ *  Four questions, and the config asks each of them exactly once:
  *
  *  - **Is this run recording?** (`DISPATCH_E2E_STUB_RECORD=1`, `bun run e2e:stub:record`.) Then
  *    the stubbed rows meet the real harness, so the config takes the harness's base URL for
@@ -22,11 +22,11 @@
  *  running it against a deployed server would prove something about neither: the config leaves
  *  the stub projects out of such a run and declares no server for it.
  *
- *  A fourth question has the same answer as the second and is asked of this module too, so that
- *  it cannot drift from it: **are the stub projects declared at all?** The config leaves them
- *  out of a deployed run and out of two-process mode, and declaring a project with no server,
- *  or starting a server for a project that is not declared, is the pair of faults one answer
- *  prevents.
+ *  A fourth question is asked of this module too, so that it cannot drift from the second:
+ *  **are the stub projects declared at all?** It is not the same answer - a run naming
+ *  `--project chromium` declares them and holds no stubbed row - but the two are read from one
+ *  place, and declaring a project with no server, or starting a server for a project that is
+ *  not declared, is the pair of faults that prevents.
  */
 import { projectsOnCommandLine } from "../configurations";
 

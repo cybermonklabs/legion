@@ -2571,8 +2571,15 @@ status of each route, and the rows that stayed on the real stack hold the server
 The job uploads the re-recorded set, and applying it is a replacement of
 `e2e/__recordings__` by that artifact rather than a copy over it: a copy would leave behind
 every recording the job named as written by no row any more.
-It finds those too - which it could not while it re-recorded over the committed
-set - and `bun e2e/tools/row-map.ts` refuses one on a pull request, before a nightly meets it.
+It finds those too - which it could not while it re-recorded over the committed set - and a
+pull request refuses one before a nightly meets it, in two halves, because no one reading can
+see them all: `bun e2e/tools/row-map.ts` refuses a recording no listed row owns, and the
+replay refuses one whose row is listed and writes nothing all the same, which is a row that
+skips itself in that project or has stopped taking `scene`
+(`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+Read the recording step before you apply the artifact: the comparison runs even where that
+step failed, and a row that threw wrote nothing, so it is named as one no row writes while its
+committed copy is sound.
 
 The `@pr` tag is the other axis, and it is about the lane rather than the layer. The
 pull-request lane runs `--grep=(^|\s)@pr(\s|$)` over `chromium`, `iphone`, `stub` and

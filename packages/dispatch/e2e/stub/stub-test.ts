@@ -96,8 +96,47 @@ async function answerTheLiveSocket(page: Page): Promise<void> {
  *  in replay. What it returns is written beside the recording as JSON and handed back to the row,
  *  so the row names no server-minted id of its own. */
 export function stubbed<Scene>(seed: () => Promise<Scene>) {
-  return base.extend<{ scene: Scene }>({
+  /** The rows whose `scene` was set up, by Playwright's own id for the row. A row that takes
+   *  no `scene` never runs that fixture, which is half of what the guard below reads. */
+  const scened = new Set<string>();
+  return base.extend<{ scene: Scene; deadRecordingGuard: undefined }>({
+    /** Refuses a committed recording that the row it is named for does not write any more.
+     *
+     *  `e2e/tools/row-map.ts` refuses a recording no listed row owns, and that is the whole of
+     *  what a listing can see: a row whose body calls `test.skip` is still listed, and so is a
+     *  row that has stopped taking `scene`, so each of them keeps owning a recording it never
+     *  writes. The pull request stays green and the next re-record run reports the file as
+     *  written by no row any more, with the full lane of that night red beside it.
+     *
+     *  This is the half only the run can see, so it runs on every row of a replay: after the
+     *  row, a recording that exists while the row skipped or never set its scene up is a file
+     *  to delete. A recording run is left alone - it is the run that rewrites the set, and its
+     *  own comparison already names what it wrote nothing for. */
+    deadRecordingGuard: [
+      // Playwright refuses a first argument that is not a destructuring pattern.
+      // biome-ignore lint/correctness/noEmptyPattern: this fixture takes no other fixture.
+      async ({}, use, test) => {
+        await use(undefined);
+        if (stubRecording()) return;
+        const har = recordingPath(test, ".har");
+        if (!existsSync(har)) return;
+        const why =
+          test.status === "skipped"
+            ? "this row skipped itself in this project"
+            : scened.has(test.testId)
+              ? ""
+              : "this row takes no `scene` and replays nothing";
+        if (why === "") return;
+        throw new Error(
+          `${har} is committed and ${why}, so no row writes it any more. Delete it, with the ` +
+            "`.scene.json` beside it. A recording nothing writes passes every check of a pull " +
+            "request and fails the next re-record run of the nightly."
+        );
+      },
+      { auto: true },
+    ],
     scene: async ({ page, context, baseURL }, use, test) => {
+      scened.add(test.testId);
       if (!stubRecording()) {
         const har = recordingPath(test, ".har");
         if (!existsSync(har)) {

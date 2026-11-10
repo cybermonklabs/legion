@@ -55,7 +55,10 @@ test("a row with a note carries it in the map, and is not called unchanged", () 
   const lines = map.split("\n").filter((line) => line.startsWith("| `e2e/"));
   expect(lines.length, "the map's moved table is empty").toBeGreaterThan(0);
   for (const [key, note] of Object.entries(movedRowNotes)) {
-    const [file, title] = key.split(" › ");
+    // The first separator only: a row inside a `describe` carries more of them in its title.
+    const separator = key.indexOf(" › ");
+    const file = key.slice(0, separator);
+    const title = key.slice(separator + " › ".length);
     const row = lines.find(
       (line) => line.startsWith(`| \`e2e/${file}\` | ${title} |`) && !line.includes(" | --- |")
     );

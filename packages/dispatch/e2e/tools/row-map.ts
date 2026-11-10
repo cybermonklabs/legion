@@ -10,11 +10,12 @@
  *
  *  Where each half comes from:
  *
- *  - **A row that moved** is a row of a `*.stub.e2e.ts` file. Its assertions are the ones it
- *    had: a move renames the file, lifts the shared seeding into the fixture and adds the lane
- *    tag to the title, and changes no line of what the row asserts, which is what makes
- *    "before and after" a mechanical claim rather than a prose one. The reason it may be
- *    stubbed is its file's own header comment.
+ *  - **A row that moved** is a row of a `*.stub.e2e.ts` file. A move renames the file, lifts
+ *    the shared seeding into the fixture and adds the lane tag to the title, and usually
+ *    changes no line of what the row asserts, which is what makes "before and after" a
+ *    mechanical claim rather than a prose one. A row where something did change says so, from
+ *    `e2e/stub/moved-row-notes.ts`. The reason it may be stubbed is its file's own header
+ *    comment.
  *  - **A row that stayed** carries its file's reason from `e2e/stub/real-stack-reasons.ts`, and
  *    a file the listing names that has none there fails the generation.
  *  - **A row that left the pull-request lane** is a row with no `@pr` tag. It runs on the full
@@ -34,6 +35,7 @@ import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
 import { realStackReasons } from "../stub/real-stack-reasons";
 import {
   committedRecordings,
+  familyOf,
   recordingFamily,
   recordingFor,
   recordingsUnder,
@@ -42,7 +44,6 @@ import {
 // A listing names a file relative to the config's own directory, which is `e2e/`.
 const suiteDirectory = fileURLToPath(new URL("..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
-const recordings = committedRecordings;
 
 /** The first paragraph of a stub spec file's header comment, which says why its rows may be
  *  stubbed. A file with no header comment fails the generation: the reason is the whole point. */
@@ -116,16 +117,21 @@ if (strayNotes.length > 0) {
   );
 }
 
-// Every committed recording belongs to a row the listing still names. Nothing else checks
-// this: record mode writes the path of the row it is running and deletes nothing, so a row
-// that is renamed, removed, or newly skipped leaves its `.har` and `.scene.json` behind, the
+// Every committed recording belongs to a row the listing still names. Nothing else on a pull
+// request checks this: record mode writes the path of the row it is running and deletes
+// nothing, so a row that is renamed or removed leaves its `.har` and `.scene.json` behind, the
 // contract test goes on reading them because they are still valid bodies, and the pull request
 // merges green. The first nightly on `main` then re-records, finds a committed file no row
 // wrote, and fails - with the full lane in that same run red beside it. This is the one-way
 // half of that comparison, and it needs no harness: the listing names the rows, and
 // `recordingFor` is the same rule the fixture writes by.
+//
+// A listing cannot see the other two shapes of the same fault, because a row that skips itself
+// and a row that has stopped taking `scene` are both still listed and so still own their file.
+// Those are the replay's to refuse, after the row, where its status is known
+// (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
 const owned = new Set(moved.map((row) => recordingFor(row, ".har")));
-const unowned = recordingsUnder(recordings).filter((path) => !owned.has(path));
+const unowned = recordingsUnder(committedRecordings).filter((path) => !owned.has(path));
 if (unowned.length > 0) {
   throw new Error(
     "These committed recordings belong to no row the listing names, so the next re-record run " +
@@ -179,10 +185,12 @@ them, and the generation refuses to write a map without one.
 
 ## The rows that moved
 
-Each kept every assertion it had. What changed is the file it lives in, the fixture it takes,
-the server behind it, and the \` @pr\` the title gained for the lane axis - a move touches no
-line of what a row asserts, which is what makes "before and after" a mechanical claim rather
-than a prose one. The reason a recording can answer it is its file's own header.
+Each row's third column says what the move did to what it asserts. What a move changes is the
+file the row lives in, the fixture it takes, the server behind it, and the \` @pr\` the title
+gained for the lane axis; usually it touches no line of what the row asserts, which is what
+makes "before and after" a mechanical claim rather than a prose one, and a row where something
+did change says so in that column. The reason a recording can answer it is its file's own
+header.
 
 ${table(["file", "row", "assertion before and after", "why a recording can answer it"], movedLines)}
 
@@ -216,10 +224,10 @@ if (process.argv.includes("--search")) {
   // the list and a reviewer reads it; that is the division k2 asks for.
   const literal = /(?:toHaveText|toContainText|getByText|toHaveValue)\(\s*"([^"]{4,})"/g;
   const files = [...new Set(moved.map((row) => row.file))].sort();
-  const committed = recordingsUnder(recordings);
+  const committed = recordingsUnder(committedRecordings);
   if (committed.length === 0) {
     throw new Error(
-      `There are no recordings under ${recordings}, so this search would read nothing and ` +
+      `There are no recordings under ${committedRecordings}, so this search would read nothing and ` +
         "report nothing. Record them with `bun run e2e:stub:record` in packages/dispatch."
     );
   }
@@ -229,12 +237,12 @@ if (process.argv.includes("--search")) {
   );
   for (const file of files) {
     const source = readFileSync(`${suiteDirectory}${file}`, "utf8");
-    const family = file.replace(/\.stub\.e2e\.ts$/, "");
+    const family = familyOf(file);
     // A row that runs in both stubbed projects has a recording under each, so a family's
     // recordings are every committed path the layout reads that family out of.
     const recorded = new Map<string, string>();
     for (const name of committed.filter((path) => recordingFamily(path) === family)) {
-      recorded.set(name, readFileSync(join(recordings, name), "utf8"));
+      recorded.set(name, readFileSync(join(committedRecordings, name), "utf8"));
     }
     const hits = new Set<string>();
     for (const match of source.matchAll(literal)) {

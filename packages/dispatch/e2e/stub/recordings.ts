@@ -30,11 +30,18 @@ export function recordingsDirectory(env: NodeJS.ProcessEnv = process.env): strin
   return named === "" ? committedRecordings : named.replace(/\/+$/, "");
 }
 
+/** The spec family a `*.stub.e2e.ts` file belongs to, which is the directory its recordings
+ *  live in. One rule, because the generation reads a family out of a committed path and the
+ *  fixture writes one into a path it builds. */
+export function familyOf(file: string): string {
+  return file.replace(/\.stub\.e2e\.ts$/, "");
+}
+
 /** A row's file name, from its `describe` titles and its own: lower case, every run of other
  *  characters a single hyphen, cut to 120. The listing's own title separator collapses to that
  *  one hyphen too, so a row read from `playwright test --list` and the same row running under
  *  the fixture name one file. */
-export function recordingName(title: string): string {
+function recordingName(title: string): string {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -54,8 +61,7 @@ export function recordingFor(
   row: { project: string; file: string; title: string },
   extension: string
 ): string {
-  const family = row.file.replace(/\.stub\.e2e\.ts$/, "");
-  return join(row.project, family, `${recordingName(row.title)}${extension}`);
+  return join(row.project, familyOf(row.file), `${recordingName(row.title)}${extension}`);
 }
 
 /** The absolute path of one running row's recording or scene, under the directory this run
