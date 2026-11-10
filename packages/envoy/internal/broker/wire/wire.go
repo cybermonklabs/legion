@@ -252,3 +252,4 @@ type MachineLookupRequest struct {
 	// The XXXX-XXXX confirmation code the machine shows, as the approver typed it.
 	Code string `json:"code" required:"true"`
 }
+// selection probe
