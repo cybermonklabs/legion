@@ -3,9 +3,10 @@
 --   asked_of     the canonical login (model.CanonicalLogin: lower case, trimmed) of the person
 --                this ask waits on, null until a person hands the ask on, which is every row
 --                this migration leaves. Null means the ask waits on the assignee of its issue.
---   asked_of_by  the canonical login of the person who last handed the ask on, null beside a
---                null asked_of.
---   asked_of_at  when that hand-on was written, null beside a null asked_of.
+--   asked_of_by  the canonical login of the person who last handed the ask on, null until a
+--                person first does. A hand-on to the assignee of the ask's own issue writes it
+--                beside a null asked_of.
+--   asked_of_at  when that hand-on was written, null and written as asked_of_by is.
 --
 -- INFRA-1576: a Dispatch ask reaches the assignee of its issue and nobody else, so a question
 -- meant for one person sat in another person's Inbox and the person it was meant for never saw

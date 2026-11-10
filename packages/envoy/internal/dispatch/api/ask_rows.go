@@ -75,10 +75,10 @@ end`
 // out, since the Inbox already lists it (myRepliesOwner in api/replies.go). It names the ask a
 // and its issue i, so every query reading it joins issues as i.
 //
-// It compares with = against a login already canonical rather than wrapping the column in
-// lower(btrim(...)): the wrap defeats the issues_assignee index
-// (store/migrations/0034_issue_assignee.up.sql:6), and both asks.asked_of and issues.assignee
-// hold what model.CanonicalLogin returns, so the two sides match as they are stored.
+// It compares with = rather than wrapping either column in lower(btrim(...)): both
+// asks.asked_of and issues.assignee hold what model.CanonicalLogin returns, so the two sides
+// match as they are stored. The expression spans two tables, so no index on issues.assignee
+// (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee)`
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and

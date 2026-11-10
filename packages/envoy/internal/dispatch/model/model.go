@@ -1316,7 +1316,8 @@ type Ask struct {
 	// waits on the assignee of its issue, which is where every ask starts.
 	AskedOf *string `json:"asked_of"`
 	// AskedOfBy is the person who last handed the ask on and AskedOfAt when they did; both are
-	// empty while AskedOf is.
+	// empty until somebody first hands the ask on. A hand-on to the assignee of the ask's own
+	// issue empties AskedOf and still writes both, so the ask card can say who gave it back.
 	AskedOfBy *string    `json:"asked_of_by"`
 	AskedOfAt *time.Time `json:"asked_of_at"`
 	// WaitingOn is whose reply an open ask needs next: a moved approval request stays with its
