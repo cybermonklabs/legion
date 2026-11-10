@@ -1,6 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
 import {
   agentRow,
@@ -32,8 +31,9 @@ import { recordClipboard } from "./clipboard";
 import { holdFirstRequest } from "./editor";
 import { inboxList } from "./inbox-pane";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
-import { resetDatabase, setCreatedAt } from "./seed";
+import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -78,10 +78,6 @@ const archivist: FakeSession = {
   session_id: sessionIds.archivist,
   title: "Archivist",
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): one page tour over four sessions - order, folds, pills, pin, clipboard and an
 // issue-less BTW conversation. Every second is a step the row asserts, and the seed's order is

@@ -1,7 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, test, type WebSocket } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
@@ -18,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -56,10 +54,6 @@ async function renameUntilShown(
   }
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
 test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({

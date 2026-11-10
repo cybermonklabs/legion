@@ -1,10 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies } from "./api";
 import { selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -29,10 +27,6 @@ const LONG_REPLY = Array.from(
   { length: 40 },
   (_, index) => `Line ${index + 1} of the replay answer.`
 ).join("\n\n");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The read mark's own row: reading a reply taller than the pane marks it read and leaves its row in the list.
 test("a reply taller than the reading pane is marked read by reading it, and its row stays @pr", async ({

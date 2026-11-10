@@ -1,9 +1,7 @@
-import { expect, type Request, test } from "@playwright/test";
-
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
 import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
-import { resetDatabase } from "./seed";
+import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -24,10 +22,6 @@ const session = {
 function isPinWrite(request: Request): boolean {
   return request.method() === "PUT" && "pinned" in (request.postDataJSON() ?? {});
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the issue scope reaches the header controls and the tab chords, and ? lists them under Issue", async ({
   browser,

@@ -13,7 +13,6 @@
  *  meets; only its scale is the harness's, and the constants below are where that scale is
  *  written down. At that scale no row needs a timeout of its own: each fits the suite's 30 s
  *  (`e2e/playwright.config.ts`). */
-import { expect, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, editArtifact, listComments } from "./api";
 import {
@@ -28,7 +27,7 @@ import {
   openSpec,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const SPEC = [
@@ -69,10 +68,6 @@ const UNREMEMBERED_MESSAGE =
   "The words you selected read in more than one place, and nothing kept of where you selected " +
   "them says which one this comment is about. " +
   "Your draft is kept — select the text again to attach it.";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Samples whether `markId`'s span is in `page` every `SAMPLE_MS` until `untilMs` after
  *  `writtenAt`, appending `<milliseconds>ms:<present|gone>` to `log`. The row waits by sampling,

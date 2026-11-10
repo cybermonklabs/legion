@@ -1,4 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
 import { mintAgentToken } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
@@ -8,7 +7,7 @@ import {
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
 
@@ -112,10 +111,6 @@ async function clickShape(page: Page, shape: { series: string; x: number; at: st
   if (position === null) throw new Error(`no ${shape.series} shape painted at ${shape.at}`);
   await page.mouse.click(position.x, position.y);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the Delivery sidebar nav entry opens the delivery timeline", async ({ browser }) => {
   await seedDeliveryFixture();

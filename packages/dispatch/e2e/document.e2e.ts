@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   createProject,
   createProjectDocument,
@@ -17,14 +15,10 @@ import {
   typeAtEnd,
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, the reload the
 // row proves the text and the version picker survive, and a full-page screenshot.

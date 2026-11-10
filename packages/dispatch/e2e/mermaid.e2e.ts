@@ -20,8 +20,6 @@
 // the page, so the style, hostile, worker, focus and redraw rows fail.
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, editComment, getArtifactText } from "./api";
 import { blockId, documentEditor, openSpec, placeCaret } from "./editor";
 import {
@@ -33,7 +31,7 @@ import {
   settledScrollTop,
   withoutScrollAnchoring,
 } from "./mermaid-helpers";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -282,10 +280,6 @@ async function expectNothingHostile(
   expect(await page.evaluate(() => window.__hostile)).toEqual([]);
   expect(requested).toEqual([]);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The diagram family's one row on the lane: a mermaid block in a comment draws, with its source behind Mermaid source.
 test("a comment holding a mermaid block draws a diagram, its source behind Mermaid source @pr", async ({

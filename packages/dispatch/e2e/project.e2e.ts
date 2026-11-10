@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createAsk,
   createIssue,
@@ -10,8 +8,8 @@ import {
   putIssueState,
 } from "./api";
 import { pickFilterOption } from "./filters";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -22,10 +20,6 @@ import { asUser } from "./users";
  */
 
 const session = { actor: { id: "e2e-project", kind: "session" as const }, as: "agent" as const };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): one row for the whole project page - nine issues seeded across eight statuses,
 // the grouped board over them, eight filter presses, and the Documents tab down to a created

@@ -1,18 +1,12 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
   const box = await locator.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A keyed write a person makes: labels edited from the multi-select, and the project list filtered by every one picked.
 test("edits issue labels from a searchable multi-select and filters project issues by every selected label @pr", async ({

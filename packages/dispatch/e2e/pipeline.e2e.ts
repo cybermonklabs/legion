@@ -1,13 +1,8 @@
-import { expect, test } from "@playwright/test";
 import { mintAgentToken } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the Pipeline rail entry opens the page", async ({ browser }) => {
   await seedPipelineFixture();

@@ -1,8 +1,6 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor, holdFirstRequest, placeCaret } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
@@ -68,10 +66,6 @@ async function openDocumentWithCaret(page: Page, slug: string): Promise<void> {
   await placeCaret(page, "after", "sextant");
   await expect(documentEditor(page)).toBeFocused();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): four pages, one of them a document whose editor must connect before the caret
 // goes in.

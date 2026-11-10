@@ -1,10 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { RELATED_DEBOUNCE_MS } from "../web/src/features/issue/related-timing";
 import { createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /** The no-write check the dialog asks, for any project. A glob would read `?` as a wildcard. */
@@ -60,10 +58,6 @@ async function openCreateDialog(
   await expect(title).toBeFocused();
   return { dialog, related: dialog.getByRole("region", { name: "Related items" }), title };
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Create through answer to close: the related-issue check behind the create dialog must ask again once an issue was filed, not answer from before.
 test("a title checked before an issue was filed is checked again, not answered from before @pr", async ({

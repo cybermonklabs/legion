@@ -1,5 +1,4 @@
 import { shortSessionId } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
@@ -20,9 +19,9 @@ import {
   listBroadcasts,
   replyToMessageDelivery,
 } from "./api";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -65,10 +64,6 @@ const observer: FakeSession = {
   session_id: sessionIds.observer,
   title: "Observer",
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the whole broadcast flow in a real browser - the fold, four ticks, the send, a live
 // answer and the list that follows it.

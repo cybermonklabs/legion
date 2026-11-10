@@ -1,14 +1,5 @@
 import { createServer, type Server } from "node:http";
 
-import {
-  type BrowserContext,
-  expect,
-  type Page,
-  type Response,
-  type TestInfo,
-  test,
-} from "@playwright/test";
-
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import { usesFakeBroker } from "./harness-broker";
 import {
@@ -23,7 +14,7 @@ import {
   seedPendingRequests,
   withdrawSeededRequests,
 } from "./real-broker";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Page, type Response, type TestInfo, test } from "./test";
 import { asUser } from "./users";
 
 // A secret request is approved on the secrets broker's own page, by a person signed in to the
@@ -41,10 +32,6 @@ const brokerCookies = /^__Host-broker-/;
 /** What the broker answers a POST from any origin but its own, having written nothing. */
 const originRefusal =
   "This request did not come from the secrets broker's own page, so nothing was changed.";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Skips a row that one browser proves, or that this run has no real broker for: the harness
  *  starts it beside the fake broker only (e2e/harness-listeners.ts). */

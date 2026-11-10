@@ -1,16 +1,10 @@
-import { expect, test } from "@playwright/test";
-
 import { shownAgentRows } from "./agents";
 import { getInbox } from "./api";
 import { askCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Every surface the `person` scope opens has to come up non-empty from this one seed: an empty
 // Inbox, Agents page or broadcast would prove nothing about a change to it.

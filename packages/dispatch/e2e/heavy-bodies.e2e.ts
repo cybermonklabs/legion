@@ -12,7 +12,6 @@
 // here holds the main thread for is measured by `main-thread-hold.ts`, which
 // `nested-directive.e2e.ts` measures its own two rows with, so one instrument and one bound
 // answer for both (sjawhar/legion#2612).
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
 
 // `markdownWorkerThreshold` comes from the module that carries it and imports nothing: the
 // engine around it (`markdown-engine.ts`) is a browser module this spec's process cannot load.
@@ -32,7 +31,7 @@ import {
 } from "./heavy-bodies";
 import { expectSettled, markdownBody } from "./heavy-bodies-page";
 import { expectUnderTheBound, measureDraw, record } from "./main-thread-hold";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -137,10 +136,6 @@ async function seedIssue(title: string): Promise<{ key: string }> {
   await createProject({ key: "CORE", name: "Core" });
   return await createIssue({ project: "CORE", title });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 interface Row {
   /** The body an agent posts. */

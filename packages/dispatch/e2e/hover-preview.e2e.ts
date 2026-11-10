@@ -1,7 +1,5 @@
-import { expect, test } from "@playwright/test";
-
 import { seedReference } from "./hover-preview";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -9,10 +7,6 @@ import { asUser } from "./users";
  * what the page draws and is a stubbed row, in `hover-preview.stub.e2e.ts`; this one stays
  * because the `iphone` project runs no stubbed row.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("on a phone, tapping a reference follows it and never shows a card @phone", async ({
   browser,

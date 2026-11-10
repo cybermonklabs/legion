@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   createArtifactComment,
   createAsk,
@@ -24,8 +22,8 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -53,10 +51,6 @@ const longDocument = [
   ),
   "Unique faraway quotation.",
 ].join("\n\n");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedIssue() {
   await createProject({ key: "CORE", name: "Core" });

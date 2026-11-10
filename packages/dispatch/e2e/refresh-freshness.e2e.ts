@@ -1,7 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { type APIResponse, expect, type Page, type Route, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
   createArtifactComment,
@@ -19,7 +17,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { type APIResponse, expect, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: what an open page shows must still follow the writes it shows, once an event
@@ -27,10 +25,6 @@ import { asUser } from "./users";
 // alice's page stays open, and expects the change on the page within 2 s, with no reload.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 const live = { timeout: 2_000 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Opens `path` and returns once Dispatch has started the page's event feed on its live socket
  *  (`events_start`): it subscribes the feed to its event relay before it sends that frame, so every

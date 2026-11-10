@@ -1,11 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, test } from "@playwright/test";
-
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue } from "./keyboard-palette";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -16,10 +14,6 @@ import { asUser } from "./users";
  * the addresses its rows open and the way the list fits a window - is in
  * `keyboard-palette.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
   browser,

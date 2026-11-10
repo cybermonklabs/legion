@@ -1,7 +1,5 @@
 import { writeFile } from "node:fs/promises";
 
-import { expect, type Page, type Request, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
   createComment,
@@ -12,7 +10,7 @@ import {
   putIssueState,
 } from "./api";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -22,10 +20,6 @@ import { asUser } from "./users";
 // The writer is an autonomous session acting through the bearer API, as in `live.e2e.ts`; only
 // alice's browser is real.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides

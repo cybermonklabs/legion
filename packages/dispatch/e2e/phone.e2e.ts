@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import { setLiveSessions } from "./agents";
 
 import {
@@ -18,8 +17,9 @@ import {
 import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
-import { insertExternalLink, resetDatabase } from "./seed";
+import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -56,10 +56,6 @@ async function assertTabTrapped(page: Page, selector: string): Promise<void> {
     expect(await activeElementInside(page, selector)).toBe(true);
   }
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two focus traps of 32 presses each, every one read back from the page, on an
 // emulated phone - the cycle is the property, and both containers hold more than eight stops.

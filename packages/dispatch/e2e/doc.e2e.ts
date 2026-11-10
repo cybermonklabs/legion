@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type BrowserContext, expect, test } from "@playwright/test";
 
 import {
   createComment,
@@ -30,7 +29,7 @@ import {
   typeAtEnd,
 } from "./editor";
 import { engineParagraphs } from "./read-back";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -39,10 +38,6 @@ const session = {
 };
 const longToken = `sjawhar/legion#838-${"unbreakable".repeat(12)}`;
 const initialMarkdown = `## Database\n\nUse SQLite\n\n| col | value |\n|---|---|\n| a | 1 |\n| b | ${longToken} |\n\n- [ ] task\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\nEnd of spec.\n`;
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the spec opens as a formatted, editable document with no source pane", async ({
   browser,

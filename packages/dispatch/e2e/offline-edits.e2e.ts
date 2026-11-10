@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
 import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const INITIAL = "# Offline edits\n\nOriginal paragraph.\n";
@@ -74,10 +72,6 @@ async function waitForPersistedTyping(
     .poll(() => pendingEditCount(page, artifactId), PROBE)
     .toBeGreaterThanOrEqual(text.length);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @webkit @firefox: IndexedDB-backed recovery, here an edit the store holds across a reload.
 test("an edit typed while the document transport is down survives a reload @webkit @firefox", async ({

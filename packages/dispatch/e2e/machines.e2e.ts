@@ -1,4 +1,3 @@
-import { expect, test } from "@playwright/test";
 import { setLiveSessions } from "./agents";
 import {
   assertPaneProportions,
@@ -22,7 +21,7 @@ import {
   WIDTH_HOST,
   widthIds,
 } from "./machines";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -43,10 +42,6 @@ import { asUser } from "./users";
  * k8, k12, the drawing's own proportions and everything the page says it does not know - are
  * stubbed rows, in `machines.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test.describe("@machines-draw", () => {
   test("the machine page draws both tmux servers, its windows in index order, and each pane in its own proportion", async ({

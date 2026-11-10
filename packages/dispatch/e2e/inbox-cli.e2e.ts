@@ -1,7 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -25,7 +24,7 @@ import { cliSession, runDispatch } from "./dispatch-cli";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -296,10 +295,6 @@ async function seedInbox(): Promise<SeededInbox> {
     reviewedIssue: reviewed.key,
   };
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Sign-in and tokens: `dispatch inbox` under a person's own token lists what the page lists, and every act it makes is theirs.
 test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it @pr", async ({

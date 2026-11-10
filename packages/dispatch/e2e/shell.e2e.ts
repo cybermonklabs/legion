@@ -1,12 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, test } from "@playwright/test";
-
 import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
-import { resetDatabase } from "./seed";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -31,10 +29,6 @@ interface NavigationEventTrace {
   type: string;
   url?: unknown;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // It is no stubbed row: the row's own 503s are recorded beside the answer that follows them, and
 // a replay is given the first of them for every ask, so the page never opens.

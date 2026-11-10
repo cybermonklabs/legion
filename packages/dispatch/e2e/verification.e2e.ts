@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createIssue,
   createIssueArtifact,
@@ -8,7 +6,7 @@ import {
   recordCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A result's currency is judged against the head of the pull request Dispatch holds for the
@@ -51,10 +49,6 @@ async function seedIssue(title: string, head: string) {
   });
   return issue;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): 2.3 s - a project, its default repository, a pull request in the fake GitHub, a
 // Verification document of three checks and two recorded results, each result's record route

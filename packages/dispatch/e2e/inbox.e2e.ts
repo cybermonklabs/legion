@@ -1,5 +1,3 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { agentRow, setInterests, setLiveSessions } from "./agents";
@@ -34,8 +32,9 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { resetDatabase, setCreatedAt } from "./seed";
+import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -46,9 +45,6 @@ const session = {
   },
   as: "agent" as const,
 };
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,

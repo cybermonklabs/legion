@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { expect, test } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
@@ -11,12 +10,8 @@ import {
   putRepoProject,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("a repository mapping added in Settings assigns a new external issue to its selected project", async ({
   browser,

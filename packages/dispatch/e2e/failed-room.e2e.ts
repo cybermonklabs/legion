@@ -12,7 +12,6 @@
 //
 // Comparing a tree against another is what it is for: run it on this head and on the base, and
 // read the two lines it prints for the queued writer.
-import { expect, test } from "@playwright/test";
 
 import {
   baseUrl,
@@ -25,6 +24,7 @@ import {
 import { documentEditor } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /** Holds the room's next durable append inside its `doc_updates` insert for this long, which is
@@ -113,6 +113,11 @@ test("a writer inside the docs layer when its room fails is told, and the room r
     "the failed-room probe is opt-in: it holds a durable append for 20 s and cancels a backend"
   );
   test.setTimeout(240_000);
+  // The `test` of this suite empties the database before every row (e2e/test.ts), so this
+  // repeats it. It is kept because this body is read as one procedure by hand, on two checkouts
+  // at once (the header above), and what the probe starts from is the first thing a reader of
+  // that comparison needs: a row whose 40 s are spent on one append cannot be read against
+  // another tree's run without it.
   await resetDatabase();
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({

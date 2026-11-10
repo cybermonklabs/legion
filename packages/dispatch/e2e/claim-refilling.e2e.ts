@@ -1,8 +1,6 @@
-import { expect, test } from "@playwright/test";
-
 import { setListsState, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A session's claim lapses when its session is no longer running, and the claim chip and the
@@ -17,10 +15,6 @@ import { asUser } from "./users";
 // random share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`), so a view's first
 // refilling read says so up to 20 s after the page made it: `REFILL_TIMEOUT` is that wait and a
 // margin, and the test's own deadline covers the two reads below that take it.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const holder = { session_id: "claim-refill-session", title: "Claim refill holder" };
 const REFILLING = "The agent list is refilling. Try again in a moment.";

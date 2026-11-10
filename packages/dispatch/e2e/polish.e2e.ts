@@ -1,18 +1,12 @@
-import { expect, test } from "@playwright/test";
-
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
  * The two rows of this family that need the real stack. The collapsed project filters and the
  * margin ask's compact composer are a stubbed row, in `polish.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // The narrow-screen half of the stubbed row. The board lays its columns out side by side, so it
 // is the page a phone's width can push sideways; the stubbed row walks the same board at

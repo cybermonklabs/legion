@@ -1,12 +1,3 @@
-import {
-  type WebSocket as BrowserWebSocket,
-  expect,
-  type Page,
-  type Request,
-  test,
-  type WebSocketRoute,
-} from "@playwright/test";
-
 import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -19,8 +10,15 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import {
+  type WebSocket as BrowserWebSocket,
+  expect,
+  type Page,
+  type Request,
+  test,
+  type WebSocketRoute,
+} from "./test";
 import { asUser } from "./users";
 
 const agent: FakeSession = {
@@ -193,10 +191,6 @@ function trackDocumentLoads(page: Page): string[] {
   });
   return loaded;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): one socket for every live view is read over three live views, so the row loads and
 // draws all three in the one tab - the project's board, the session's live thread and the

@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue } from "./api";
 import { openBoard, seedBoard } from "./keyboard";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -11,10 +9,6 @@ import { asUser } from "./users";
  * rank write read back. The chords, the shortcut help, the Inbox selection and the board's
  * roving are in `keyboard.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Create through answer to close: the create itself - c opens the dialog, and the issue the API returns is the one the SPA opens.
 test("c opens the create dialog; project and title create an issue the API returns and the SPA opens @pr", async ({

@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -36,10 +34,6 @@ async function selectMention(page: Page, text: string, option = "planner"): Prom
     .getByRole("option", { name: option })
     .click();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The /btw delivery mode's own row: the token is stripped and one comment-level delivery goes out.
 test("/btw with a surviving mention strips its token and sends one comment-level mode @pr", async ({

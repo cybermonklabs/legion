@@ -1,5 +1,4 @@
 import { AGENT_STREAM_LIMITS, capAgentStreamText } from "@legion/contracts";
-import { expect, type Page, test } from "@playwright/test";
 
 import { agentRow, type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
@@ -12,8 +11,8 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
-import { resetDatabase } from "./seed";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -381,7 +380,6 @@ async function lowerKeyboard(page: Page): Promise<void> {
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   await setLiveSessions([planner]);
 });
 

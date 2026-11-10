@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   type FakeSession,
   getSentMessages,
@@ -32,8 +31,8 @@ import {
   resolveComment,
 } from "./api";
 import { conversationFilter } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -70,10 +69,6 @@ const planner: FakeSession = {
   session_id: "s1",
   title: "planner",
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The Conversation tab's own row: it owns the route, lists one card per message newest first, and resolves live agent names.
 test("Conversation owns the route, lists one card per message newest first, and resolves live agent names @pr", async ({

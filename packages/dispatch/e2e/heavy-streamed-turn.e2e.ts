@@ -11,11 +11,10 @@
 // arriving behind it, and that is what the reader would read until that frame's own answer and
 // its whole paint had landed: the regression this change has now repeated twice
 // (sjawhar/legion#2519, `useRenderedMarkdown`).
-import { expect, type Page, test } from "@playwright/test";
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { expectSettled, looseTextLength, markdownBody } from "./heavy-bodies-page";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -32,10 +31,6 @@ declare global {
     __heavyStreamTurnEnded?: () => void;
   }
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * How many paragraphs the turn holds and how long the row leaves between frames, which the
