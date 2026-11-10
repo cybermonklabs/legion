@@ -71,7 +71,6 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   issueResults: (client) => client.issueResults("DSP-1"),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
-  handAskTo: (client) => client.handAskTo("ask-1", "alice@example.com"),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),
   listIssueAsks: (client) => client.listIssueAsks("DSP-1"),
   getArtifactAsks: (client) => client.getArtifactAsks("artifact-1"),

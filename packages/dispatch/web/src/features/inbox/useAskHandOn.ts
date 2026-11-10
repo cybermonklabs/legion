@@ -2,8 +2,9 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
-import type { InboxRow } from "../../api/types";
+import type { Ask, InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
   /** The server's reason after a refused hand-on, until the next attempt. */
@@ -20,7 +21,8 @@ export interface AskHandOnWrite {
 /**
  * The one way the SPA hands an ask to a person. The new person lands on every inbox cache at
  * once, so the row leaves the list it was in and joins theirs on the press, rolls back if the
- * server refuses, and the list refetches once the hand-on settles - the same shape as
+ * server refuses, and every read carrying the ask - the Inbox and its owner's lists
+ * (`invalidateOwnerReads`) - refetches once the hand-on settles, the same shape as
  * `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
@@ -31,12 +33,12 @@ export interface AskHandOnWrite {
  * any card can be pressed, and a hand-on made without it leaves the pair unnamed until the
  * refetch answers.
  */
-export function useAskHandOn(askId: string): AskHandOnWrite {
+export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
   // The card says why its hand-on was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
-    write: (askedOf: string, bounds) => api.handAskTo(askId, askedOf, bounds),
+    write: (askedOf: string, bounds) => api.handAskTo(ask.id, askedOf, bounds),
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,
     onMutate: async (askedOf) => {
@@ -46,7 +48,7 @@ export function useAskHandOn(askId: string): AskHandOnWrite {
       const at = new Date().toISOString();
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
         current?.map((row) =>
-          row.id === askId
+          row.id === ask.id
             ? {
                 ...row,
                 // Naming the assignee of the ask's own issue stores no person: the ask
@@ -68,7 +70,11 @@ export function useAskHandOn(askId: string): AskHandOnWrite {
       }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: inboxKey });
+      // Every surface that draws this ask follows the write, not the `ask.asked_of` event that
+      // lands after it: on the issue page, in a document's margin and in its ask block the card
+      // reads the ask from its owner's list, where the control's own value comes from, so an
+      // Inbox-only refresh would snap the picker back to the person before the hand-on.
+      invalidateOwnerReads(queryClient, ask);
     },
   });
   return {

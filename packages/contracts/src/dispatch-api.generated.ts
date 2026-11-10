@@ -3143,7 +3143,7 @@ export interface components {
       version: number;
     };
     AskAskedOfInput: {
-      asked_of: null | string;
+      asked_of: string;
     };
     AskBlockArtifact: {
       id: string;

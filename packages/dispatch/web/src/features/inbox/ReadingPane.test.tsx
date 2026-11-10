@@ -193,6 +193,8 @@ function renderPane({
   const answered: string[] = [];
   /** Every registration the head's Snooze made, in order: `[askId, live]`. */
   const snoozeLiveness: (readonly [string, boolean])[] = [];
+  /** Every registration a card's hand-on made, in order: `[askId, live]`. */
+  const handOnLiveness: (readonly [string, boolean])[] = [];
   const tree = (row: InboxRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -200,6 +202,7 @@ function renderPane({
           <MarginProvider>
             <ReadingPane
               onAnswered={(id) => answered.push(id)}
+              onHandOnLive={(askId, live) => handOnLiveness.push([askId, live])}
               onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
               row={{ ask: row, kind: "ask" }}
               viewer="alice"
@@ -731,6 +734,7 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
+              onHandOnLive={() => {}}
               onSnoozeLive={() => {}}
               row={{ kind: "thread", thread }}
               viewer="alice"

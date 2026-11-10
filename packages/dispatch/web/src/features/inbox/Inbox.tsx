@@ -414,6 +414,7 @@ function InboxCardRow({
   marked,
   onAnswered,
   onAssignLive,
+  onHandOnLive,
   onMark,
   onRelease,
   onSnoozeLive,
@@ -432,6 +433,9 @@ function InboxCardRow({
   /** The same registration for this row's snooze write; the Inbox keeps a live row rendered
    *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
   onSnoozeLive: (askId: string, live: boolean) => void;
+  /** The same registration for a hand-on made from this row's card, which the optimistic
+   *  `waiting_on_person` would otherwise unmount with the row (`AskHandOn`). */
+  onHandOnLive: (askId: string, live: boolean) => void;
   /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
@@ -490,6 +494,7 @@ function InboxCardRow({
         initialThread={{ ask, ...ask.thread }}
         initialThreadUpdatedAt={threadUpdatedAt}
         onAnswered={onAnswered}
+        onHandOnLive={onHandOnLive}
       />
     </InboxRowShell>
   );
@@ -752,6 +757,20 @@ export function Inbox({
       return next;
     });
   }, []);
+  // And the same for a hand-on, whose control sits in the card rather than beside it
+  // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
+  // write starts, so without this the card holding the control would be unmounted before the
+  // server answered and a refusal would come back to a fresh card that never failed.
+  const [handingOn, setHandingOn] = useState<ReadonlySet<string>>(() => new Set());
+  const onHandOnLive = useCallback((askId: string, live: boolean) => {
+    setHandingOn((current) => {
+      if (current.has(askId) === live) return current;
+      const next = new Set(current);
+      if (live) next.add(askId);
+      else next.delete(askId);
+      return next;
+    });
+  }, []);
   // The row the reader's hand is on (focus or pointer), read from the DOM as last committed. When
   // the server has dropped it (answered or resolved elsewhere) or handed its turn the other way
   // (their own ask-back, an agent's note or reply), it is kept - `held` - where the reader last
@@ -795,14 +814,16 @@ export function Inbox({
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
-  // The filters and the typed text both decide what is listed, with one exception that outranks
-  // them all: a row whose "Assign to me" write is live stays. Taking a question under the
-  // Unassigned filter is exactly that case - the row stops matching the moment the optimistic
-  // assignment lands - and unmounting the control would take `Assigning…`, a refusal and its
-  // Retry off the screen with it.
+  // The filters and the typed text both decide what is listed, with two exceptions that
+  // outrank them all: a row whose "Assign to me" write is live stays, and so does one whose
+  // hand-on is. Taking a question under the Unassigned filter is exactly the first case - the
+  // row stops matching the moment the optimistic assignment lands - and handing a question on
+  // in the reader's own list is the second, since the optimistic `waiting_on_person` is read
+  // by this very filter. Unmounting either control would take `Assigning…` or `Handing on…`, a
+  // refusal and its Retry off the screen with it.
   const narrowed = candidates.filter(
     (row) =>
-      (row.kind === "ask" && assigning.has(row.ask.id)) ||
+      (row.kind === "ask" && (assigning.has(row.ask.id) || handingOn.has(row.ask.id))) ||
       (inAssigneeFilter(row, selection, viewer ?? "") &&
         matchesInboxSearch(row, words) &&
         INBOX_FILTER_FIELDS.every((field) =>
@@ -1585,6 +1606,7 @@ export function Inbox({
                 <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
                   <ReadingPane
                     onAnswered={recordAnswered}
+                    onHandOnLive={onHandOnLive}
                     onSnoozeLive={onSnoozeLive}
                     row={subject}
                     viewer={viewer}
@@ -1697,6 +1719,7 @@ export function Inbox({
         key={id}
         onAnswered={recordAnswered}
         onAssignLive={onAssignLive}
+        onHandOnLive={onHandOnLive}
         onSnoozeLive={onSnoozeLive}
         threadUpdatedAt={inbox.dataUpdatedAt}
         viewer={viewer}

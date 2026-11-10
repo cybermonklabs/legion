@@ -129,6 +129,11 @@ export interface AskCardProps {
   documentLink?: boolean;
   /** Called once the server has recorded the reader's answer from this card. */
   onAnswered?: (id: string) => void;
+  /** Registers the ask with its host while a hand-on from this card is in flight or failed, so
+   *  a host that lists the ask - the Inbox, whose list the optimistic `waiting_on_person` drops
+   *  the row out of as the write starts - keeps it listed until the server decides it, and the
+   *  reason for a refusal is shown by this card rather than lost to a remount (`AskHandOn`). */
+  onHandOnLive?: (askId: string, live: boolean) => void;
   /** `change` opens the seeded form when the viewer may replace the current answer. */
   mode?: "answer" | "change";
   /** Marks the ask's thread read through the shared thread read mark (`useMarkThreadRead`) once
@@ -205,13 +210,36 @@ function useFormRef(): [
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
- * reader pressed it, as `AssignToMe` and `SnoozeControl` do.
+ * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it tells
+ * its host while that write is live (pending or failed) through `onLive`, because the
+ * optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
+ * write starts (`isMine`, `inAssigneeFilter`): without the registration this card would be
+ * unmounted before the server answered, and a refusal would put the row back with a fresh
+ * card that never failed, so the reader would see it return and no reason. A host that lists
+ * the ask passes `onLive`; one that does not - a document's margin, its ask block - leaves it
+ * undefined, since nothing there can unmount the card under the write.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+function AskHandOn({
+  ask,
+  assignee,
+  onLive,
+}: {
+  ask: Ask;
+  assignee: string | null;
+  /** Registers this ask while its hand-on is in flight or failed; unregistered once it settles
+   *  cleanly or the card unmounts. */
+  onLive?: (askId: string, live: boolean) => void;
+}): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
-  const write = useAskHandOn(ask.id);
+  const write = useAskHandOn(ask);
+  const live = write.pending || write.failed;
+  useEffect(() => {
+    if (!live || onLive === undefined) return;
+    onLive(ask.id, true);
+    return () => onLive(ask.id, false);
+  }, [ask.id, live, onLive]);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The list is drawn only once the reader reaches for the control, as it is read: the query
   // keeps its people for the session, so a card that built its options from whatever another
@@ -307,6 +335,7 @@ export function AskCard({
   initialThreadUpdatedAt,
   documentLink = true,
   onAnswered,
+  onHandOnLive,
   mode = "answer",
   markRead = false,
   unread,
@@ -825,7 +854,11 @@ export function AskCard({
             the issue is the card's own prop: only an Inbox row carries one, and the ask reads
             do not. */}
         {displayedAsk.state === "open" ? (
-          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+          <AskHandOn
+            ask={displayedAsk}
+            assignee={ask.issue?.assignee ?? null}
+            onLive={onHandOnLive}
+          />
         ) : null}
         <AskEditHistory ask={displayedAsk} edits={edits} />
         {referencedByNode}

@@ -21,11 +21,12 @@ import (
 // when (asked_of_by, asked_of_at) whatever else the write leaves, so the ask card can say it.
 
 // askAskedOfInput is the body of PUT /api/v1/asks/{id}/asked-of: the person the ask waits on
-// from now on. It is required - a body naming nobody is 400 INVALID_ASK - and never null,
-// since an ask always waits on somebody; handing one to the assignee of its own issue is what
-// gives the ask back to the issue (the empty stored field below).
+// from now on. It is a plain required string, as the bodies in asks.go are, since the field is
+// never null - an ask always waits on somebody, and handing one to the assignee of its own
+// issue is what gives the ask back to the issue (the empty stored field below). A body that
+// omits it, and one that sends JSON null, both leave it empty, which is 400 INVALID_ASK below.
 type askAskedOfInput struct {
-	AskedOf *string `json:"asked_of" required:"true"`
+	AskedOf string `json:"asked_of" required:"true"`
 }
 
 // putAskAskedOf writes the person an open ask waits on.
@@ -44,7 +45,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if input.AskedOf == nil {
+	if input.AskedOf == "" {
 		writeError(w, "INVALID_ASK", http.StatusBadRequest, "asked_of must be a person's email")
 		return
 	}
@@ -54,7 +55,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// (store.ErrNestedAcquire), so it cannot run under the transaction below - the reason
 	// editAsk resolves its acting person before it begins. A caller naming nobody who has
 	// signed in is therefore told so before the ask is read.
-	askedOf, err := s.allowedLogin(r.Context(), *input.AskedOf)
+	askedOf, err := s.allowedLogin(r.Context(), input.AskedOf)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -137,10 +138,21 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the 200 answers: the ask as every other read of it answers, read back under this
+	// transaction's own locks through the columns those reads share (askReadColumns), so it
+	// carries waiting_on and waiting_on_person - which the locked row above carries neither of,
+	// and which a handler setting them by hand would be a second rule to keep in step with
+	// askedOfPersonExpression at every hand-back. The event payload stays the locked row, which
+	// is the shape every ask.* payload has (ask_rows.go).
+	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(event)
-	WriteJSON(w, http.StatusOK, ask)
+	WriteJSON(w, http.StatusOK, answer)
 }

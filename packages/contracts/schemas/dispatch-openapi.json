@@ -12660,10 +12660,7 @@
       "AskAskedOfInput": {
         "properties": {
           "asked_of": {
-            "type": [
-              "null",
-              "string"
-            ]
+            "type": "string"
           }
         },
         "required": [

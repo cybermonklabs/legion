@@ -1251,17 +1251,6 @@ export class DispatchClient {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
-  /** `PUT /api/v1/asks/{id}/asked-of`: hands an open ask to the person `askedOf` names, the
-   *  email of somebody who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise). The ask keeps its
-   *  question, its thread and its followers and stays open; it waits on that person from now on
-   *  wherever its issue goes, and their Inbox lists it. Naming the assignee of the ask's own
-   *  issue empties the field, so the ask follows that issue again. It needs the person scope:
-   *  handing a question on is one person asking another, and no agent may make the call.
-   *  409 ASK_NOT_OPEN on an ask that is not open, 409 ISSUE_CLOSED when its issue is closed. */
-  async handAskTo(id: string, askedOf: string): Promise<Ask> {
-    return this.#json("PUT", ["api", "v1", "asks", id, "asked-of"], { asked_of: askedOf });
-  }
-
   async comment(issue: string, input: CreateCommentInput): Promise<Advised<CommentWriteResponse>> {
     return this.#json(
       "POST",

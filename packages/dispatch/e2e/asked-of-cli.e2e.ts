@@ -111,19 +111,20 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     const documentAsk = askedId(onDocument.stdout);
 
     // 1. The session's own listing names the issue's assignee on the first row and nobody on the
-    // second, and both are waiting on a human, so the three numbers are 2, 2 and 0.
+    // second - in the card's own word, `asked of`, which claims no turn - and both are waiting
+    // on a human, so the three numbers are 2, 2 and 0.
     const own = await runDispatch(["open-asks"], home);
     expect(own.code, `${own.stdout}${own.stderr}`).toBe(0);
-    expect(rowFor(own.stdout, issueAsk)).toContain(" · waiting on alice · ");
-    expect(rowFor(own.stdout, documentAsk)).toContain(" · waiting on nobody · ");
+    expect(rowFor(own.stdout, issueAsk)).toContain(" · asked of alice · ");
+    expect(rowFor(own.stdout, documentAsk)).toContain(" · asked of nobody · ");
     expect(printedCounts(own.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 2. The project-wide listing, which is every open ask in the project whoever authored it,
     // names the same two people and carries the same three numbers.
     const project = await runDispatch(["open-asks", "--project", "CORE"], home);
     expect(project.code, `${project.stdout}${project.stderr}`).toBe(0);
-    expect(rowFor(project.stdout, issueAsk)).toContain(" · waiting on alice · ");
-    expect(rowFor(project.stdout, documentAsk)).toContain(" · waiting on nobody · ");
+    expect(rowFor(project.stdout, issueAsk)).toContain(" · asked of alice · ");
+    expect(rowFor(project.stdout, documentAsk)).toContain(" · asked of nobody · ");
     expect(printedCounts(project.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 3. Bob, who holds neither the issue nor the document, takes the first question himself
@@ -145,8 +146,8 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     // 4. The same author session's listing names him from then on, with nothing else moved.
     const after = await runDispatch(["open-asks"], home);
     expect(after.code, `${after.stdout}${after.stderr}`).toBe(0);
-    expect(rowFor(after.stdout, issueAsk)).toContain(" · waiting on bob · ");
-    expect(rowFor(after.stdout, documentAsk)).toContain(" · waiting on nobody · ");
+    expect(rowFor(after.stdout, issueAsk)).toContain(" · asked of bob · ");
+    expect(rowFor(after.stdout, documentAsk)).toContain(" · asked of nobody · ");
     expect(printedCounts(after.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
   } finally {
     await bob.close();

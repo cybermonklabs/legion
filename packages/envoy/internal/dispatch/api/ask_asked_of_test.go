@@ -206,6 +206,48 @@ func TestAskAskedOf(t *testing.T) {
 		}
 	})
 
+	// The answer is the ask as a read of it answers: whom it waits on is on the 200 itself, so a
+	// caller needs no second request to learn what its own write decided - a hand-back to the
+	// assignee, which stores nobody, included.
+	t.Run("the answer says whom the ask waits on, after a hand-on and after a hand-back", func(t *testing.T) {
+		handler, _ := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, handler, "ANSWER", "A question handed to and fro", "A spec")
+		askID := createIssueAsk(t, handler, issue.Key, "Which transport?")
+
+		handedOn := handAskOn(t, handler, askID, "bob", "alice")
+		if handedOn.WaitingOnPerson != "bob" || handedOn.WaitingOn != "human" {
+			t.Fatalf("the hand-on answered waiting_on_person=%q waiting_on=%q, want bob and human",
+				handedOn.WaitingOnPerson, handedOn.WaitingOn)
+		}
+		// Handed back to the issue's own assignee the stored field is empty, and the answer
+		// still names the person: the expression every read shares resolves it.
+		handedBack := handAskOn(t, handler, askID, "alice", "alice")
+		if handedBack.AskedOf != nil || handedBack.WaitingOnPerson != "alice" || handedBack.WaitingOn != "human" {
+			t.Fatalf("the hand-back answered asked_of=%v waiting_on_person=%q waiting_on=%q, want nothing stored and alice",
+				handedBack.AskedOf, handedBack.WaitingOnPerson, handedBack.WaitingOn)
+		}
+	})
+
+	// asked_of is a required string, never null: a body that omits it and one that sends null
+	// both name nobody, and the route says so before it reads the ask.
+	t.Run("a body naming nobody is refused", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, handler, "EMPTY", "A question handed to nobody", "A spec")
+		askID := createIssueAsk(t, handler, issue.Key, "Which transport?")
+		target := "/api/v1/asks/" + askID + "/asked-of"
+
+		for _, body := range []map[string]any{{}, {"asked_of": nil}, {"asked_of": ""}} {
+			refused := dispatchRequest(t, handler, http.MethodPut, target, body, "alice")
+			if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"INVALID_ASK"`) {
+				t.Fatalf("hand the ask on with %v: status=%d body=%s, want 400 INVALID_ASK",
+					body, refused.Code, refused.Body.String())
+			}
+		}
+		if askedOf, by, at := askedOfColumns(t, database, askID); askedOf != nil || by != nil || at != nil {
+			t.Fatalf("the refused ask holds asked_of=%v asked_of_by=%v asked_of_at=%v, want all three empty", askedOf, by, at)
+		}
+	})
+
 	// The person must be somebody who has signed in, held by the check the assignee is held by.
 	t.Run("a login nobody has signed in with is refused", func(t *testing.T) {
 		handler, database := newTestHandlerWithStore(t)

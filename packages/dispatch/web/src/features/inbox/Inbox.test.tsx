@@ -1801,6 +1801,73 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
   }
 });
 
+// The hand-on's optimistic `waiting_on_person` takes the row out of the reader's own list as
+// the write starts, which would unmount the card holding the control: the card registers its
+// write with the list (`AskHandOn`'s `onLive`), so the refusal is shown where the reader
+// pressed, by the instance that wrote, rather than lost to a remount.
+test("a refused hand-on keeps its row in the reader's own list, with the reason and a working Retry", async () => {
+  const user = userEvent.setup();
+  // Handed to alice on an issue bob holds, so the row is alice's and handing it back to bob
+  // takes it out of her list.
+  const mine = issueAsk({
+    asked_of: "alice",
+    id: "ask-mine",
+    issue: { assignee: "bob", key: "CORE-4", title: "Bob's issue" },
+    issue_key: "CORE-4",
+    question: "Hand this on?",
+  });
+  const rows = [mine];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const firstHandOn = Promise.withResolvers<InboxRow>();
+  let attempts = 0;
+  const handedBack = { ...mine, asked_of: null, waiting_on_person: "bob" };
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+    attempts += 1;
+    return attempts === 1 ? firstHandOn.promise : handedBack;
+  });
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Hand this on?");
+    await user.selectOptions(
+      within(rowOf("ask-mine")).getByLabelText("Hand this question to"),
+      "bob"
+    );
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    // Handed on optimistically, the row waits on somebody else - and stays.
+    await waitFor(() => expect(screen.getByText("Handing on…")).toBeTruthy());
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    await act(async () => {
+      firstHandOn.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await firstHandOn.promise.catch(() => undefined);
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    // The card's own Retry writes again; the row leaves once the server takes it and the
+    // refetched inbox says bob waits on it.
+    getInbox.mockResolvedValue([handedBack]);
+    await user.click(within(alert).getByRole("button", { name: /Retry/ }));
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    handAskTo.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("a sibling ask of the same issue leaving the list does not drop an in-flight Assign to me: its refusal still shows", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({
