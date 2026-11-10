@@ -18,6 +18,14 @@ import { selectedRow } from "./inbox-pane";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
+// Both paths the palette's searches take. The keystroke tier always carries `keywords_only`, and
+// a palette opened on a project or an issue page carries `number_project`, so either request goes
+// to `/api/v1/search/results` rather than `/api/v1/search` (`everyBuildReadsSearch`,
+// `@legion/contracts`). A route matching one path alone would let the other through, and the
+// stub or the hold below would miss the request it is about.
+const searchPath = (url: URL): boolean =>
+  url.pathname === "/api/v1/search" || url.pathname === "/api/v1/search/results";
+
 // The keymap is bound only once sign-in resolves (`AuthGate` renders a skeleton until
 // `/auth/whoami` answers), so a key pressed before the page renders reaches no handler.
 async function openIssue(page: Page, issueKey: string, title: string): Promise<void> {
@@ -173,17 +181,14 @@ test("a failed palette search keeps its Retry action", async ({ browser }) => {
   try {
     const page = await context.newPage();
     let searches = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        searches += 1;
-        await route.fulfill({
-          body: JSON.stringify({ code: "INTERNAL", error: "search index unavailable" }),
-          contentType: "application/json",
-          status: 500,
-        });
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      searches += 1;
+      await route.fulfill({
+        body: JSON.stringify({ code: "INTERNAL", error: "search index unavailable" }),
+        contentType: "application/json",
+        status: 500,
+      });
+    });
     // A failed read is retried twice, `QUERY_RETRY_DELAY_MS` apart, before the alert: page
     // timers, which the page's own clock fires.
     await page.clock.install();
@@ -521,14 +526,11 @@ test("a query that holds a card move further in moves no card on Enter", async (
     // then would have taken the move to the next status before any answer came.
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await page.keyboard.press("Control+k");
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
@@ -851,14 +853,11 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     // Hold the search the way a slow network would, so the reader arrows before the hits arrive.
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await openIssue(page, issue.key, "Go held search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -910,14 +909,11 @@ test("an arrow pressed before the search answers reaches no action the query fin
     });
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await openIssue(page, issue.key, "Arrow before the issue search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -987,14 +983,11 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     await page.clock.fastForward("00:31");
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     await input.fill("issue");

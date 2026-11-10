@@ -151,8 +151,14 @@ def measure(dispatch, case, query, limit):
     configured with. A server with none runs the same statement either way, so the ranks of a run
     against one are what they always were; what the parameter adds is that the measurement is the
     keyword path by request rather than by the absence of a model service.
+
+    The request goes to /api/v1/search/results, as the bar's does, because keywords_only is a
+    member a build released before it drops: that build would answer /api/v1/search by meaning
+    too, and the run would report the hybrid path's numbers as the keyword path's. On the
+    results route such a build answers 404 no route, so the run fails rather than measuring the
+    wrong thing.
     """
-    path = "/api/v1/search?" + urllib.parse.urlencode(
+    path = "/api/v1/search/results?" + urllib.parse.urlencode(
         {"q": query, "limit": limit, "keywords_only": "true"})
     started = time.monotonic()
     answer = dispatch.get(path, tries=2)
