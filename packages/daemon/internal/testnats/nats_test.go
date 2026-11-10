@@ -171,12 +171,14 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// The stream a test is handed must be empty. A create that comes back holding a previous test's
-// work — the store the delete before it left behind, adopted by a create of the same name (URL's
-// reset) — fails the test there, naming each message by subject, stream sequence and stored time
+// The stream a test is handed must be empty. A create that comes back holding an earlier test's
+// work — the store a delete of that same name left where it was, which URL's purge states and
+// cites — fails the test there, naming each message by subject, stream sequence and stored time
 // and each consumer by name, rather than reaching the test as a count it reads later and reads as
 // its own. A stream holding a consumer and no message names the consumer alone: there is no
-// message to name, and a sequence nothing stored is not one.
+// message to name, and a sequence nothing stored is not one. A stream whose range holds deleted
+// sequences names the messages it does hold and counts only those, so a gap neither spends one of
+// the ten places nor makes the count of the rest wrong.
 func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 	js := JetStream(t)
 	for _, row := range []struct {
@@ -184,7 +186,7 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 		stream string
 		leave  func(t *testing.T, stream jetstream.Stream)
 		want   []string
-		unwant string
+		unwant []string
 	}{
 		{
 			name:   "a message",
@@ -205,7 +207,29 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 				}
 			},
 			want:   []string{"ALREADY_CONSUMED is not empty at its create", "consumer left-behind"},
-			unwant: "message",
+			unwant: []string{"message"},
+		},
+		{
+			name:   "messages with a deleted sequence between them",
+			stream: "ALREADY_GAPPED",
+			leave: func(t *testing.T, stream jetstream.Stream) {
+				for _, subject := range []string{"full.one", "full.two", "full.three"} {
+					if _, err := js.Publish(t.Context(), subject, []byte("x")); err != nil {
+						t.Fatalf("publish %s: %v", subject, err)
+					}
+				}
+				if err := stream.DeleteMsg(t.Context(), 2); err != nil {
+					t.Fatalf("delete the message at sequence 2: %v", err)
+				}
+			},
+			want: []string{
+				"ALREADY_GAPPED is not empty at its create",
+				"message 1 full.one stored ",
+				"message 3 full.three stored ",
+			},
+			// The deleted sequence is named by nothing and counted as nothing: no read of it, and
+			// no "and 1 more" from counting its failed read as a message named.
+			unwant: []string{"message 2", "not found", "and "},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -232,8 +256,10 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say %q", again.message, want)
 				}
 			}
-			if row.unwant != "" && strings.Contains(again.message, row.unwant) {
-				t.Errorf("CreateStream of a stream holding no message failed with %q, want it to name no %q", again.message, row.unwant)
+			for _, unwant := range row.unwant {
+				if strings.Contains(again.message, unwant) {
+					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say no %q", again.message, unwant)
+				}
 			}
 		})
 	}
