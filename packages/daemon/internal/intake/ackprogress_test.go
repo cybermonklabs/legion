@@ -740,9 +740,26 @@ func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *tes
 	if said := strings.Count(written, heldFactLine); said != 1 {
 		t.Errorf("%d lines say a fact outlived its acknowledgement window, want one for the one fact: the line is the fact's, not the progress keeper's tick's, in:\n%s", said, written)
 	}
-	// How long it took is a measurement, so the row asks that it is reported and not what it
-	// reads.
-	for _, attribute := range []string{"consumer=", "event_id=", "delivered=", "took="} {
+	// The consumer the held fact was delivered by, by value: the fact this row publishes is an
+	// issue event, which the Dispatch durable alone carries (its filter, consume.go), and the
+	// check reads the line per consumer. A line carrying consumer="" is the metadata read above
+	// the line failing (consume.go), and names no durable at all.
+	if said := logValue(line, "consumer"); said != dispatchConsumerName(spec.Project) {
+		t.Errorf("the held fact's line says consumer=%s, want %s, the Dispatch durable that carried the held fact: %s", said, dispatchConsumerName(spec.Project), line)
+	}
+	// One delivery, by value: this count is the delivery that wrote the line, and the line is
+	// written by the handling that outlived the window, which is the held message's first
+	// delivery. A redelivery would be a message of its own, which heldOnce releases at once, so
+	// its handling outlives no window and writes no line of its own to be read here. That is
+	// what makes the count of lines above sound at this row's 200 ms window, and this value
+	// rests on the same reading. A delivered=0 is the metadata read of consume.go failing, and
+	// reads as a held fact nothing ever delivered.
+	if said := logValue(line, "delivered"); said != "1" {
+		t.Errorf("the held fact's line says delivered=%s, want 1, the held copy's own first delivery: %s", said, line)
+	}
+	// How long it took is a measurement, and the event id is the fixture's, so the row asks that
+	// each is reported and not what it reads.
+	for _, attribute := range []string{"event_id=", "took="} {
 		if !strings.Contains(line, attribute) {
 			t.Errorf("the held fact's line carries no %s, which is what an operator reads it for: %s", attribute, line)
 		}
