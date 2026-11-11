@@ -146,7 +146,6 @@ done
 
 # --- This run's own directory, under TMPDIR as dev-broker.sh's is. ---
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-secrets-airlock.XXXXXX")"
-BIN_DIR="$WORK_DIR/bin"
 STANDS_DIR="$WORK_DIR/stands"
 STANDS_JSON="$WORK_DIR/stands.json"
 STANDS_LOG="$WORK_DIR/stands.log"
@@ -406,13 +405,6 @@ admin_psql -c "create database ${DB_NAME};"
 CREATED_DB=true
 echo "dev-airlock: created isolated database $DB_NAME" >&2
 DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
-
-# --- dev-airlock-stands, the binary dev-broker.sh built with the rest: this script runs it for
-# the stands, the fronts and the enrolment, and links it into this run's own bin directory,
-# where scripts/airlock-check.sh reads it ($AIRLOCK_DIR/bin) and where the PATH below looks
-# first. ---
-mkdir -p "$BIN_DIR"
-ln -sf "$STANDS_BIN" "$BIN_DIR/dev-airlock-stands"
 
 # --- The stand-ins. Each HTTPS stand's certificate carries the name the rules bind it to, since
 # the proxy verifies the name it dialled against the certificate the stand presents. The
@@ -749,7 +741,7 @@ dev-airlock: ready.
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
   export AIRLOCK_ENROLLMENT=$ENROLLMENT_ID
   export DEV_BROKER_DIR=$BASE_DIR
-  export PATH=$BIN_DIR:$BASE_BIN_DIR:\$PATH
+  export PATH=$BASE_BIN_DIR:\$PATH
 
 $BROKER_BANNER
   secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, bound to $S_HOST; $SCOPED_SECRET in

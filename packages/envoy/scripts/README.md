@@ -215,12 +215,12 @@ fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
-builds and `dev-airlock.sh` links into its own `bin` directory: `probe-private` is
-`k4`'s private-address probe, `probe-bound` is `k7`'s call
-to a bound host, and `load` is `k9`'s load driver and the plain tunnel its baseline
-goes through. CI compiles and vets all three with the rest of that command. The
-others are under `scripts/airlock/`: `memscan.py`, `k6`'s boto3 steps
-(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
+builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
+`probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
+the plain tunnel its baseline goes through. CI compiles and vets all three with the
+rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
+boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
+credential helper.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
