@@ -488,9 +488,21 @@ RULES = {
     # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
+    f"{ENVOY}/cmd/dispatch/settings_test.go": reads(
+        (f"{ENVOY}/cmd/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files"),
+        (f"{ENVOY}/internal/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files")),
     f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:174,419,463")),
+    f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
+        (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
+        (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:19"),
+        (f"{ENVOY}/AGENTS.md", "cmd/listener/grace_margin_doc_test.go:20")),
+    f"{ENVOY}/cmd/listener/infra_stop_budget_test.go": reads(
+        (f"{INFRA}/gcp/clusteredhub_listener.go", "cmd/listener/infra_stop_budget_test.go:18")),
+    f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
+        (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
+        (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
-                                                            "internal/broker/config/config_test.go:1346,1376 Load the URL whose sslrootcert is this bundle (rdsBundle :1306), which pgx reads to build the root pool")),
+                                                            "internal/broker/config/config_test.go:1348,1378 Load the URL whose sslrootcert is this bundle (rdsBundle :1308), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
