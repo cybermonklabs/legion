@@ -4,44 +4,45 @@ import type { TreeNode } from "./issue-tree";
  * How much of the issue's tree is drawn (dispatch://INFRA-1196 R1, R6). Pure, over the model
  * `issue-tree.ts` builds, so the rows, the zoom and the unit tests fold the same way.
  *
- * The page opens folded to the frontier and not to a fixed depth: the path to every open
- * question that waits on the reader is unfolded whatever its depth, and every other branch is
- * folded to its first level, saying how many nodes it holds. Those unfolded rows are not counted
- * against the fold, because there is no budget to count them against: a branch is folded unless
- * the frontier or the reader opened it, so a question's path costs no other branch a row.
+ * The first drawing is the frontier's own: the path to what is open and unanswered is
+ * unfolded whatever its depth, and every other branch arrives folded to one row saying how
+ * many nodes it holds. Nothing is counted against anything - there is no budget and no fixed
+ * depth - because a branch is folded unless the frontier or the reader opened it, so what is
+ * open costs no other branch a row.
  *
- * ## What a branch is
+ * The reader's own hand outranks the rule, both ways: a branch they folded stays shut though
+ * the frontier runs through it, and a branch they opened stays open though nothing under it
+ * is open at all (`OpenedBranches`).
  *
- * A branch is a node that holds a set of its own: a document and its blocks, a child issue, a
- * comment or a message and its replies, and a decision that was replaced. Those fold, because
- * what they hold is a set the reader opens, and a reader who opened an issue did not ask for
- * every block of every document it carries.
+ * ## What is open, by kind
  *
- * The reasoning is not a branch and is drawn: a requirement with the checks and plan tasks that
- * serve it, a check with its results, a decision with what it settled. That is what the page is
- * for, so it is on screen without a reader opening anything, down to the three drawn levels.
+ * The frontier is the path to the nodes `unanswered` names, and that function says, kind by
+ * kind, what "open and unanswered" is for a node of that kind and why. An open node's own
+ * branch is not unfolded by it: the frontier is the path *to* it, so what it holds is a set
+ * the reader opens, as every other branch is.
  *
- * Three levels are drawn. A branch deeper than that folds to one row saying how many nodes it
- * holds, which opens them in place; the frontier outranks that, since R6 unfolds a question's
- * path whatever the fold says.
+ * ## What the depth still decides
+ *
+ * `DRAWN_LEVELS` no longer decides what is drawn: it decides how far one opening reaches. A
+ * branch the reader opens below the third level draws one row saying how many nodes it holds
+ * rather than the nodes themselves, which they open in place (`DeeperRow`, `OpenedBranches`'s
+ * `deeper`), so one gesture deep in the tree cannot flood the page. The frontier outranks it:
+ * a path to something open is drawn to its end whatever the depth (R6).
  */
 
-/** How many levels of the tree are drawn before a deeper branch folds to one row. */
+/** How deep a branch may sit and still draw its nodes when it is opened: below this, one
+ *  opening draws one row with a count instead, which the reader opens in place. */
 export const DRAWN_LEVELS = 3;
-
-/** The node kinds whose contents are a set the reader opens rather than the reasoning: these
- *  fold to one row with a count, and everything else is drawn. */
-const FOLDED_KINDS: readonly string[] = ["child_issue", "comment", "document", "image", "message"];
 
 /** What the reader has done to the fold by hand: the branches they unfolded, the branches they
  *  folded shut, and the deeper branches they opened in place. */
 export interface OpenedBranches {
   /** The nodes whose children the reader unfolded. */
   readonly branches: ReadonlySet<string>;
-  /** The nodes whose children the reader folded shut. A branch the fold draws of its own
-   *  accord - the reasoning, and the path to an open question - is drawn until the reader
-   *  closes it, and this is what says they did: without it a reader could open a branch and
-   *  never close it again, and the Fold control on it would do nothing. */
+  /** The nodes whose children the reader folded shut. A branch the frontier draws of its own
+   *  accord - the path to what is open and unanswered - is drawn until the reader closes it,
+   *  and this is what says they did: without it a reader could open a branch and never close
+   *  it again, and the Fold control on it would do nothing. */
   readonly closed: ReadonlySet<string>;
   /** The nodes whose branch below `DRAWN_LEVELS` the reader opened in place. */
   readonly deeper: ReadonlySet<string>;
@@ -90,15 +91,77 @@ export const NOTHING_OPENED: OpenedBranches = {
 };
 
 /**
- * The ids of every node above an open question that waits on the reader: the path the fold
- * unfolds whatever its depth. The questions themselves are not in it - a question's own branch
- * is folded like any other - so a question that holds a deeper question is in it, as that one's
- * ancestor.
+ * Whether the node is itself open and unanswered, which is what the frontier is the path to
+ * (R1). One answer per kind the tree draws, because "open" is a different fact in each, and
+ * each is named here with the reason the issue's readers wait on it.
+ */
+function unanswered(node: TreeNode): boolean {
+  switch (node.type) {
+    // A question nobody has answered. `question` is the ask's own `state === "open"`
+    // (`tree-drafts.ts`'s `addAsks`), and an ask that was answered, declined or withdrawn
+    // asks the reader nothing.
+    case "ask":
+      return node.question;
+    // A check that has not passed: failed, out of date, not judged, or with no result at
+    // all (`NODE_STATE_WORDS.check`). Each of the four leaves the work it covers unproved,
+    // which is what the reader came to see; only `passed` says the issue need not look.
+    case "check":
+      return node.state !== "passed";
+    // A decision that waits for the reader's review: Keep and Change are drawn on exactly
+    // these (`DecisionActions.tsx`), so it is the one kind of decision the issue is waiting
+    // on an answer to. A decision a person made, one the reader kept and one a later
+    // decision replaced are all settled.
+    case "decision":
+      return node.waiting;
+    // A plan task, always: Dispatch records no completion for a `plan_task` block at all -
+    // the block declares `serves` and `needs` and nothing else
+    // (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`), and the issue's own
+    // `tasks_done` counts the checked task items of its primary document
+    // (`packages/envoy/internal/dispatch/docs/task_progress.go`), which name no block - so
+    // no plan task can be read as done, and a plan the page folded away would hide every
+    // step of the work nobody has recorded finishing. The day the model holds a task's own
+    // state, this reads it, and a finished plan folds itself.
+    case "plan_task":
+      return true;
+    // A requirement the issue cannot yet show it meets: the coverage read counts no check
+    // serving it, so nothing proves it. A requirement whose checks have not all passed needs
+    // no rule of its own - each of those checks is open itself and sits under it, so the
+    // path to that check runs through the requirement and opens its branch down to the check
+    // that is not passing. A requirement the coverage read does not hold at all - a
+    // `requirement` block of a document that is not this issue's spec - carries no counts,
+    // and the page knows nothing about what proves it, so it says nothing either.
+    case "requirement":
+      return node.counts !== undefined && node.counts.checks === 0;
+    // Nothing else holds an answer of its own for the reader to wait on. A note, a document
+    // and an image are what somebody wrote; a child issue is read and answered on its own
+    // page, and the children section is where a reader waits on one (R10); a comment, a
+    // message and a handoff are what somebody said, and what is unanswered in a conversation
+    // is the ask inside it, which puts its turn on the frontier as that ask's ancestor; a
+    // result is a record of what a run saw, and its check carries the verdict; and the issue
+    // itself is the root, which is drawn whatever this says.
+    case "callout":
+    case "child_issue":
+    case "comment":
+    case "document":
+    case "handoff":
+    case "image":
+    case "issue":
+    case "message":
+    case "result":
+      return false;
+  }
+}
+
+/**
+ * The ids of every node above something open and unanswered (`unanswered`): the path the fold
+ * unfolds whatever its depth. The open nodes themselves are not in it - what one holds is a
+ * set the reader opens, like any other branch - so an open node that holds a deeper open one
+ * is in it, as that one's ancestor.
  */
 export function frontier(root: TreeNode): ReadonlySet<string> {
   const path = new Set<string>();
   const walk = (node: TreeNode, above: readonly string[]): void => {
-    if (node.question) {
+    if (unanswered(node)) {
       for (const id of above) path.add(id);
     }
     for (const child of node.children) walk(child, [...above, node.id]);
@@ -109,10 +172,10 @@ export function frontier(root: TreeNode): ReadonlySet<string> {
 
 /**
  * Every row the tree draws over `root`, in reading order. The root is always unfolded, because
- * an issue drawn as one folded row would say nothing at all; a branch below it is unfolded when
- * the frontier runs through it, when the reader opened it, or when it is the reasoning rather
- * than a set the reader opens - and folded shut, whichever of those holds, once the reader has
- * folded it by hand, because a branch a reader cannot close is a branch they cannot read past.
+ * an issue drawn as one folded row would say nothing at all; a branch below it is unfolded
+ * when the frontier runs through it or when the reader opened it, and nothing else - and
+ * folded shut, whichever of those holds, once the reader has folded it by hand, because a
+ * branch a reader cannot close is a branch they cannot read past.
  *
  * `above` is the path down to `root` itself, outermost first: the ids a reader who zoomed into
  * it left above the tree (`IssueTree.tsx`). It seeds the trails, so every row is keyed by its
@@ -128,20 +191,21 @@ export function treeRows(
   const rows: DrawnRow[] = [];
   const walk = (node: TreeNode, level: number, trail: readonly string[]): void => {
     const holds = node.children.length > 0;
-    // A replaced decision's branch folds to the one line that settled it and opens by key: the
-    // frontier does not open it, and nothing deletes it (R1).
-    const foldsShut = node.replaced || FOLDED_KINDS.includes(node.type);
-    // The reasoning is drawn and a set the reader opens is folded; how deep the drawn levels
-    // reach is the rule below, not this one. The reader's own hand outranks both: what they
-    // folded stays shut until they open it again.
+    // Every branch arrives folded, and the frontier is what opens one: the path to what is
+    // open and unanswered, drawn to its end whatever its depth. A replaced decision's branch
+    // folds to the one line that settled it even there - the frontier does not open it, and
+    // nothing deletes it (R1). The reader's own hand outranks both: what they folded stays
+    // shut until they open it again, and what they opened stays open.
     const unfolded =
       level === 1 ||
       (holds &&
         !opened.closed.has(node.id) &&
-        (opened.branches.has(node.id) || (!node.replaced && path.has(node.id)) || !foldsShut));
-    // Past the drawn levels the branch is one row of its own, unless the reader opened it in
-    // place or the frontier runs through it. Either way the node's children are drawn as no
-    // row of theirs, so the row says how many it holds.
+        (opened.branches.has(node.id) || (!node.replaced && path.has(node.id))));
+    // How far one opening reaches: a branch opened below the drawn levels draws one row of
+    // its own rather than its nodes, which the reader opens in place, so one gesture deep in
+    // the tree cannot flood the page. The frontier outranks it, since a path to something
+    // open is drawn to its end. Either way the node's children are drawn as no row of
+    // theirs, so the row says how many it holds.
     const toOneLine =
       unfolded &&
       holds &&
@@ -198,6 +262,11 @@ interface ZoomedRow {
  * it, at the same one level, so that question is on the first screen with nothing unfolded by
  * hand even while the tree is on the issue itself (R6). The branches those nodes hold besides
  * the trail are a zoom away, because a screen that is one trail deep is still one screen.
+ *
+ * That trail is the open question's alone, and not the whole frontier `treeRows` unfolds: a
+ * phone has one screen, and a trail per failing check and undone plan task would fill it with
+ * paths rather than with the one thing R6 puts there. Everything else the frontier reaches is
+ * a zoom away, as every other branch is.
  */
 export function zoomedRows(
   root: TreeNode,

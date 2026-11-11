@@ -1,4 +1,5 @@
 import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue/page-words";
+import { DRAWN_LEVELS } from "../web/src/features/issue/tree-fold";
 import { createAsk, createIssue, createProject, getArtifact, getIssue } from "./api";
 import { barAction, selectEditorText, selectTextIn } from "./editor";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
@@ -568,11 +569,17 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
     expect(await focusedRow(page), "Home did not reach the first visible row").toBe(order[0]);
 
     // The right arrow unfolds the focused node and then moves into its first child; the left
-    // arrow moves back to the parent and then folds it.
-    const folded = (await drawnRows(page)).find((row) => row.expanded === "false");
+    // arrow moves back to the parent and then folds it. The branch is one above the drawn
+    // levels, because that is where unfolding draws the children as rows of their own: a
+    // branch below them folds to one line the open-deeper key is for (`tree-fold.ts`), which
+    // is no child row for an arrow to move into. The page opens folded to the frontier, so
+    // there are plenty either way.
+    const folded = (await drawnRows(page)).find(
+      (row) => row.expanded === "false" && Number(row.level) < DRAWN_LEVELS
+    );
     expect(
       folded,
-      "no branch of the tree is folded, so the arrows have nothing to unfold"
+      "no branch above the drawn levels is folded, so the arrows have nothing to unfold"
     ).toBeDefined();
     const branch = folded?.id ?? "";
     await nodeRow(page, branch).first().focus();

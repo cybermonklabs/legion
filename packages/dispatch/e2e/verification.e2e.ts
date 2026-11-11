@@ -21,6 +21,7 @@ import {
   nodeRow,
   rowBody,
   rowsOfType,
+  unfoldEveryBranch,
   visibleText,
 } from "./issue-page";
 import { expect, type Page, test } from "./test";
@@ -95,10 +96,13 @@ async function factsIn(page: Page, id: string): Promise<DrawnFact[]> {
   return await factsOf(rowBody(row));
 }
 
-/** Opens every branch the fold left as one row, which is where a check's results sit: a check
- *  is the third drawn level under the issue, so the results under it fold to a row that says
- *  how many they are until a reader opens them (R1). */
+/** Opens every branch the fold left shut and then every branch it left as one row, which is
+ *  where a check's results sit: the page opens folded to the frontier (R1), so a check's own
+ *  branch is shut until a reader opens it, and a check is the third drawn level under the
+ *  issue, so what it holds then folds to a row saying how many they are until the reader opens
+ *  that too. */
 async function openResults(page: Page): Promise<void> {
+  await unfoldEveryBranch(page);
   for (let opened = 0; opened < 8 && (await branchMoreRows(page).count()) > 0; opened += 1) {
     await branchMoreRows(page).first().getByRole("button").first().click();
   }
@@ -156,6 +160,10 @@ A check nobody has run yet reads no result.
   try {
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${issue.key}/verification`);
+    // The page opens folded to the frontier (R1): a requirement whose every check has passed
+    // holds nothing open, so the check under it is a twisty away. The reader opens what the
+    // fold shut, and the preset then draws every check of the document.
+    await unfoldEveryBranch(page);
 
     // Every check of the document, each drawn once, with the state the newest result gives it.
     await expect(rowsOfType(page, "check")).toHaveCount(3);
@@ -286,6 +294,8 @@ A result at the head reads passed.
   try {
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${issue.key}/verification`);
+    // The check that passed at the head is behind the fold, as the row above this one says.
+    await unfoldEveryBranch(page);
     const checks = (await drawnRows(page)).filter((row) => row.type === "check");
     const older = checks.find((row) => row.id === blockNodeId(verification, "c-older"));
     expect(older?.state).toBe("older");

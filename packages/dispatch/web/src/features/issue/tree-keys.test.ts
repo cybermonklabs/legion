@@ -125,8 +125,13 @@ test("a node drawn under two requirements gives every row below it a key of its 
   expect(new Set(open).size).toBe(open.length);
   expect(open).toContain("CORE-1>spec#b-r1>verification-md#b-c1>res1");
   expect(open).toContain("CORE-1>spec#b-r2>verification-md#b-c1>res1");
-  // Folded as the page opens, each copy's branch below the drawn levels is its own row too.
-  const folded = treeRows(root).map(rowKeyOf);
+  // Nothing under either copy is open, so each arrives folded; opened by the reader, each
+  // copy's branch below the drawn levels is its own row too.
+  const folded = treeRows(root, {
+    branches: new Set(["spec#b-r1", "spec#b-r2", "verification-md#b-c1"]),
+    closed: new Set(),
+    deeper: new Set(),
+  }).map(rowKeyOf);
   expect(new Set(folded).size).toBe(folded.length);
   expect(folded.filter((key) => key.startsWith("deeper:"))).toEqual([
     "deeper:CORE-1>spec#b-r1>verification-md#b-c1",

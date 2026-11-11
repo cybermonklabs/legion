@@ -105,6 +105,11 @@ import { navigateInApp } from "./sends";
  *   beside its two counts. c-children.
  * - **A `role="status"` of the page's own** for what a key reports when it has nowhere to go,
  *   such as the next-question key with no further question. c-open-questions, c-keyboard.
+ * - **A row's own twisty**, a `button` named `CONTROL_LABELS.fold` while its branch is drawn
+ *   and `CONTROL_LABELS.unfold` while it is folded, drawn on every row that holds children:
+ *   the page opens folded to the frontier (R1), so this is how a reader opens a branch the
+ *   fold left shut, and `unfoldEveryBranch` is a check doing it. c-tree, c-checks-readable,
+ *   c-nodes, c-nothing-lost.
  *
  * ## How a test reads the page
  *
@@ -954,6 +959,38 @@ export async function gotoIssue(page: Page, path: string): Promise<void> {
 /** Opens `preset` on `key` at its own address. */
 export async function openPreset(page: Page, key: string, preset: Preset): Promise<void> {
   await gotoIssue(page, presetAddress(key, preset));
+}
+
+/** How many branches `unfoldEveryBranch` will open before it gives up: well past the branches
+ *  any seeded issue holds, so the bound costs a settled tree nothing and a tree that draws a
+ *  closed twisty whatever is pressed ends as the caller's own failed reading rather than as
+ *  this helper running until the test's deadline. */
+const BRANCHES_OPENED_AT_MOST = 200;
+
+/**
+ * Opens every branch the fold left shut, which is what a reader does to read past one: the page
+ * opens folded to the frontier (R1, `web/src/features/issue/tree-fold.ts`), so a check that
+ * reads what a branch holds presses its twisty rather than asserting that the first drawing
+ * carried it. The reader's own opening outranks the fold, so what this opens stays open.
+ *
+ * It presses the first closed twisty on the page and reads the tree again, because opening one
+ * branch draws the rows - and the twisties - under it, and it stops when none is left.
+ *
+ * Only at a width that draws the whole tree: at 1024 px and below a row's twisty zooms into
+ * that row instead of unfolding it in place (`IssueTree.tsx`), which is a move of its own.
+ */
+export async function unfoldEveryBranch(page: Page): Promise<void> {
+  for (let opened = 0; opened < BRANCHES_OPENED_AT_MOST; opened += 1) {
+    const twisty = nodeRows(page)
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
+      .first();
+    if ((await twisty.count()) === 0) return;
+    await twisty.click();
+  }
+  expect(
+    await nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).count(),
+    `the tree still draws a folded branch after ${BRANCHES_OPENED_AT_MOST} openings`
+  ).toBe(0);
 }
 
 /** Opens one of the addresses the old tabs answered, from wherever the page is on that issue:

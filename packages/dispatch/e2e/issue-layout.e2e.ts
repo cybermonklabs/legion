@@ -138,6 +138,7 @@ import {
   tree,
   treeText,
   undividedTexts,
+  unfoldEveryBranch,
   uploadInput,
   versionPicker,
 } from "./issue-page";
@@ -1521,6 +1522,12 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
         PRESET_NAMES.checks
       );
       await expectIssuePageDrawn(page);
+      // The page opens folded to the frontier (R1), so a requirement whose every check has
+      // passed arrives folded with the rest: at a width that draws the whole tree the reader
+      // opens what the fold shut, which is what a reader reading the checks does. At 1024 px
+      // and below the tree is zoomed one node at a time and draws every check the preset kept
+      // under the issue already (`zoomedRows`), where a twisty zooms instead of unfolding.
+      if (width > 1024) await unfoldEveryBranch(page);
 
       const checks = await rowsOfType(page, "check").count();
       expect(checks, `the Checks preset draws ${checks} checks, not the six seeded`).toBe(6);
@@ -1541,9 +1548,14 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
       ).toEqual([]);
     }
 
-    // A command renders as code with a copy control, and `when` reads as words.
+    // A command renders as code with a copy control, and `when` reads as words. The check
+    // that passed is one the frontier leaves folded away, so the reader opens the branches
+    // again on this load: every one of the six is then a row, which the five states below
+    // are read from too.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await openPreset(page, seeded.key, "checks");
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
     const passed = nodeRow(page, blockNodeId(verificationSlug, checkBlockId(1))).first();
     await passed.focus();
     expect(await nodeCommands(page).count(), "the check's command is not drawn as code").toBe(1);
@@ -1692,14 +1704,18 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
 test("documents are nodes and nothing is a file list", async ({ browser }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    // Nothing under the citing requirement is open, so its branch - the document it cites -
+    // arrives folded with the rest (R1): the reader opens what the fold shut, which is the
+    // twisty the folded row draws, and the document is a node under that block there.
+    await unfoldEveryBranch(page);
 
     // The cited document is a node under the block that cites it, and opens from there.
     expect(
       await parentOfRow(page, seeded.documents.cited),
       "the cited document does not sit under the block that cites it"
     ).toBe(blockNodeId(specSlug, seeded.documents.citingBlock));
-    await expectIssuePageDrawn(page);
     const cited = nodeRow(page, seeded.documents.cited).first();
     await cited.focus();
     // The read is the node's own, made when the body opens: the page reads no document's text
@@ -2085,9 +2101,15 @@ test("the new page carries every element of the old one @phone", async ({ browse
       // text, its facts and its controls are in that body (R2). The walk loads the page once
       // and then moves through the rows, which is how a reader moves through them: each view is
       // still read, and still fitted, on its own.
+      //
+      // At a width that draws the whole tree the walk opens the branches the page opened
+      // folded first (R1): a node behind a fold - the document a requirement cites - is a
+      // twisty away for a reader, and a walk that never pressed one would read it as lost. At
+      // 1024 px and below a twisty zooms instead, which the zoom walk below does.
       ...Array.from({ length: walkDepth }, (_unused, index) => async () => {
         if (index === 0) {
           await gotoIssue(page, `/issues/${seeded.key}`);
+          if (width > 1024) await unfoldEveryBranch(page);
           const first = nodeRows(page);
           if ((await first.count()) > 0) await first.first().focus();
           return true;
@@ -2135,7 +2157,15 @@ test("the new page carries every element of the old one @phone", async ({ browse
                 // still opened on a page of its own, because a zoom is left by loading the
                 // issue again.
                 if (into === 0) {
+                  // Read off a page that has stopped reading: the tree is drawn empty and
+                  // fills as the reads land (`expectLoadSettled`), so a set taken the moment
+                  // the navigation returns holds the twisties of a half-filled tree, and a
+                  // row missed here is a node this state never zooms into. Measured on a
+                  // loaded box at 390 px: the cited document's own copy control read as lost
+                  // on the attempt and was found on the retry.
+                  const settling = watchApiRequests(page);
                   await gotoIssue(page, `/issues/${seeded.key}`);
+                  await expectLoadSettled(settling);
                   zoomsInto.clear();
                   const rows = nodeRows(page);
                   const drawn = Math.min(await rows.count(), walkDepth);

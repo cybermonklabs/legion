@@ -102,48 +102,186 @@ test("a question's rows are not counted against the fold", () => {
   expect(after.length).toBeLessThan(before.length);
 });
 
-test("the reasoning under a requirement is drawn without the reader opening anything", () => {
-  const root = node("CORE-1", "issue", [
-    node("spec#b-r1", "requirement", [
-      node("verification-md#b-c1", "check", [], { state: "passed" }),
-    ]),
-  ]);
-  const rows = treeRows(root);
-  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-r1", "verification-md#b-c1"]);
+/** A requirement with one check that passed and nothing else: a branch holding nothing open. */
+function proved(id: string): TreeNode {
+  return node(id, "requirement", [node(`${id}-check`, "check", [], { state: "passed" })], {
+    counts: { checks: 1, planTasks: 0 },
+  });
+}
+
+test("a branch that holds nothing open arrives folded, with a count of what it holds", () => {
+  const rows = treeRows(node("CORE-1", "issue", [proved("spec#b-r1")]));
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-r1"]);
+  const branch = rowOf(rows, "spec#b-r1");
+  expect(branch?.kind === "node" ? branch.expanded : undefined).toBe(false);
+  expect(branch?.kind === "node" ? branch.folded : undefined).toBe(1);
 });
 
-test("a branch below the drawn levels is one row saying how many nodes it holds", () => {
-  const deep = node("CORE-1", "issue", [
-    node("spec#b-r1", "requirement", [
-      node("verification-md#b-c1", "check", [
-        node("result-1", "result"),
-        node("result-2", "result"),
-      ]),
-    ]),
+test("the path to an open question arrives unfolded and nothing beside it does", () => {
+  const rows = treeRows(
+    node("CORE-1", "issue", [
+      node("spec", "document", [node("spec#b-q1", "ask", [], { question: true, state: "open" })]),
+      proved("spec#b-r1"),
+    ])
+  );
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec", "spec#b-q1", "spec#b-r1"]);
+  const above = rowOf(rows, "spec");
+  expect(above?.kind === "node" ? above.expanded : undefined).toBe(true);
+});
+
+// One row per kind the frontier holds (`unanswered`), each read against the same kind settled.
+
+test("an open question is open and an answered one is not", () => {
+  const rows = treeRows(
+    node("CORE-1", "issue", [
+      node("asked", "document", [node("asked#b-q", "ask", [], { question: true, state: "open" })]),
+      node("answered", "document", [node("answered#b-q", "ask", [], { state: "answered" })]),
+    ])
+  );
+  expect(idsOf(rows)).toEqual(["CORE-1", "asked", "asked#b-q", "answered"]);
+  const settled = rowOf(rows, "answered");
+  expect(settled?.kind === "node" ? settled.folded : undefined).toBe(1);
+});
+
+test("a check that has not passed is open and a passed one is not", () => {
+  for (const state of ["failed", "no-result", "older", "unmarked"] as const) {
+    const rows = treeRows(
+      node("CORE-1", "issue", [
+        node("spec#b-r1", "requirement", [node("v#b-c1", "check", [], { state })], {
+          counts: { checks: 1, planTasks: 0 },
+        }),
+      ])
+    );
+    expect(idsOf(rows), `a ${state} check is drawn nowhere`).toEqual([
+      "CORE-1",
+      "spec#b-r1",
+      "v#b-c1",
+    ]);
+  }
+  expect(idsOf(treeRows(node("CORE-1", "issue", [proved("spec#b-r1")])))).toEqual([
+    "CORE-1",
+    "spec#b-r1",
   ]);
+});
+
+// A decision sits under the question it settles the day the model holds that edge
+// (`tree-drafts.ts`'s `addDecisions`); wherever it is drawn, what opens the path to it is its
+// waiting for the reader's review.
+test("a decision waiting for the reader's review is open and a settled one is not", () => {
+  const rows = treeRows(
+    node("CORE-1", "issue", [
+      node(
+        "spec#b-q1",
+        "ask",
+        [node("decisions-md#b-d1", "decision", [], { state: "waiting_review", waiting: true })],
+        { state: "answered" }
+      ),
+      node("spec#b-q2", "ask", [node("decisions-md#b-d2", "decision", [], { state: "yours" })], {
+        state: "answered",
+      }),
+    ])
+  );
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-q1", "decisions-md#b-d1", "spec#b-q2"]);
+  const settled = rowOf(rows, "spec#b-q2");
+  expect(settled?.kind === "node" ? settled.folded : undefined).toBe(1);
+});
+
+// Dispatch records no completion for a plan task, so none can be read as done and the path to
+// every one of them is drawn (`unanswered`).
+test("a plan task is open while nothing records it done", () => {
+  const rows = treeRows(
+    node("CORE-1", "issue", [
+      node(
+        "spec#b-r1",
+        "requirement",
+        [node("plan-md#b-t1", "plan_task"), node("v#b-c1", "check", [], { state: "passed" })],
+        { counts: { checks: 1, planTasks: 1 } }
+      ),
+      proved("spec#b-r2"),
+    ])
+  );
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-r1", "plan-md#b-t1", "v#b-c1", "spec#b-r2"]);
+});
+
+test("a requirement no check serves is open, and one outside the coverage read is not", () => {
+  const rows = treeRows(
+    node("CORE-1", "issue", [
+      node("spec", "document", [
+        node("spec#b-r1", "requirement", [], { counts: { checks: 0, planTasks: 0 } }),
+      ]),
+      node("branch", "document", [node("branch#b-r1", "requirement")]),
+    ])
+  );
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec", "spec#b-r1", "branch"]);
+  const outside = rowOf(rows, "branch");
+  expect(outside?.kind === "node" ? outside.folded : undefined).toBe(1);
+});
+
+test("a branch the reader opens below the drawn levels is one row saying how many it holds", () => {
+  const deep = node("CORE-1", "issue", [
+    node(
+      "spec#b-r1",
+      "requirement",
+      [
+        node(
+          "verification-md#b-c1",
+          "check",
+          [node("result-1", "result"), node("result-2", "result")],
+          { state: "failed" }
+        ),
+      ],
+      { counts: { checks: 1, planTasks: 0 } }
+    ),
+  ]);
+  // The check is on the frontier's path and drawn; what it holds is a set the reader opens,
+  // and the row says how many nodes that is.
   const rows = treeRows(deep);
-  expect(idsOf(rows)).toEqual([
+  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-r1", "verification-md#b-c1"]);
+  expect(rowOf(rows, "verification-md#b-c1")).toMatchObject({ expanded: false, folded: 2 });
+  // Opened by the reader at the third level, the branch is one row saying how many nodes it
+  // holds rather than the nodes themselves.
+  const opened = treeRows(deep, {
+    branches: new Set(["verification-md#b-c1"]),
+    closed: new Set(),
+    deeper: new Set(),
+  });
+  expect(idsOf(opened)).toEqual([
     "CORE-1",
     "spec#b-r1",
     "verification-md#b-c1",
     "more:verification-md#b-c1",
   ]);
-  const more = rows.at(-1);
+  const more = opened.at(-1);
   expect(more?.kind === "deeper" ? more.held : 0).toBe(2);
   expect(more?.kind === "deeper" ? more.level : 0).toBe(DRAWN_LEVELS + 1);
   // The row above it says how many nodes it holds that no row of their own draws, as a row
   // whose own twisty is closed does: a reader of the tree pattern - c-keyboard's among them -
   // takes a row carrying `aria-expanded` to hold children, and these are drawn as one line.
-  const branch = rowOf(rows, "verification-md#b-c1");
+  const branch = rowOf(opened, "verification-md#b-c1");
   expect(branch?.kind === "node" ? branch.folded : undefined).toBe(2);
   expect(branch?.kind === "node" ? branch.expanded : undefined).toBe(true);
   // Opened in place, the branch is drawn where it stands.
-  const opened = treeRows(deep, {
-    branches: new Set(),
+  const inPlace = treeRows(deep, {
+    branches: new Set(["verification-md#b-c1"]),
     closed: new Set(),
     deeper: new Set(["verification-md#b-c1"]),
   });
-  expect(idsOf(opened)).toContain("result-2");
+  expect(idsOf(inPlace)).toContain("result-2");
+});
+
+// R1: the reader's own hand outranks the frontier both ways. This is the open; the fold is the
+// row below.
+test("a branch the reader opens stays open though nothing in it is open", () => {
+  const root = node("CORE-1", "issue", [proved("spec#b-r1")]);
+  expect(idsOf(treeRows(root))).toEqual(["CORE-1", "spec#b-r1"]);
+  const opened = treeRows(root, {
+    branches: new Set(["spec#b-r1"]),
+    closed: new Set(),
+    deeper: new Set(),
+  });
+  expect(idsOf(opened)).toEqual(["CORE-1", "spec#b-r1", "spec#b-r1-check"]);
+  const branch = rowOf(opened, "spec#b-r1");
+  expect(branch?.kind === "node" ? branch.expanded : undefined).toBe(true);
 });
 
 test("a replaced decision folds to one line with a count, and is not deleted", () => {
