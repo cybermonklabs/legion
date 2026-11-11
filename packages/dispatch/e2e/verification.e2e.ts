@@ -6,18 +6,19 @@ import {
   createProject,
   putRepoProject,
   recordCheckResult,
+  retractCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-// A result's currency is judged against the head of the pull request Dispatch holds for the
-// check's issue. The browser harness runs with NATS disabled, so no `pull_request` envelope can
-// reach the server to teach it that head; the record route's own read-through does it instead
+// A result is compared with the head of the pull request Dispatch holds for the check's
+// issue. The browser harness runs with NATS disabled, so no `pull_request` envelope can reach
+// the server to teach it that head; the record route's own read-through does it instead
 // (`readThroughPullRequests`), asking the fake GitHub which pull requests name the result's
 // commit and storing that pull request's head. Re-seeding the fake with a later head and
-// recording another result moves the head exactly as a push does, which is how the row below
-// ages a result that is no longer at it.
+// recording another result moves the head exactly as a push does, which is how a row below
+// leaves a result behind at a commit the head has moved past.
 const repository = "acme/widgets";
 const firstHead = "1".repeat(40);
 const secondHead = "2".repeat(40);
@@ -29,7 +30,7 @@ Every check of the Verification document is listed.
 :::
 
 :::requirement{#r2}
-A check says how its newest result stands.
+A check says whether a pass of it stands.
 :::
 `;
 
@@ -73,7 +74,7 @@ The tab lists every check of the document.
 :::
 
 :::check{#c-failed serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record no result and the check reads no result."}
-A check whose newest result failed reads failed.
+A check whose one result failed holds no pass that stands.
 :::
 
 :::check{#c-none serves="dispatch://${issue.key}/spec#b-r2" surface="api" run="curl the results route" negative_control="Record a result and the check stops reading no result."}
@@ -113,42 +114,49 @@ A check nobody has run yet reads no result.
     // Every check of the document, in document order, whatever anyone has recorded against it.
     const checks = page.getByTestId("verification-check");
     await expect(checks).toHaveCount(3);
-    await expect(checks.getByTestId("verification-check-state")).toHaveText([
-      "Passed",
-      "Failed",
-      "No result",
+    await expect(checks.getByTestId("verification-check-pass-stands")).toHaveText([
+      "A pass stands",
+      "No pass stands",
+      "No pass stands",
     ]);
 
-    // The result recorded through the API sits under its own check, and the check reads passed.
+    // The result recorded through the API sits under its own check, and a pass of that check
+    // stands, from the role that recorded it.
     const passed = checks.filter({ hasText: "The tab lists every check of the document." });
-    await expect(passed).toHaveAttribute("data-check-state", "passed");
+    await expect(passed).toHaveAttribute("data-pass-stands", "yes");
+    await expect(passed.getByTestId("verification-check-roles")).toHaveText("from tester");
     await expect(passed.getByTestId("verification-check-when")).toHaveText("before_merge");
     await expect(passed.getByTestId("verification-check-surface")).toHaveText("browser");
     const result = passed.getByTestId("verification-result");
     await expect(result).toHaveCount(1);
     await expect(result.getByTestId("verification-result-verdict")).toHaveText("Pass");
-    // The commit the result ran at is the pull request's head, so the result still stands.
-    await expect(result.getByTestId("verification-result-currency")).toHaveText("Current");
+    // The commit the result ran at is the pull request's head, which is what the check
+    // compared with, and the page prints that commit whole.
+    await expect(result.getByTestId("verification-result-commit-stands")).toContainText(
+      `At the head of pull request 7 ${secondHead}`
+    );
+    await expect(result.getByTestId("verification-result-check-words")).toHaveText(
+      /^This check's words \(version \d+\)$/
+    );
     await expect(result.getByTestId("verification-result-role")).toHaveText("tester");
     await expect(result.getByTestId("verification-result-surface")).toHaveText("browser");
     await expect(result.getByTestId("verification-result-observed")).toHaveText("3 checks listed");
-    await expect(result.getByTestId("verification-result-commit")).toHaveText(
-      secondHead.slice(0, 12)
-    );
+    await expect(result.getByTestId("verification-result-commit")).toHaveText(secondHead);
     await expect(result.getByTestId("verification-result-negative-control")).toHaveText(
       "Removed the list and the run failed."
     );
     await expect(result.getByTestId("verification-result-failed")).toHaveText("0");
 
-    // A check whose newest result failed reads failed, and counts what that run counted.
-    const failed = checks.filter({ hasText: "A check whose newest result failed reads failed." });
-    await expect(failed).toHaveAttribute("data-check-state", "failed");
+    // A check that holds one fail answers that no pass of it stands, and counts what that run
+    // counted.
+    const failed = checks.filter({ hasText: "A check whose one result failed holds no pass" });
+    await expect(failed).toHaveAttribute("data-pass-stands", "no");
     await expect(failed.getByTestId("verification-result-verdict")).toHaveText("Fail");
     await expect(failed.getByTestId("verification-result-failed")).toHaveText("2");
 
     // A check nobody has run says so instead of showing an empty list.
     const none = checks.filter({ hasText: "A check nobody has run yet reads no result." });
-    await expect(none).toHaveAttribute("data-check-state", "no-result");
+    await expect(none).toHaveAttribute("data-pass-stands", "no");
     await expect(none.getByTestId("verification-check-no-results")).toHaveText(
       "No result recorded against this check."
     );
@@ -162,31 +170,33 @@ A check nobody has run yet reads no result.
 // SLOW(>=2s): 1.9 s here, over the bar on the four-lane report this rule is read against, and
 // this pod puts it over in a third of runs. Two results recorded against the document's two
 // checks, each one's record route reading through to the fake GitHub for the pull request's
-// head, with the fake re-seeded between them so the first result ages; then one load of the
-// Verification tab. Most of it is the floor every row of these files pays, measured on this
-// row: a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle a fresh
-// context cannot cache (0.40 s) and the dashboard's own fifteen boot reads before the first
-// check draws (0.80 s). The row's own seven assertions are 0.26 s of it. INFRA-1109 holds that
-// floor; nothing in the row is removable.
-test("a result at a commit the pull request has moved past reads older", async ({ browser }) => {
-  const issue = await seedIssue("Verification currency", firstHead);
+// head, with the fake re-seeded between them so the first result is left behind; then one
+// load of the Verification tab. Most of it is the floor every row of these files pays,
+// measured on this row: a fresh Chromium context (0.25 s), the cold parse of the dashboard
+// bundle a fresh context cannot cache (0.40 s) and the dashboard's own fifteen boot reads
+// before the first check draws (0.80 s). The row's own seven assertions are 0.26 s of it.
+// INFRA-1109 holds that floor; nothing in the row is removable.
+test("a result the pull request has moved past stands at no commit the check compared with", async ({
+  browser,
+}) => {
+  const issue = await seedIssue("Verification comparison", firstHead);
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
 
-:::check{#c-older serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Keep the head and the result stays current."}
-A result the head has moved past reads older.
+:::check{#c-past serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Keep the head and the result stands at it."}
+A result the head has moved past stands at another commit.
 :::
 
-:::check{#c-head serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Move the head again and this one ages too."}
-A result at the head reads passed.
+:::check{#c-head serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Move the head again and this one is left behind too."}
+A result at the head is a pass that stands.
 :::
 `,
     name: "verification.md",
   });
   // Recorded at the head as it stands, so the read-through stores that head and the result is
-  // current the moment it is written.
+  // at what the check compares with the moment it is written.
   await recordCheckResult(issue.key, {
-    check: "c-older",
+    check: "c-past",
     commit: firstHead,
     observed: "41 passed",
     role: "tester",
@@ -218,20 +228,111 @@ A result at the head reads passed.
     await page.goto(`/issues/${issue.key}/verification`);
     const checks = page.getByTestId("verification-check");
 
-    const older = checks.filter({ hasText: "A result the head has moved past reads older." });
-    await expect(older).toHaveAttribute("data-check-state", "older");
-    await expect(older.getByTestId("verification-check-state")).toHaveText("Older");
-    // The result itself still says it passed; what changed is that it no longer speaks for the
-    // work as it stands.
-    await expect(older.getByTestId("verification-result-verdict")).toHaveText("Pass");
-    await expect(older.getByTestId("verification-result-currency")).toHaveText("Older");
-    await expect(older.getByTestId("verification-result-commit")).toHaveText(
-      firstHead.slice(0, 12)
+    const past = checks.filter({ hasText: "A result the head has moved past" });
+    await expect(past).toHaveAttribute("data-pass-stands", "no");
+    await expect(past.getByTestId("verification-check-pass-stands")).toHaveText("No pass stands");
+    // The result itself still says it passed; what the page says is that its commit is not one
+    // of the commits the check compared with, and the whole commit is there to read.
+    await expect(past.getByTestId("verification-result-verdict")).toHaveText("Pass");
+    await expect(past.getByTestId("verification-result-commit-stands")).toHaveText(
+      "At another commit"
     );
+    await expect(past.getByTestId("verification-result-commit")).toHaveText(firstHead);
 
-    const head = checks.filter({ hasText: "A result at the head reads passed." });
-    await expect(head).toHaveAttribute("data-check-state", "passed");
-    await expect(head.getByTestId("verification-result-currency")).toHaveText("Current");
+    const head = checks.filter({ hasText: "A result at the head is a pass that stands." });
+    await expect(head).toHaveAttribute("data-pass-stands", "yes");
+    await expect(head.getByTestId("verification-check-compared-with")).toContainText(
+      `the head of pull request 7 ${secondHead}`
+    );
+    await expect(head.getByTestId("verification-result-commit-stands")).toContainText(
+      `At the head of pull request 7 ${secondHead}`
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): 2.1 s - a project, its default repository, a pull request in the fake GitHub, a
+// Verification document of two checks, three recorded results and one retraction, each record
+// route reading through to that fake for the pull request's head, before one load of the tab.
+// The floor the row above measures is most of it.
+test("a check is read over every result of it, never over its newest result alone", async ({
+  browser,
+}) => {
+  const issue = await seedIssue("Every result", secondHead);
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.
+
+:::check{#c-both serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record the fail alone and no pass stands."}
+A pass at the head stands under a later fail at the same head.
+:::
+
+:::check{#c-retracted serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Leave the pass alone and it stands."}
+A retracted pass stands for nothing.
+:::
+`,
+    name: "verification.md",
+  });
+  // The tester's pass, then the reviewer's fail at the same commit. The fail is the newest
+  // result of the check, and the tester's pass stands at the head all the same.
+  await recordCheckResult(issue.key, {
+    check: "c-both",
+    commit: secondHead,
+    observed: "41 passed, 0 failed",
+    role: "tester",
+    verdict: "pass",
+  });
+  await recordCheckResult(issue.key, {
+    check: "c-both",
+    commit: secondHead,
+    failed: 1,
+    observed: "40 passed, 1 failed",
+    role: "reviewer",
+    verdict: "fail",
+  });
+  const retract = await recordCheckResult(issue.key, {
+    check: "c-retracted",
+    commit: secondHead,
+    observed: "41 passed",
+    role: "tester",
+    verdict: "pass",
+  });
+  await retractCheckResult(retract.result.id, {
+    reason: "The run was against the wrong branch.",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/verification`);
+    const checks = page.getByTestId("verification-check");
+
+    // Both results are drawn, newest first, each with the reading its role recorded. The
+    // check's own answer is read over both of them: the tester's pass stands at the head, and
+    // the reviewer's later fail takes nothing away from it.
+    const both = checks.filter({ hasText: "A pass at the head stands under a later fail" });
+    await expect(both.getByTestId("verification-result")).toHaveCount(2);
+    await expect(both.getByTestId("verification-result-verdict")).toHaveText(["Fail", "Pass"]);
+    await expect(both.getByTestId("verification-result-role")).toHaveText(["reviewer", "tester"]);
+    await expect(both.getByTestId("verification-result-observed")).toHaveText([
+      "40 passed, 1 failed",
+      "41 passed, 0 failed",
+    ]);
+    await expect(both).toHaveAttribute("data-pass-stands", "yes");
+    await expect(both.getByTestId("verification-check-pass-stands")).toHaveText("A pass stands");
+    await expect(both.getByTestId("verification-check-roles")).toHaveText("from tester");
+
+    // The one pass of the other check is retracted, so no pass of it stands. The result is
+    // neither changed nor hidden: it shows as retracted, with the reason it is wrong.
+    const gone = checks.filter({ hasText: "A retracted pass stands for nothing." });
+    await expect(gone).toHaveAttribute("data-pass-stands", "no");
+    await expect(gone.getByTestId("verification-check-pass-stands")).toHaveText("No pass stands");
+    await expect(gone.getByTestId("verification-result-retracted")).toHaveText("Retracted");
+    await expect(gone.getByTestId("verification-result-retraction")).toContainText(
+      "Retracted: The run was against the wrong branch."
+    );
+    await expect(gone.getByTestId("verification-result-verdict")).toHaveText("Pass");
+    await expect(gone.getByTestId("verification-result-commit")).toHaveText(secondHead);
   } finally {
     await alice.close();
   }
