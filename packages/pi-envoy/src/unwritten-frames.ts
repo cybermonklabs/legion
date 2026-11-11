@@ -82,7 +82,9 @@ interface HeldNotice extends HeldReplayNotice {
 
 /** What `UnwrittenFrames` asks of the extension around it. */
 export interface UnwrittenFramesHost {
-  /** The session this instance serves now: a frame written once it is on another records nothing. */
+  /** The session this instance serves now, which a session event moves: a settled moment hands
+   *  again only what this session was handed, a run's end is done with only its text turns, and
+   *  a notice is held only for it. */
   sessionID(): string;
   /** Whether the host has `id` open, which is the conversation a card handed now reaches: a card
    *  for any other session is handed to nobody (`sendCard`), since the host writes what it is
@@ -97,7 +99,9 @@ export interface UnwrittenFramesHost {
    */
   settled(): boolean;
   /** Records a frame the host wrote in the ledger of `sessionID`, the session it was shown in
-   *  (`ReplayEngine.recordDeliveredFor`). */
+   *  (`ReplayEngine.recordDeliveredFor`). The write binds to that session and records nothing
+   *  once it is not the one this process writes its transcript to, so the caller makes no
+   *  session test of its own. */
   recordDelivered(sessionID: string, identity: DedupeIdentity): Promise<void>;
   /** Hands the host a card (`pi.sendMessage`); a throw means it was not handed. */
   handCard(
@@ -481,13 +485,17 @@ export class UnwrittenFrames {
     }
   }
 
-  // The host wrote what it was handed: the ledger records the frame, so no sweep shows the
-  // stream's copy again, here or after a restart, and its claim settles. Written once the host is
-  // on another session, it is recorded nowhere: that session's own sweep reads its transcript.
+  // The host wrote what it was handed: the ledger records the frame for the session the frame
+  // names, the one it was shown in, so no sweep shows the stream's copy again, here or after a
+  // restart, and its claim settles. No session test belongs here: the write binds to the session
+  // it is handed (`ReplayEngine.recordDeliveredFor`, `bindTo(sessionID, writeSession)` in
+  // `packages/envoy-client/src/replay.ts`), and records nothing, answering false, once that
+  // session is not the one this process writes its transcript to. A test of this instance's own
+  // id would drop the record of a card handed in the window `sendCard` admits one for: the host
+  // has moved, the switch event has not reached this instance, and the card went to the session
+  // the host moved to, whose ledger the record belongs in.
   async #recordWritten(frame: Unwritten): Promise<void> {
-    if (frame.sessionID === this.#host.sessionID()) {
-      await this.#host.recordDelivered(frame.sessionID, frame.identity);
-    }
+    await this.#host.recordDelivered(frame.sessionID, frame.identity);
     frame.claim?.settle();
   }
 

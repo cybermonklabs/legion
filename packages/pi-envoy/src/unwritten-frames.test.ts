@@ -49,12 +49,18 @@ function harness() {
   const dedupe: DeliveryDedupe = createDeliveryDedupe();
   const state = {
     session: "s1",
+    // The host's live id while the host has moved and no session event has told the instance of
+    // it: `session`, the id the instance serves, lags behind until that event. Undefined while
+    // the two are the same.
+    hostSession: undefined as string | undefined,
     settled: true,
     refuseHand: false,
     refuseRecord: false,
     matched: undefined as string | undefined,
   };
-  // Each frame the host recorded, with the session whose ledger it was recorded in.
+  // Each frame the host was asked to record, with the session whose ledger it names. The real
+  // host binds the write to that session (`ReplayEngine.recordDeliveredFor`) and records nothing
+  // once it is not the one this process writes its transcript to.
   const recorded: { session: string; identity: DedupeIdentity }[] = [];
   // The cards handed to nobody, each with the session it was for.
   const notShown: { session: string; identity: DedupeIdentity | undefined }[] = [];
@@ -68,7 +74,7 @@ function harness() {
   const recordFailures: string[] = [];
   const frames = new UnwrittenFrames({
     sessionID: () => state.session,
-    hostIsOn: (id) => id === state.session,
+    hostIsOn: (id) => id === (state.hostSession ?? state.session),
     settled: () => state.settled,
     recordDelivered: async (session, identity) => {
       recorded.push({ session, identity });
@@ -181,7 +187,7 @@ describe("a card handed to the host", () => {
     expect(unkept.became).toEqual(["released"]);
   });
 
-  test("written once the host is on another session settles its claim and records nothing", async () => {
+  test("written once the host is on another session is recorded for the session it was shown in", async () => {
     const { frames, state, recorded, claim, claimState } = harness();
     const frame = dispatchFrame(1);
     frames.sendCard("s1", "card", "card", frame, claim(frame));
@@ -189,7 +195,10 @@ describe("a card handed to the host", () => {
     state.session = "s2";
     await frames.written(writtenCard({ event_id: "event-1" }));
 
-    expect(recorded).toEqual([]);
+    // The card was shown in s1, so s1 is the session its record names. The write binds to that
+    // session (`ReplayEngine.recordDeliveredFor`) and records nothing once the process writes
+    // another session's transcript, which is not read here.
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
     expect(claimState(frame)).toBe("settled");
   });
 
@@ -210,6 +219,25 @@ describe("a card handed to the host", () => {
     state.session = "s2";
     frames.handBackWithdrawn();
     expect(handed).toEqual([]);
+  });
+
+  // The window `hostIsOn` admits a card in: the host moved to s2 and the switch event has not
+  // reached this instance, whose own id still reads s1. A frame that is no Dispatch delivery
+  // names no session, so its card goes to the conversation the host has (`cardSession` in
+  // `../extensions/envoy.ts`) - s2, which is the session it was shown in and the session its
+  // record belongs to. Recorded nowhere, s2's resume shows the stream's copy of it again.
+  test("carded into the session the host moved to is recorded for that session, switch event or not", async () => {
+    const { frames, state, recorded, handed, claim, claimState } = harness();
+    const frame: DedupeIdentity = { event_id: "event-1", dedupe_key: "relay-1", source: "github" };
+    state.hostSession = "s2";
+
+    expect(frames.sendCard("s2", "card", "card", frame, claim(frame))).toBe("queued");
+    expect(handed).toEqual([{ content: "card", deliverAs: "card", identity: frame }]);
+
+    await frames.written(writtenCard({ event_id: "event-1" }));
+
+    expect(recorded).toEqual([{ session: "s2", identity: frame }]);
+    expect(claimState(frame)).toBe("settled");
   });
 });
 

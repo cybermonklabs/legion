@@ -15889,6 +15889,175 @@ console.log(JSON.stringify(args));
       });
     }
 
+    // The same last window, with no session event for the move: the host moves its session
+    // manager first and emits `session_switch` after its resets, so inside the picture load this
+    // instance's own id still reads ses_delivery while the host already writes its transcript to
+    // the conversation it moved to. The comment's card is handed there - one for ses_delivery
+    // would be handed to nobody, the host being on neither - and the host writes it, so the
+    // frame belongs in the ledger of the session it was written to. Recorded nowhere, a resume
+    // of that session sweeps the stream's copy and cards the comment a second time
+    // (dispatch://INFRA-812).
+    test("records a comment's card for the conversation the host moved to with no session event", async () => {
+      const slug = "card-load-comment-no-event";
+      const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
+      const body = `Look:\n\n![shot.png](${address})`;
+      let live = "ses_delivery";
+      const picture = Promise.withResolvers<Response>();
+      const requested = Promise.withResolvers<void>();
+      const routes = pictureRoutes(slug);
+      const { agent, context, fixture } = await bootDirectSession(slug, {
+        dispatch: ((url: URL) => {
+          if (url.pathname !== `/api/v1/artifacts/${slug}-id/versions/1`) return routes(url);
+          requested.resolve();
+          return picture.promise as unknown as Response;
+        }) as (url: URL) => Response | undefined,
+        hostSessionID: () => live,
+      });
+
+      agent.push(commentNotification(slug, body));
+      await requested.promise;
+      // The host is on another conversation from here on, with no handler fired for the move.
+      live = "ses_after_no_event";
+      picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
+      const carded = () =>
+        fixture.deliveries.filter((delivery) => JSON.stringify(delivery.content).includes(address));
+      await until(() => carded().length > 0, "the comment's card");
+      expect(carded().flatMap((card) => card.content as unknown[])).toEqual([
+        { type: "text", text: expect.stringContaining(address) },
+        image,
+      ]);
+
+      // The host writes the card into the conversation it has, which is what records the frame.
+      const card = carded()[0];
+      if (card === undefined) throw new Error("the card was not handed");
+      const { options: _options, ...written } = card;
+      await fixture.handlers.get("message_end")?.(
+        { message: { role: "custom", ...written } },
+        context
+      );
+
+      const recorded = fixture.entries.filter(
+        (entry) => entry.customType === REPLAY_DELIVERED_ENTRY
+      );
+      expect(JSON.stringify(recorded)).toContain(`dispatch-${slug}`);
+    });
+
+    // The other direction of that window: the card was handed in ses_delivery, and the host moved
+    // before it wrote it. The frame names the session it was shown in, so an entry written now
+    // would go into the file of the conversation the host moved to, which was never shown the
+    // comment, and whose sweep would pass over the stream's copy of a comment nobody showed it.
+    // Nothing is recorded instead: a resume of ses_delivery cards the comment a second time, and
+    // no session's ledger holds a frame it never showed (dispatch://INFRA-812). The comment
+    // written before the move is the control: it shows that the ledger this row reads records
+    // what it is given.
+    test("records in no other conversation's ledger a card the host wrote after moving", async () => {
+      const first = "card-written-before-move";
+      const second = "card-written-after-move";
+      const addressOf = (slug: string) => `dispatch://LEGION-1/artifact/${slug}@v1`;
+      const routes = [pictureRoutes(first), pictureRoutes(second)];
+      let live = "ses_delivery";
+      const { agent, context, fixture } = await bootDirectSession(second, {
+        dispatch: (url: URL) =>
+          routes.map((route) => route(url)).find((answer) => answer !== undefined),
+        hostSessionID: () => live,
+      });
+
+      const carded = (slug: string) =>
+        fixture.deliveries.filter((delivery) =>
+          JSON.stringify(delivery.content).includes(addressOf(slug))
+        );
+      const recorded = (): string =>
+        JSON.stringify(
+          fixture.entries.filter((entry) => entry.customType === REPLAY_DELIVERED_ENTRY)
+        );
+      // The host's own write of the card, which is what records the frame.
+      const write = async (slug: string): Promise<void> => {
+        await until(() => carded(slug).length > 0, `the card of ${slug}`);
+        const card = carded(slug)[0];
+        if (card === undefined) throw new Error("the card was not handed");
+        const { options: _options, ...written } = card;
+        await fixture.handlers.get("message_end")?.(
+          { message: { role: "custom", ...written } },
+          context
+        );
+      };
+
+      agent.push(commentNotification(first, `Look:\n\n![shot.png](${addressOf(first)})`));
+      await write(first);
+      expect(recorded()).toContain(`dispatch-${first}`);
+
+      agent.push(commentNotification(second, `Look:\n\n![shot.png](${addressOf(second)})`));
+      await until(() => carded(second).length > 0, "the second comment's card");
+      // The host is on another conversation from here on, with no handler fired for the move, so
+      // what it writes from here on goes into that conversation's file.
+      live = "ses_after_write";
+      await write(second);
+
+      expect(recorded()).not.toContain(`dispatch-${second}`);
+      // The first comment's record is still there, so the absence above is the move's doing and
+      // not a ledger that records nothing at all.
+      expect(recorded()).toContain(`dispatch-${first}`);
+    });
+
+    // The same move with no session event, for the one frame held to the session the person
+    // addressed: a delivery's card is handed to nobody once the host is on another conversation,
+    // so that conversation is shown nothing of the frame and its ledger gains nothing for it.
+    // The picture stays unshown in both sessions, so the copy the listener sends ses_delivery
+    // again carries it (dispatch://INFRA-812).
+    test("hands a delivery's card to nobody when the host moved with no session event, and records it nowhere", async () => {
+      const slug = "card-load-delivery-no-event";
+      const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
+      const body = `Look:\n\n![shot.png](${address})`;
+      const moved = "ses_after_no_event_delivery";
+      let live = "ses_delivery";
+      const picture = Promise.withResolvers<Response>();
+      const requested = Promise.withResolvers<void>();
+      const routes = pictureRoutes(slug);
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const { agent, fixture } = await bootDirectSession(slug, {
+          accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
+          dispatch: ((url: URL) => {
+            if (url.pathname !== `/api/v1/artifacts/${slug}-id/versions/1`) return routes(url);
+            requested.resolve();
+            return picture.promise as unknown as Response;
+          }) as (url: URL) => Response | undefined,
+          hostSessionID: () => live,
+        });
+
+        agent.push(directDispatchEnvelope("steer", slug, { body }));
+        await requested.promise;
+        // The host is on another conversation from here on, with no handler fired for the move.
+        live = moved;
+        picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
+        const carded = () =>
+          fixture.deliveries.filter((delivery) =>
+            JSON.stringify(delivery.content).includes(address)
+          );
+        await until(
+          () =>
+            carded().length > 0 ||
+            warnings.some((warning) => warning.includes("a card was not shown here")),
+          "the card to be shown or reported as not shown"
+        );
+
+        expect(carded()).toEqual([]);
+        const recorded = fixture.entries.filter(
+          (entry) => entry.customType === REPLAY_DELIVERED_ENTRY
+        );
+        expect(JSON.stringify(recorded)).not.toContain(`dispatch-${slug}`);
+        // Read by this row's own address: the sets are the process's, and a row before this one
+        // leaves ses_delivery the pictures it was shown.
+        expect(shownPictures(moved).has(address)).toBe(false);
+        expect(shownPictures("ses_delivery").has(address)).toBe(false);
+      } finally {
+        stopSink();
+      }
+    });
+
     // An admission still holding its pictures belongs to a `sendUserInput` the host has not yet
     // asked pi-envoy's input handler about: a session change (a branch, a move-off) must leave it,
     // or the accepted turn goes out without its pictures and Dispatch never offers it again.
