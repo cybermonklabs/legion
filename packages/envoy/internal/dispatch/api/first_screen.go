@@ -16,15 +16,14 @@ type FirstScreenAddress struct {
 }
 
 // FirstScreen is what the page handler puts into the page a reader opens a document at: the HTML
-// of the document's opening blocks, and whether that is the whole document (routes.servePage,
-// dispatch://INFRA-341 R11). Drawn is false where the page carries no document at all - the
-// reader has no session or a revoked one, the address names no document, it names something
-// that is not one, the document cannot be loaded, or the read ran out of the time the page may
-// spend on it - and the page is then the static shell it has always been.
+// of the document's opening blocks (routes.servePage, dispatch://INFRA-341 R11). Drawn is false
+// where the page carries no document at all - the reader has no session or a revoked one, the
+// address names no document, it names something that is not one, the document cannot be loaded,
+// its opening block alone is larger than a page may carry, or the read ran out of the time the
+// page may spend on it - and the page is then the static shell it has always been.
 type FirstScreen struct {
-	HTML     string
-	Complete bool
-	Drawn    bool
+	HTML  string
+	Drawn bool
 }
 
 // firstScreen answers the document address's opening blocks for a page request.
@@ -45,18 +44,23 @@ func (s *server) firstScreen(ctx context.Context, r *http.Request, address First
 	if s.deps.Store == nil || s.deps.Docs == nil {
 		return FirstScreen{}
 	}
-	if _, _, err := s.optionalActor(r); err != nil {
+	// On ctx, not on the request's own: the caller check reads the session's generation and
+	// confirms the membership, each of which can wait on the sign-in issuer (identity.Membership's
+	// refreshTimeout is 15 s), and the page handler's budget is what bounds that wait. The
+	// request is what carries the cookie, so the check is made with the same request under the
+	// context the page gave it.
+	if _, _, err := s.optionalActor(r.WithContext(ctx)); err != nil {
 		return FirstScreen{}
 	}
 	artifact, err := s.firstScreenArtifact(ctx, address)
 	if err != nil || artifact.Kind != "doc" {
 		return FirstScreen{}
 	}
-	html, complete, err := s.deps.Docs.FirstScreenHTML(ctx, artifact.ID)
+	html, err := s.deps.Docs.FirstScreenHTML(ctx, artifact.ID)
 	if err != nil || html == "" {
 		return FirstScreen{}
 	}
-	return FirstScreen{Complete: complete, Drawn: true, HTML: html}
+	return FirstScreen{Drawn: true, HTML: html}
 }
 
 // firstScreenArtifact resolves a browser address to the document behind it, as the read routes

@@ -241,9 +241,12 @@ func TestFirstScreenCutsAtItsByteBudget(t *testing.T) {
 	}
 }
 
-// A document whose opening block alone is longer than the whole budget still draws it: a reader
-// with no first block has no first screen at all.
-func TestFirstScreenDrawsAnOversizedOpeningBlock(t *testing.T) {
+// A document whose opening block alone passes the byte cap draws nothing at all. The cap is what
+// keeps a page from carrying the whole of a document that opens with a large code block or
+// table - up to the 1 MiB a Markdown document may be, and escaping grows `&` five times over -
+// and a page with no first screen is the static shell, which is the answer every other refused
+// read gets (dispatch://INFRA-341, R11 Design item 1).
+func TestFirstScreenDrawsNothingForAnOversizedOpeningBlock(t *testing.T) {
 	doc := &Node{Type: "doc", Children: []*Node{
 		{
 			Type:     "paragraph",
@@ -260,8 +263,8 @@ func TestFirstScreenDrawsAnOversizedOpeningBlock(t *testing.T) {
 	if complete {
 		t.Fatal("a document of two paragraphs was drawn whole")
 	}
-	if blocks := blocksOfHTML(t, rendered); len(blocks) != 1 || blocks[0].ID != "b-001" {
-		t.Fatalf("the oversized opening block was not drawn alone: %+v", blocks)
+	if rendered != "" {
+		t.Fatalf("the oversized opening block drew %d bytes, want no first screen at all", len(rendered))
 	}
 }
 

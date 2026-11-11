@@ -260,6 +260,13 @@
       The page's own preview takes these blocks as its first draw rather than drawing them again
       (src/features/doc/first-screen.ts, DocumentPreview), and the element goes with them.
 
+      It stays a child of body, which is where that module looks for it and the only place it
+      looks: this id is one namespace with the document's own text, since milkdown names a
+      heading by the slug of its words, and a document opening with a heading called "First
+      screen" is drawn as <h2 id="first-screen"> inside the live editor. Nothing the page draws
+      is a child of body, so nothing the page draws can be taken for this (first-screen.test.tsx
+      holds the element here, first-screen.live-editor.test.tsx holds the editor's heading safe).
+
       Its classes are the preview's own (markdownClassName in src/features/refs/markdown-engine.ts,
       which first-screen.test.ts holds this attribute to), so the blocks read the same before the
       page runs as after it. The server replaces the comment inside it and nothing else; a page
@@ -274,7 +281,7 @@
       padding at desktop widths, from the stylesheet the browser has before it paints anything,
       so the server's blocks are laid out once (dispatch://INFRA-341, R11). The attribute it
       selects on is the one the server writes (firstScreenElement in
-      internal/dispatch/routes/router.go), so a page with no document matches no rule.
+      internal/dispatch/routes/first_screen.go), so a page with no document matches no rule.
     -->
     <div
       id="first-screen"

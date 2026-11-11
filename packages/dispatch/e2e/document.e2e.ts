@@ -300,13 +300,14 @@ declare global {
 //
 // The opening blocks of an issue document are drawn by the server into the page it sends, in
 // `#first-screen`, which sits after `#root` and so is on the screen before any script has run
-// (`web/index.html`, `internal/dispatch/routes/router.go`'s `servePageForDocument`). Nothing the
-// page can do reserves a column for them: `ReservedMarginColumn` is mounted after the route is
-// drawn (`web/src/features/margin/MarginColumn.tsx`), about a second after those blocks have
-// already been painted. So the shell reserves the sidebar's column, the margin's column and
-// `<main>`'s padding in static CSS (`web/src/styles.css`), and this row is what holds it: the
-// server's blocks are laid out at exactly the width the document keeps, on every frame they are
-// on the screen, so the reader's first paint of the document is the last layout of it.
+// (`web/index.html`, `internal/dispatch/routes/first_screen.go`'s `servePageForDocument`).
+// Nothing the page can do reserves a column for them: `ReservedMarginColumn` is mounted after
+// the route is drawn (`web/src/features/margin/MarginColumn.tsx`), about a second after those
+// blocks have already been painted. So the shell reserves the sidebar's column, the margin's
+// column and `<main>`'s padding in static CSS (`web/src/styles.css`), and this row is what
+// holds it: the server's blocks are laid out at exactly the width the document keeps, on every
+// frame they are on the screen, so the reader's first paint of the document is the last layout
+// of it.
 //
 // Without that CSS the server's draw was laid out across the whole 1,280 px viewport and
 // re-wrapped to 528 px when the page adopted it (dispatch://INFRA-341, R11).

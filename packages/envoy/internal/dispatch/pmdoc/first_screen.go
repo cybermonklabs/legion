@@ -22,14 +22,17 @@ const (
 	// FirstScreenBlocks is the most top-level blocks the first screen carries.
 	FirstScreenBlocks = 30
 	// FirstScreenBytes is the most HTML it carries. A document whose opening block alone is
-	// longer is still drawn, because a reader with no first block has no first screen at all.
+	// longer carries no first screen at all: the page is then the static shell, which is the
+	// answer the spec gives for every other read the page refuses, and the document's own read
+	// draws it a moment later (dispatch://INFRA-341, R11 Design item 1).
 	FirstScreenBytes = 16 << 10
 )
 
 // FirstScreenHTML is the HTML of doc's opening blocks: up to FirstScreenBlocks of them and no
 // more than FirstScreenBytes, cut at whichever comes first, and the whole document when it fits.
-// complete says the HTML holds every top-level block the document has, which is what lets the
-// page know it is reading the whole of it.
+// A document whose first block alone passes FirstScreenBytes draws nothing, since the cap is
+// what keeps a page from carrying megabytes of one block. complete says the HTML holds every
+// top-level block the document has; the rows of the cut read it.
 //
 // It takes a document node (a tree the server already holds) and writes no error: a node outside
 // the Proof schema is skipped rather than refused, since a page drawing most of a document is
@@ -51,7 +54,7 @@ func FirstScreenHTML(doc *Node) (html string, complete bool) {
 		if block.Len() == 0 {
 			continue
 		}
-		if out.Len() > 0 && out.Len()+block.Len() > FirstScreenBytes {
+		if out.Len()+block.Len() > FirstScreenBytes {
 			return out.String(), false
 		}
 		out.WriteString(block.String())
@@ -315,9 +318,18 @@ func writeFootnoteDefinitionHTML(out *strings.Builder, n *Node) {
 
 // writeImageHTML writes a picture as the page's own serializer draws it: a `dispatch://` source
 // names an artifact rather than a file, and draws as the empty anchor the picture serializer
-// puts in its place (`refs/markdown-engine.ts`), which the page fills with the picture once it
-// has read the artifact; every other source draws as an `img`, under the same scheme rule a link
-// is held to, so a `javascript:` picture reaches the page with no source at all.
+// puts in its place (`refs/markdown-engine.ts`); every other source draws as an `img`, under the
+// same scheme rule a link is held to, so a `javascript:` picture reaches the page with no source
+// at all.
+//
+// A picture named that way stays empty until the editor opens the document. Only a body the page
+// paints itself gets the picture pass that fills it (`collectPictureAnchors`,
+// `refs/DispatchPicture.tsx`), and `DocumentPreview` adopts these blocks as they are rather than
+// painting them, so what the reader has before the editor is the rest of the opening - its text,
+// its lists, its tables - and a gap where the picture will be. The anchor carries the reference
+// as written, which is what the page's own serializer writes for a reference it cannot route;
+// one the page can route it draws with `data-dispatch-picture`, `data-picture-caption` and an
+// app path, and that is the editor's to draw here (dispatch://INFRA-341).
 func writeImageHTML(out *strings.Builder, n *Node) {
 	source := stringAttr(n.Attrs["src"])
 	if dispatchHref(source) != "" {

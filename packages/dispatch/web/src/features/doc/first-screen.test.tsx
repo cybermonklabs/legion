@@ -22,7 +22,7 @@ const ADDRESS = "/issues/CORE-1/artifacts/spec-md";
 
 /** The page the server sends a reader who may read the document at `address`: the build's own
  *  `#first-screen` element with the document's opening blocks drawn into it
- *  (`internal/dispatch/routes/router.go`). */
+ *  (`internal/dispatch/routes/first_screen.go`). */
 function pageCarryingADraw(address = ADDRESS, blocks = `<p data-block-id="b-1">Served</p>`): void {
   document.body.innerHTML =
     `<div id="root"></div>` +
@@ -93,6 +93,22 @@ describe("the blocks the server drew into the page", () => {
     for (const className of markdownClassName.split(" ")) {
       expect((element as RegExpExecArray)[1].split(" ")).toContain(className);
     }
+  });
+
+  // This module takes the server's draw from `<body>`'s own child and from nothing else, which
+  // is what keeps a heading the editor drew under the same id out of its reach
+  // (`first-screen.live-editor.test.tsx`). The page the server writes into has to put it there.
+  test("are drawn in the element the page keeps for them, a child of body", () => {
+    const page = readFileSync(join(import.meta.dir, "../../../index.html"), "utf8");
+    const parsed = new DOMParser().parseFromString(page, "text/html");
+
+    const host = parsed.querySelector("body > #first-screen");
+
+    expect(host).not.toBeNull();
+    expect(parsed.querySelectorAll("#first-screen")).toHaveLength(1);
+    // The comment the server replaces with the document's opening blocks
+    // (`firstScreenMarker`, `internal/dispatch/routes/first_screen.go`).
+    expect((host as Element).innerHTML).toBe("<!--first-screen-->");
   });
 });
 

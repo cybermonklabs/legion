@@ -51,7 +51,7 @@ body {
 /* Where the server's own draw of a document is laid out, before any script of the page has run.
 
    A reader who opens an issue document is sent its opening blocks as HTML, in `#first-screen`
-   (`web/index.html`, `internal/dispatch/routes/router.go`'s `servePageForDocument`). That
+   (`web/index.html`, `internal/dispatch/routes/first_screen.go`'s `servePageForDocument`). That
    element is a child of `body`, after `#root`, so until React mounts there is no shell around
    it and nothing holds the columns the shell will draw: the blocks were laid out across the
    whole 1,280 px viewport and then re-wrapped to the 528 px the document keeps when the page
@@ -74,7 +74,7 @@ body {
        them - 1,279 px to 1,231 px, measured at 1279x900 - which is the page's own gutter and
        not either column;
      - nothing on a route that draws no margin, because the server writes this element on the
-       four issue document addresses alone (`documentAddress` in `routes/router.go`), and
+       four issue document addresses alone (`documentAddress` in `routes/first_screen.go`), and
        `routeHasMargin` answers true for every one of them. A page with no draw carries no
        element with this attribute and no rule matches.
 
