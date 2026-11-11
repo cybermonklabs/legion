@@ -12,8 +12,13 @@ import "context"
 // listed session to keep one of them, and this read's largest caller (sessionsTitled,
 // groups.go) lists every session of the stored delivery population at once. The lateral is the
 // shape this repository already uses for the same table and the same index, for the same
-// question of the same population (agentLastActivityQuery, dispatch/api/agents.go), whose own
-// measurement is 1,875 rows and 470 buffers to answer five sessions against 20 buffers here.
+// question of the same population (agentLastActivityQuery, dispatch/api/agents.go; the 1,875
+// rows and 470 buffers against 20 cited there were measured on that statement, not on this one).
+// This statement's own measurement is the plan test of this package
+// (session_titles_plan_test.go): over a fixture of 14 events across three listed sessions, the
+// one node that reads events runs one loop a session -- three -- and touches no more of those 14
+// rows than stopping at each session's newest titled row costs, which is 8 here, where the
+// `distinct on` it replaced ran a single loop over all 14.
 //
 // The lateral repeats actor->>'kind' = 'session' because that index is partial on it, and it is
 // joined with `cross join`, not a left join: a session with no titled event must answer no row,

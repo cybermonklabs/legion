@@ -51,8 +51,7 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // group's min(rank) decides, so a session that is both comes out a member. A Postgres array is
 // 1-indexed, so that first element is (min(rank))[1], which the row carries as from_thread. The
 // caller keeps a member of the thread whatever the issue's claim is and leaves a credit out on an
-// issue a session claims (addAuthorRoutes), since the credits of a document are
-// not a second reason to deliver what that issue's claimant already hears on its own topic.
+// issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states.
 const commentRecipientsQuery = `
 	with recursive
 	up as (
@@ -117,11 +116,10 @@ type threadRecipient struct {
 // order it was written), marked fromThread, then every session the thread's document credits
 // (documentCreditsSQL; none when the thread is on no document), each once and marked fromThread
 // only where the thread names it too. A session the thread's document credits alone is left out
-// by the caller where the comment is a person's on an issue a session claims (addAuthorRoutes):
-// the credits of a document are not a second reason to deliver what that claimant already hears
-// on its own topic. People are left out, since a person has no Envoy topic. A comment that has no
-// row has no entry. The actor and the sessions the reply's mentions reach are skipped by the
-// caller too.
+// by the caller where the comment is a person's on an issue a session claims (addAuthorRoutes),
+// by the rule takesClaimantRoute states. People are left out, since a person has no Envoy topic.
+// A comment that has no row has no entry. The actor and the sessions the reply's mentions reach
+// are skipped by the caller too.
 func loadCommentRecipients(ctx context.Context, db queryer, commentIDs []string) (map[string][]threadRecipient, error) {
 	if len(commentIDs) == 0 {
 		return map[string][]threadRecipient{}, nil
@@ -215,7 +213,11 @@ func takesPrimaryAuthors(event model.Event, routing routing) bool {
 // that session's own topic (addClaimantRoute): it names an issue, its actor is a person, the
 // batch read a session claimant, and its type is one of the answers, comments and messages a
 // claimant is told about. addAuthorRoutes reads the same predicate for its claimed test, so the
-// credits of a document are left out exactly where the claimant was added.
+// credits of a document are left out exactly where the claimant was added: the credits of a
+// document are
+// not a second reason to deliver what that claimant already hears on its own topic. This is
+// where that rule is decided, and its one statement among this package's reads; the places that
+// apply it point here.
 func takesClaimantRoute(event model.Event, claimant string) bool {
 	// A project document's event names no issue, so there is no claim to read.
 	if event.IssueKey == nil || event.Actor.Kind != "user" || claimant == "" {

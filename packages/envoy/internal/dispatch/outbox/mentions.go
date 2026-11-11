@@ -237,6 +237,40 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 	return holds.live(sessionID) || holds.waitsForAnUnnamedMention(sessionID)
 }
 
+// decidesCopyFor reports whether a mention of this comment decides the copy bound for sessionID:
+// the state of the mentions this reading can say are bound for it is anything but mentionFailed,
+// the state of a key with no attempt at all and no attempt that names no session yet resolved to
+// it (mentionHolds.state, mentionOutcomes.state).
+//
+// The credits filter asks it (addAuthorRoutes). On an issue a session claims, a session a
+// document credits alone is dropped before any copy of it is built - which is where the mention
+// rule would be asked of that session (destinations.addSession) - so a session whose copy a
+// mention of this comment decides has to be kept, and left to that rule: it is what holds the
+// event back while the send is live and what keeps the fallback row the pass publishes should
+// the mention fail (destinations.leftTo, publishFallbackCopies). The filter's other exemption,
+// fallbackKeys, names the one state settled before the batch read it, a mention that already
+// failed; this answers for every state of a mention still to decide the copy.
+//
+// It asks mentionHolds.state and not the attempts of that session alone (mentionDeliveries.
+// sessions, mentionOutcomes.state): the hold takes the lower of that key's own attempts and the
+// fold of the attempts that name no session yet (mentionHolds.named,
+// unpinnedRoleMentions.resendingUnnamed), so a session an unpinned @role: attempt is on its way
+// to reads that attempt's state here and is kept, which the session's own attempts alone would
+// miss, and leftTo then reads the same attempt. The other side of the rule still holds: a
+// session no attempt of the comment names and no unpinned attempt resolves to reads
+// mentionFailed and is dropped, so an ordinary credit of a document is left out as before
+// (TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone). A session a mention of the
+// comment delivered to reads mentionSent and is kept, which costs nothing: the mention rule
+// leaves that session's copy to the mention and adds none.
+//
+// A reading of no mentions at all - the zero value, which a comment.edited and a comment.created
+// that names no mention carry (eventDestinations) - answers mentionFailed for every session, so
+// the filter applies plainly there and an edit's exemption is its failed mentions alone
+// (lookup.mentionFallbackKeys).
+func (d mentionDeliveries) decidesCopyFor(sessionID string) bool {
+	return d.holds().state(sessionID) != mentionFailed
+}
+
 // mentionComment is the comment whose mention attempts a mentionDeliveries read, the
 // comment.created event that created it, and the context and store a settle or a hold of one of
 // its keys runs on (settleAbandoned, holdFallbackCopy). It lives as long as the one batch or

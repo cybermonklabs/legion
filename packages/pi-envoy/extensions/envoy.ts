@@ -2898,8 +2898,8 @@ export default function envoyExtension(pi: PiApi): void {
    *  an empty title, which would take the session's name away rather than leave it standing
    *  (`readSessionTitle` answers `undefined` for a file holding one). It throws what
    *  `sessionDirectory` throws for a session id that is not one plain path segment, and what the
-   *  write itself throws; its one wrapper (`writeDispatchTitleOnce`) swallows that for both of
-   *  its callers, since a cosmetic title must fail neither a heartbeat nor a tool call. */
+   *  write itself throws; the writers `dispatchTitleWriter` builds swallow that for both of its
+   *  call sites, since a cosmetic title must fail neither a heartbeat nor a tool call. */
   const writeDispatchTitle = (context: SessionContext): void => {
     const id = process.env.DISPATCH_SESSION_ID;
     if (id === undefined || id === "") return;
@@ -2910,20 +2910,29 @@ export default function envoyExtension(pi: PiApi): void {
     writtenTitle = { sessionID: id, title };
   };
 
-  /** Writes the title file for one call site and swallows a failed write, logging it once per
-   *  holder. Each site keeps a holder of its own — the heartbeat's, the main agent's tool call's
-   *  — so a session whose writes fail at both still says one line per site, and says it once,
-   *  since a write that fails fails the same way at every tick and every call. */
-  const writeDispatchTitleOnce = (context: SessionContext, notified: { said: boolean }): void => {
-    try {
-      writeDispatchTitle(context);
-    } catch (error) {
-      if (notified.said) return;
-      notified.said = true;
-      logger.warn(
-        `envoy: could not write the session title for the dispatch command (${messageFor(error)}); the dispatch command's writes carry no session title`
-      );
-    }
+  /** Builds one call site's title writer: it writes the file and swallows a failed write, saying
+   *  so once. The flag is the writer's own closure variable, as this module's other
+   *  once-per-episode flags are (`heartbeatOutageNotified`, `stallNotified`), so its lifetime is
+   *  the writer's: each site builds a writer of its own — the heartbeat's, which lives as long as
+   *  that heartbeat, and the main agent's tool call's, which lives as long as the session — and a
+   *  site cannot be handed another site's flag by mistake. So a session whose writes fail at both
+   *  sites still says one line per site, and says it once, since a write that fails fails the same
+   *  way at every tick and every call. */
+  const dispatchTitleWriter = (): ((context: SessionContext) => void) => {
+    // Never cleared: a write that cannot reach the session's state directory fails the same way
+    // at every tick and every call, and one line says it.
+    let notified = false;
+    return (context: SessionContext): void => {
+      try {
+        writeDispatchTitle(context);
+      } catch (error) {
+        if (notified) return;
+        notified = true;
+        logger.warn(
+          `envoy: could not write the session title for the dispatch command (${messageFor(error)}); the dispatch command's writes carry no session title`
+        );
+      }
+    };
   };
 
   const ensureHeartbeat = (context: SessionContext): void => {
@@ -2947,9 +2956,9 @@ export default function envoyExtension(pi: PiApi): void {
     // Whether the one extra call a failed tick buys is already owed. Armed by a failed interval
     // tick, spent by the call it schedules, and cleared by any pass that settles.
     let retryArmed = false;
-    // Whether a failed title write has been logged. Never cleared: a write that cannot reach the
-    // session's state directory fails the same way at every tick, and one line says it.
-    const titleFailureNotified = { said: false };
+    // This heartbeat's own title writer, which says a failed write once (`dispatchTitleWriter`):
+    // a write that cannot reach the session's state directory fails the same way at every tick.
+    const writeHeartbeatTitle = dispatchTitleWriter();
     // The pane hears about a stall as it hears about a registry outage, and for the same reason:
     // the session is at risk of being reaped by the listener while the pane runs on.
     const noteStall = (detail: string): void => {
@@ -2978,7 +2987,7 @@ export default function envoyExtension(pi: PiApi): void {
       // would fail the registration. A failure never fails a heartbeat, as `stampOnce` in
       // packages/claude-envoy/src/envoy-channel-server.ts holds for its own stamp; it is said
       // once, since a title write that fails fails the same way at every tick.
-      writeDispatchTitleOnce(context, titleFailureNotified);
+      writeHeartbeatTitle(context);
       // A held inert card or replay notice, or a card the host withdrew unwritten, is handed first,
       // while the host is settled (`hostSettled`), so the sweep finds its frame still claimed.
       // Every tick also sweeps the stream, outside the pass, so a sweep never waits on one: it
@@ -4225,12 +4234,12 @@ export default function envoyExtension(pi: PiApi): void {
   // parent's file. The write is wrapped as the heartbeat's is: it runs before every tool call of
   // the main agent now, and a title the plugin cannot write — a session id that is no path
   // segment, a state directory it cannot reach — must fail none of them. Said once, since it
-  // fails the same way at every call; the handler is registered once per session, so the flag
-  // beside it is that session's.
-  const toolCallTitleFailureNotified = { said: false };
+  // fails the same way at every call; this writer is built once per session, beside the handler
+  // that is registered once per session, so its flag is that session's.
+  const writeToolCallTitle = dispatchTitleWriter();
   pi.on("tool_call", async (_event, context) => {
     if (context.agent?.kind !== "main") return undefined;
-    writeDispatchTitleOnce(context, toolCallTitleFailureNotified);
+    writeToolCallTitle(context);
     return undefined;
   });
 

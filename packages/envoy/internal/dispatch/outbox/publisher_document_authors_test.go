@@ -244,6 +244,27 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 			},
 		},
 		{
+			// The rule that keeps a credit whose copy a mention still decides exempts this one
+			// too - its mention reads mentionSent, not mentionFailed
+			// (mentionDeliveries.decidesCopyFor) - and it still gets nothing, by the other road:
+			// the mention reached it, so the mention rule leaves its copy to that mention and
+			// builds none (destinations.addSession, destinations.leftToMention). The two roads to
+			// "no copy" are what a later reader confuses: this session's copy is the mention's,
+			// not a session the credits filter dropped, which is why exempting a mention that was
+			// sent costs nothing.
+			name:     "a credited author the comment's mention reached is left to that mention on a claimed issue",
+			claimant: "session-claimant",
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				doc := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer, editor})
+				return model.Event{IssueKey: new("T-1"), Type: "comment.created", Actor: alice, Payload: map[string]any{
+					"id": "00000000-0000-0000-0000-000000000018", "anchor": anchorOn(doc),
+					"mentions": mentionsOf("session-writer"),
+				}}, ""
+			},
+			deliveries: map[string]string{"session-writer": "sent"},
+			wantAgents: []string{"notifications.agent.session-claimant"},
+		},
+		{
 			// An edit reads which of its comment's mentions failed of that comment alone
 			// (lookup.mentionFallbackKeys), so the writer, which the comment names and no mention
 			// of it reached, takes the edit as well, and the editor, a credit of the document

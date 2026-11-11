@@ -13,11 +13,20 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// distinctOnSessionTitlesQuery is the statement ResolveSessionTitles ran before the lateral,
-// held here letter for letter as the oracle of the comparison below. It is a copy of the text
-// this change replaced, not text built from the package's own constant: a statement built from
-// that would move with it, and the two sides would agree however the read changed.
-const distinctOnSessionTitlesQuery = `
+// correctedDistinctOnTitlesQuery writes the rule this change settled on -- a session is named by
+// the newest event whose stamped title is not empty -- in the shape the read had before the
+// lateral: one `distinct on (actor->>'id')` over every listed session at once. It is not the
+// statement that shipped. The shipped one read `where actor->>'kind' = 'session' and
+// actor->>'id' = any($1)` with no title condition at all and dropped the empty titles in Go,
+// which answers the newest event's title whatever that event stamped -- the defect INFRA-1368
+// fixes, since a later write carrying none took the session's name away. The title condition is
+// written in here so that both sides of the comparison below ask that one corrected question;
+// putting the shipped text back would not restore an equivalence, it would assert the defect,
+// and the comparison would fail on this fixture, which is built to tell the two questions apart.
+//
+// It is held letter for letter rather than built from the package's own constant: a statement
+// built from that would move with it, and the two sides would agree however the read changed.
+const correctedDistinctOnTitlesQuery = `
 		select distinct on (actor->>'id')
 			actor->>'id' as session_id,
 			actor->'origin'->>'session_title' as session_title
@@ -129,19 +138,21 @@ func sessionTitleRows(t *testing.T, ctx context.Context, pool *store.Pool, state
 	return got
 }
 
-// titlePlanNode is what this test reads of one node of an `EXPLAIN (ANALYZE, FORMAT JSON)`
-// plan: how many times the node ran, how many rows each of those runs answered, how many each
-// threw away, and what it reads. `Actual Loops`, `Actual Rows` and `Rows Removed by Filter` are
-// only in an ANALYZE plan, which is why this test runs the statement rather than only planning
-// it. Both counts are averages over the loops, so a total is the average times the loops.
+// titlePlanNode is the part of an `EXPLAIN (ANALYZE, FORMAT JSON)` plan tree that explaintest
+// does not read: how many times a node ran, how many rows each of those runs answered and how
+// many each threw away, under the index the node reads through, which is how the one node this
+// test counts is picked out. `Actual Loops`, `Actual Rows` and `Rows Removed by Filter` are only
+// in an ANALYZE plan, which is why this test runs the statement rather than only planning it.
+// Both counts are averages over the loops, so a total is the average times the loops. Nothing
+// else of a node is read here: whether the plan holds one plan, whether a scan in it is unkeyed,
+// and which index each scan reads under which condition are explaintest's own checks (OnePlan,
+// ScansWithoutIndexCond, IndexKeys), which the test below runs over the same plan.
 type titlePlanNode struct {
-	NodeType     string          `json:"Node Type"`
-	RelationName string          `json:"Relation Name,omitempty"`
-	IndexName    string          `json:"Index Name,omitempty"`
-	Rows         float64         `json:"Actual Rows"`
-	Loops        float64         `json:"Actual Loops"`
-	Filtered     float64         `json:"Rows Removed by Filter"`
-	Plans        []titlePlanNode `json:"Plans,omitempty"`
+	IndexName string          `json:"Index Name,omitempty"`
+	Rows      float64         `json:"Actual Rows"`
+	Loops     float64         `json:"Actual Loops"`
+	Filtered  float64         `json:"Rows Removed by Filter"`
+	Plans     []titlePlanNode `json:"Plans,omitempty"`
 }
 
 // everyNode is every node of the plan, the subplan subtrees included.
@@ -165,9 +176,17 @@ func (node titlePlanNode) touched() float64 {
 // fixture holds a handful of rows, which is read fastest whole however the statement is
 // written, so without that setting the planner answers a sequential scan whatever indexes exist
 // and the plan says nothing about the statement; with it, a read that no index serves still
-// shows up, as a scan carrying no index condition. The api package has the same two helpers
-// (planWithoutSeqScans, analyzePlan), unexported there as these are here: Go shares no test-only
-// code across packages, and both are a few lines over internal/explaintest.
+// shows up, as a scan carrying no index condition.
+//
+// Everything explaintest answers it is asked for, here and in the test below. What is left in
+// this file is the ANALYZE run and the counters above: explaintest reads a plan's shape -- its
+// scans, their indexes and their conditions -- and not how many times a node ran or how many
+// rows it touched, which is this test's whole subject. The api package runs its own ANALYZE for
+// the same subject (analyzePlan with planWithoutSeqScans, issue_list_plan_test.go and
+// query_plan_test.go); those are unexported test helpers of another package, which no import
+// reaches, and lifting them into explaintest would have to serve api's node fields (Parent
+// Relationship and the join spine it walks) as well as these counters, which is a larger change
+// than this one.
 func analyzedTitlePlan(
 	t *testing.T, ctx context.Context, pool *store.Pool, statement string, arguments ...any,
 ) (json.RawMessage, titlePlanNode, string) {
@@ -193,29 +212,37 @@ func analyzedTitlePlan(
 	return explaintest.OnePlan(t, raw), plans[0].Plan, string(raw)
 }
 
-// The lateral answers exactly what the `distinct on` read it replaced answered: the newest
-// title each session stamped, no row for a session that never stamped one, no row for a session
-// the events table has never heard of, and nothing from a row whose actor is not a session.
-func TestTheSessionTitlesAnswerWhatTheDistinctOnReadDid(t *testing.T) {
+// The two shapes of the corrected rule answer the same rows: the newest non-empty title each
+// session stamped, no row for a session that never stamped one, no row for a session the events
+// table has never heard of, and nothing from a row whose actor is not a session. That is what
+// the move from `distinct on` to the lateral is held to -- it changed what the read costs (the
+// plan test below) and not what it answers.
+//
+// It is no equivalence with the statement that shipped, and must never be made into one. That
+// statement carried no title condition and answered the newest event's title whatever it held
+// (correctedDistinctOnTitlesQuery above), which is the defect this change fixes; the lateral
+// deliberately answers something else, and on this fixture the two differ -- the titled
+// session's newest event carries no title at all.
+func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T) {
 	pool, ctx := newSessionTitlesPlanFixture(t)
-	want := sessionTitleRows(t, ctx, pool, distinctOnSessionTitlesQuery)
+	want := sessionTitleRows(t, ctx, pool, correctedDistinctOnTitlesQuery)
 	// fmt.Sprint writes no space between two strings, so a row reads as its id and its title
 	// run together; both sides are built the same way, which is all the comparison needs.
 	if len(want) != 1 || want[0] != fmt.Sprint(titledPlanSession, titledPlanName) {
-		t.Fatalf("the `distinct on` read answered %v; want the one session that stamped a title", want)
+		t.Fatalf("the `distinct on` shape of the rule answered %v; want the one session that stamped a title", want)
 	}
 	if got := sessionTitleRows(t, ctx, pool, resolveSessionTitlesQuery); !slices.Equal(got, want) {
-		t.Fatalf("the session titles read answered\n%v\nwant the `distinct on` read's rows\n%v", got, want)
+		t.Fatalf("the session titles read answered\n%v\nwant the rows the `distinct on` shape of the same rule answered\n%v", got, want)
 	}
 }
 
 // The session titles read reaches events only through events_session_actor_created_at_idx, the
 // partial index on ((actor->>'id'), created_at desc) for a session actor, and reads it once for
 // each session asked for, stopping at that session's newest titled row. Naming the index alone
-// decides nothing here: the `distinct on` read this replaced used the same index with the same
-// condition, and read every event of every listed session through it. The lateral is what stops
-// the read early, and the plan says so in the loops of the one node that reads events and in the
-// rows that node touched.
+// decides nothing here: the `distinct on` read this replaced searched the same index under the
+// same index condition, and read every event of every listed session through it. The lateral is
+// what stops the read early, and the plan says so in the loops of the one node that reads events
+// and in the rows that node touched.
 //
 // What this proves is a bound, not one row a session, and that is where it differs from its
 // model in the api package: the title condition is not in the index, so the read skips a

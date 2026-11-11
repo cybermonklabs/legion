@@ -83,17 +83,6 @@ func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
 		json.RawMessage(`{"kind":"session","id":"`+named+`","origin":{"session_title":""}}`))
 	writeSessionEvent(t, ctx, pool, at.Add(3*time.Minute), actorJSON(t, model.Actor{Kind: "session", ID: nameless}))
 
-	var empty int
-	if err := pool.QueryRow(ctx, `
-		select count(*) from events
-		where issue_key = $1 and actor->>'id' = $2 and actor->'origin'->>'session_title' = ''
-	`, titlesIssue, named).Scan(&empty); err != nil {
-		t.Fatalf("count the empty-title events of %s: %v", named, err)
-	}
-	if empty != 1 {
-		t.Fatalf("events of %s holding an empty session_title = %d, want the one this test wrote", named, empty)
-	}
-
 	titles, err := ResolveSessionTitles(ctx, pool, []string{named, nameless})
 	if err != nil {
 		t.Fatalf("ResolveSessionTitles: %v", err)
