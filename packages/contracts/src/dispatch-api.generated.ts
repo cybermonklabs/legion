@@ -718,10 +718,11 @@ export interface paths {
     get: operations["getApiV1CommentsById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Delete a comment: its author alone (403 NOT_AUTHOR), naming itself in actor where the credential proves no session. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/comments/{id}/history reads the mark in its place. The suggestion's replacement text goes with the body, each block is removed with its excerpt cleared, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'not sent: the post was deleted'. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED. */
+    delete: operations["deleteApiV1CommentsById"];
     options?: never;
     head?: never;
-    /** @description Edit a comment's body. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. */
+    /** @description Edit a comment's body: its author alone (403 NOT_AUTHOR), naming itself in actor where the credential proves no session, as the resolve does. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. */
     patch: operations["patchApiV1CommentsById"];
     trace?: never;
   };
@@ -770,6 +771,23 @@ export interface paths {
     put?: never;
     /** @description Retry a comment mention delivery; target is required when it has multiple mentions. */
     post: operations["postApiV1CommentsByIdDeliveries"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/comments/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=<RFC3339 time> answers the page after, the rows written before it. A comment nobody edited answers an empty list, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text. */
+    get: operations["getApiV1CommentsByIdHistory"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -2058,6 +2076,23 @@ export interface paths {
     put?: never;
     /** @description The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending or sent attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. */
     post: operations["postApiV1MessagesByIdDeliveriesByAttemptAccept"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/messages/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). At most 200 rows in one answer; ?before=<RFC3339 time> answers the page after, the rows written before it. A message nobody edited answers an empty list, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text. */
+    get: operations["getApiV1MessagesByIdHistory"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -4085,6 +4120,7 @@ export interface components {
       token: string;
     };
     EditCommentInput: {
+      actor?: components["schemas"]["Actor"] | null;
       base_revision?: null | number;
       blocks?: components["schemas"]["CarriedBlock"][] | null;
       body: string;
@@ -4867,6 +4903,18 @@ export interface components {
     };
     PersonSignInsResponse: {
       signins: components["schemas"]["PersonSignInResp"][] | null;
+    };
+    PostHistoryEntry: {
+      body: string;
+      /** Format: date-time */
+      edited_at: string;
+      edited_by: components["schemas"]["Actor"];
+    };
+    PostHistoryRead: {
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      entries: components["schemas"]["PostHistoryEntry"][] | null;
     };
     ProgressCount: {
       done: number;
@@ -7253,6 +7301,44 @@ export interface operations {
       };
     };
   };
+  deleteApiV1CommentsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Comment"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   patchApiV1CommentsById: {
     parameters: {
       query?: {
@@ -7388,6 +7474,41 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentDelivery"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1CommentsByIdHistory: {
+    parameters: {
+      query?: {
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostHistoryRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10634,6 +10755,41 @@ export interface operations {
       };
     };
   };
+  getApiV1MessagesByIdHistory: {
+    parameters: {
+      query?: {
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostHistoryRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1MessagesByIdReply: {
     parameters: {
       query?: {
@@ -12519,6 +12675,8 @@ export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
+export type PostHistoryEntry = components["schemas"]["PostHistoryEntry"];
+export type PostHistoryRead = components["schemas"]["PostHistoryRead"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];

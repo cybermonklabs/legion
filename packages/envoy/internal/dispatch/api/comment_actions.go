@@ -147,23 +147,29 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 
 // editCommentInput is the body of PATCH /api/v1/comments/{id}.
 //
+// actor is who makes the edit, for a bearer caller that names its own session: the route is the
+// author's, and an agent's comment has an author of kind session, so a session that reads its
+// own writer from no credential names it here, exactly as the resolve below does
+// (commentAction). A person's credential names them and carries no actor at all.
+//
 // blocks and base_revision are the ids the dashboard editor carried through the edit: each
 // block's id and where its span starts in body, in UTF-16 code units, against the comment's
 // revision the editor read them at (refs.IndexItem). Without them the ids follow the text.
 type editCommentInput struct {
 	Body         string               `json:"body" required:"true"`
+	Actor        *model.Actor         `json:"actor"`
 	BaseRevision *int                 `json:"base_revision"`
 	Blocks       []itemblocks.Carried `json:"blocks"`
 }
 
 func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.actingPerson(w, r)
-	if !ok {
-		return
-	}
 	var input editCommentInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	actor, ok := s.requireActor(w, r, input.Actor)
+	if !ok {
 		return
 	}
 	if strings.TrimSpace(input.Body) == "" {
@@ -195,10 +201,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The author is compared as a writer and not field by field: actingPerson hands back the
-	// person with the credential that acted beside them (model.ActorAct), so an agent editing
-	// its person's comment carries an Act the stored author has not, and the person is who the
-	// authorship is about.
+	// The author is compared as a writer and not field by field: a person's actor carries the
+	// credential that acted beside them (model.ActorAct), so an agent editing its person's
+	// comment carries an Act the stored author has not, and the person is who the authorship is
+	// about.
 	if !comment.Author.SameAs(actor) {
 		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may edit it")
 		return
@@ -221,6 +227,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
+	if err := recordPostBodyHistory(r.Context(), tx, refs.ItemComment, comment.ID, previousBody, actor); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	referenceChanges, err := refs.ReplaceCountedItemEdit(r.Context(), tx, refs.ItemComment, comment.ID, previousBody, comment.Body, s.deps.ServerURL, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
@@ -230,21 +240,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		projectionKind, err := s.commentProjectionKind(documentCtx, comment)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	if err := s.projectThreadMark(documentCtx, tx, comment, actor); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	payload, err := s.commentEventPayload(r.Context(), tx, &comment, artifactName, commentEventThread{}, referenceChanges)
 	if err != nil {

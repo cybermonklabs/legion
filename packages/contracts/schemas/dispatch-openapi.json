@@ -2854,8 +2854,63 @@
         },
         "x-auth": "any"
       },
+      "delete": {
+        "description": "Delete a comment: its author alone (403 NOT_AUTHOR), naming itself in actor where the credential proves no session. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/comments/{id}/history reads the mark in its place. The suggestion's replacement text goes with the body, each block is removed with its excerpt cleared, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'not sent: the post was deleted'. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED.",
+        "operationId": "deleteApiV1CommentsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
       "patch": {
-        "description": "Edit a comment's body. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text.",
+        "description": "Edit a comment's body: its author alone (403 NOT_AUTHOR), naming itself in actor where the credential proves no session, as the resolve does. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text.",
         "operationId": "patchApiV1CommentsById",
         "parameters": [
           {
@@ -2908,9 +2963,6 @@
           }
         },
         "x-auth": "any",
-        "x-oauth-scopes": [
-          "person"
-        ],
         "x-write-scope": "project"
       }
     },
@@ -3077,6 +3129,60 @@
         },
         "x-auth": "any",
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/comments/{id}/history": {
+      "get": {
+        "description": "Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A comment nobody edited answers an empty list, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text.",
+        "operationId": "getApiV1CommentsByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostHistoryRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/comments/{id}/reject": {
@@ -8216,6 +8322,60 @@
         },
         "x-auth": "bearer",
         "x-write-scope": "session"
+      }
+    },
+    "/api/v1/messages/{id}/history": {
+      "get": {
+        "description": "Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A message nobody edited answers an empty list, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text.",
+        "operationId": "getApiV1MessagesByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostHistoryRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/messages/{id}/reply": {
@@ -17136,6 +17296,16 @@
       },
       "EditCommentInput": {
         "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "base_revision": {
             "type": [
               "null",
@@ -20749,6 +20919,62 @@
         },
         "required": [
           "signins"
+        ],
+        "type": "object"
+      },
+      "PostHistoryEntry": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_by": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "body",
+          "edited_by",
+          "edited_at"
+        ],
+        "type": "object"
+      },
+      "PostHistoryRead": {
+        "properties": {
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/PostHistoryEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deleted_at",
+          "deleted_by",
+          "entries"
         ],
         "type": "object"
       },

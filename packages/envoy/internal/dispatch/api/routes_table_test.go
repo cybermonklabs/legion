@@ -493,7 +493,10 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 
 // Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
 // and the scope map names no route the table does not mount: the two halves register's panic
-// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted.
+// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted. The one
+// exception is `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's
+// comment has an author of kind session, so a person scope would shut every author of one out
+// of its own edit, and the route holds the caller to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
@@ -521,7 +524,6 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/asks/{id}/answer",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
-		"PATCH /api/v1/comments/{id}",
 		"POST /api/v1/comments/{id}/reject",
 		"GET /api/v1/artifacts/{id}/subscribers",
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",

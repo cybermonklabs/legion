@@ -39,11 +39,13 @@ GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
 GET /api/v1/broadcasts/{id} any
+DELETE /api/v1/comments/{id} any
 GET /api/v1/comments/{id} any
 PATCH /api/v1/comments/{id} any
 POST /api/v1/comments/{id}/accept any
 GET /api/v1/comments/{id}/blocks any
 POST /api/v1/comments/{id}/deliveries any
+GET /api/v1/comments/{id}/history any
 POST /api/v1/comments/{id}/reject any
 POST /api/v1/comments/{id}/reopen any
 POST /api/v1/comments/{id}/reply bearer
@@ -130,6 +132,7 @@ GET /api/v1/messages/{id} any
 GET /api/v1/messages/{id}/blocks any
 POST /api/v1/messages/{id}/deliveries any
 POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
+GET /api/v1/messages/{id}/history any
 POST /api/v1/messages/{id}/reply bearer
 GET /api/v1/projects any
 POST /api/v1/projects any
