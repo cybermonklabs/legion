@@ -78,6 +78,14 @@ async function executeWrite(tool: string, args: Record<string, unknown>, advice?
       // No source configured is the list's own answer, not a refusal.
       return new Response("[]", { headers: { "Content-Type": "application/json" } });
     }
+    // The two reads an upload makes before it sends: what the issue holds, which holds no
+    // document of the uploaded name here, and the markdown the store would hold for the text.
+    if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+      return response([]);
+    }
+    if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+      return response({ markdown: body.markdown });
+    }
     if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
       return response(
         withAdvice(

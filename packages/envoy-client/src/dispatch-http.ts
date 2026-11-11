@@ -53,6 +53,7 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
@@ -860,6 +861,26 @@ export class DispatchClient {
     throw new Error(
       `GET ${this.#url(path, query)} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`
     );
+  }
+
+  /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
+   *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
+   *  holds. */
+  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  }
+
+  /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
+   *  route writes nothing: it parses the text and renders it again, as a document write does, so
+   *  a caller compares the answer with the text it holds and refuses a text the store would
+   *  change. */
+  async markdownRoundTrip(markdown: string): Promise<string> {
+    const answer: MarkdownRoundTripResponse = await this.#json(
+      "POST",
+      ["api", "v1", "markdown", "round-trip"],
+      { markdown }
+    );
+    return answer.markdown;
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {

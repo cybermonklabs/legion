@@ -1771,6 +1771,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/markdown/round-trip": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error. */
+    post: operations["postApiV1MarkdownRoundTrip"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/agent-tokens": {
     parameters: {
       query?: never;
@@ -4712,6 +4729,12 @@ export interface components {
     };
     MachineLookupRequest: {
       code: string;
+    };
+    MarkdownRoundTripInput: {
+      markdown: string;
+    };
+    MarkdownRoundTripResponse: {
+      markdown: string;
     };
     Message: {
       author: components["schemas"]["Actor"];
@@ -9926,6 +9949,42 @@ export interface operations {
       };
     };
   };
+  postApiV1MarkdownRoundTrip: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MarkdownRoundTripInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MarkdownRoundTripResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1MeAgentTokens: {
     parameters: {
       query?: {
@@ -12587,6 +12646,8 @@ export type LeadTime = components["schemas"]["LeadTime"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
+export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
+export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
 export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];

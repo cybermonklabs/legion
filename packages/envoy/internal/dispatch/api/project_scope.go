@@ -315,8 +315,8 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 	default:
 		// A write that belongs to the calling session (scopeSession, held to its own session by
-		// withinSessionScope), and the issue create, whose project its handler reads from the
-		// body (scopeProjectInBody).
+		// withinSessionScope), the issue create, whose project its handler reads from the body
+		// (scopeProjectInBody), and a row that writes nothing at all (scopeNoWrite).
 		return handler
 	}
 }
@@ -415,8 +415,9 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses
 // gives no class, and one classed scopeProject whose address names no object to resolve. Every
-// other class is decided: scopeDeployment and scopeProjectInBody by the class itself, and
-// scopeSession by withinSessionScope and the handlers behind it.
+// other class is decided: scopeDeployment and scopeProjectInBody by the class itself,
+// scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by writing
+// nothing at all.
 // TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
 // table it names anything in, so a row added later cannot be left undecided. The other direction,
 // a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
@@ -429,7 +430,7 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 		}
 		name := route.Method + " " + route.Pattern
 		switch route.Scope {
-		case scopeSession, scopeDeployment, scopeProjectInBody:
+		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
 			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")

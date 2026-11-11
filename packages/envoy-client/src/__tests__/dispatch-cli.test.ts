@@ -281,6 +281,12 @@ const server = Bun.serve({
         version: { number: 1 },
       });
     }
+    // What the issue holds, which an upload reads to refuse a name that exists: DSP-1 holds no
+    // document here, so every upload below writes a first version. It is recorded with the rest.
+    if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "GET") {
+      requests.push({ method: request.method, path: pathname, body: undefined });
+      return Response.json([]);
+    }
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
@@ -817,7 +823,10 @@ describe("the dispatch CLI", () => {
 
     expect(code, stdout).toBe(0);
     expect(stdout).toContain("Uploaded rows.jsonl as version 1");
-    const uploaded = requests.filter((request) => request.path.endsWith("/artifacts"));
+    // The upload itself, past the read of what the issue holds that runs before it.
+    const uploaded = requests.filter(
+      (request) => request.path.endsWith("/artifacts") && request.method === "POST"
+    );
     expect(uploaded.map((request) => request.body)).toEqual([rows]);
   });
 

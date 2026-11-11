@@ -58,6 +58,8 @@ import type {
   WriteAdvice,
 } from "@legion/contracts";
 import {
+  ARTIFACT_NAME_EXISTS_RULE,
+  ARTIFACT_STORED_TEXT_RULE,
   ASK_URGENCIES,
   actorActText,
   actorLabel,
@@ -855,15 +857,27 @@ async function refuseItemOffRef(
 }
 
 /**
+ * How a caller words a prefix `resolveIdPrefix` resolved to none, or to more than one. `refusal`
+ * is handed what the prefix matched and every candidate it was matched against, and answers the
+ * whole refusal. A caller that gives it also raises that refusal as a problem no flag carries
+ * (ToolInputError), since what the reader must fix is the id and not which flags the command
+ * takes.
+ */
+interface PrefixCandidates<Item> {
+  readonly refusal: (matched: readonly Item[], candidates: readonly Item[]) => string;
+}
+
+/**
  * The full id an ask or comment reference names. A full uuid passes through; a unique prefix
  * is resolved against `list()`, the candidate set `ownerName` names; anything else is refused.
  */
-async function resolveIdPrefix(
+async function resolveIdPrefix<Item extends { readonly id: string }>(
   tool: string,
   kind: "ask" | "comment",
   id: string,
   ownerName: string,
-  list: () => Promise<readonly { readonly id: string }[]>
+  list: () => Promise<readonly Item[]>,
+  candidates?: PrefixCandidates<Item>
 ): Promise<string> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) return fullID;
@@ -873,8 +887,12 @@ async function resolveIdPrefix(
     ]);
   }
   const prefix = id.toLowerCase();
-  const matches = (await list()).filter((item) => item.id.toLowerCase().startsWith(prefix));
+  const all = await list();
+  const matches = all.filter((item) => item.id.toLowerCase().startsWith(prefix));
   if (matches.length === 1 && matches[0] !== undefined) return matches[0].id;
+  if (candidates !== undefined) {
+    throw new ToolInputError(tool, [candidates.refusal(matches, all)], { aboutAFlag: false });
+  }
   throw new ToolInputError(tool, [
     matches.length === 0
       ? `${kind} id ${id} matches none of the ${kind}s on ${ownerName}; use the full id`
@@ -1961,11 +1979,19 @@ function boundedEditDistance(a: readonly string[], b: readonly string[], limit: 
 
 const askHintLimit = 8;
 
-function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], scope: string): string {
+/** The open asks a refused `reply_to_ask` lists, each by the 8 characters that name it — a
+ *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. */
+function openAskChoices(asks: readonly Pick<Ask, "id" | "question">[], owner: string): string {
+  if (asks.length === 0) return `${owner} holds no open ask.`;
   const hints = asks
     .slice(0, askHintLimit)
     .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
-  return `ask IDs are UUIDs; use the full ask ID; ${scope} open asks: ${hints.length === 0 ? "none" : hints.join(", ")}`;
+  return `The open asks of ${owner} are: ${hints.join(", ")}.`;
+}
+
+/** The refusal of a `reply_to_ask` value that is neither a whole ask id nor a prefix of one. */
+function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], owner: string): string {
+  return `ask ids are uuids. Write the whole id, or at least its first 8 characters. ${openAskChoices(asks, owner)}`;
 }
 
 /** The line a reply on an approval request a newer version moved prints: no reply hands such a
@@ -1994,20 +2020,51 @@ async function movedApprovalLine(
   );
 }
 
-async function invalidReplyToAskProblem(
+/** The open asks a `reply_to_ask` may name, and the words a refusal calls their owner by: the
+ *  issue's own open asks, or those of the project document the comment is written on. */
+async function replyToAskCandidates(
   client: DispatchClient,
   owner: Owner,
   resolved: ResolvedArtifact | undefined
-): Promise<string> {
+): Promise<{ readonly asks: readonly Pick<Ask, "id" | "question">[]; readonly owner: string }> {
   if (owner.kind === "issue") {
     const issue = resolved?.issue ?? (await client.getIssue(owner.issue));
-    return askIDInputProblem(issue.open_asks ?? [], "this issue's");
+    return { asks: issue.open_asks ?? [], owner: "this issue" };
   }
   if (resolved === undefined) throw new Error("project document is missing its resolved artifact");
-  return askIDInputProblem(
-    await client.getArtifactAsks(resolved.artifact.id, "open"),
-    "this document's"
-  );
+  return {
+    asks: await client.getArtifactAsks(resolved.artifact.id, "open"),
+    owner: "this document",
+  };
+}
+
+/**
+ * The whole ask id `reply_to_ask` names: a whole uuid passes through, and a prefix of at least 8
+ * hex characters is resolved against the owner's open asks by the resolver `dispatch read` uses
+ * (resolveIdPrefix). A value that is neither, one that names no open ask, and one that names
+ * more than one are each refused here, and each refusal lists those asks so the next call
+ * carries an id that resolves. None of them prints the command's flags: the id is what the
+ * reader must fix.
+ */
+async function resolveReplyToAsk(
+  tool: string,
+  client: DispatchClient,
+  target: Owner,
+  resolved: ResolvedArtifact | undefined,
+  id: string
+): Promise<string> {
+  const whole = normalizeUUID(id);
+  if (whole !== undefined) return whole;
+  const { asks, owner } = await replyToAskCandidates(client, target, resolved);
+  if (!isIdPrefix(id)) {
+    throw new ToolInputError(tool, [askIDInputProblem(asks, owner)], { aboutAFlag: false });
+  }
+  return resolveIdPrefix(tool, "ask", id, owner, async () => asks, {
+    refusal: (found, all) =>
+      found.length === 0
+        ? `reply_to_ask ${id} names no open ask of ${owner}. ${openAskChoices(all, owner)}`
+        : `reply_to_ask ${id} names ${found.length} open asks of ${owner}. Write more of the id. ${openAskChoices(all, owner)}`,
+  });
 }
 
 function anchor(
@@ -2057,6 +2114,52 @@ function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined 
       // The wire type is an open string: a state this build does not know names itself.
       return `Approval: ${approval.state} on v${approval.version}${content}`;
   }
+}
+
+/** The document an upload under `name` would write the next version of: the owner's artifact
+ *  whose slug or filename that name is, as the upload itself resolves one (`$2 in (name, slug)`,
+ *  the slug first). Undefined where the owner holds no such document. */
+function artifactUnderName(artifacts: readonly Artifact[], name: string): Artifact | undefined {
+  const written = name.trim();
+  return (
+    artifacts.find((held) => held.slug === written) ??
+    artifacts.find((held) => held.name === written)
+  );
+}
+
+/** The refusal of an upload under a name its owner already holds: the document found, its kind,
+ *  its newest version and who wrote that version, then the rule that names --force. */
+function artifactNameExistsProblem(held: Artifact, owner: string): string {
+  const versions = held.versions ?? [];
+  const newest = versions[versions.length - 1];
+  if (newest === undefined) {
+    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${ARTIFACT_NAME_EXISTS_RULE}`;
+  }
+  const authors = (newest.authors ?? []).map(actorText);
+  const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
+  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
+}
+
+/** The first line the store would write otherwise, which is the line a reader fixes first. The
+ *  two texts differ, so one of the three arms answers. */
+function firstStoredDifference(given: string, stored: string): string {
+  const written = given.split("\n");
+  const holds = stored.split("\n");
+  for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
+    const wrote = written[line];
+    const held = holds[line];
+    if (wrote === held) continue;
+    if (wrote === undefined) return `the store writes a line ${line + 1}, ${JSON.stringify(held)}`;
+    if (held === undefined) return `the store drops line ${line + 1}, ${JSON.stringify(wrote)}`;
+    return `line ${line + 1} reads ${JSON.stringify(wrote)} and is stored as ${JSON.stringify(held)}`;
+  }
+  return "the stored text differs from the text given";
+}
+
+/** The refusal of inline text the store would change: where the two first differ, and the rule
+ *  that names path. */
+function storedTextProblem(given: string, stored: string): string {
+  return `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}. ${ARTIFACT_STORED_TEXT_RULE}`;
 }
 
 /** The Components line of an issue read: the effective set with where it came from. */
@@ -4908,12 +5011,9 @@ export async function executeDispatchTool(
       const replyTo = itemReplyTo(args, "reply_to");
       const replyToAskTarget = itemReplyTo(args, "reply_to_ask");
       const replyToAsk =
-        replyToAskTarget === undefined ? undefined : normalizeUUID(replyToAskTarget.id);
-      if (replyToAskTarget !== undefined && replyToAsk === undefined) {
-        throw new ToolInputError(input.tool, [
-          await invalidReplyToAskProblem(client, owner, resolved),
-        ]);
-      }
+        replyToAskTarget === undefined
+          ? undefined
+          : await resolveReplyToAsk(input.tool, client, owner, resolved, replyToAskTarget.id);
       // reply_to and reply_to_ask are mutually exclusive, so at most one names a block: a block
       // of the comment reply_to answers, or the part of the ask reply_to_ask threads under.
       const replyToBlock = replyTo?.block ?? replyToAskTarget?.block;
@@ -5475,6 +5575,39 @@ export async function executeDispatchTool(
       const summary = optionalString(args, "summary");
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
+      const artifactOwner = documentOwner();
+      // An upload under a name the owner already holds writes that document's next version, over
+      // the text it holds, so the command reads what the owner holds and refuses it. --force is
+      // what asks for the version, and the API writes one for every other caller as before.
+      if (optionalBoolean(args, "force") !== true) {
+        const held = artifactUnderName(
+          artifactOwner.kind === "project"
+            ? await client.listProjectArtifacts(artifactOwner.project)
+            : await client.listIssueArtifacts(issue()),
+          name
+        );
+        if (held !== undefined) {
+          throw new ToolInputError(input.tool, [
+            artifactNameExistsProblem(
+              held,
+              artifactOwner.kind === "project"
+                ? `project ${artifactOwner.project}`
+                : `issue ${issue()}`
+            ),
+          ]);
+        }
+      }
+      // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
+      // text it would write under another spelling is refused here rather than stored changed.
+      // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
+      // A Dispatch that does not answer it - an older one, or one that takes this text nowhere -
+      // leaves the upload to make its own refusal, as it did before this check.
+      if (content !== undefined) {
+        const stored = await client.markdownRoundTrip(content).catch(() => undefined);
+        if (stored !== undefined && stored !== content) {
+          throw new ToolInputError(input.tool, [storedTextProblem(content, stored)]);
+        }
+      }
       const artifactInput =
         content === undefined
           ? {
@@ -5496,7 +5629,6 @@ export async function executeDispatchTool(
               ...(summary === undefined ? {} : { summary }),
               actor,
             };
-      const artifactOwner = documentOwner();
       const result =
         artifactOwner.kind === "project"
           ? await client.projectArtifact(artifactOwner.project, artifactInput)

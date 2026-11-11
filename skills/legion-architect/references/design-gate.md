@@ -14,10 +14,13 @@ own status are visible from the issue tree and the handoffs; do not narrate them
 Extend the primary document in place: a new version adds only the evidence each decision needs and
 what the human decides, each as a [decision block](skill://dispatch/SKILL.md#asks-and-ask-blocks).
 Never post a second "spec" artifact beside it: `dispatch artifact` with the primary document's name
-replaces the human's document.
+replaces the human's document. The command refuses an upload under the name of a document the
+issue already holds and names `--force`, so that flag is what writes over such a document: pass it
+only where you mean to replace the whole text, and edit a document with `dispatch doc-edit`.
 
 Mark each requirement of the spec as a `requirement` block, and write the issue's Verification
-document (`verification.md`) with it: one `check` block per thing that must be proved, each with
+document (`verification.md`) with it, uploading each version after the first with `--force`: one
+`check` block per thing that must be proved, each with
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`. The human approves both documents in one request (step 4 below), and every
 later role reads the checks: the implementer and the tester record a result against each, and the

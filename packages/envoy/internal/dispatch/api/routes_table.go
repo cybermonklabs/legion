@@ -72,6 +72,13 @@ const (
 	// (refuseWriteOutsideProjectScope), and withinProjectScope passes the row through by this
 	// class rather than by a name it compares.
 	scopeProjectInBody writeScope = "project-in-body"
+	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
+	// its own body alone. There is no object whose project could be resolved and no session the
+	// answer belongs to, so the project check passes it through (withinProjectScope) and this
+	// class is what says the row was decided rather than forgotten. POST
+	// /api/v1/projects/{key}/related writes nothing either and is scopeProject, because it
+	// reads the project its path names; this class is for a row that reads nothing at all.
+	scopeNoWrite writeScope = "no-write"
 )
 
 // writeClasses is the class of every mutating route, by "<method> <pattern>". It stands beside
@@ -194,6 +201,10 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/artifacts/_test/quiesce":                 scopeDeployment,
 	"POST /api/v1/settings/new-issue/_test":                scopeDeployment,
 	"POST /api/v1/writes/_test/slow":                       scopeDeployment,
+
+	// The row that writes nothing and reads no row: the markdown round trip, which answers what
+	// a document write would store for the text it is given.
+	"POST /api/v1/markdown/round-trip": scopeNoWrite,
 }
 
 // idRoute is what the id wildcards of one route's pattern name, which is what the prefix layer
@@ -568,6 +579,7 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1", authPublic, "This index: every route with its method, auth, and purpose.", s.getRouteIndex},
 		{http.MethodGet, "/api/v1/schema/blocks", authPublic, "The typed document block schema as JSON.", s.getBlockSchema},
 		{http.MethodGet, "/api/v1/limits", authAny, "The bounds a write is held to: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long its question and options are together, how long a body an event carries whole may be, and the bytes a request, a document and a handoff body may hold.", s.getLimits},
+		{http.MethodPost, "/api/v1/markdown/round-trip", authAny, "The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error.", s.postMarkdownRoundTrip},
 		{http.MethodGet, "/api/v1/projects", authAny, "List projects.", s.listProjects},
 		{http.MethodPost, "/api/v1/projects", authAny, fmt.Sprintf("Create a project {key, name}: any signed-in person or agent session; a bearer names its session in actor. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over %d characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS.", contracts.ProjectNameMax), s.createProject},
 		{http.MethodGet, "/api/v1/projects/{key}/artifacts", authAny, "List a project's documents.", s.listProjectArtifacts},

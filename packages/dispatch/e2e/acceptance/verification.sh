@@ -262,9 +262,10 @@ close_issue() {
   pass "$1" "closed $2"
 }
 
-# upload SECTION ISSUE NAME FILE: uploads FILE as the document NAME of ISSUE.
+# upload SECTION ISSUE NAME FILE: uploads FILE as the document NAME of ISSUE. --force writes the
+# next version of a name the issue already holds, which spec.md always is.
 upload() {
-  run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4"
+  run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" --force
   pass "$1" "uploaded $3 to $2"
 }
 

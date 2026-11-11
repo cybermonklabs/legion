@@ -454,7 +454,10 @@ var routeShapes = map[string]routeShape{
 		Opaque:            "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
 		OpaqueContentType: "application/json",
 	},
-	"GET /api/v1/limits":    {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"POST /api/v1/markdown/round-trip": {
+		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
+	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
 	"POST /api/v1/projects": {Status: http.StatusCreated, Response: model.Project{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {

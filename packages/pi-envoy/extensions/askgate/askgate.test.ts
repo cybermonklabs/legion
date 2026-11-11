@@ -5957,6 +5957,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       const request =
         url instanceof Request ? new Request(url, init) : new Request(url.toString(), init);
       const route = new URL(request.url).pathname;
+      // What the issue holds, which the upload reads to refuse a name that exists: DSP-1 holds
+      // no document here, so the upload below writes a first version.
+      if (route.endsWith("/artifacts") && request.method === "GET") {
+        return Response.json([]);
+      }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
         sent.push({ path: route, body: await file.text() });
