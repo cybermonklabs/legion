@@ -1,5 +1,7 @@
 import { lazy, type ReactNode, Suspense } from "react";
 
+import { renderChunk } from "../shell/DeploymentResilience";
+
 import type { MarginProps } from "./Margin";
 
 /**
@@ -19,7 +21,15 @@ import type { MarginProps } from "./Margin";
  * (`useMarginSheet.ts`). `fallback={null}` is what the reader sees on the frames before it
  * arrives, which is what the margin itself draws on the route they land on.
  */
-const Margin = lazy(() => import("./Margin").then((module) => ({ default: module.Margin })));
+// Under `renderChunk`, which tells the chunk-failure recovery that a reader is waiting on this
+// download: the margin is mounted by the route, not prefetched by the entry, so a failure here
+// must spend the tab's reload rather than be read as the entry's prefetch
+// (`features/shell/DeploymentResilience.tsx`). `fallback={null}` makes the wait invisible, not
+// harmless: a margin that never arrives is a page missing its comments, its threads and its
+// composer.
+const Margin = lazy(() =>
+  renderChunk(() => import("./Margin").then((module) => ({ default: module.Margin })))
+);
 
 export function MarginColumn(props: MarginProps): ReactNode {
   return (

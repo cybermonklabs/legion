@@ -43,14 +43,12 @@
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
 import { inboxPane } from "./inbox-pane";
 import { seedCommentThread, THREAD_SESSION } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /** R3's bound on one issue landing: at most this many reads, in at most `WAVE_BOUND` waves. */
@@ -70,10 +68,6 @@ const ANSWER_SETTLE_MS = 2_000;
 /** The pages, in the order this row drives them. The assertion names the same four, so a landing
  *  dropped from here fails the row rather than quietly shrinking what "every page" covers. */
 const PAGES = ["issue page", "board", "inbox", "document page"] as const;
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * One read of one landing: a GET under `/api/` or `/auth/`, with the time it started and the time
@@ -185,7 +179,7 @@ function shellWavesBeforeOwnData({ landing, reads, waves }: Measurement): number
  *  reading taken just before the navigation). */
 function recordReads(page: Page, from: number): Read[] {
   const reads: Read[] = [];
-  const pending = new Map<unknown, Read>();
+  const pending = new Map<Request, Read>();
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (request.method() !== "GET") return;

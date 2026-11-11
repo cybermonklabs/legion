@@ -115,9 +115,10 @@ const loadProjectPage = () =>
 const loadDocumentPage = () =>
   import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }));
 
-// Each route chunk under `renderChunk`, which is what tells the chunk-failure recovery that a
-// reader is waiting on this download rather than the entry having prefetched it
-// (`features/shell/DeploymentResilience.tsx`).
+// The three the entry can prefetch, under `renderChunk`, which is what tells the chunk-failure
+// recovery that a reader is waiting on this download rather than the entry having prefetched it
+// (`features/shell/DeploymentResilience.tsx`). Every other route of this file is under it too,
+// further down: these three are only the ones named twice, here and in the preload.
 const IssuePage = lazy(() => renderChunk(loadIssuePage));
 const ProjectPage = lazy(() => renderChunk(loadProjectPage));
 const DocumentPage = lazy(() => renderChunk(loadDocumentPage));
@@ -152,64 +153,106 @@ const loadDocumentChunks = () =>
  * is no page of a cold landing starts nothing. A chunk that fails here is left to the router:
  * `lazy` asks for the same import again, and that failure - a reader in front of a page that
  * cannot draw - is the one `DeploymentResilience` reloads for (`prefetchChunk`).
+ *
+ * `pathname` is the caller's and has no default: the one call site is `main.tsx`, which passes
+ * `window.location.pathname` - the address the browser is loading, read before React renders
+ * anything - and the landing read beside it defaults to that same address of its own accord
+ * (`readLanding`).
  */
-export function preloadRouteChunk(pathname: string = window.location.pathname): void {
-  const page = landingReadOf(pathname).page;
-  const chunks =
-    page === "issue"
-      ? [loadIssuePage, loadDocumentChunks]
-      : page === "document"
-        ? [loadDocumentPage, loadDocumentChunks]
-        : page === "board"
-          ? [loadProjectPage]
-          : [];
-  for (const load of chunks) prefetchChunk(load);
+export function preloadRouteChunk(pathname: string): void {
+  switch (landingReadOf(pathname).page) {
+    case "issue":
+      prefetchChunk(loadIssuePage);
+      prefetchChunk(loadDocumentChunks);
+      break;
+    case "document":
+      prefetchChunk(loadDocumentPage);
+      prefetchChunk(loadDocumentChunks);
+      break;
+    case "board":
+      prefetchChunk(loadProjectPage);
+      break;
+    case "inbox":
+      break;
+  }
 }
 
+// Every other route of the shell, each under `renderChunk` as the three above are, and for the
+// same reason: a reader is waiting on this download the moment the router renders the route, so
+// its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
+// on may be passed over, and the entry's prefetch is the only such chunk there is
+// (`features/shell/DeploymentResilience.tsx`). Left bare, as these were, a route chunk that
+// failed while the entry's prefetch of another chunk was still out was read as that prefetch's
+// and reloaded nothing, leaving the reader in front of a page that could not draw
+// (dispatch://INFRA-1109).
 const AgentsPage = lazy(() =>
-  import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
+  renderChunk(() =>
+    import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
+  )
 );
 
 const MachinesPage = lazy(() =>
-  import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+  renderChunk(() =>
+    import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+  )
 );
 
 const MachinePage = lazy(() =>
-  import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
+  renderChunk(() =>
+    import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
+  )
 );
 
 const AgentConversationPage = lazy(() =>
-  import("./features/agent-view/AgentConversationPage").then((module) => ({
-    default: module.AgentConversationPage,
-  }))
+  renderChunk(() =>
+    import("./features/agent-view/AgentConversationPage").then((module) => ({
+      default: module.AgentConversationPage,
+    }))
+  )
 );
 
 const AgentArtifactPage = lazy(() =>
-  import("./features/artifacts/AgentArtifactPage").then((module) => ({
-    default: module.AgentArtifactPage,
-  }))
+  renderChunk(() =>
+    import("./features/artifacts/AgentArtifactPage").then((module) => ({
+      default: module.AgentArtifactPage,
+    }))
+  )
 );
 
 const BroadcastsPage = lazy(() =>
-  import("./features/agents/BroadcastsPage").then((module) => ({ default: module.BroadcastsPage }))
+  renderChunk(() =>
+    import("./features/agents/BroadcastsPage").then((module) => ({
+      default: module.BroadcastsPage,
+    }))
+  )
 );
 
 const BroadcastPage = lazy(() =>
-  import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
+  renderChunk(() =>
+    import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
+  )
 );
 
 const DeliveryPage = lazy(() =>
-  import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
+  renderChunk(() =>
+    import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
+  )
 );
 const PipelinePage = lazy(() =>
-  import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
+  renderChunk(() =>
+    import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
+  )
 );
 
 const AnswersPage = lazy(() =>
-  import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+  renderChunk(() =>
+    import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+  )
 );
 const SettingsPage = lazy(() =>
-  import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+  renderChunk(() =>
+    import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+  )
 );
 
 function IssuePageFallback(): ReactNode {

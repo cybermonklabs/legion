@@ -3,7 +3,7 @@ import type { Doc } from "yjs";
 
 import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { importWhenOnline, renderChunk } from "../shell/DeploymentResilience";
 import type { AnchoredBlock } from "./ask-block";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";
@@ -66,7 +66,12 @@ export const loadEditorLibrary = () =>
   );
 
 export const createEditor: CreateEditor = async (root, options) => {
-  const [{ createProofEditor }, { installTypedBlocks }] = await loadEditorLibrary();
+  // `renderChunk` and not a bare call: this runs when a document mounts, so a reader is waiting
+  // on the download and its failure must spend one of the tab's recovery reloads. The entry
+  // starts the same import as a prefetch (`app.tsx`, `preloadRouteChunk`), and that one is
+  // nobody waiting; the two are told apart here, at the call, because the import itself is
+  // shared (`features/shell/DeploymentResilience.tsx`).
+  const [{ createProofEditor }, { installTypedBlocks }] = await renderChunk(loadEditorLibrary);
   const handle = await createProofEditor(root, { ...options, drawMermaid: requestMermaidDrawing });
   for (const [name, value] of Object.entries(editorAttributes)) {
     handle.view.dom.setAttribute(name, value);
