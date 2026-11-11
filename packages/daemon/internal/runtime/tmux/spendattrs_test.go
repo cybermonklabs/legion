@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -73,5 +74,45 @@ func TestEveryPaneCarriesTheOperatorsSpendAttributesWithItsOwnIssueAndRole(t *te
 func TestCheckPaneEnvAcceptsTheOperatorsSpendAttributes(t *testing.T) {
 	if err := checkPaneEnv(map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}, nil); err != nil {
 		t.Errorf("checkPaneEnv with the operator's own spend attributes: %v", err)
+	}
+}
+
+// The composed value reaches a real process under this runtime too: a child is run with exactly
+// the variables a pane is told (PaneVariables, which answers panePairs' own pairs in the pane's
+// own order), and what that child prints is what an agent in such a pane reads. A pane of its
+// own would prove nothing more here and needs a tmux this machine need not carry, while the
+// variables are the whole of what a pane hands its process.
+//
+// The order inside the value is the control: the operator's attributes stand first and the
+// daemon's issue and role after them, where the detector's last-wins assignment gives the launch
+// a key the operator's value already holds. A pane that told the operator's own value last — as
+// the operator's loop told it before this composition — fails here. The child prints the whole
+// value, and the word `unset` for a variable its environment does not hold, so a value that is
+// absent reads apart from one that is empty.
+func TestAPanesChildProcessReadsTheComposedSpendAttributes(t *testing.T) {
+	spec := testSpec()
+	in := PaneInputs{
+		StateDir: t.TempDir(), Workspace: "/state/workspaces/LEGION-43", DaemonURL: "http://127.0.0.1:13370",
+		EnvoyURL:    "http://127.0.0.1:9020",
+		OperatorEnv: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes},
+	}
+	variables, err := PaneVariables(spec, in, secretFiles(in.StateDir, spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command("/bin/sh", "-c", `printf '%s' "${`+runtime.SpendAttributesVariable+`-unset}"`)
+	child.Env = variables
+	read, err := child.Output()
+	if err != nil {
+		t.Fatalf("the child of a pane's variables: %v", err)
+	}
+	t.Logf("a pane's child process read %s=%s", runtime.SpendAttributesVariable, read)
+	want := operatorSpendAttributes + ",legion.issue=LEGION-43,legion.role=tester"
+	if string(read) != want {
+		t.Errorf("a pane's child read %s=%q, want %q", runtime.SpendAttributesVariable, read, want)
+	}
+	if !strings.HasPrefix(string(read), operatorSpendAttributes+",legion.") {
+		t.Errorf("a pane's child read %s=%q, want the operator's own %q first and the daemon's pairs after it: the detector assigns last-wins",
+			runtime.SpendAttributesVariable, read, operatorSpendAttributes)
 	}
 }

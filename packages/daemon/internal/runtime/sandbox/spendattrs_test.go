@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"encoding/json"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -81,5 +83,112 @@ func TestTheImageProbeIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
 	if strings.Contains(carried[0], runtime.SpendIssueAttribute) || strings.Contains(carried[0], runtime.SpendRoleAttribute) {
 		t.Errorf("the probe container carries %s = %q, want no %s and no %s: it runs no role and serves no issue",
 			runtime.SpendAttributesVariable, carried[0], runtime.SpendIssueAttribute, runtime.SpendRoleAttribute)
+	}
+}
+
+// The composed value reaches a real process, not only the launch's own data: the plain pairs
+// launchEnvironment hands the generation's start command are run as one child's whole
+// environment, and what that child prints is what the agent of the generation reads. The
+// launcher hands LauncherStart.Env to its child verbatim, which internal/launcher's
+// TestAGenerationsCredentialsLiveExactlyAsLongAsItsChild proves — its child read the credential
+// through the pointer the start command's own ENVOY_TOKEN_FILE pair named — so a child run under
+// exactly those pairs is the generation's own environment, and that proof is cited here rather
+// than written again.
+//
+// The controller's launch is the control: it serves no issue, so its child prints the operator's
+// attributes with legion.role=controller and no legion.issue at all. The child prints the whole
+// value, and the word `unset` for a variable its environment does not hold, so a value that is
+// absent reads apart from one that is empty and from the operator's own alone.
+func TestAGenerationsChildProcessReadsTheComposedSpendAttributes(t *testing.T) {
+	opts := testOptions()
+	opts.Pod = Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}
+	r, err := configure(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		spec runtime.SpawnSpec
+		want string
+	}{
+		"a worker":       {workerSpec(t), operatorSpendAttributes + ",legion.issue=" + testTree + ",legion.role=tester"},
+		"the controller": {controllerSpec(t), operatorSpendAttributes + ",legion.role=controller"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, plain := r.launchEnvironment(launchOf(t, r, tc.spec))
+			child := exec.Command("/bin/sh", "-c", `printf '%s' "${`+runtime.SpendAttributesVariable+`-unset}"`)
+			child.Env = plain
+			read, err := child.Output()
+			if err != nil {
+				t.Fatalf("the child of %s's start command: %v", name, err)
+			}
+			t.Logf("%s: its child process read %s=%s", name, runtime.SpendAttributesVariable, read)
+			if string(read) != tc.want {
+				t.Errorf("the child of %s read %s=%q, want %q", name, runtime.SpendAttributesVariable, read, tc.want)
+			}
+		})
+	}
+}
+
+// The composed value travels in the generation's start command and in no pod specification,
+// which is why a role already running is not restarted for it: a pod is replaced for what its own
+// specification holds and for the configuration its template records (podShapeAnnotation,
+// podShapeDrift), and the whole template — every container and that annotation with them — names
+// this variable nowhere.
+//
+// POD_UID is the control that tells the two carriers apart: it is the one variable of a role's
+// environment that comes from the pod specification, through the downward API, and it is printed
+// beside the start command's pairs from the same launch. So a read that finds nothing of the
+// spend attributes in the pod specification is told from a read that could see nothing there at
+// all. Both printed halves are the evidence, and both are asserted.
+func TestTheComposedSpendAttributesTravelInTheStartCommandAndNoPodSpecification(t *testing.T) {
+	opts := testOptions()
+	opts.Pod = Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}
+	r, err := configure(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := launchOf(t, r, workerSpec(t))
+	_, plain := r.launchEnvironment(l)
+	var carried []string
+	for _, pair := range plain {
+		if strings.HasPrefix(pair, runtime.SpendAttributesVariable+"=") {
+			carried = append(carried, pair)
+		}
+	}
+	t.Logf("the generation's start command carries: %s", strings.Join(carried, " "))
+	want := runtime.SpendAttributesVariable + "=" + operatorSpendAttributes + ",legion.issue=" + testTree + ",legion.role=tester"
+	if len(carried) != 1 || carried[0] != want {
+		t.Errorf("the start command carries %q, want exactly one pair, %q", carried, want)
+	}
+	template := r.podTemplate(l)
+	container := containerNamed(t, template.Spec, l.kind.container())
+	var sources []string
+	podUID := "no POD_UID at all"
+	for _, entry := range container.Env {
+		switch {
+		case entry.ValueFrom != nil && entry.ValueFrom.FieldRef != nil:
+			sources = append(sources, entry.Name+" from the downward API's "+entry.ValueFrom.FieldRef.FieldPath)
+			if entry.Name == "POD_UID" {
+				podUID = entry.ValueFrom.FieldRef.FieldPath
+			}
+		case entry.ValueFrom != nil:
+			sources = append(sources, entry.Name+" from "+entry.ValueFrom.String())
+		default:
+			sources = append(sources, entry.Name+"="+entry.Value)
+		}
+	}
+	t.Logf("the pod specification's %s container carries: %s", container.Name, strings.Join(sources, ", "))
+	if podUID != "metadata.uid" {
+		t.Errorf("the %s container carries POD_UID from %q, want the downward API's metadata.uid: it is the control this read tells the pod specification by",
+			container.Name, podUID)
+	}
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{runtime.SpendAttributesVariable, operatorSpendAttributes} {
+		if strings.Contains(string(encoded), text) {
+			t.Errorf("the pod template names %q: the composed value travels in the generation's start command alone, so that no role already running is restarted for it", text)
+		}
 	}
 }
