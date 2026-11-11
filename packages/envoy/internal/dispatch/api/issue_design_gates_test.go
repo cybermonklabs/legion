@@ -120,11 +120,15 @@ func designGateEditRequest(t *testing.T, artifactID, markdown string) *http.Requ
 // Dispatch's `superseded_approval` advice. The daemon publishes the document each gated step
 // records (PUT /api/v1/issues/{key}/design-gates), the issue read answers that record, and a write
 // that supersedes a person's approval names the live issues whose gates record the document it
-// rewrote and stays quiet about every other document. The rows below are that whole path, driven
-// over the routes a daemon, a person and an agent each reach, and never over the table itself.
+// rewrote, on a step that deployment gates, and stays quiet about every other document. The rows
+// below are that whole path, driven over the routes a daemon, a person and an agent each reach,
+// and never over the table itself.
 func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
+	// The deployment serving DGATE gates all three steps, so the rows below turn on the record
+	// alone; the two rows at the end are the ones that move this list.
+	publishGatedSteps(t, handler, "DGATE", []string{model.GatedStepDecisions, model.GatedStepCriteria, model.GatedStepSpec})
 	spec := "# Design\n\nThe design, as approved.\n"
 
 	t.Run("a publish replaces the issue's whole set", func(t *testing.T) {
@@ -316,6 +320,8 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		// come back by issue key, and GATEA-1 stands before GATEB-1.
 		createAdviceProject(t, handler, "GATEA")
 		createAdviceProject(t, handler, "GATEB")
+		publishGatedSteps(t, handler, "GATEA", []string{model.GatedStepSpec})
+		publishGatedSteps(t, handler, "GATEB", []string{model.GatedStepCriteria})
 		owner := createAdviceIssue(t, handler, "GATEA", "The issue the document belongs to", &spec)
 		other := createAdviceIssue(t, handler, "GATEB", "The issue handed that same document", &spec)
 		publishDesignGates(t, handler, owner.Key, []issueDesignGate{
@@ -378,6 +384,41 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 
 		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence written after the gate went.", approved)
 		requireNoDesignGates(t, superseded, "a document whose gate record the daemon cleared")
+	})
+
+	t.Run("a gate on a step the deployment does not gate names none", func(t *testing.T) {
+		// A daemon records a gate row for a step it does not gate - under `gates.design: off` the
+		// registration records the spec step and approves it, and no later event ever moves it -
+		// and such a gate refuses no READY. The project's own list is what says so.
+		createAdviceProject(t, handler, "GATEONE")
+		publishGatedSteps(t, handler, "GATEONE", []string{model.GatedStepSpec})
+		issue := createAdviceIssue(t, handler, "GATEONE", "Gated on its spec alone", &spec)
+		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
+			{Step: model.GatedStepCriteria, ArtifactID: issue.PrimaryArtifactID},
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
+		})
+		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
+
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the spec gate had not seen.", approved)
+		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}
+		if !slices.Equal(superseded.DesignGates, want) {
+			t.Fatalf("design_gates = %#v, want %#v: the criteria gate of a deployment that gates the spec alone holds no READY back",
+				superseded.DesignGates, want)
+		}
+	})
+
+	t.Run("a project whose deployment gates nothing names none", func(t *testing.T) {
+		// The empty list is what a deployment with `gates.design: off` publishes, and it is also
+		// what a project reads as before its daemon has published anything at all.
+		createAdviceProject(t, handler, "GATENONE")
+		issue := createAdviceIssue(t, handler, "GATENONE", "Recorded by a daemon that gates nothing", &spec)
+		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
+		})
+		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
+
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence no gate waits on.", approved)
+		requireNoDesignGates(t, superseded, "a document a gate of a deployment that gates nothing records")
 	})
 
 	t.Run("a gate read that never answers costs the gate list and never the write", func(t *testing.T) {

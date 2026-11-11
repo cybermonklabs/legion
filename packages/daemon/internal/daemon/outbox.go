@@ -401,6 +401,17 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
 				"status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.DesignGatesPublish:
+		// Nobody is told: the one refusal that ends this row is an issue Dispatch does not know
+		// (permanentRefusal, ISSUE_NOT_FOUND), and no architect of such an issue is there to
+		// hear it. The line is what says the row ended, since without it the drop would be
+		// silent, and it names what Dispatch is left holding: whatever set it last took for
+		// that issue, which its write advice goes on reading.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {

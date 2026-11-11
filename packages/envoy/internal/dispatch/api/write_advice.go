@@ -285,8 +285,9 @@ type decisionBlockCheck struct {
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
 // PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// with each issue's own Dispatch status: a gate on an issue Dispatch holds as done reopens
-// nothing. Where the record names no issue, this write closed no gate anyone here knows of.
+// kept to the gates that hold a READY back: the issue is not done there, and the project's own
+// list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
+// this write closed no gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version a person approved, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -295,9 +296,10 @@ type supersededApproval struct {
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
-	// issue and step, kept to the issues that are not done. Omitted when empty, and empty is
-	// also what a failed gate read leaves (supersededApprovalAdvice), because an absent list
-	// and an empty one say the one thing a client acts on - Dispatch names no gate here.
+	// issue and step, kept to the live issues whose step the project gates. Omitted when empty,
+	// and empty is also what a failed gate read leaves (supersededApprovalAdvice), because an
+	// absent list and an empty one say the one thing a client acts on - Dispatch names no gate
+	// here.
 	DesignGates []supersededApprovalGate `json:"design_gates,omitempty"`
 }
 
@@ -371,16 +373,28 @@ func (s *server) supersededApprovalAdvice(
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
 // document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
-// whose issue is not done: a gate on a closed issue holds no READY back, so reporting it would
-// send the writer to an issue with nothing to reopen. The order is the issue's key and then the
-// order a gate runs the steps in ($2, model.GatedStepsKnown), the order the issue read lists an
-// issue's own gates in.
+// that hold a READY back and no others. Two things decide that, and the row alone says neither.
+//
+// The issue must not be done: a gate on a closed issue holds no READY back, so reporting it
+// would send the writer to an issue with nothing to reopen.
+//
+// The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
+// written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
+// these rows). A daemon records a gate row for a step it does not gate - with `gates.design: off`
+// the registration records the spec step, approves it, and no later event ever moves it - and
+// that gate refuses nothing. A project whose daemon has published no list gates nothing it holds,
+// and prints no clause, which is the direction this whole change takes: a reader told nothing
+// asks the architect, where a reader told a gate that is not there stops working.
+//
+// The order is the issue's key and then the order a gate runs the steps in ($2,
+// model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
 func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
 	rows, err := q.Query(ctx, `
 		select g.issue, g.step
 		from design_gates g
 		join issues i on i.key = g.issue
-		where g.artifact_id = $1 and i.status <> 'done'
+		join projects p on p.key = i.project_key
+		where g.artifact_id = $1 and i.status <> 'done' and g.step = any(p.gated_steps)
 		order by g.issue, array_position($2::text[], g.step)
 	`, artifactID, model.GatedStepsKnown)
 	if err != nil {

@@ -180,6 +180,13 @@ describe.skipIf(!dispatchStackEnabled)(
       stack = await startDispatchStack({ work: stackDirectory });
       for (const key of [PROJECT, FIRST_TREE, SECOND_TREE]) {
         await asPerson("POST", "/api/v1/projects", { key, name: `${key} project` });
+        // The deployment's own gated steps, which its daemon publishes beside the gate records
+        // and which the advice reads: a gate row on a step the deployment does not gate holds
+        // no READY back and prints no clause.
+        await asMachine("PUT", `/api/v1/projects/${key}/gated-steps`, {
+          steps: ["decisions", "criteria", "spec"],
+          actor: { kind: "session", id: SESSION },
+        });
       }
     }, 600_000);
     afterAll(async () => {
