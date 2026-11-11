@@ -856,9 +856,11 @@ const RED_SPENT =
  * publish to it. */
 const CONTROLLER_TOPIC = /\bnotifications\.role\.legion-[\w-]+-controller\b/;
 /** The role's own words for a test no issue of Dispatch tracks (findings.md: "Where no issue
- * tracks the test … say so in that message"). */
+ * tracks the test … say so in that message"). The noun between `no` and `issue` is the role's to
+ * choose — a live run wrote "No Dispatch issue tracks this test" — so up to two words stand
+ * between them. */
 const NO_ISSUE =
-  /\bno (?:open |other )?issue\b|\bnothing tracks\b|\bnot tracked\b|\bno such issue\b/i;
+  /\bno (?:\w+ ){0,2}issue\b|\bnothing tracks\b|\bnot tracked\b|\bno such issue\b/i;
 /** `dispatch issue`, the command that files one: never `issue-update`, and never a `--help` or a
  * `--dry-run`, which file nothing. */
 const FILES_ISSUE = /\bdispatch[ \t]+issue\b(?!-)(?![^\n]*--(?:help|dry-run)\b)/;

@@ -1851,6 +1851,8 @@ red_fixture() {
                  payload:($settlement|tojson)}},
        ({match:"^gh run view .*--log-failed"}
         + (if $log_err == "" then {stdout:$log} else {stderr:($log_err + "\n"), exit:1} end)),
+       {match:"^gh run list", stdout:[$run]},
+       {match:"^gh run view", stdout:($run + {jobs:$jobs})},
        {match:("^gh api .*actions/runs/" + ($run_id|tostring) + "/jobs"),
         stdout:{total_count:($jobs|length), jobs:$jobs}},
        {match:"^gh api .*actions/runs",
