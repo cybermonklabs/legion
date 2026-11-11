@@ -1233,7 +1233,8 @@ Table `references` from `GET /api/v1/artifacts/{id}/blocks` aggregate anchors pi
 A row or column deletion that would remove an open ask or unresolved comment anchor is `INVALID_OP` on `index`, naming the axis and anchor ids;
 answered asks and resolved comments remain historical and do not block it.
 Block ids stay with moved, retyped, and table-edited nodes, so the ask reconciliation keeps a moved ask;
-a removed block retracts its ask only while the ask is open (an answered or resolved ask is already closed, and `asks_answer_state_check` forbids a resolved row that still carries an answer).
+a batch whose result drops a block an open ask points at is refused `INVALID_ASK_BLOCK`, naming the block and saying to answer or resolve its ask, or to remove the block in the document editor, before the write (`dropsAskBlock`, which reads the asks table only when a block is gone, and `refuseDroppedAskBlocks`, which the upload path and a rebuild run too);
+the editor's own removal is what retracts an ask, and it retracts it only while the ask is open (an answered or resolved ask is already closed, and `asks_answer_state_check` forbids a resolved row that still carries an answer).
 Within one atomic batch, an operation that names a block cascaded away by an earlier `delete {block}` fails as `INVALID_OP`, naming the earlier operation and the parent block rather than treating it as an unknown id.
 `ApplyOps` stamps `EnsureBlockIDs` on the live tree before resolving operations so every block is addressable.
 

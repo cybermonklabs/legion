@@ -797,7 +797,7 @@ func boundedReadBack(entries []string) string {
 	if bytes <= editReadBackBound {
 		return strings.Join(entries, "\n\n")
 	}
-	budget := editReadBackBound - 2 - len(readBackCutLine(characters, len(entries)))
+	budget := editReadBackBound - 2 - len(ReadBackCutLine(characters, len(entries)))
 	kept, used, cut := make([]string, 0, len(entries)), 0, len(entries)
 	for index, entry := range entries {
 		separator := 0
@@ -819,11 +819,12 @@ func boundedReadBack(entries []string) string {
 	for _, entry := range entries[:cut] {
 		characters -= utf8.RuneCountInString(entry)
 	}
-	return strings.Join(append(kept, readBackCutLine(characters, len(entries)-cut)), "\n\n")
+	return strings.Join(append(kept, ReadBackCutLine(characters, len(entries)-cut)), "\n\n")
 }
 
-// readBackCutLine says what a read-back held back at the bound.
-func readBackCutLine(characters, blocks int) string {
+// ReadBackCutLine says what a read-back held back at the bound. It is exported so a caller's
+// test reads the line this package writes rather than a copy of its wording.
+func ReadBackCutLine(characters, blocks int) string {
 	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
 }
 
@@ -2531,11 +2532,8 @@ func refuseCodeThatReshapesItsBlock(before pmdoc.ValidDocument, after *pmdoc.Nod
 		return err
 	}
 	holder := "block"
-	for _, ancestor := range at.Ancestors {
-		if pmdoc.IsTypedBlock(ancestor.Type) {
-			holder = ancestor.Type
-			break
-		}
+	if typed := typedBlockHolder(at); typed != nil {
+		holder = typed.Type
 	}
 	return &ErrInvalidOp{Field: field, Reason: fmt.Sprintf(
 		"%s %q changes how the %s holding this code block reads back (%v); move the code block out of the %s",

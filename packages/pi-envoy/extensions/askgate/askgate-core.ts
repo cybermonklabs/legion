@@ -187,11 +187,11 @@
 //     only against two rules (rule-check.md): an ask whose own recommendation is to change
 //     nothing, and an ask for the person's hands where the agent did not try the access it has.
 //     A new ask (`@legion/envoy-client/askgate-new-asks`) is a `dispatch ask`, each `:::ask{`
-//     opener a `dispatch doc-edit` insert, a `dispatch issue` spec or a markdown `dispatch
-//     artifact` upload writes, and each block a doc-edit retypes into an ask. For a retype the
-//     gate reads the block's own text from Dispatch, and for an upload the ids the version it
-//     replaces already holds, so a re-upload judges only the asks it adds; each read goes
-//     through the Dispatch the call's own directory configures (`Deps.dispatchClient`, the
+//     opener a `dispatch doc-edit` insert or replace, a `dispatch issue` spec or a markdown
+//     `dispatch artifact` upload writes, and each block a doc-edit retypes into an ask. For a
+//     retype the gate reads the block's own text from Dispatch, and for an upload the ids the
+//     version it replaces already holds, so a re-upload judges only the asks it adds; each read
+//     goes through the Dispatch the call's own directory configures (`Deps.dispatchClient`, the
 //     directory `readArgs` names lazily). When the answer names an ask that matches `no_change`
 //     or `untried_access`, AskGate refuses the call in every mode, naming each matching ask and
 //     putting the charter's revise reason after the rules reason; no marker is minted for it. A

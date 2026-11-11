@@ -865,14 +865,11 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string,
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read open ask blocks: %w", err)
 	}
-	pmdoc.Walk(target, func(node *pmdoc.Node) bool {
-		if node.Type == "ask" {
-			if blockID, ok := node.Attrs[pmdoc.BlockIDAttr].(string); ok {
-				delete(open, blockID)
-			}
-		}
-		return true
-	})
+	// The same walk dropsAskBlock reads the two trees with, so the gate and the refusal it gates
+	// cannot read one tree's ask blocks differently.
+	for id := range askBlockIDs(target) {
+		delete(open, id)
+	}
 	if len(open) == 0 {
 		return nil
 	}
@@ -1524,8 +1521,12 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			if outcome, written, mutationErr = batch.outcome(len(ops)); mutationErr != nil {
 				return
 			}
-			if outcome.Written, mutationErr = batch.readBack(written); mutationErr != nil {
-				return
+			// A batch that left the document as it was wrote nothing to read back, so it pays
+			// for no render of the document.
+			if outcome.Changed {
+				if outcome.Written, mutationErr = batch.readBack(written); mutationErr != nil {
+					return
+				}
 			}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 				if err := pmdoc.UpdateDocument(transaction, fragment, written); err != nil {
@@ -1597,8 +1598,12 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		if outcome, written, err = batch.outcome(len(ops)); err != nil {
 			return err
 		}
-		if outcome.Written, err = batch.readBack(written); err != nil {
-			return err
+		// A batch that left the document as it was wrote nothing to read back (the other caller
+		// says the same), so it pays for no render of the document.
+		if outcome.Changed {
+			if outcome.Written, err = batch.readBack(written); err != nil {
+				return err
+			}
 		}
 		return recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 			var updateErr error

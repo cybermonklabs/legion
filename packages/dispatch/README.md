@@ -401,7 +401,23 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-All three source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
+names blocks: a list written over a paragraph's whole text, a list written over the text of a
+nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
+matched item's own marker, and the markdown each edit answers with. It takes the first three
+inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
+that project. It is the one driver that can start its own server: given `DATABASE_URL`, a
+loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
+its own trap. That command truncates and reseeds the database it is given, so a `DATABASE_URL`
+naming the database of `LEGION_TEST_PG_DSN` is refused.
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
+  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
+```
+
+All four source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 

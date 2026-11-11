@@ -76,7 +76,7 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-require_commands bun curl jq grep sed date
+require_commands bun curl jq grep sed head mktemp date
 
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
@@ -251,10 +251,20 @@ start_instance() {
   (cd "$repo_root" && DATABASE_URL="$database_url" exec setsid bun run dispatch:local) \
     >"$work/instance.log" 2>&1 </dev/null &
   instance_pid=$!
-  instance_group="$(ps -o pgid= -p "$instance_pid" 2>/dev/null | tr -d ' ' || true)"
   own_group="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
-  # A group of this shell's own is never signalled: that would stop this run with the instance.
-  [[ -n "$instance_group" && "$instance_group" != "$own_group" ]] || instance_group=""
+  # The child is in this shell's own group until it reaches setsid, and a group of this shell's
+  # own is never signalled: that would stop this run with the instance. So the group is read
+  # until it is one of the instance's own, which is what stop_instance signals to reach the two
+  # `bun run` parents and the server under them.
+  instance_group=""
+  while ((SECONDS < deadline)); do
+    instance_group="$(ps -o pgid= -p "$instance_pid" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -z "$instance_group" || "$instance_group" != "$own_group" ]]; then
+      break
+    fi
+    instance_group=""
+    sleep 0.2
+  done
   while :; do
     line="$(grep -m 1 -F '  Open (signed in as alice): ' "$work/instance.log" 2>/dev/null || true)"
     if [[ -n "$line" ]]; then

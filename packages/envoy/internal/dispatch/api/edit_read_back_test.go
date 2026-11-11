@@ -1,12 +1,12 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -137,18 +137,12 @@ func checkBoundedReadBack(t *testing.T, got string, blocks []string) {
 		t.Fatalf("written cut %q, want a piece of the third block %q", cut, blocks[2])
 	}
 	left := utf8.RuneCountInString(blocks[2]) - utf8.RuneCountInString(cut) + utf8.RuneCountInString(blocks[3])
-	if want := readBackCutLine(left, 2); entries[3] != want {
+	if want := docs.ReadBackCutLine(left, 2); entries[3] != want {
 		t.Fatalf("written ends %q, want %q", entries[3], want)
 	}
 	if len(got) < 1900 {
 		t.Fatalf("written holds %d bytes, want a read-back that fills its bound before it cuts", len(got))
 	}
-}
-
-// readBackCutLine is the line a read-back ends with once it has run past its bound, as the server
-// writes it (docs.readBackCutLine).
-func readBackCutLine(characters, blocks int) string {
-	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
 }
 
 // An edit whose blocks hold more than the bound stops there: it prints the blocks it has room for,
