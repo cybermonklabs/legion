@@ -188,10 +188,8 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// transaction against a Postgres drainRoundTrip - 3 ms - away, so the window is a hang guard far
 	// above the work each message does, and a redelivery the count would see needs the whole
 	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
-	// is intake.OpenConsumers' own, with the fetch batch of one every intake consumer takes
-	// (consumerFetchBatch, consume.go), so no redelivery can reach it while a handler runs, and
-	// one the server makes after a handler's return races that return's acknowledgement
-	// (ConsumerSpec.HandlerLimit's comment in consume.go, where that mechanism is written).
+	// is intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment
+	// in consume.go).
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)

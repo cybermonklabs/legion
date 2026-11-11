@@ -512,15 +512,28 @@ It says nothing about the run that was lost: the series goes to the log, and tha
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS
-JetStream is this repository's broker. It makes a message due again when neither a progress report
-nor the acknowledgement reaches the server inside the acknowledgement window. A second delivery
-may then reach the consumer at the pull that follows the handler's return, racing the
-acknowledgement or nak that the same return sends, which usually wins. Every counter a handling
-moves then moves a second time: a statement counter, a request counter, a call counter in a fake.
-That second move is the broker's business and no part of what the code promises, so a test asserts
-no exact count of such work. Assert the effect the handler leaves behind instead: the
-record written, the fact applied once, the row a repeated handling does not add. A repeat is then
-invisible to the test, because the handler's effect is the same either way.
+JetStream is this repository's broker. Four facts decide when it hands one over a second time. The
+comment on `ConsumerSpec.HandlerLimit` (`packages/daemon/internal/intake/consume.go`) is where the
+mechanism is written whole, with the measurement behind each part.
+
+- The intake consumer asks for one message at a time, so no pull is outstanding while a handler
+  runs and nothing reaches the consumer then. A reconnect, which pulls again, is the one exception.
+- The progress keeper prevents a second delivery while each of its reports reaches the server
+  before the acknowledgement window lapses: each such report starts the window again.
+- A late signal lets the message fall due again. A late report lets it fall due while the handler
+  still runs. A late acknowledgement, which goes out only after the handler returns, lets it fall
+  due after that return.
+- A message that fell due is delivered again, and that redelivery races the acknowledgement or nak
+  the handler's return sends. Either side can win, and the redelivery usually does: with the keeper
+  removed it reached the consumer in 12 runs of 20, and on the handler-limit path it won all 15
+  runs on an idle machine, losing to the nak only under load. A nak the server works first resets
+  the redelivery timer, so the event comes one nak delay later instead.
+
+Every counter a handling moves then moves a second time: a statement counter, a request counter, a
+call counter in a fake. That second move is the broker's business and no part of what the code
+promises, so a test asserts no exact count of such work. Assert the effect the handler leaves
+behind instead: the record written, the fact applied once, the row a repeated handling does not
+add. A repeat is then invisible to the test, because the handler's effect is the same either way.
 
 Two kinds of row keep an exact count.
 
@@ -542,9 +555,7 @@ Two kinds of row keep an exact count.
   report of the progress keeper, the goroutine that reports a running handler in progress so that
   the server does not make its message due again. A window above the handler's own work is not
   enough. Until the keeper has reported once, the window alone stands between the held message and
-  the server making it due again; a second delivery may then reach the consumer at the pull that
-  follows the handler's return, racing the acknowledgement that same return sends, which usually
-  wins. Where the delivery wins, the count sees the repeat.
+  the server making it due again, and the count sees whatever repeat follows.
   `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce` and its control
   `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal`
   (`packages/daemon/internal/intake/ackprogress_test.go`) are of this kind.
@@ -576,12 +587,10 @@ The second handling happened because the progress keeper was starved. `keepInPro
 goroutine was not scheduled for, and by its own documentation it sends only after each tick, so the
 keeper reports nothing during the first period of a window (Go 1.27.3). Measured at a 200 ms window,
 whose period is 66.7 ms: the largest interval from the keeper's start to its first report was
-403.7 ms, which is 6.06 times the period, and the 99th percentile of that interval was 276.8 ms. A
-progress report or an acknowledgement that reaches the server after the window has lapsed makes the
-message due again at the server. A second delivery may then reach the consumer at the pull that
-follows the handler's return, racing the acknowledgement that same return sends, which usually
-wins. At the 200 ms window the row failed 2 of 1000 runs in one campaign and 7 of about 2274 in
-another, which is 0.2 and 0.31 per cent. At the committed one-minute window it passed 800 of 800.
+403.7 ms, which is 6.06 times the period, and the 99th percentile of that interval was 276.8 ms.
+That late first report is the late signal above. At the 200 ms window the row failed 2 of 1000
+runs in one campaign and 7 of about 2274 in another, which is 0.2 and 0.31 per cent. At the
+committed one-minute window it passed 800 of 800.
 
 Four issues record the same fault. dispatch://INFRA-456 was the daemon preparing one Dispatch issue
 event's repository more than once under redelivery, which is why `keepInProgress` exists.

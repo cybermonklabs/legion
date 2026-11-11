@@ -1407,9 +1407,8 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 
 // assertAcknowledgedThrough waits for consumer to have acknowledged every message of its filter up
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
-// deliveries: a message whose AckWait passes unacknowledged falls due again at the server, and the
-// redelivery that may follow races the acknowledgement its handler's return sends
-// (ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
+// deliveries, because one message can be delivered more than once (the delivery mechanism:
+// ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
 // deduplicates and which a delivery count would read as more.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
@@ -1974,11 +1973,8 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
 			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
 			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
-			// closes, the keeper prevents a third read only while its reports reach the server
-			// in time, and a late one leaves a redelivery racing the nak or acknowledgement
-			// that handling's return sends (ConsumerSpec.HandlerLimit's comment in consume.go,
-			// where that mechanism is written). A third read can be made no earlier than that
-			// redelivery.
+			// closes, a third read can be made no earlier than a second delivery of the message
+			// (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
 			spec.AckWait = time.Minute
 			var mu sync.Mutex
 			var asks []time.Time

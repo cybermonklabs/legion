@@ -45,10 +45,9 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	// a factor of about 80 below this window. The progress keeper reports nothing here: it ticks
 	// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and the hold ends as
 	// soon as the read below is made, long before the first tick is due (keepInProgress,
-	// ackprogress.go). Where the margin closes, the keeper prevents a second delivery only while
-	// its reports reach the server in time, and a late one leaves a redelivery racing this
-	// handling's acknowledgement (ConsumerSpec.HandlerLimit's comment in consume.go, where that
-	// mechanism is written). Either outcome can act only after the read below.
+	// ackprogress.go). Where the margin closes, a second delivery of that fact still comes only
+	// after the read below (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
+	// consume.go).
 	spec.AckWait = time.Minute
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
