@@ -602,8 +602,8 @@ package api
 // that pace is holding until their turn: an array, never null, of `{claim, issue, role, kind,
 // dueAt}`, beside `strandedClaims` and `heldOutboxRows`, one row per wake of the three lanes it
 // paces — `launch`, a role process it is about to start, `plugin-task`, the update task a
-// stale-plugin round queues to a session already running (69 below deletes that round and names
-// the relaunch it became `plugin-refresh`, so no daemon from 69 on writes this kind), both held
+// stale-plugin round queues to a session already running (73 below deletes that round and names
+// the relaunch it became `plugin-refresh`, so no daemon from 73 on writes this kind), both held
 // in the claim's machine, and
 // `catch-up`, the notice a start writes to an architect already running, which waits on its own
 // outbox row — in claim order, and empty at every moment outside a restart, a re-admission wave or
@@ -959,7 +959,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 69: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
+// 73: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
 // readable. `api.State` gains `claimsToRefresh`, how many claims the lane still has to relaunch
 // onto this daemon's plugin: a claim with a recorded session, whose process holds a capability,
 // whose recorded plugin contract is not this number, that is in no update round, and whose
@@ -972,10 +972,10 @@ package api
 // most one minute of the pacing at a time (`supervise.RefreshGate`), so its waiting wakes are
 // what it has been admitted, never what it has left — at the INFRA wave of 2026-11-10 one
 // reading counted 395 live processes on the old contract against about 600 of the lane's wakes,
-// and nothing in the body reconciled them. A strict reader before 69 refuses a state carrying
+// and nothing in the body reconciled them. A strict reader before 73 refuses a state carrying
 // the key, 0 as surely as a number, so for the one window the pairing leaves open — a pod of the
 // contract before this one still being replaced — the route serves a caller whose pod records a
-// contract below 69 a body with no `claimsToRefresh` key at all (api's stateFor,
+// contract below 73 a body with no `claimsToRefresh` key at all (api's stateFor,
 // withoutClaimsToRefresh), as it serves a caller below 62 the workers without their counted
 // moves back, one below 58 the issues without their place in the line, one below 57 the claim
 // views with no `step`, one below 56 the stranded report without its retired entries, one below
@@ -989,7 +989,7 @@ package api
 // tmux pane — is served the count.
 // The same change moves the wire's wake kinds. `plugin-task`, the update task the stale-plugin
 // round queued a running session, is gone with that round: the lane relaunches a stale process
-// at one paced wake and asks its worker nothing, and no daemon from 69 on opens such a round or
+// at one paced wake and asks its worker nothing, and no daemon from 73 on opens such a round or
 // sends such a task. The relaunch the lane's own gate admits waits under `plugin-refresh`
 // instead (`supervise.WakePluginRefresh`), a kind no other launch carries, so a reader of
 // `wakesWaiting` tells the refresh of a fleet from the launches that start a tree's work; the
@@ -997,15 +997,20 @@ package api
 // needs no shaping of its own, because the schema leaves `kind` an unconstrained string, and
 // every reader of the kinds — `packages/contracts/src/legion-api.ts`, `docs/kubernetes.md`, the
 // two site guides and `scripts/wake-windows.py` — names the new one. This change adds no store
-// migration. (This entry took 60 when the base carried 59, then 69 at the forward merge of
-// 2026-11-11 that brought main in at 3956a7a66c10d7d512ad35ab866bd00018dd2109, where main
-// declared 64 and the open pull requests declared 65 (#2731), 66 (#3534), 67 (#3519), 68 (#3511)
-// and 70 (#3573). It keeps 69 at the second forward merge of that day,
-// 287919e79112d2f1fbe85b74b2a5e37471685ea0, which brought in the 68 above — #3511's own entry,
-// now main's — since 69 is still above the base and no open head declares it. Each reading is of
-// this file at refs/pull/<n>/head for every open pull request, never of a file list, for the
-// reason the entry above gives: GitHub cuts a pull request's file list short. Read the base's own
-// number and every open pull request again at the next merge rather than from this line, as
+// migration. (This entry has taken four numbers, each read the same way and each recorded here
+// rather than in a memory: 60 when the base carried 59; 69 at the forward merge of 2026-11-11
+// that brought main in at 3956a7a66c10d7d512ad35ab866bd00018dd2109, where main declared 64 and
+// the open heads declared 65 (#2731), 66 (#3534), 67 (#3519), 68 (#3511) and 70 (#3573); 69
+// again at the second merge of that day, 287919e79112d2f1fbe85b74b2a5e37471685ea0, which brought
+// in the 68 above and left 69 still free; and 73 at 16:40Z that day, because
+// cybermonklabs/legion#3519 had moved onto 69 in a forward merge of its own and two heads
+// declaring one number is a refusal for whichever merges second. This tree moved rather than
+// that one because this tree had a round open, where a number taken at READY costs a tester
+// round. The reading at 16:40Z, of `const DaemonAPIVersion` at refs/pull/<n>/head for each of
+// the 124 open pull requests and never of a file list, gives main 68 and, above it, 69 (#2539,
+// #3519 and this one before the move), 70 (#3573), 71 (#3577) and 72 (#3534), so 73 is the
+// lowest free number above the base. Read the base's own number and every open head again at the
+// next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 69
+const DaemonAPIVersion = 73

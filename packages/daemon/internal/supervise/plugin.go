@@ -168,6 +168,23 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		m.releaseRefresh()
 		return nil
 	}
+	// Every relaunch of this lane waits under a credit of the gate, so one reached with none asks
+	// for its own here. The pass posts two claims uncredited: the controller's, whose relaunch is
+	// outside the pacing the gate bounds and takes no credit at all, and a claim its snapshot read
+	// in a turn, which takes none because its turn's end asks the gate itself (R2). The second is
+	// the window the imperfect skip leaves: a claim whose turn ended between the pass's read and
+	// this decision is no longer in a turn, and relaunching it on no credit would park a wake the
+	// gate never counted — eight of them at once where a wave's turns end together, which is twice
+	// the rate in the pacing and the one thing R1 promises cannot happen. Refused, it is left to
+	// the next sweep, which reads it idle and admits it like any other.
+	if !controller && !m.refreshCredit {
+		if !m.admitRefresh() {
+			m.log.Info("supervise: this claim left its turn between the pass's read and this decision, and the refresh gate is full; its relaunch waits for the next sweep",
+				"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
+			return nil
+		}
+		m.refreshCredit = true
+	}
 	return m.relaunchStale(ctx, WakePluginRefresh, trigger)
 }
 

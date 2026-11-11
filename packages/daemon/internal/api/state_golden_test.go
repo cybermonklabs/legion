@@ -524,7 +524,7 @@ func populatedState(t *testing.T) State {
 		// Four claims are still on an earlier plugin, the one whose refresh wake waits above among
 		// them: the count is everything the lane has left to do and the wakes are the share of it
 		// the pacing is holding now, which is the pair a reader of a running wave needs
-		// (contract 69).
+		// (contract 73).
 		ClaimsToRefresh: 4,
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",

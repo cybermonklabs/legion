@@ -1819,7 +1819,7 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 
 // claimsToRefresh is how many of claims the stale-plugin lane still has to relaunch onto this
 // daemon's plugin, which the state serves as `claimsToRefresh` (api.State.ClaimsToRefresh,
-// contract 69): a reader of a running wave can then tell what the lane has left from what it
+// contract 73): a reader of a running wave can then tell what the lane has left from what it
 // has already admitted into the pacing, which `wakesWaiting` alone cannot say now that the gate
 // holds no more than a minute of that pacing at a time (dispatch://INFRA-2712 R4).
 //

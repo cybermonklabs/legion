@@ -62,7 +62,7 @@ type State struct {
 	// recorded plugin contract is not DaemonAPIVersion, that is in no update round, and whose
 	// launch installs a plugin — the set the daemon's own pass walks
 	// (daemon's refreshStalePlugins). Always a number, never null, and 0 when the lane has
-	// nothing left, which is every moment outside a wave (contract 69).
+	// nothing left, which is every moment outside a wave (contract 73).
 	//
 	// It is what `wakesWaiting` alone cannot say. The lane holds at most one minute of the
 	// pacing at a time (supervise.RefreshGate), so the wakes waiting are what it has admitted,
@@ -308,7 +308,7 @@ type AgentSecretsLoginView struct {
 // `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
 // its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
 // two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (69) as well and is served neither key; a third banded key is one more field here, not four
+// (73) as well and is served neither key; a third banded key is one more field here, not four
 // more shapes.
 //
 // A body that hides neither key is marshaled through the embedded value alone. The shadow's own

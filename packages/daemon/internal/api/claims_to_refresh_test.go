@@ -113,7 +113,7 @@ func TestABodyWithBothStripsCarriesNeitherKey(t *testing.T) {
 // claimsToRefreshContract is the contract whose entry in version.go added the count, and this
 // daemon's own contract is never below it: a caller at this contract is served the number.
 func TestClaimsToRefreshContractIsTheContractThatAddedTheCount(t *testing.T) {
-	const addedClaimsToRefresh = 69
+	const addedClaimsToRefresh = 73
 	if claimsToRefreshContract != addedClaimsToRefresh {
 		t.Fatalf("claimsToRefreshContract = %d, want %d, the contract whose entry in version.go added the count of claims the stale-plugin lane has left",
 			claimsToRefreshContract, addedClaimsToRefresh)

@@ -768,14 +768,14 @@ const waitingLineContract = 58
 const backwardMovesContract = 62
 
 // claimsToRefreshContract is the daemon contract that added `claimsToRefresh`, how many claims
-// the stale-plugin lane still has to relaunch onto this daemon's plugin (version.go's 69). A
+// the stale-plugin lane still has to relaunch onto this daemon's plugin (version.go's 73). A
 // plugin before it is served the state without the key: one built before sjawhar/legion#2788
 // reads it with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It is the
 // highest of the ten bands, this daemon's own contract, so the only caller served the count is
 // one at it.
-const claimsToRefreshContract = 69
+const claimsToRefreshContract = 73
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

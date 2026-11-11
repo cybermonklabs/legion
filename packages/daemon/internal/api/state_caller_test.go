@@ -241,7 +241,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
 			// (withoutBackwardMoves), and with `claimsToRefresh` gone, the count a reader
-			// before contract 69 refuses as surely when it is 0 (withoutClaimsToRefresh).
+			// before contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
