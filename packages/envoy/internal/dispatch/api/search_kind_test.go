@@ -290,19 +290,32 @@ func TestSearchKindFilterIsLiteralSQLThatBindsNothing(t *testing.T) {
 	if got, want := highestParameter(statements.keyword), highestParameter(searchQuery); got != want {
 		t.Fatalf("the keyword statement over one kind binds up to $%d, searchQuery up to $%d", got, want)
 	}
-	if got, want := highestParameter(statements.meaning), highestParameter(searchQueryMeaning); got != want {
-		t.Fatalf("the meaning statement over one kind binds up to $%d, searchQueryMeaning up to $%d", got, want)
+	// The three meaning statements are the three project scopes, each over this set's kinds, so
+	// each is compared with the unfiltered text of its own scope.
+	meanings := [...][2]string{
+		{statements.meaningEvery, searchQueryMeaning},
+		{statements.meaningScoped, searchQueryMeaningScoped},
+		{statements.meaningJoined, searchQueryMeaningJoined},
 	}
-	if !strings.Contains(statements.keyword, "kind in ('issue', 'document', 'comment', 'message')") ||
-		!strings.Contains(statements.meaning, "kind in ('issue', 'document', 'comment', 'message')") {
-		t.Fatal("neither statement carries the kinds it leaves out as literal SQL")
+	for _, pair := range meanings {
+		if got, want := highestParameter(pair[0]), highestParameter(pair[1]); got != want {
+			t.Fatalf("a meaning statement over one kind binds up to $%d, its own scope up to $%d", got, want)
+		}
+		if !strings.Contains(pair[0], "kind in ('issue', 'document', 'comment', 'message')") {
+			t.Fatal("a meaning statement does not carry the kinds it leaves out as literal SQL")
+		}
 	}
-	// The set that leaves nothing out runs the two statements as they stand: statements() builds
+	if !strings.Contains(statements.keyword, "kind in ('issue', 'document', 'comment', 'message')") {
+		t.Fatal("the keyword statement does not carry the kinds it leaves out as literal SQL")
+	}
+	// The set that leaves nothing out runs the statements as they stand: statements() builds
 	// every set the same way, and an empty exclusion makes those bytes, so a search naming no
-	// kind runs the text the pool has always prepared.
-	if searchKinds(0).statements().keyword != searchQuery ||
-		searchKinds(0).statements().meaning != searchQueryMeaning {
-		t.Fatal("every kind runs other text than searchQuery and searchQueryMeaning")
+	// kind runs the text the pool has always prepared, in each of the three scopes.
+	every := searchKinds(0).statements()
+	if every.keyword != searchQuery || every.meaningEvery != searchQueryMeaning ||
+		every.meaningScoped != searchQueryMeaningScoped ||
+		every.meaningJoined != searchQueryMeaningJoined {
+		t.Fatal("every kind runs other text than the statements the pool prepares")
 	}
 }
 

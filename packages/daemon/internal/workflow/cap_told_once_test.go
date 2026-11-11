@@ -3,6 +3,7 @@ package workflow
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,7 +36,9 @@ func capNotices(t *testing.T, pool *pgxpool.Pool, kind record.NoticeKind) int {
 // last told go with them.
 func clearsGeneration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208") })
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", time.Now().UTC())
+	})
 }
 
 // The architect is told once for each value review_round_cap holds, and not on every round at or
