@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -268,19 +269,19 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 	return logins[appauth.Review], nil
 }
 
-// mintAtBoot mints the implement and then the review App token for repo, as one attempt run again
-// after a failure GitHub reports as its own trouble (appauth.TransientError); any other failure is
-// refused at once. The token manager keeps a lease it minted, so an attempt after the implement
-// token passed asks GitHub only for the review token. A mint asks for what each App's
-// installation is granted of the role's set and says on stderr what it left out (appauth's
-// exchangeGranted), so a permission an account has not approved no longer stops the boot: what
-// does is an App with no installation on the owner, an installation granted none of the set at
-// all, or GitHub's own trouble lasting past the retries.
-func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Repository, log *slog.Logger) error {
+// mintAtBoot mints the implement and then the review App token on owner's installation, as one
+// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError);
+// any other failure is refused at once. The token manager keeps a lease it minted, so an attempt
+// after the implement token passed asks GitHub only for the review token. A mint asks for what
+// each App's installation is granted of the role's set and says on stderr what it left out
+// (appauth's exchangeGranted), so a permission an account has not approved no longer stops the
+// boot: what does is an App with no installation on the owner, an installation granted none of
+// the set at all, or GitHub's own trouble lasting past the retries.
+func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *slog.Logger) error {
 	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
-			if _, err := tokens.Token(ctx, role, repo.Owner()); err != nil {
-				return fmt.Errorf("mint %s GitHub App token at boot: %w", role, err)
+			if _, err := tokens.Token(ctx, role, owner); err != nil {
+				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)
 			}
 		}
 		return nil
@@ -290,7 +291,7 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
 // Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
 // checked for both GitHub Apps) into repos, the served repositories every role's gh bundle reads
-// its directories from, the Apps' logins, the App tokens minted for every served repository, the
+// its directories from, the Apps' logins, the App tokens minted on each served owner account, the
 // fill of any record written before the record carried its repository, then the deployment's
 // design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish).
 //
@@ -344,15 +345,26 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err != nil {
 		return nil, err
 	}
-	// A token names the repository it acts on, so the boot proves each App's key on every
-	// repository the mapping serves rather than once per owner: an installation that does not
-	// reach one of them, or that is granted none of the permissions a role's write token asks
-	// for, stops the boot naming the repository and the set, where it would otherwise leave a
+	// A token reaches every repository its App's installation holds, and the account that
+	// installs the App chooses those, so the boot proves each App's key once for each owner
+	// account of the repositories the mapping serves rather than once for each repository: an
+	// App with no installation on an owner, or one granted none of the permissions a role's
+	// write token asks for, stops the boot naming that owner, where it would otherwise leave a
 	// role with no gh files at its launch. An installation granted some of the set mints with
 	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
-	// one permission awaiting an account's approval costs the role no gh files at all.
+	// one permission awaiting an account's approval costs the role no gh files at all. An owner
+	// the App is installed on that the mapping does not reach is not proved at boot: the boot
+	// would then depend on installations no work of this project needs.
+	//
+	// The owners are deduplicated as a token's scope is (appauth's leaseScope: lowercased), so
+	// two repositories of one account are one mint, and minted in their sorted order, so one
+	// boot's log reads like the next's.
+	owners := map[string]bool{}
 	for _, repo := range w.repositories.Accepted() {
-		if err := mintAtBoot(ctx, tokens, repo, log); err != nil {
+		owners[strings.ToLower(repo.Owner())] = true
+	}
+	for _, owner := range slices.Sorted(maps.Keys(owners)) {
+		if err := mintAtBoot(ctx, tokens, owner, log); err != nil {
 			return nil, err
 		}
 	}
