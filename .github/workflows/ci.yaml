@@ -4817,12 +4817,14 @@ jobs:
     # itself, in both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
-    # The job's own bound is its measured time on attempt 1, read from that run's jobs API -
-    # 00:23:05Z to 00:34:39Z, 694 s, 11.57 minutes - plus the largest of those limits, 17
-    # minutes, plus 6, rounded up: 11.57 + 17 + 6 = 34.57, so 35. The eight calls of the unit
-    # step run at the same time, so the step's own worst case is the longest of them rather
-    # than their sum.
-    timeout-minutes: 35
+    # The job's own bound is the larger of its pair's two measured times, read from the runs'
+    # jobs API - 725 s on attempt 1 (run 43007295244, job 130477949633) against 607 s on
+    # attempt 2 - 12.08 minutes, plus the largest of those limits, 17 minutes, plus 6: 12.08 +
+    # 17 + 6 = 35.08, so 36. A bound is met when it is at least what the head's own pair asks
+    # for; a later pair can ask for a larger one, because a job that varies by 120 seconds does
+    # not settle inside a one-minute band. The eight calls of the unit step run at the same
+    # time, so the step's own worst case is the longest of them rather than their sum.
+    timeout-minutes: 36
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5523,14 +5525,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, taking the larger of the final
-    # pair's two readings for each one (attempt 1, run 42984005006; attempt 2, run 42988153687;
-    # dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole minute
-    # at which its slowest package takes at most half of it: internal/bus, 425.3 s on attempt 2,
-    # 425.3 / 30 = 14.18, so 15m, which it fills to 47.3 per cent (14m it would fill to 50.6).
-    # The job's own bound is its larger measured time - 565 s on attempt 1, job 130400827506,
-    # against 559 s on attempt 2 - 9.42 minutes, plus that largest -timeout plus 6, rounded up:
-    # 9.42 + 15 + 6 = 30.42, so 31. The limit must fire before the runner cancels the job, so a
+    # Both numbers take the larger of this head's pair for their own reading (attempt 1, run
+    # 43007295244; attempt 2, run 43015711475; dispatch://INFRA-1075, check 6224bb0e). The
+    # step's -timeout is the smallest whole minute at which its slowest package takes at most
+    # half of it: internal/bus, 446.9 s on attempt 2, 446.9 / 30 = 14.90, so 15m, which it
+    # fills to 49.7 per cent (14m it would fill to 53.2). The job's own bound is its larger
+    # measured time - 572 s on attempt 2, job 130506232898, against 514 s on attempt 1 - 9.53
+    # minutes, plus that largest -timeout plus 6: 9.53 + 15 + 6 = 30.53, so 31. The limit must fire before the runner cancels the job, so a
     # hung test prints the dump that names it.
     timeout-minutes: 31
     services:
@@ -5614,14 +5615,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, taking the larger of the final
-    # pair's two readings for each one (attempt 1, run 42984005006; attempt 2, run 42988153687;
-    # dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole minute
-    # at which its slowest package takes at most half of it: internal/dispatch/api, this job's
-    # one package, 767.9 s on attempt 2, 767.9 / 30 = 25.60, so 26m, which it fills to 49.2 per
-    # cent (25m it would fill to 51.2). The job's own bound is its larger measured time - 935 s
-    # on attempt 2, job 130414327527, against 750 s on attempt 1 - 15.58 minutes, plus that
-    # largest -timeout plus 6, rounded up: 15.58 + 26 + 6 = 47.58, so 48. The limit must fire
+    # Both numbers take the larger reading of a pair for their own measurement. This head's pair
+    # (attempt 1, run 43007295244; attempt 2, run 43015711475) reads internal/dispatch/api, this
+    # job's one package, at 619.0 s, which asks for 21m, and the job at 768 s, which asks for
+    # 12.80 + 21 + 6 = 39.80, so 40. Both stand where an earlier pair of this branch put them -
+    # 26m, which that pair's 767.9 s asks for, and 48, which its 935 s asks for - because a
+    # bound is met when it is at least what the head's own pair needs, and this job has already
+    # been measured asking for more (dispatch://INFRA-1075, check 6224bb0e). The limit must fire
     # before the runner cancels the job, so a hung test prints the dump that names it.
     timeout-minutes: 48
     services:
@@ -5717,17 +5717,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, on the attempt of its own pair
-    # this job was slower on: attempt 2, run 42938867893, job 130255672370 (1703 s, against
-    # 1173 s on attempt 1; dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
-    # smallest whole minute at which its slowest package takes at most half of it:
-    # internal/dispatch/docs, this job's one package, 1612.8 s of that attempt, 1612.8 / 30 =
-    # 53.76, so 54m, which it fills to 49.8 per cent (53m it would fill to 50.7). The job's own
-    # bound is its measured time, read from that run's jobs API - 01:25:53Z to 01:54:16Z,
-    # 1703 s, 28.38 minutes - plus that largest -timeout plus 6, rounded up: 28.38 + 54 + 6 =
-    # 88.38, so 89. The limit must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it.
-    timeout-minutes: 89
+    # Both numbers take the larger of this head's pair for their own reading (attempt 1, run
+    # 43007295244; attempt 2, run 43015711475; dispatch://INFRA-1075, check 6224bb0e). The
+    # step's -timeout is the smallest whole minute at which its slowest package takes at most
+    # half of it: internal/dispatch/docs, this job's one package, 1634.3 s on attempt 2,
+    # 1634.3 / 30 = 54.48, so 55m, which it fills to 49.5 per cent (54m it would fill to 50.4).
+    # The job's own bound is its larger measured time - 1724 s on attempt 2, job 130506232865,
+    # against 1687 s on attempt 1 - 28.73 minutes, plus that largest -timeout plus 6: 28.73 +
+    # 55 + 6 = 89.73, so 90. The limit must fire before the runner cancels the job, so a hung
+    # test prints the dump that names it.
+    timeout-minutes: 90
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5812,7 +5811,7 @@ jobs:
       # this sampler at -parallel 2 peaked at 1,534,288 kB, and the rest of the package at
       # -parallel 2 reached 6,240,116 kB, so even added as though nothing were reused they stay
       # under 8388608 kB. What it costs is this step's own time, about twice the 965 s the run
-      # above spent at four slots, which the -timeout 54m below and the job's 89 minutes hold.
+      # above spent at four slots, which the -timeout 55m below and the job's 90 minutes hold.
       # No -p beside it: one package is one build lane, so go test's package parallelism has
       # nothing to divide. No GOMEMLIMIT either: two slots leave the heap it would bound below
       # the 2 GiB this step once set, so it would only make the detector's work slower.
@@ -5826,7 +5825,7 @@ jobs:
       - name: Race-test the document service
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
-          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 54m ./internal/dispatch/docs/
+          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 55m ./internal/dispatch/docs/
         working-directory: packages/envoy
       # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
       - name: Upload the go test -json stream
