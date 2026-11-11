@@ -1273,6 +1273,7 @@ test("a comment card of a deleted comment reads as deleted and gives no part of 
     </Harness>
   );
   try {
+    // The hover card opens on a pointer, and only a real pointer event starts its open delay.
     fireEvent.pointerOver(screen.getByRole("link", { name: "the comment" }), {
       pointerType: "mouse",
     });
