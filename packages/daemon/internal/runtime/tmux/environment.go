@@ -76,7 +76,10 @@ func resolveLeakCheck(environ []string) (string, error) {
 // at construction — boot, before any pane. Every entry must be a file named for an environment
 // variable that no pane already carries: the shim refuses to start over a name its environment
 // holds, and skips without a word a name whose NAME_FILE pointer it holds
-// (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key.
+// (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key. A composed
+// name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
+// whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
+// rather than at each pane's shim.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -87,6 +90,9 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 		carried[name] = true
 	}
 	owned := func(name string) bool {
+		if composed[name] {
+			return true
+		}
 		return runtimeOwned[name] && (dispatchConfigured || (name != "DISPATCH_URL" && name != "DISPATCH_TOKEN_FILE"))
 	}
 	var names []string
@@ -113,9 +119,11 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 // refuses (one that places the session a resume reads, one a Claude Code pane is told after the
 // operator's, a launch secret's pointer, a value that is a URL carrying a password), and a provider
 // key or its pointer, which the shim would then refuse to start over or skip
-// (internal/shim/config.go). The loader refuses what it can see without the runtime
-// (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane opens. A
-// refusal names the variable and why, never its value.
+// (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed names
+// (composed), which the operator may set because the runtime writes this launch's share into the
+// value the operator wrote rather than over it. The loader refuses what it can see without the
+// runtime (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane
+// opens. A refusal names the variable and why, never its value.
 func checkPaneEnv(env map[string]string, providerKeys []string) error {
 	identity := runtime.GitIdentity{}.Env()
 	for _, name := range slices.Sorted(maps.Keys(env)) {

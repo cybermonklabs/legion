@@ -265,8 +265,8 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			// so the header is one it does not know and the open listener serves the request
 			// as it served every unauthenticated one before this credential existed. Refusing
 			// it would lock out every client that holds a broker route of its own — the
-			// loopback, no-bearer listener a GCP VM and the clustered hub run is called by
-			// exactly those clients.
+			// no-bearer listeners a GCP VM and the clustered hub run, one on loopback and one
+			// off it behind its NetworkPolicy, are called by exactly those clients.
 			name:       "serves a DPoP presentation to a listener that takes none, as it always did",
 			token:      personToken,
 			wantStatus: http.StatusOK,
@@ -616,11 +616,12 @@ func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
 // is the listener it was before this credential existed, whatever a client presents. A client
 // sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
 // bearer is set (packages/envoy-client/src/envoy-settings.ts), so it presents one to every
-// listener it is pointed at — including the loopback, no-bearer listener a GCP VM and the
-// clustered hub run, which takes no broker token. Such a listener reads that header as it read
-// every Authorization header it did not know: the open one serves the request, the one that
-// requires a bearer answers the 401 it always answered. It asks the broker nothing, binds no
-// caller, and writes no refusal of a credential kind it does not take.
+// listener it is pointed at — including the no-bearer listeners a GCP VM and the clustered hub
+// run, one on loopback and one off it behind its NetworkPolicy, which take no broker token. Such
+// a listener reads that header as it read every Authorization header it did not know: the open
+// one serves the request, the one that requires a bearer answers the 401 it always answered. It
+// asks the broker nothing, binds no caller, and writes no refusal of a credential kind it does
+// not take.
 func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker := brokertokentest.NewStubBroker(t)
 	caller := brokertokentest.NewCaller(t)

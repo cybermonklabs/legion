@@ -3571,7 +3571,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   both write their lines through a text handler on `io.Discard`, so the number is the line's own cost and not the operator's stderr behind it).
   It is always on rather than a setting because that is under a thousandth of a route's own cost, and the question it answers - which caller is making the requests - is asked when a deployment is already in trouble and nobody can turn a setting on retroactively.
 
-- Health endpoints reflect dependency health, not just process liveness, except Dispatch's `GET /livez`, which is liveness alone by design:
+- Health endpoints reflect dependency health, not just process liveness, except `GET /livez`, which both `envoy-dispatch` and `envoy-listener` serve as liveness alone by design:
   it answers `204` reading nothing, so a liveness or startup probe never restarts a process for a slow or unreachable dependency, and readiness stays on `/healthz`.
   The listener's `/healthz` is every pod's readiness (`cmd/listener/README.md`, "Readiness").
   It answers `503 {"status":"starting"}` until the pod can serve (NATS connected, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer configured, its discovery succeeded), then `200` naming the pod's `role`:
@@ -4113,7 +4113,7 @@ The `Host` is compared with its port stripped, its IPv6 brackets off, case folde
 That keeps a page that rebinds its own name to an address reaching the listener (a loopback port, or a forward such as a tailnet one) from using its bearer-free API.
 A listener that requires a bearer checks no `Host`, since such a page holds no bearer.
 The boot log's `listener API hosts:` line names what is served.
-`/healthz`, `/metrics` and the webhook routes are served to any `Host`.
+`/healthz`, `/livez`, `/metrics` and the webhook routes are served to any `Host`.
 
 Each item below names an endpoint and its method, then its contract, and an item that names no endpoint continues the contract above it.
 
@@ -4245,7 +4245,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   NATS refusing the read outright (the listener's user lacks `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, no JetStream, no stream) is `503 {"code":"REPLAY_UNAVAILABLE","error":"<NATS error>"}`, any other failed read a plain 503.
   Trust model: `/v1/replay` trusts `session_id` as every `/v1` route does, with no check beyond `/v1`'s own authentication (`apiAuth`) and no per-session secret, and no check that the session is live, so a caller who can call `/v1` and knows a session's id, live or ended, can read that session's 72 hours of stored inbox:
   with a bearer configured, a holder of the API credential (the shared token or an accepted service-account token);
-  with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on the GCP hub, whose listener takes no bearer, includes its tailnet name, so there it is every tailnet peer the tailnet's access rules let reach the port;
+  with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on either GCP hub, whose listener takes no bearer, includes the hub's tailnet name, so there it is every tailnet peer the tailnet's access rules for port 9020 let reach the listener;
+  the VM hub's listener is on loopback and Tailscale Serve forwards the node's tailnet port 9020 to it, and the clustered hub's listener is a pod of its own that the tailnet entry's pods forward the Tailscale Service's port 9020 to, so the same tailnet rules decide and the listener's NetworkPolicy, which admits those pods alone, keeps every other pod of the cluster out;
   what the route refuses is reading any session it does not name (a wildcard, another session's subject through an interest, an exception lane).
   A listener older than the route answers 404 (the `/v1` catch-all), which the client reads as "does not replay".
 
@@ -4959,8 +4960,10 @@ Targeted issue `message.created` skips bound-route and author fan-out because th
 `/v1` accepts two bearer kinds: the `ENVOY_API_TOKEN` shared token, and
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
 — a projected service-account token that issuer signed for that audience.
-The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither.
-`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a non-loopback listener refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is the temporary Fargate transition flag.
+The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
+`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
+That flag is how an operator declares that something else fences the listener's port.
+The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
 The boot log names what is on: `shared token`, `oidc <issuer>`, both, or `disabled`.
 
 Beside the two bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
@@ -4976,7 +4979,8 @@ Four variables configure it, all or none, and any of them set without the rest i
 The account identity is the file or the audience and never both: the broker resolves the calling service from whichever token it is presented (`BROKER_API_ACCOUNTS`, which takes a Kubernetes subject or a Google account's email).
 Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the two bearers — a broker token says who is calling, never whether `/v1` may be reached.
 A listener with none of the four variables set takes no such credential and reads `Authorization: DPoP` as it read every header it did not know before this credential existed: the open listener serves the request with no session bound, and a listener that requires a bearer answers the 401 it always answered, with nothing asked of any broker and no refusal logged.
-That is what keeps the loopback, no-bearer listener a GCP VM and the clustered hub run serving its clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
+That is what keeps the no-bearer listeners a GCP VM and the clustered hub run serving their clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
+The VM's listener is on loopback and the clustered hub's serves off loopback behind its NetworkPolicy, and neither takes a bearer.
 The scheme alone decides the kind, as RFC 9449 Section 7.2 requires, so a `DPoP` presentation is never retried as a bearer and a bearer is never read as one.
 A listener that takes broker tokens records every spent proof in the `envoy_dpop_proofs` KV bucket, whose records expire after the proof's acceptance window and a minute (`spentProofRetention`), so a proof captured from one replica is refused by every other; a bus with no JetStream is a startup refusal naming `ENVOY_AGENT_SECRETS_URL`, never a store in one process's memory.
 The boot log names it beside the bearers: `broker tokens at <url> as projected token <path>` or `as google audience <audience>`.
@@ -5117,13 +5121,13 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   the first move after an opening or a hand-back is not quiet.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
-  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and every session the thread's document credits;
+  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
   a message reply's direct parent author; for a resolve or reopen, the resolved comment's root author only, so the reopen a reply makes in the same transaction tells no new session twice;
-  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
+  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, where no session claims the issue, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
   That document is the anchor's (`anchor.artifact_id`) for a comment on a passage of an issue's document, and the event's own for a project document;
   for a reply, it is the thread root's, since a reply carries no anchor.
   A comment on an issue's conversation names no document.
-  A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under.
+  A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under, and each row says which of the two it came from (`from_thread`, the first element of the `min(rank)` the statement already orders by), so a session that is both a member and a credit counts as a member.
   A person's `comment.created` or `comment.edited` on an issue with no route and no session claimant (`routing`:
   unclaimed, or a person holds the claim) also reaches every session the issue's primary document (`artifacts.is_primary`) credits, as `documentCreditsSQL` reads credits (`addPrimaryDocumentAuthors`), so a session that wrote the spec without a claim still hears comments on any of the issue's threads, an ask's thread included.
   A batch reads those sessions for all such events in one statement (`loadPrimaryDocumentAuthors`, another lookup kind of `loadLookups`), keyed by issue.
@@ -5133,6 +5137,15 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The primary-document and author routes are skipped for a human, who has no topic, for the event's own actor, so a session commenting on a document it wrote is never told of its own comment, and for a session whose own mention of the comment delivers it (`recipientFilter` keeps the first two, the mention rule below the third, asked where every copy bound for a session's own topic asks it).
   An unanswered `role:X` mention names no session in the payload, and the comment's attempt rows name the one its sender pinned there, so a thread session or document author that mention reached is left to it like any other; one the sender has not pinned yet hears the comment twice.
   An agent's comment notifies nobody (`notify` is false), so it takes no primary-document or author route at all.
+
+- On an issue a session claims, that session is the one a person's comment obliges, and the credits of a document are not a second reason to deliver:
+  a session the read gives only as a credit of a document is left out of the reply arm and of the document arm above when the event names an issue, its actor is a person and the issue's claimant is a session (`addAuthorRoutes`, the three conditions `addClaimantRoute` itself carries).
+  Six cases keep the delivery they have now: a comment on a project document, which names no issue and so has no claim to read;
+  an issue a person claims, whose claimant is empty;
+  an issue a route holds and no session claims, where the route's holder and the credits both hear it;
+  a session the comment names whose own mention of it failed, which has no other route on a claimed issue and whose copy carries the key of that failed mention (`mentionDeliveries.fallbackKeys`, read for the comment's edit as well as for the comment itself);
+  a member of the thread, so a session that wrote there still gets the person's later replies;
+  and a person's edit of a document (`artifact.human_edited`), which still reaches every session that document credits.
 
 - When a batch's recipient statement fails - its comment recipients, its primary document authors or its document credits (`loadDocumentSessionAuthors`) - unlike the other lookup kinds, whose failure fails the whole batch, only the events that asked an id the statement cannot answer fail.
   A statement Postgres refuses over the rows it read (`refusedStatement`:
@@ -5473,7 +5486,7 @@ A machine's own session is its fleet's service's and no person's: its credential
 `cmd/broker`'s `serviceNames` registers both settings' services with the policy loader, so a secret a machine service owns is served rather than refused `owner-tag-malformed`.
 The two ERROR lines, `policy.RefusedMessage` with a `Reason*` constant and `policy.LoadFailedMessage`, are what the deployment's alarms filter on, so neither changes without the alarm, and a failed reload keeps the last set;
 a reload cut short because `NewCurrent`'s context ended (the broker shutting down) is no failed load and logs nothing.
-`Set.Version`, the SHA-256 of every served secret's name, owner, tier, source, max grant, GitHub owners, requesters, scopes and admin mark, is recorded on every request.
+`Set.Version`, the SHA-256 of every served secret's name, owner, tier, source, max grant, GitHub owners, requesters, scopes, admin mark and the shape tag of a secret that carries one, is recorded on every request.
 A kind source is `mint:<kind>:<store source>` (`policy.KindSource`, read back by `policy.ParseKindSource`).
 A grant ends for good when a release finds its secret's kind changed (a moved source) or its lifetime over the current max-grant (`Machine.endGrant`);
 a change reverted before any release finds it leaves the grant as it was, and to end a grant, revoke it.
@@ -5483,6 +5496,7 @@ a comma is refused `ErrGitHubOwnersComma`), and `policy.GitHubOwnersFor` (with `
 a comma is refused `ErrRequestersComma`, a list naming nobody `ErrRequestersMissing`, and an entry that is neither `ErrRequestersEntry`).
 The list narrows who may ask and bounds no grant by itself.
 `policy.TagRules` is the one statement of what a secret's tags demand of each other, which the loader and `agent-secrets secret` create and retag all apply:
+`shape-malformed`, which it weighs first, refuses a `shape` tag that is neither `token` nor `document`, since until the broker knows what the stored value is it cannot say what a release of the secret would hand over;
 `max-grant-required`, a max grant of an hour at most, is demanded of an admin secret (`policy.TagAdmin`) and of a `google-service-account` secret, and every other secret keeps its own cap, or none, so a person's mail and Drive logins stay at their tier and are capped by nothing;
 `requesters-not-owner` refuses a `google-service-account` secret whose list is not exactly its one person owner, and a service entry on an agent-tier one, a human-tier one being free to list registered services beside that owner so that a Legion pod can ask and the owner approves each request;
 `requesters-not-owner` again refuses a service entry on a secret the deployment binds to a `dev-<name>` account, at either tier, since such a token is one person's own;
@@ -5492,6 +5506,9 @@ The tag holds short names because the AWS store keeps its annotations as AWS tag
 a secret carrying none mints `cloud-platform` alone, as every token of this kind did before the tag existed, and a changed list reaches the token at the next release, since the minter reads the snapshot the release checked.
 `policy.TagAdmin` marks a secret whose grant is an administrator's, `"true"` its only value and anything else `admin-malformed`:
 the broker cannot tell such a secret from its kind, an admin console password and a personal API key both being stored strings, so the program that declares the secret says so, and the rules above then hold it to human tier, a requesters list and an hour's cap.
+`policy.TagShape` says what a secret's stored value is, in two words: `policy.ShapeToken`, a one-line credential such as an API key or a password, and `policy.ShapeDocument`, a value every byte of which is part of it, such as a PEM key.
+`policy.TrimForShape` is the one statement of what that tag does to a value: from a `ShapeToken` value it removes the trailing run of carriage returns and line feeds, a `ShapeDocument` value it answers byte for byte, and a value of a secret carrying no tag it reads for itself, removing a trailing line ending only where the value holds none inside it.
+It also answers whether it changed the value, and the broker's `release` (`requests.shapedValue`) and `agent-secrets secret` create and set all read it, so a value is stored and spent under the one rule.
 `Set.Evaluate` reads the list before owner and tier and denies a requester it does not name `policy.ReasonRequesterNotListed`, which the request row keeps as its `decision_detail` (`<NAME>: requester-not-listed`, several joined with `"; "`) and the request routes answer as `detail`.
 `requests.evaluate` also writes that field when a request is created: a name whose outcome would be an approval, in a request whose reason is empty once trimmed, is denied `policy.ReasonNoReason` there, so the row reads `<NAME>: a reason is necessary; ask again with --reason`, and the fixed sentence `policy denies at least one requested secret` joins the named denials whenever some name was denied with no reason to name.
 The kinds are `github-app` (installation tokens from the stored App key), `google-login` (an access token from the stored authorized-user credential), `azure-login` (`secrets.AzureLogin`, in `internal/broker/secrets/azurelogin.go`) and `google-service-account` (`secrets.GoogleServiceAccount`, in `internal/broker/secrets/googleserviceaccount.go`: an access token for one Google service account, minted by impersonating it with the broker's own Google credential through the IAM Service Account Credentials API, carrying the scopes the secret's `scopes` tag names, and served to the one person the secret's requesters name beside the registered services a human-tier one may list).
@@ -5623,7 +5640,11 @@ Anything but line endings after the first line is refused with exit 2.
 Bytes arriving after that quiet window can reach the shell; multi-line values should be piped, not pasted.
 A terminal hang-up before the line or paste ends returns an error, never a partial value, and so does a bracketed paste that falls quiet for `maxPasteDrain` (10 s) before its closing mark comes, where the signal keys pressed meanwhile were pasted text;
 input arriving after it is given up reaches the shell.
-Piped input is read to EOF, less one trailing newline.
+Piped input is read to EOF.
+Either arm's value then meets the broker's own shape rule (`policy.TrimForShape`), the one statement of what a stored value is:
+with `shape: token` the whole trailing run of carriage returns and line feeds goes, unless the value is nothing but line endings, with `shape: document` nothing goes, and with no shape tag that run goes only where the rest of the value is not empty and holds no carriage return and no line feed.
+Where the rule changed nothing, one final line feed goes, which this reader has always removed, so `echo` and a file ending in a newline give the value without one.
+`secret set` reads the secret's own shape tag (`currentTags`) before it reads the value, so a document's owner stores a document.
 Empty and non-UTF-8 values are usage errors on either path.
 
 The reader alone changes the terminal, including its final flushing restore and bracketed-paste disable.
@@ -5669,7 +5690,7 @@ SIGQUIT uses the kernel default, not Go's goroutine dump.
 Core dumps are disabled once, before the first value byte is read, for the rest of the process (`PR_SET_DUMPABLE` 0 on Linux, `RLIMIT_CORE` 0 on Darwin), not just on SIGQUIT.
 `secret_job_linux_test.go` hosts prompts under interactive bash to test Ctrl-Z/bg/fg, a start with `&` (the restored settings are compared with those bash hands a foreground job, and the label with the terminal's owner and echo when it is printed), a stop before the label, an orphaned group, a shell that exits under a background prompt, SIGTERM and SIGHUP after `bg`, an external SIGSTOP, bytes after Ctrl-Z in one write, signal keys inside a paste, a paste that begins after the line, ignored SIGTSTP wrappers, quiet-window stops, refusal draining, shell history and terminal restoration.
 
-`secret.go` builds the one tag map a write sends (`optionalTags`), owner and tier plus `kind`, `github-owners`, `requesters`, `scopes`, `admin`, `max-grant` and `default-grant` when the command names them, and the rollback guard beside a kind, under the broker's own rules (`policy.ValidKind`, `policy.ParseGitHubOwners`, `policy.ParseRequesterShapes`, `policy.ParseScopes`, `policy.ParseMaxGrant`), and each backend writes a map it does not read into (`create(tags)`, `setTags`, `removeTags`).
+`secret.go` builds the one tag map a write sends (`optionalTags`), owner and tier plus `kind`, `github-owners`, `requesters`, `scopes`, `admin`, `shape`, `max-grant` and `default-grant` when the command names them, and the rollback guard beside a kind, under the broker's own rules (`policy.ValidKind`, `policy.ParseGitHubOwners`, `policy.ParseRequesterShapes`, `policy.ParseScopes`, `checkShape`, `policy.ParseMaxGrant`), and each backend writes a map it does not read into (`create(tags)`, `setTags`, `removeTags`).
 AWS `create` writes on the settings' key with those tags and no `ClientRequestToken` (the SDK sets one).
 A `retag` is one write: it either sets tags or removes them, never both, and refuses `none` beside another change before any read or write, so a refused call never leaves it half applied.
 Either reads the secret's tags once (`currentTags`, a `heldTags` with GCP's etag) and builds from them the tags the secret will hold once the write lands (`after`), and applies the github-owners rule to those once (`checkGitHubOwnersFor`), as create applies it to its flags, so neither writes a `github-app` secret without owners.
@@ -5677,9 +5698,8 @@ Each writes against that read: GCP sends the held annotations, changed, with the
 AWS's tag calls take no condition, so its `setTags` and `removeTags` read the tags back (`awsBackend.raceCheck`) and, when another writer left a kind/owners pair the broker refuses, restore the tags read and answer `errTagsChanged` too, and the retag exits 1 naming the race.
 A retag on AWS is safe only with one writer at a time.
 The retag form lives in `secret_retag.go`.
-One that sets tags sends owner and tier in one `TagResource`, plus `kind` (with the rollback guard), `github-owners`, `requesters`, `scopes`, `admin`, `max-grant` and `default-grant` when the command sets them, so an IAM condition on the request's tags sees them;
-one that removes tags (`--kind none`, which also removes the rollback guard, `--github-owners
-none`, `--requesters none`, `--scopes none`, `--admin none`, `--max-grant none`, `--default-grant none`) is one `UntagResource` of those keys.
+One that sets tags sends owner and tier in one `TagResource`, plus `kind` (with the rollback guard), `github-owners`, `requesters`, `scopes`, `admin`, `shape`, `max-grant` and `default-grant` when the command sets them, so an IAM condition on the request's tags sees them;
+one that removes tags (`--kind none`, which also removes the rollback guard, `--github-owners none`, `--requesters none`, `--scopes none`, `--admin none`, `--shape none`, `--max-grant none`, `--default-grant none`) is one `UntagResource` of those keys.
 On `AccessDenied` for a retag that sets tags on a secret held shared, or a retag to `--owner shared`, it adds that a shared secret's owner and tier are an administrator's to change (a person's own secret may be made shared where their access allows the retag;
 only an existing shared secret's tags are reserved); `delete` schedules a 30-day recovery window, never forced, and prints `DeleteSecret`'s own `DeletionDate`.
 GCP `create` creates the secret with automatic replication under the broker's `kms_key_name` and owner, tier and any named kind, `github-owners`, requesters, scopes, admin mark, max grant, default grant and the rollback guard beside a kind as annotations (never labels, so they carry no GCP label naming rules), then adds the value as its first version;
@@ -6369,6 +6389,8 @@ A kind source is `mint:<kind>:<source>`:
 `Machine.release` parses it (`policy.ParseKindSource`;
 a malformed one is `policy.ErrKindSourceMalformed`), reads `<source>` through the store's own `Read`, and passes that value to `Machine.Minters[kind]`.
 It never returns the stored value.
+Both of release's reads of the store pass through `policy.TrimForShape` under that secret's shape tag (`requests.shapedValue`), so the value a session is handed and the input a minter is given are read by the one rule.
+Each value the rule changed writes one INFO line, `requests.TrailingLineEndingRemovedMessage`, carrying the secret's name and nothing else.
 A minter's failure is `requests.ErrMintFailed`, `502 MINT_FAILED` carrying the minter's own message (never an upstream's text), and one ERROR line for the operator, `broker: mint failed` (`requests.MintFailedMessage`) with the name, the kind and `class=` `stored-value`, `narrowing`, `refused`, `binding` or `upstream` (`secrets.MintErrorClass`).
 The usual re-check then verifies the enrollment, the grant, its whole approval chain (`VerifyChain`), and
 — when the policy version moved since the grant was decided, any granted name is a service's (`anyServiceOwned`), or any granted name carries a `requesters` tag (`anyListed`):
@@ -6583,12 +6605,18 @@ it logs `issuer listening url=<url>` once every file is written.
 Its key lives in its memory alone, so its tokens stop verifying when it stops.
 `dev-broker.sh` starts it with five tokens:
 `account-token` for `system:serviceaccount:example-ns:example-dispatch` (the broker's `BROKER_API_ACCOUNTS` caller `dispatch`), `listener-token` for its caller `listener`, `exchange-token` for `system:serviceaccount:example-ns:example-worker`'s pod at the exchange audience (its `BROKER_EXCHANGE_ACCOUNTS` entry, project `EXAMPLE` for `ada@example.com`, no fixed session), `pod-token` for that same pod at the broker's own audience, and `registrar-token` for `system:serviceaccount:example-ns:example-daemon`, its `BROKER_SERVICE_LOGINS` service login.
-`BROKER_SERVICES` binds that pod's own account to the same service that login logs in as, as a deployment serving a service's secrets to its pods must, so the stack's third fake secret, `DEMO_SERVICE_TOKEN` (`owner=legion-daemon`, `tier=agent`), is served rather than refused `owner-tag-malformed` on every reread, and a pod session enrolled under that login gets it without asking while no person's session sees it;
+`BROKER_SERVICES` binds that pod's own account to the same service that login logs in as, as a deployment serving a service's secrets to its pods must, so the stack's service-owned fake secrets — `DEMO_SERVICE_TOKEN` (`owner=legion-daemon`, `tier=agent`) and the two `github-app` ones below — are served rather than refused `owner-tag-malformed` on every reread, and a pod session enrolled under that login gets each without asking while no person's session sees it;
 the script enrols no such session itself, and its banner prints the `cmd/dev-airlock-stands enroll-pod` command that enrols one against this stack's registrar and pod tokens.
+`dev-broker.sh` builds and starts one `cmd/dev-airlock-stands` of its own, for the GitHub a `github-app` secret mints at, and points the broker's `BROKER_AIRLOCK_TEST_GITHUB_API_BASE` at that process's GitHub stand, which is served over plain http on a loopback address, since the broker's minter trusts this host's own roots and nothing else.
+The App that stand answers for is installed on three accounts, and the script writes two `github-app` secrets against it, each owned by the registered service and each holding that stand's App id and private key as its stored value: `DEMO_GITHUB_APP`, whose `github-owners` tag names the one account `acme-org`, and `DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which the App is installed twice under logins that differ only in case (`ada` and `Ada`).
+`secrets.GitHubApp.Mint` compares a narrowing's owner without regard to case, so a narrowing to `ada` mints for both of those installations and the released object holds two, which is the release `agent-secrets --github-token` must refuse.
+GitHub itself allows no two accounts whose logins differ only in case, so that pair stands for nothing real and exists to drive that refusal.
+The stand records every call it was sent and the answer it gives a token request is set while it runs, which is how one stack drives the ordinary mint, the HTTP 422 that mints nothing and a token wider than the body asked for, one after another.
 Once the broker is healthy it makes one `POST /v1/oauth/exchange/pod-sessions` with the registrar token and `pod-token`, registering that pod for `example-worker-session`, which is the one name its exchange is answered under (an unregistered name is `invalid_grant`);
 it points the broker's `BROKER_K8S_OIDC_ISSUER` at the issuer, and stops it on exit.
 The same issuer process is the broker's sign-in provider: `dev-broker.sh` generates the client secret into its workdir under umask 077, starts the issuer with `--code-flow dev-broker=<that file>` and `--sign-in-as ada@example.com`, and gives the broker `BROKER_SIGNIN_ISSUER`, `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` (the approver's own domain), which it cannot start without, so a browser on that machine approves a secret request at `<broker>/approve/<record>` with no page to fill in.
-It prints the exports a second shell needs (`AGENT_SECRETS_URL`, `AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, `AGENT_SECRETS_APPROVER`, the helper's `AGENT_SECRETS_HELPER_SOCK`, `AGENT_SECRETS_OPERATOR_FILE`, `AGENT_SECRETS_MACHINE_FILE` and `AGENT_SECRETS_STATE_FILE`, all in its workdir, where it writes the operator file, and `DEV_BROKER_DIR`, the workdir itself).
+It prints the exports a second shell needs (`AGENT_SECRETS_URL`, `AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, `AGENT_SECRETS_APPROVER`, the helper's `AGENT_SECRETS_HELPER_SOCK`, `AGENT_SECRETS_OPERATOR_FILE`, `AGENT_SECRETS_MACHINE_FILE` and `AGENT_SECRETS_STATE_FILE`, all in its workdir, where it writes the operator file, `DEV_BROKER_DIR`, the workdir itself, and `DEV_BROKER_POD_UID` and `DEV_BROKER_SERVICE`, the pod uid its issuer bound and the registered service, which are what its own enrolment command names, so a check script enrols that session from the exports rather than from the banner's prose).
+It prints the stand's own exports beside them: `DEV_BROKER_GITHUB_URL`, the GitHub stand's address, `DEV_BROKER_GITHUB_RECORDS_URL`, a GET of every call that stand was sent as JSON, `DEV_BROKER_GITHUB_ANSWER_URL`, a POST of `{"mode": "ordinary"|"refuse"|"widen"}` that sets what each token request is answered from then on, and `DEV_BROKER_GITHUB_SECRET`, `DEV_BROKER_GITHUB_OWNER`, `DEV_BROKER_GITHUB_CASE_SECRET` and `DEV_BROKER_GITHUB_CASE_OWNER`, the two secrets and the account each one's tag names.
 It names the records file outright because the helper keeps its records beside its machine login, and a dev stack that exported only a socket would have its helper overwrite the records of the helper installed under the caller's own HOME, whose named sessions' signing keys are in them; `dev-stack.sh` does the same, for its first box and for its second.
 The docs rig (`docs/site/media/broker/rig.sh`) starts the same issuer the same way, for Dispatch's own token and for the broker's sign-in client `docs-broker`.
 With `--code-flow <client id>=<client secret file>` it also serves the authorization code flow for that one confidential client (the values `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET` take, the secret the file's content less surrounding whitespace), so a browser signs in to a local Dispatch with no Google:
@@ -6599,6 +6627,8 @@ a Google Workspace account of the email's domain, and a Cognito pool user federa
 Dispatch accepts `DISPATCH_SIGNIN_DOMAIN` only under Google's issuer, so a local Dispatch signs in through this issuer with `DISPATCH_SIGNIN_GROUP` set to that group.
 Each `dev-broker.sh` run creates and drops its own isolated database, on the shared `dispatch-pg` container, which it boots through `dev-postgres.sh` (so a `dispatch-pg` off that script's pinned image is refused before anything is created), or, with `DEV_BROKER_POSTGRES_URL` set, through `psql` on the server that URL names (no Docker), so concurrent instances never see each other's enrollments, requests or grants, and listens on the port its own `cmd/broker` binds and logs (`BROKER_LISTEN_ADDR=127.0.0.1:0`), so concurrent instances can never collide on a shared port either.
 `dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go` job.
+`scripts/github-narrowing-check.sh` drives that stack end to end, as `airlock-check.sh` and `judge-check.sh` drive theirs: it starts `dev-broker.sh`, enrols one pod session of the registered service, runs checks k1, k2 and k4 of `dispatch://INFRA-2687` against it, and prints one PASS or FAIL line for each property with `all <n> assertions passed` as its last line.
+It takes `DEV_BROKER_POSTGRES_URL` as `dev-broker.sh` does, so a box with no container runtime names its own server there.
 
 `internal/broker/airlock/airlocktest` is the airlock's stand-ins, an ordinary package rather than a `_test.go` file, as `internal/broker/store/storetest` is, so the Go tests and the local stack serve the same ones: the HTTPS services a call behind the airlock reaches, each recording every request it was sent, the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft token endpoint the `azure` kind exchanges at, and an AWS service that verifies Signature Version 4 against a key pair of its own.
 Nothing there takes a `*testing.T`, since the command that serves them is no test.
@@ -6608,6 +6638,7 @@ Nothing there takes a `*testing.T`, since the command that serves them is no tes
 and `probe-private`, `probe-bound` and `load` are the three Go clients `scripts/airlock-check.sh` drives — k4's private-address probe, k7's call to a bound host, and k9's load driver with the plain tunnel its baseline goes through — which live here rather than in heredocs of that script so that CI compiles and vets them.
 `packages/envoy/scripts/dev-airlock.sh` is the whole local airlock in one command, with no container runtime and no cluster (`packages/envoy/scripts/README.md`):
 it runs `dev-broker.sh` for Postgres, `dev-oidc-issuer` and the binaries, starts the stands, writes a rules file and a fake secrets file naming the same six secrets (two stored, a `github-app`, a `google-login`, an `azure-login` and a stored AWS key pair), starts two brokers on a database of its own with one front over both API ports and one over both proxy ports, enrols one pod session, and prints the exports a second shell drives it from.
+It builds nothing of its own: `dev-broker.sh` builds `cmd/dev-airlock-stands` with the other five binaries, and this script runs that one, and `airlock-check.sh` reads it as `$DEV_BROKER_DIR/bin/dev-airlock-stands`.
 Each bound host is a `.test` name no resolver answers, on port 443 of a loopback address of its own, because the airlock refuses a request whose `Host` header is not its CONNECT target and a client writes the port into that header for every port but 443:
 `BROKER_AIRLOCK_TEST_RESOLVE` says where each name is and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` lets the proxy dial that one address, while every other loopback, private and link-local address stays refused, so one such stack runs at a time on a machine.
 `--keep-values` and `--no-kind` (`BROKER_AIRLOCK_TEST_KEEP_VALUES`, `BROKER_AIRLOCK_TEST_NO_KIND`) are two checks' negative controls, and `cmd/broker` refuses every one of those test settings on a production start (`refuseAirlockTestSettingsInProduction`).
