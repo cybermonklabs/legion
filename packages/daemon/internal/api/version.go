@@ -845,4 +845,24 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 60: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
+// runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
+// the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
+// `internal/stream`'s Listener.hello from what the runtime's launcher resolver hands it. The
+// launcher sends the daemon one `launcher_volume_report` frame per sweep that ends with the
+// volume still above its low mark, and `ServeLauncher` reads it into one `volume-near-full`
+// notice to the issue's architect.
+//
+// The skew is safe in both directions, and this entry records why, because that is what a
+// reader of it needs. A new worker image under an older daemon reads the member absent, which
+// is the one thing that means "no settings", so its trimmer never starts, it never sends a
+// report, and it never meets that daemon's switch on an unmodelled frame type. An older worker
+// image under a new daemon ignores the extra member of the ack, because the frame decoder is
+// tolerant of members it does not model, and it sends no report either. Both rest on one
+// constraint, which holds now and later: the settings must never become a daemon-to-launcher
+// frame of their own, because `ServeLauncher` and the launcher's own command loop each close
+// the connection on a frame type they do not name, and a launcher that redials once a second
+// for every role of the pod is the failure this shape exists to avoid.
+const DaemonAPIVersion = 60

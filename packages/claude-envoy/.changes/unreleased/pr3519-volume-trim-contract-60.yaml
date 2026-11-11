@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr3519
+body: |-
+  The daemon API contract this plugin declares is 60, for the launcher wire the cache trimmer in
+  an issue pod adds: the trimmer's settings on the daemon's answer to a launcher's hello, and the
+  trimmer's report frame.
