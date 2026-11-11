@@ -680,3 +680,39 @@ func recordedPasses(t *testing.T, database *store.Store, name string) int {
 	}
 	return recorded
 }
+
+// LeaseHeld answers for the database it is asked on and no other. pg_locks holds every lock of
+// every database of the server, while an advisory lock is taken within one database, so a read
+// that did not say which database would report a lease as held because another database's
+// session holds one of that name: a CI reconcile pass that ended would read as running for as
+// long as a pass of another deployment on the same server held the lease
+// (cireconcile.RecentPasses).
+func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
+	const name = "ci-reconcile"
+	database := storetest.Open(t)
+	elsewhere := storetest.Open(t)
+	taken, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		duty.Exclusive(t.Context(), leasesOf(t, elsewhere), name, time.Time{}, 0, func(context.Context) {
+			close(taken)
+			<-release
+		})
+	}()
+	<-taken
+	defer func() {
+		close(release)
+		<-done
+	}()
+
+	if held, err := duty.LeaseHeld(t.Context(), elsewhere.Pool, name); err != nil || !held {
+		t.Fatalf("the lease reads as held = %v in the database whose session holds it: %v", held, err)
+	}
+	held, err := duty.LeaseHeld(t.Context(), database.Pool, name)
+	if err != nil {
+		t.Fatalf("read whether the lease is held: %v", err)
+	}
+	if held {
+		t.Fatal("a lease another database's session holds reads as held here: pg_locks is the whole server's, and this read is not kept to this database")
+	}
+}

@@ -63,6 +63,9 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	// GitHub refuses the head's Checks fields to a query, so the pass reads it over REST, which
+	// is the read this test's limit is answered to.
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -109,6 +112,7 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
