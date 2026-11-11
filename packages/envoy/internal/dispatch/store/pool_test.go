@@ -1217,3 +1217,113 @@ func TestTheLeasePoolCountsEveryLeaseName(t *testing.T) {
 			LeaseNameCount, LeasePoolSize, names, names+2)
 	}
 }
+
+// A read-only transaction takes no BeforeCommit step: the step writes, and Postgres refuses a
+// write inside a READ ONLY transaction even when it would match no row, so a step attached to
+// such a transaction fails every commit it is attached to. A keyed write that reads a document
+// no room holds opens exactly that transaction under the request's step (docs' cold fold), and
+// the fold's failure failed the room and answered the write 503. A read-write transaction of
+// the same request still takes it.
+func TestAReadOnlyTransactionTakesNoCommitStep(t *testing.T) {
+	database := openEmptyTestStore(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `create table read_only_step_test (value int primary key)`); err != nil {
+		t.Fatalf("create the table the step writes: %v", err)
+	}
+	var taken atomic.Int64
+	// The shape api.markRequestKeyCommitted runs: one SELECT with an update CTE, which
+	// Postgres refuses inside a READ ONLY transaction whether or not the update matches.
+	step := func(ctx context.Context, tx pgx.Tx) error {
+		taken.Add(1)
+		var marked bool
+		return tx.QueryRow(ctx, `
+			with marked as (
+				update read_only_step_test set value = value where value = 1 returning 1
+			)
+			select exists (select 1 from marked)
+		`).Scan(&marked)
+	}
+	keyed := WithBeforeCommit(WithTransactionTracking(ctx), step)
+
+	reading, err := database.Pool.BeginTx(keyed, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatalf("open the fold's read-only transaction: %v", err)
+	}
+	defer func() { _ = reading.Rollback(context.Background()) }()
+	var one int
+	if err := reading.QueryRow(keyed, `select 1`).Scan(&one); err != nil {
+		t.Fatalf("read inside the read-only transaction: %v", err)
+	}
+	if err := reading.Commit(keyed); err != nil {
+		t.Fatalf("commit the read-only transaction: %v, want it to commit with no step", err)
+	}
+	if taken.Load() != 0 {
+		t.Fatalf("the read-only transaction took the request's commit step %d times, want none", taken.Load())
+	}
+
+	writing, err := database.Pool.Begin(keyed)
+	if err != nil {
+		t.Fatalf("open the write's transaction: %v", err)
+	}
+	defer func() { _ = writing.Rollback(context.Background()) }()
+	if _, err := writing.Exec(keyed, `insert into read_only_step_test (value) values (1)`); err != nil {
+		t.Fatalf("write the row: %v", err)
+	}
+	if err := writing.Commit(keyed); err != nil {
+		t.Fatalf("commit the write: %v", err)
+	}
+	if taken.Load() != 1 {
+		t.Fatalf("the write took the request's commit step %d times, want once", taken.Load())
+	}
+}
+
+// A COMMIT the server never sent is a busy pool, not an outcome nobody knows: pgconn marks such
+// an error safe to retry, and a transaction whose COMMIT never left the process committed
+// nothing. Here the commit's own bound has already passed when Commit is reached - the work
+// before the COMMIT spent it - so pgconn refuses the statement before writing anything.
+func TestACommitTheServerNeverSentIsABusyPool(t *testing.T) {
+	database := openEmptyTestStore(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `create table never_sent_commit_test (value int primary key)`); err != nil {
+		t.Fatalf("create the table the write fills: %v", err)
+	}
+	writing := WithCommitBoundForTest(WithTransactionTracking(ctx), time.Nanosecond)
+	tx, err := database.Pool.Begin(writing)
+	if err != nil {
+		t.Fatalf("open the write's transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `insert into never_sent_commit_test (value) values (1)`); err != nil {
+		t.Fatalf("write the row: %v", err)
+	}
+	err = tx.Commit(writing)
+	if !IsPoolBusy(err) {
+		t.Fatalf("a COMMIT the server never sent: %v, want ErrPoolBusy", err)
+	}
+	if IsCommitTimeout(err) {
+		t.Fatalf("a COMMIT the server never sent reads as an unknown outcome: %v", err)
+	}
+}
+
+// A statement run on the commit's own bound before the COMMIT is sent is a busy pool: its
+// transaction rolls back, so nothing of it committed, and the client may send the whole write
+// again. Both callers of that bound name it the same way (docs.Ledger.commit's settlement
+// credit and announcement, and a keyed request's Idempotency-Key step).
+func TestAStatementPastTheCommitBoundIsABusyPool(t *testing.T) {
+	ctx, cancel := CommitContext(WithCommitBoundForTest(context.Background(), time.Nanosecond))
+	defer cancel()
+	<-ctx.Done()
+	err := RanOutTheCommitBound(ctx, context.DeadlineExceeded)
+	if !IsPoolBusy(err) {
+		t.Fatalf("a statement past the commit bound: %v, want ErrPoolBusy", err)
+	}
+	live, liveCancel := CommitContext(context.Background())
+	defer liveCancel()
+	own := errors.New("the statement failed on its own")
+	if got := RanOutTheCommitBound(live, own); got != own {
+		t.Fatalf("a statement that failed while the bound stood: %v, want it returned as it is", got)
+	}
+	if RanOutTheCommitBound(live, nil) != nil {
+		t.Fatal("a statement that did not fail was named a refusal")
+	}
+}

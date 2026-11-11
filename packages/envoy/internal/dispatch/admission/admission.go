@@ -617,20 +617,9 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 	}
 	l.mu.Unlock()
 
-	queuedAt := time.Now()
-	timer := time.NewTimer(max(g.wait-a.waited, 0))
-	defer timer.Stop()
-	var failure error
-	select {
-	case <-queued.ready:
-		a.waited += time.Since(queuedAt)
+	granted, failure := a.await(ctx, queued.ready, g.wait, &Refusal{Class: a.class, Reason: WaitExceeded})
+	if granted {
 		return nil
-	case <-ctx.Done():
-		a.waited += time.Since(queuedAt)
-		failure = ctx.Err()
-	case fired := <-timer.C:
-		a.waited += fired.Sub(queuedAt)
-		failure = &Refusal{Class: a.class, Reason: WaitExceeded}
 	}
 
 	l.mu.Lock()
@@ -657,11 +646,55 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 	}
 	if _, refused := failure.(*Refusal); refused {
 		g.waitExceeded.Add(1)
-		if int64(a.waited) > g.longestRefusedWait.Load() {
-			g.longestRefusedWait.Store(int64(a.waited))
-		}
+		g.noteRefusedWait(a.waited)
 	}
 	return failure
+}
+
+// await waits for ready - the place a gate hands its queue head - for what is left of a's one
+// wait, and reports whether that place is a's. The wait is wait less what a has already waited,
+// so a request that queues more than once (a heavy read's lane and then its class, a ticket
+// asking its units back) waits one wait over all of its queues, and every arm adds what it
+// waited here to a.waited, so the next queue it joins counts from there.
+//
+// A false answer carries why: refusal, the caller's own, when the wait ran out, and ctx's error
+// when the caller's context ended. Either way the place may have been granted in the moment the
+// wait ended, which only the gate's own lock can settle, so the caller re-locks and looks again
+// before it gives the refusal (Limiter.acquire, Limiter.EnterLane). a is the request's own
+// arrival, which only its goroutine touches.
+func (a *Arrival) await(ctx context.Context, ready <-chan struct{}, wait time.Duration, refusal *Refusal) (bool, error) {
+	queuedAt := time.Now()
+	timer := time.NewTimer(max(wait-a.waited, 0))
+	defer timer.Stop()
+	select {
+	case <-ready:
+		a.waited += time.Since(queuedAt)
+		return true, nil
+	case <-ctx.Done():
+		a.waited += time.Since(queuedAt)
+		return false, ctx.Err()
+	case fired := <-timer.C:
+		a.waited += fired.Sub(queuedAt)
+		return false, refusal
+	}
+}
+
+// noteRefusedWait records waited as the longest a refused request of this class has waited, if
+// it is: the figure an operator reads to see how long a refusal cost the request that got it
+// (ClassStats.LongestRefusedWait). A heavy read's lane records its own refusals here too, since
+// a lane refusal is a refusal of the read class and spends the read's one wait (Limiter.
+// EnterLane). It is a compare-and-swap rather than a read and a write, because a lane holds no
+// lock of the Limiter's while it records one.
+func (g *gate) noteRefusedWait(waited time.Duration) {
+	for {
+		longest := g.longestRefusedWait.Load()
+		if int64(waited) <= longest {
+			return
+		}
+		if g.longestRefusedWait.CompareAndSwap(longest, int64(waited)) {
+			return
+		}
+	}
 }
 
 // release gives units of class back and grants the queues whatever now fits.

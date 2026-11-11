@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  A keyed write that reads a document no room holds is served again.
+  Resolving a check against a Verification document reads that document live, and for one whose
+  room is closed and whose rendering is not cached that is a cold read, whose fold opens a
+  read-only transaction under the request's own context.
+  The `Idempotency-Key` step every transaction of a keyed request takes before its `COMMIT` is a
+  `SELECT` with an `update request_keys` CTE, which Postgres refuses inside a `READ ONLY`
+  transaction whether or not the update matches a row, so the fold's commit failed, the fold
+  failed the room, every reader sharing it got the error, and the write was answered
+  `503 DOC_SERVICE_UNAVAILABLE` with no `Retry-After`.
+  The step is now taken off the fold, which is the document's work rather than the request's
+  write (`store.WithoutBeforeCommit` in `docs.Service.foldContext`), and a read-only transaction
+  takes no step at all, having written nothing to mark.
+  A keyed write whose step runs the commit's own bound out is refused `503 DATABASE_BUSY` rather
+  than answered `500 INTERNAL`: the step runs inside the write's transaction, before the `COMMIT`
+  is sent, so nothing of the write committed and the client may send it again.
+  The rule lives beside the bound it belongs to (`store.RanOutTheCommitBound`), which the document
+  ledger's own last statements now use as well, and such a step rolls its transaction back on a
+  context of its own rather than on the expired one, which left pgx dropping the connection.
+  A `COMMIT` the server never sent - one pgconn marks safe to retry - is refused the same way
+  instead of being called an outcome nobody knows.

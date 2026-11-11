@@ -103,6 +103,40 @@ func TestWriteUnservedTellsTheCausesApartInOrder(t *testing.T) {
 	}
 }
 
+// The call whose outcome nobody knows is named once: unknownOutcome describes it, and the ERROR
+// line the operator reads and the body the client reads both carry that description, so the two
+// can never name different calls. The pair is tested there and nowhere else.
+func TestTheUnknownOutcomeIsNamedOnceForTheLogAndTheAnswer(t *testing.T) {
+	for _, test := range []struct {
+		name, describes string
+		err             error
+	}{
+		{"a commit", "this write's commit", fmt.Errorf("commit the write: %w: %w", store.ErrCommitTimeout, context.DeadlineExceeded)},
+		{"a statement outside a transaction", "a statement of this write", fmt.Errorf("revoke the token: %w", store.ErrStatementOutcomeUnknown)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := unknownOutcome(test.err); got != test.describes {
+				t.Fatalf("unknownOutcome = %q, want %q", got, test.describes)
+			}
+			logged := &bytes.Buffer{}
+			logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+			w := httptest.NewRecorder()
+			if !WriteUnserved(w, context.Background(), test.err, true) {
+				t.Fatal("WriteUnserved left the unknown outcome to its caller")
+			}
+			if !strings.Contains(logged.String(), test.describes) {
+				t.Fatalf("the ERROR line is %s, want it naming %q", logged.String(), test.describes)
+			}
+			if !strings.Contains(w.Body.String(), test.describes) {
+				t.Fatalf("the answer is %s, want it naming %q", w.Body.String(), test.describes)
+			}
+		})
+	}
+	if got := unknownOutcome(errors.New("boom")); got != "" {
+		t.Fatalf("unknownOutcome of a plain failure = %q, want it empty", got)
+	}
+}
+
 // A request whose client went away is answered nothing, and its access-log line says so: 499,
 // nginx's client-closed code, where a handler that writes nothing is otherwise logged as the 200
 // of a request served. The write that rolled back because its client left was read as a success.

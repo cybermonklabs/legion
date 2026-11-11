@@ -178,6 +178,34 @@ func TestALaneAndItsClassCostOneWait(t *testing.T) {
 	}
 }
 
+// A lane's refusal is a refusal of the read class, so it counts against the longest a refused
+// read waited (ClassStats.LongestRefusedWait), the figure an operator reads to see what a
+// refusal cost the request that got it. A lane holds the read's one wait, so a read the lane
+// refuses has spent that whole wait and nothing else records it: left out, the figure said no
+// read had waited at all while every refusal of a lane route waited its second.
+func TestALaneRefusalCountsAgainstTheReadClassesLongestWait(t *testing.T) {
+	const wait = 300 * time.Millisecond
+	limiter := New(Limits{Read: 8, Write: 8, HeavyReadLane: 1, ReadWait: wait})
+	ctx := context.Background()
+	held, err := enterLane(ctx, limiter, Search)
+	if err != nil {
+		t.Fatalf("take the search lane's only place: %v", err)
+	}
+	defer held()
+
+	if _, err := enterLane(ctx, limiter, Search); refusalReason(err) != WaitExceeded {
+		t.Fatalf("the second search waited out the lane: %v, want a wait_exceeded refusal", err)
+	}
+	stats := laneStatsOf(t, limiter, Search)
+	if stats.WaitExceeded != 1 {
+		t.Fatalf("the search lane counts %d requests refused for waiting, want 1", stats.WaitExceeded)
+	}
+	longest := classStats(limiter, Read).LongestRefusedWait
+	if longest < wait-150*time.Millisecond || longest > wait+250*time.Millisecond {
+		t.Fatalf("the read class records the longest refused wait as %v, want the %v the lane refused the read after", longest, wait)
+	}
+}
+
 // enterLane takes lane for a request arriving now, in the order api.admitted takes them: the
 // arrival that stamps the request's place first, then the lane, which counts its wait against it.
 func enterLane(ctx context.Context, limiter *Limiter, lane Lane) (func(), error) {

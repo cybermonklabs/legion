@@ -125,12 +125,23 @@ func defaultAcquireBound(name string) time.Duration {
 
 // ErrPoolBusy is a call a bound of this server's own, and not the caller's context, ended
 // before the database answered it, and after which nothing the caller asked for can have
-// committed: an acquire that ran out its pool's acquire bound while the caller was still
-// waiting, every connection of that pool having stayed taken for the whole bound, or a call the
-// database stopped answering on before the call reached it at all (pgconn.SafeToRetry). The
-// caller may retry; a request answers it as busy rather than as a failure. An acquire's error
-// wraps context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells either from
-// a deadline of the caller's own.
+// committed. Five calls produce it:
+//
+//   - an acquire that ran out its pool's acquire bound while the caller was still waiting,
+//     every connection of that pool having stayed taken for the whole bound (poolBusy);
+//   - a call the database stopped answering on before the call reached it at all
+//     (pgconn.SafeToRetry), which is no call at all (poolBusy, commitTimedOut);
+//   - a call the database stopped answering on that commits nothing wherever it got to - an
+//     acquire's ping, a pool's own ping, the BEGIN that opens a transaction (poolBusy,
+//     commitsNothing);
+//   - a read-only transaction's COMMIT the database never answered, which commits nothing
+//     whether or not it ran (commitTimedOut);
+//   - a statement run on the commit's own bound before the COMMIT was sent, whose transaction
+//     rolled back (RanOutTheCommitBound).
+//
+// The caller may retry; a request answers it as busy rather than as a failure. An acquire's
+// error wraps context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells any
+// of them from a deadline of the caller's own.
 //
 // Every pool answers a bound it ran out with it, the wrapped pools (Pool) and the raw ones
 // (RawPool: rooms, leases, listen, registry, health) alike, so a caller tells a pool that could
@@ -205,9 +216,7 @@ func stalled(ctx context.Context, err error) bool {
 //     pgconn marks it safe to retry; poolBusy names that one ErrStatementOutcomeUnknown;
 //   - a COMMIT this server sent that the database never answered, which may have committed the
 //     transaction; commitTimedOut names that one ErrCommitTimeout, whatever shape the stall
-//     took - the commit's own bound passing, or the socket timing out under it. commitTimedOut
-//     reads this predicate to tell the second shape, on the error before it is named, so what
-//     is excluded here is the named error alone.
+//     took - the commit's own bound passing, or the socket timing out under it.
 func DatabaseStalled(ctx context.Context, err error) bool {
 	return stalled(ctx, err) && !errors.Is(err, ErrStatementOutcomeUnknown) && !errors.Is(err, ErrCommitTimeout)
 }

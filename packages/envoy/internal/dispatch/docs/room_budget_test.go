@@ -321,5 +321,5 @@ func roomOwesSettlement(service *Service, room string) bool {
 		return false
 	}
 	defer service.unlockState(room, state)
-	return owesSettlementLocked(state, service.armedSettleTimers())
+	return owesSettlementLocked(state, service.isSettleTimerArmed(state.settle))
 }

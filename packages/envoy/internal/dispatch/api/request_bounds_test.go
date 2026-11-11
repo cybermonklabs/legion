@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -401,7 +402,7 @@ func TestAWriteStatementOutsideATransactionTheDatabaseDropsIsAnOutcomeNobodyKnow
 		t.Fatalf("the revoke was offered as retryable:\n%s", busy)
 	}
 	unknown := logs.Lines("its outcome is unknown")
-	if !strings.Contains(unknown, "level=ERROR") || !strings.Contains(unknown, "statement was not answered") {
+	if !strings.Contains(unknown, "level=ERROR") || !strings.Contains(unknown, "a statement of this write") {
 		t.Fatalf("logged %q, want an ERROR line naming the statement whose outcome is unknown", unknown)
 	}
 }
@@ -642,6 +643,138 @@ func TestAWriteWhoseCommitRunsOutItsBoundIsNotAnsweredDatabaseBusy(t *testing.T)
 	logged := logs.String()
 	if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, "its outcome is unknown") {
 		t.Fatalf("the commit that ran out its bound logged:\n%s\nwant an ERROR line naming the unknown outcome", logged)
+	}
+}
+
+// holdKeyMarksKey is the advisory lock the key-marking trigger waits on.
+const holdKeyMarksKey = 592007
+
+// holdKeyMarks makes the Idempotency-Key step - the one statement a keyed write's transaction
+// runs just before its COMMIT (markRequestKeyCommitted) - wait on an advisory lock the test
+// holds, until the returned release runs. Only the step's own update waits: the claim inserts
+// its row and the answer's bookkeeping writes other columns, and neither touches committed_at.
+// The test's end releases the lock too.
+func holdKeyMarks(t *testing.T, database *store.Store) func() {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		create function hold_key_mark_for_test() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(592007);
+			return new;
+		end $$;
+		create trigger hold_key_mark_for_test before update of committed_at on request_keys
+			for each row when (new.committed_at is distinct from old.committed_at)
+			execute function hold_key_mark_for_test();
+	`); err != nil {
+		t.Fatalf("create the key-marking trigger: %v", err)
+	}
+	holder, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("connect the key-mark holder: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Close(context.Background()) })
+	if _, err := holder.Exec(ctx, `select pg_advisory_lock($1)`, holdKeyMarksKey); err != nil {
+		t.Fatalf("take the key-marking lock: %v", err)
+	}
+	release := sync.OnceFunc(func() {
+		_, _ = holder.Exec(context.Background(), `select pg_advisory_unlock($1)`, holdKeyMarksKey)
+	})
+	t.Cleanup(release)
+	return release
+}
+
+// A keyed write whose Idempotency-Key step runs out the commit bound is refused 503
+// DATABASE_BUSY, never 500 INTERNAL: the step runs inside the write's transaction, before the
+// COMMIT is sent, so the transaction rolls back and nothing of the write committed. The step
+// waits on the test's lock and the bound is the test's (store.WithCommitBoundForTest) rather
+// than production's ten seconds. Unnamed, the bare context deadline pgx answers the step with
+// matched no rule - not the stall predicate, which excludes a deadline, nor a busy pool - and
+// the write was answered "API handler failed".
+func TestAKeyedWriteWhoseKeyStepRunsOutTheCommitBoundIsRefusedDatabaseBusy(t *testing.T) {
+	var rig *keyedRig
+	rig = newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
+		tx, err := rig.server.begin(r.Context())
+		if err != nil {
+			rig.server.writeHandlerError(w, r, err)
+			return
+		}
+		defer tx.Rollback(r.Context())
+		// A write, so the step's update matches this request's key row: the step marks only a
+		// transaction that holds a ROW EXCLUSIVE lock on a table other than request_keys.
+		if _, err := tx.Exec(r.Context(), `insert into keyed_step_bound_test (value) values ($1)`, run); err != nil {
+			rig.server.writeHandlerError(w, r, err)
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			rig.server.writeHandlerError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusCreated, map[string]int32{"run": run})
+	})
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`create table keyed_step_bound_test (value int primary key)`); err != nil {
+		t.Fatalf("create the table the keyed write fills: %v", err)
+	}
+	release := holdKeyMarks(t, rig.database)
+	defer release()
+	logs := captureLogs(t)
+
+	data, err := json.Marshal(map[string]any{"n": 1})
+	if err != nil {
+		t.Fatalf("encode the write: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/test/a/writes", bytes.NewReader(data)).
+		WithContext(store.WithCommitBoundForTest(context.Background(), 300*time.Millisecond))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
+	request.Header.Set(contracts.IdempotencyKeyHeader, "held-step-1")
+	response := httptest.NewRecorder()
+	rig.handler.ServeHTTP(response, request)
+
+	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+	if logged := logs.String(); strings.Contains(logged, "level=ERROR") {
+		t.Fatalf("the refused keyed write logged:\n%s\nwant no ERROR line: nothing of it committed", logged)
+	}
+	var rows int
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select count(*) from keyed_step_bound_test`).Scan(&rows); err != nil {
+		t.Fatalf("count what the write left: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("the refused write left %d rows, want none: its transaction rolled back", rows)
+	}
+}
+
+// A keyed write that reads a document no room holds is served. Recording a check result reads
+// the live Verification document to resolve the check (results.go's resolveCheck ->
+// checkBlockWords -> Docs.Text), which for a document whose room is closed and whose rendering
+// is not cached is a cold read: the fold opens a read-only transaction on the request pool,
+// under the request's own context. The Idempotency-Key step that context carries is a SELECT
+// with an update CTE, which Postgres refuses inside a READ ONLY transaction whether or not the
+// update matches, so the fold's commit failed, the fold failed the room, and the write was
+// answered 503 DOC_SERVICE_UNAVAILABLE with no Retry-After. The room heap budget closes idle
+// rooms sooner, so cold reads of this shape are common.
+func TestAKeyedResultOnADocumentNoRoomHoldsIsRecorded(t *testing.T) {
+	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	service := deps.Docs.(*docs.Service)
+	issue := createInteractionIssue(t, handler, "COLD", "Cold verification", "A spec\n")
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	// No room holds the document and no rendering of it is cached, so the read below folds its
+	// stored history.
+	if err := service.Evict(context.Background(), verification.Artifact.ID); err != nil {
+		t.Fatalf("close the verification document's room: %v", err)
+	}
+
+	response := keyedRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/results",
+		resultBody("k1", "pass", headCommit, nil), "alice", "cold-result-1")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("a keyed result on a document no room holds: status=%d body=%s, want 201",
+			response.Code, response.Body.String())
+	}
+	if text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+verification.Artifact.ID+"/text", nil, "alice"); text.Code != http.StatusOK {
+		t.Fatalf("read the document after the keyed write: status=%d body=%s, want the room unfailed",
+			text.Code, text.Body.String())
 	}
 }
 

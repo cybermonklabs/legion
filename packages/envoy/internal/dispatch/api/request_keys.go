@@ -988,16 +988,20 @@ func (s *server) releaseRequestKey(ctx context.Context, claim requestKeyClaim) {
 // Only a transaction the pool opens takes the step: a write a handler makes as a bare pool
 // statement commits on its own and marks nothing, so a keyed route writes inside s.begin, which
 // TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks holds every POST and PATCH route to.
+// A transaction the pool opened read-only is passed over before the step is reached
+// (store.trackedTx.Commit): Postgres refuses this statement inside a READ ONLY transaction, the
+// update CTE matching nothing being no defence, and such a transaction wrote nothing to mark.
 func markRequestKeyCommitted(claim requestKeyClaim, running *atomic.Bool) store.BeforeCommit {
 	return func(ctx context.Context, tx pgx.Tx) error {
 		if !running.Load() {
 			return nil
 		}
 		// One statement: an update whose condition holds only for a transaction that wrote, and
-		// the same question asked beside it, so a read-only transaction writes and asks nothing
-		// more, and a written one learns whether its key is still its own. A transaction with no
-		// transaction id wrote nothing, and is not asked further. The locks are this backend's,
-		// which are this transaction's: a backend runs one transaction, and its locks end with it.
+		// the same question asked beside it, so a transaction that wrote nothing writes nothing
+		// here either and a written one learns whether its key is still its own. A transaction
+		// with no transaction id wrote nothing, and is not asked further. The locks are this
+		// backend's, which are this transaction's: a backend runs one transaction, and its locks
+		// end with it.
 		var wrote, marked bool
 		if err := tx.QueryRow(ctx, `
 			with wrote as (

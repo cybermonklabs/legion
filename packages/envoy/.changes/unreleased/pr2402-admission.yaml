@@ -31,7 +31,9 @@ body: |-
   are refused only within what is left of that one wait, the time the write spent waiting for
   the gate counted into it as well, where a second whole wait refused writes
   the server had already admitted (at ten times the load, refusals reached a p99 of 2.1 seconds
-  and a maximum of 5.8) and answered lane routes at twice their stated second. A read has a deadline of 20 seconds, and a file version download 5
+  and a maximum of 5.8) and answered lane routes at twice their stated second. A lane's refusal
+  now counts against the longest a refused read waited, as a class queue's does, where the
+  figure an operator reads was blind to every refusal the four heavy read routes got. A read has a deadline of 20 seconds, and a file version download 5
   minutes for the work it does before its answer begins - reading its row and opening the file
   store - after which the answer's own bounds carry the file's bytes however long its reader
   takes; past either is `503 REQUEST_TIMEOUT`. A write has none and runs to completion

@@ -521,6 +521,9 @@ func (p *Pool) begin(ctx context.Context, on connection, done func(), options pg
 // BeforeCommit is a step every transaction a request opens takes just before its COMMIT, inside
 // that transaction, so what it writes commits with the request's own write or not at all. An
 // error from it rolls the transaction back, and Commit returns that error.
+//
+// Every transaction but a read-only one: the step writes, and Postgres refuses a write inside a
+// READ ONLY transaction, which has nothing to mark in any case (Commit).
 type BeforeCommit func(ctx context.Context, tx pgx.Tx) error
 
 type beforeCommitKey struct{}
@@ -538,7 +541,9 @@ func WithBeforeCommit(ctx context.Context, step BeforeCommit) context.Context {
 // writes none of the request's own work: the document rooms' conditional-edit queue takes its
 // bookkeeping transaction this way (docs.Service.admitConditionalEdit), since it commits before
 // the request's write and a crash between the two must leave the key for the repeat to run rather
-// than answer it KEY_COMMITTED for a write nobody made.
+// than answer it KEY_COMMITTED for a write nobody made, and a cold read's fold takes its load
+// this way (docs.Service.foldContext), since the fold is the document's work rather than the
+// request's and outlives the request that waits for it.
 func WithoutBeforeCommit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, beforeCommitKey{}, BeforeCommit(nil))
 }
@@ -554,8 +559,9 @@ type trackedTx struct {
 	release      func()
 	beforeCommit BeforeCommit
 	// readOnly is set for a transaction opened read-only (pgx.ReadOnly). Postgres refuses every
-	// write inside such a transaction, so its COMMIT commits nothing whatever becomes of it,
-	// and an answer it never gave leaves nothing in doubt (commitTimedOut).
+	// write inside such a transaction, so it takes no BeforeCommit step (Commit), its COMMIT
+	// commits nothing whatever becomes of it, and an answer it never gave leaves nothing in
+	// doubt (commitTimedOut).
 	readOnly bool
 }
 
@@ -563,11 +569,22 @@ func (t *trackedTx) Commit(ctx context.Context) error {
 	defer t.end()
 	ctx, cancel := CommitContext(ctx)
 	defer cancel()
-	if t.beforeCommit != nil && t.Tx.Conn().PgConn().TxStatus() == 'T' {
+	// A read-only transaction takes no step: Postgres refuses every write inside one, and the
+	// step is a write (api.markRequestKeyCommitted is a SELECT with an update CTE, which a READ
+	// ONLY transaction refuses whether or not the update matches a row). Such a transaction
+	// wrote nothing, so it has nothing to mark.
+	if t.beforeCommit != nil && !t.readOnly && t.Tx.Conn().PgConn().TxStatus() == 'T' {
 		if err := t.beforeCommit(ctx, t.Tx); err != nil {
 			// The COMMIT was never sent, so this transaction rolled back and its outcome is
-			// known, whatever ended the step: the error is the step's own.
-			_ = t.Tx.Rollback(ctx)
+			// known, whatever ended the step: the error is the step's own, named a busy
+			// database when the commit's own bound is what ended it (RanOutTheCommitBound).
+			// The rollback runs on a context of its own, as Rollback's does, so a step the
+			// bound cut off still sends its ROLLBACK rather than having pgx drop the
+			// connection.
+			err = RanOutTheCommitBound(ctx, err)
+			rollbackCtx, cancelRollback := RollbackContext(ctx)
+			defer cancelRollback()
+			_ = t.Tx.Rollback(rollbackCtx)
 			return err
 		}
 	}
@@ -597,8 +614,10 @@ const commitTimeout = 10 * time.Second
 // (admission.WriteUnserved, cmd/dispatch/README.md "Load errors"). A commit its own bound cut
 // off wraps context.DeadlineExceeded too, so errors.Is finds both.
 //
-// A read-only transaction's unanswered COMMIT is not this and is ErrPoolBusy (commitTimedOut):
-// nothing can have committed in it, so the request is refused and may be sent again.
+// Two unanswered COMMITs are not this and are ErrPoolBusy (commitTimedOut): a read-only
+// transaction's, and one of a stall pgconn marks safe to retry, which the COMMIT was never sent
+// through. Nothing can have committed in either, so the request is refused and may be sent
+// again.
 var ErrCommitTimeout = errors.New("the commit was not answered; its outcome is unknown")
 
 // IsCommitTimeout reports whether err is a commit the database did not answer (ErrCommitTimeout).
@@ -608,25 +627,58 @@ func IsCommitTimeout(err error) bool { return errors.Is(err, ErrCommitTimeout) }
 // context, is the bound that ended it - pgx answers a statement its context cut off with that
 // context's error and not with its cause, so the cause is read here instead - or the socket
 // timed out while that context was still live, which is a bound of this server's that passed on
-// the connection (DatabaseStalled). The second is told here rather than left to poolBusy, which
-// never sees a commit, because the outcome of a COMMIT whose answer was lost is unknown where
-// every other lost answer leaves the transaction rolled back.
+// the connection (stalled). The second is told here rather than left to poolBusy, which never
+// sees a commit, because the outcome of a COMMIT whose answer was lost is unknown where every
+// other lost answer leaves the transaction rolled back.
 //
-// Unknown, that is, unless the transaction was read-only: Postgres let it write nothing, so its
-// COMMIT committed nothing whether or not it ran, and the call is a busy database like any other
-// the server's bounds ended (ErrPoolBusy) - a refusal the caller may make again, answered 503
-// DATABASE_BUSY rather than with an unknown outcome a client would have to read back.
+// Unknown, that is, unless the COMMIT never reached the database or the transaction wrote
+// nothing, and both are a busy database like any other the server's bounds ended (ErrPoolBusy) -
+// a refusal the caller may make again, answered 503 DATABASE_BUSY rather than with an unknown
+// outcome a client would have to read back:
+//
+//   - a stall pgconn marks safe to retry is one the COMMIT was never sent through, so nothing
+//     of the transaction can have committed, exactly as poolBusy reads such a stall for every
+//     other call (acquire.go);
+//   - a read-only transaction's COMMIT commits nothing whether or not it ran, since Postgres
+//     let it write nothing.
 //
 // A commit that failed for any other reason, and one that did not fail at all, is returned as it
 // is.
 func commitTimedOut(ctx context.Context, readOnly bool, err error) error {
-	if err == nil || !(errors.Is(context.Cause(ctx), ErrCommitTimeout) || DatabaseStalled(ctx, err)) {
+	if err == nil || !(errors.Is(context.Cause(ctx), ErrCommitTimeout) || stalled(ctx, err)) {
 		return err
 	}
-	if readOnly {
+	switch {
+	case pgconn.SafeToRetry(err):
+		return fmt.Errorf("%w: the database stopped answering before the COMMIT reached it: %w", ErrPoolBusy, err)
+	case readOnly:
 		return fmt.Errorf("%w: the database did not answer this read-only transaction's COMMIT, which commits nothing: %w", ErrPoolBusy, err)
 	}
 	return fmt.Errorf("%w: %w", ErrCommitTimeout, err)
+}
+
+// RanOutTheCommitBound names err a database too busy to serve the call (ErrPoolBusy) when ctx -
+// the bound CommitContext puts on the work a commit does - ran out while that work was still
+// before the COMMIT itself. Nothing of the transaction committed: these statements run inside it
+// and it is rolled back, so the request is refused 503 DATABASE_BUSY and the client may send the
+// whole write again (admission.WriteUnserved). Unnamed, the bare context deadline pgx answers
+// such a statement with is a failure no rule knows, which answers the client 500 INTERNAL
+// (INFRA-592: a ten-times load with the database proxy frozen answered POST
+// /api/v1/artifacts/{id}/edits that way, on the announcement).
+//
+// Two callers run statements on that bound: the document ledger's settlement credit and
+// announcement (docs.Ledger.commit), and a request's Idempotency-Key step (trackedTx.Commit,
+// BeforeCommit). A COMMIT the server did send and the database never answered is
+// ErrCommitTimeout, whose outcome nobody knows, and this never covers it: it names only the
+// statements run before the COMMIT is reached.
+//
+// A failure of any other kind, and one met while the bound still stood - a stall of the socket,
+// which DatabaseStalled names and which rolls the transaction back too - is returned as it is.
+func RanOutTheCommitBound(ctx context.Context, err error) error {
+	if err == nil || !errors.Is(context.Cause(ctx), ErrCommitTimeout) {
+		return err
+	}
+	return fmt.Errorf("%w: the commit's bound passed before the COMMIT was sent, and the transaction rolled back: %w", ErrPoolBusy, err)
 }
 
 // commitBoundKey carries the bound a test puts on the commits made under a context

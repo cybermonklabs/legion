@@ -153,7 +153,9 @@ func (l *Limiter) LaneStats() []LaneStats {
 // and the class queue the request joins next cost it one wait between them, not one each. So a
 // read held 0.9 s by a busy lane has 0.1 s left to wait in the read queue rather than a fresh
 // second, and a refusal from either comes within the one wait its class states - where a lane
-// route refused by its class answered at up to twice that wait (INFRA-592).
+// route refused by its class answered at up to twice that wait (INFRA-592). The wait itself is
+// the one both gates take (Arrival.await), and a refusal here is counted against the read class
+// as well as the lane, since it spent that class's wait (gate.noteRefusedWait).
 //
 // A request of NoLane takes nothing and releases nothing.
 func (l *Limiter) EnterLane(ctx context.Context, lane Lane, arrival *Arrival) (func(), error) {
@@ -176,20 +178,9 @@ func (l *Limiter) EnterLane(ctx context.Context, lane Lane, arrival *Arrival) (f
 	element := g.waiters.PushBack(ready)
 	g.mu.Unlock()
 
-	queuedAt := time.Now()
-	timer := time.NewTimer(max(g.wait-arrival.waited, 0))
-	defer timer.Stop()
-	var failure error
-	select {
-	case <-ready:
-		arrival.waited += time.Since(queuedAt)
+	granted, failure := arrival.await(ctx, ready, g.wait, &Refusal{Class: Read, Reason: WaitExceeded, Lane: lane})
+	if granted {
 		return func() { g.leave() }, nil
-	case <-ctx.Done():
-		arrival.waited += time.Since(queuedAt)
-		failure = ctx.Err()
-	case fired := <-timer.C:
-		arrival.waited += fired.Sub(queuedAt)
-		failure = &Refusal{Class: Read, Reason: WaitExceeded, Lane: lane}
 	}
 
 	g.mu.Lock()
@@ -209,6 +200,9 @@ func (l *Limiter) EnterLane(ctx context.Context, lane Lane, arrival *Arrival) (f
 	g.mu.Unlock()
 	if _, refused := failure.(*Refusal); refused {
 		g.waitExceeded.Add(1)
+		// The lane spends the read class's wait, so the longest a refused read waited is the
+		// longest of either queue (gate.noteRefusedWait).
+		l.classes[Read].noteRefusedWait(arrival.waited)
 	}
 	return nil, failure
 }

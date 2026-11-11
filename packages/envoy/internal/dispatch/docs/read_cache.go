@@ -405,8 +405,8 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 }
 
 // foldContext is the context a cold read's fold runs on: the read's values without its
-// cancellation, a hold mark of its own, and the request pool named as the pool the load opens its
-// transaction on (loadTxSource).
+// cancellation, without the request's commit step, a hold mark of its own, and the request pool
+// named as the pool the load opens its transaction on (loadTxSource).
 //
 // The mark is its own (store.ForConcurrentWorker) because the fold outlives the read that started
 // it: that read holds the request's pinned connection, which the request gives back when it
@@ -416,8 +416,15 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 // reads of requests (INFRA-592): the connection it takes is one of those admission never hands
 // out, which are for the work a handler leaves running (admission.unadmittedConnections), and
 // coldFolds bounds how many it may take at once.
+//
+// The step goes (store.WithoutBeforeCommit) because the fold is the document's work and not the
+// request's write: a keyed write that reads a document no room holds - recording a check result
+// against a Verification document (api/results.go) - would otherwise run the Idempotency-Key
+// step in the fold's read-only transaction, which Postgres refuses, failing the room and
+// answering the write 503 DOC_SERVICE_UNAVAILABLE. Commit skips the step for a read-only
+// transaction as well, so neither half alone can bring it back.
 func (s *Service) foldContext(ctx context.Context) context.Context {
-	return withQueryPool(store.ForConcurrentWorker(context.WithoutCancel(ctx)), s.store.Pool)
+	return withQueryPool(store.ForConcurrentWorker(store.WithoutBeforeCommit(context.WithoutCancel(ctx))), s.store.Pool)
 }
 
 // foldLoad loads artifactID's stored history for a cold read's fold, holding one of the process's

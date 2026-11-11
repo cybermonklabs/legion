@@ -394,14 +394,15 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 }
 
 // unusedLocked is whether state holds nothing that outlasts its room. These are every holder: an
-// open writer, a running or armed settlement, a latest edit source no settlement has read, a
-// failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
-// browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, and an in-flight credit whose append
-// has not landed. Its caller holds state.mu.
+// open writer, a settlement this process owes (owesSettlementLocked: one running, one armed, one
+// a live write took over, and a latest edit source no settlement has read), a failure being
+// recovered from (whose eviction forgets the state itself, evictRoom), a connected browser, a
+// document socket's admission (admitting), an update the room's persistence has not taken or
+// appended, a commit's parked bytes not yet stored, and an in-flight credit whose append has not
+// landed. Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
-	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
-		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
+	return state.liveWriter == nil && !owesSettlementLocked(state, s.isSettleTimerArmed(state.settle)) &&
+		state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
 		len(state.parked) == 0
 }

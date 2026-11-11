@@ -251,11 +251,12 @@ func (s *Service) peerlessRooms() []peerlessRoom {
 			continue
 		}
 		if len(state.connected) == 0 && state.failed == nil && !state.reloading && state.liveWriter == nil {
+			_, timerArmed := armed[state.settle]
 			peerless = append(peerless, peerlessRoom{
 				room:     room,
 				used:     state.lastUsed,
 				weight:   state.weight,
-				closable: now.Sub(state.lastUsed) >= roomBudgetMinIdle && !owesSettlementLocked(state, armed),
+				closable: now.Sub(state.lastUsed) >= roomBudgetMinIdle && !owesSettlementLocked(state, timerArmed),
 			})
 		}
 		s.unlockState(room, state)
@@ -283,18 +284,18 @@ func (s *Service) armedSettleTimers() map[*time.Timer]struct{} {
 
 // owesSettlementLocked is whether a settlement of this document is running on this process or is
 // still to run on it: one holding the state from before its wait for a settlement slot
-// (settling), one armed or fired and not yet returned (its timer, in armed), one a live write
-// took over and arms again when it ends (settleDeferred), and a latest edit source no settlement
-// has read (unsettled), which is the pending-settlement row this process still owes. These are
-// the settlement holders unusedLocked names, read off the state the trim already holds the lock
-// for: the row itself is a read of the store, which the trim must not make. A state that never
-// armed a timer has none, and nil is in no set. Its caller holds state.mu.
-func owesSettlementLocked(state *roomState, armed map[*time.Timer]struct{}) bool {
-	if state.settling > 0 || state.settleDeferred || state.unsettled {
-		return true
-	}
-	_, timerArmed := armed[state.settle]
-	return timerArmed
+// (settling), one armed or fired and not yet returned (timerArmed), one a live write took over
+// and arms again when it ends (settleDeferred), and a latest edit source no settlement has read
+// (unsettled), which is the pending-settlement row this process still owes. These are the
+// settlement holders, read off the state alone: the row itself is a read of the store, which
+// the trim must not make.
+//
+// Each caller tests the timer the way it holds the register and passes the answer:
+// the trim reads the whole set once before it takes the rooms' locks (armedSettleTimers), where
+// a room's own check asks for its timer alone (isSettleTimerArmed, Service.unusedLocked). Its
+// caller holds state.mu.
+func owesSettlementLocked(state *roomState, timerArmed bool) bool {
+	return timerArmed || state.settling > 0 || state.settleDeferred || state.unsettled
 }
 
 // peerlessRoomsOverBudget is the peerless rooms whose weight the budget does not hold and which

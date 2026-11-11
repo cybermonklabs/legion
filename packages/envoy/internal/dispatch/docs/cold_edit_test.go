@@ -6,10 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -210,4 +212,45 @@ func documentToken(t *testing.T, service *Service, artifactID string) string {
 		t.Fatalf("read the document's token: %v", err)
 	}
 	return outcome.Token
+}
+
+// A cold read's fold takes no step of the request that waits for it (store.WithoutBeforeCommit
+// in foldContext). The fold is the document's work, not the request's write: it reads the
+// stored history in a read-only transaction, and a keyed write's Idempotency-Key step is a
+// write Postgres refuses inside one, so a step left on the fold failed the commit, failed the
+// room, and answered the write 503 DOC_SERVICE_UNAVAILABLE.
+func TestAColdReadsFoldTakesNoRequestCommitStep(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
+	closeDocumentRoom(t, service, artifactID)
+
+	var taken atomic.Int32
+	keyed := store.WithBeforeCommit(context.Background(), func(context.Context, pgx.Tx) error {
+		taken.Add(1)
+		return nil
+	})
+	read, _, err := service.coldRead(keyed, artifactID)
+	if err != nil {
+		t.Fatalf("read the document no room holds: %v", err)
+	}
+	if read == nil {
+		t.Fatal("the cold read folded no rendering")
+	}
+	if taken.Load() != 0 {
+		t.Fatalf("the fold took the request's commit step %d times, want none", taken.Load())
+	}
+	// The step is off the fold's context itself, not merely skipped by the read-only
+	// transaction the load happens to open: a transaction of the fold's that does write - one
+	// a later load or materialization opens - must not mark the request's key either.
+	writing, err := service.store.Pool.Begin(service.foldContext(keyed))
+	if err != nil {
+		t.Fatalf("open a transaction on the fold's context: %v", err)
+	}
+	if err := writing.Commit(context.Background()); err != nil {
+		t.Fatalf("commit a transaction on the fold's context: %v", err)
+	}
+	if taken.Load() != 0 {
+		t.Fatalf("a transaction on the fold's context took the request's commit step %d times, want none", taken.Load())
+	}
 }

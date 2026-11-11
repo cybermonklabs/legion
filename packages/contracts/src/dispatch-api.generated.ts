@@ -7991,6 +7991,37 @@ export interface operations {
           "application/json": components["schemas"]["Ask"];
         };
       };
+      /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
+      503: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
