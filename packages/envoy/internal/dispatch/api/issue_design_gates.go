@@ -140,14 +140,20 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `
-		insert into design_gates (issue, step, artifact_id)
-		select $1::text, published.step, published.artifact_id
-		from unnest($2::text[], $3::text[]) as published(step, artifact_id)
-		on conflict (issue, step) do update set artifact_id = excluded.artifact_id
-	`, issue, steps, documents); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// The delete above stands for the publish that names no gate — the one that clears a record,
+	// and the one the daemon sends for every issue a generation clear empties — so the insert is
+	// run only when there is a row to write: an insert selecting from empty arrays writes nothing
+	// and asks the database for it anyway.
+	if len(gates) > 0 {
+		if _, err := tx.Exec(r.Context(), `
+			insert into design_gates (issue, step, artifact_id)
+			select $1::text, published.step, published.artifact_id
+			from unnest($2::text[], $3::text[]) as published(step, artifact_id)
+			on conflict (issue, step) do update set artifact_id = excluded.artifact_id
+		`, issue, steps, documents); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

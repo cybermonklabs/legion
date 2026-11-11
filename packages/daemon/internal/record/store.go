@@ -1138,17 +1138,8 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
-	var emptied []string
-	for rows.Next() {
-		var issue string
-		if err := rows.Scan(&issue); err != nil {
-			rows.Close()
-			return fmt.Errorf("%s: %w", describe, err)
-		}
-		emptied = append(emptied, issue)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	slices.Sort(emptied)
@@ -1379,19 +1370,27 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 	return gates, nil
 }
 
-// GatedIssues is the record of each issue of project that holds at least one design gate, by key;
-// an issue with no gate is left out. It is the boot's look over every recorded gate (the daemon's
-// queueRecordedGatesPublish), which judges each of these records by its own Dispatch status and
-// then reads the gates of the ones it keeps (Gates): two queries whatever the number of issues the
-// project has recorded, rather than a read per record.
-func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error) {
-	issues, err := queryIssues(ctx, tx, "select "+issueColumns+` from issues
-		where project = $1 and exists (select 1 from design_gates where design_gates.issue = issues.key)
+// GatedIssues is the key of each issue of project that holds at least one design gate and that
+// Dispatch does not show as done, in key order. It is the boot's look over every recorded gate
+// (the daemon's queueRecordedGatesPublish), which publishes the gates of these issues (Gates):
+// two queries whatever the number of issues the project has recorded, rather than a read per
+// record. The done ones are left out here rather than by the caller, since the rows nobody
+// publishes are rows nobody need read, and the key is the whole of what the caller carries on
+// with. The status read is dispatch_status, what Dispatch last showed (DoneStatus), rather than
+// status, which is what the daemon means by the issue.
+func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]string, error) {
+	rows, err := tx.Query(ctx, `select key from issues
+		where project = $1 and dispatch_status <> 'done'
+		and exists (select 1 from design_gates where design_gates.issue = issues.key)
 		order by key`, project)
 	if err != nil {
 		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
 	}
-	return issues, nil
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	return keys, nil
 }
 
 // GatesForArtifact is every gate registered on artifactID, in issue and then step order: one row

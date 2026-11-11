@@ -38,3 +38,11 @@ create table design_gates (
   artifact_id text not null,
   primary key (issue, step)
 );
+
+-- The advice reads the table by document, not by issue: `superseded_approval` asks which issues'
+-- gates record the document it is writing about (api/write_advice.go, supersededApprovalGates),
+-- and the primary key answers nothing about artifact_id. That read runs inside the advice's
+-- savepoint under a 500 ms statement_timeout, where a scan of every gate row would cost the whole
+-- gate clause the advice exists to print, so the one column that reader filters by holds an index
+-- of its own. The table is new and empty, so the index is built with it.
+create index design_gates_artifact_id_idx on design_gates (artifact_id);

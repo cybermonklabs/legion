@@ -1,8 +1,15 @@
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
-import { freePorts } from "./envoy-stack";
+import {
+  awaitReady,
+  buildGoBinaries,
+  ENVOY_MODULE,
+  freePorts,
+  type ReadyBudget,
+  stopProcess,
+} from "./envoy-stack";
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
@@ -55,54 +62,11 @@ export interface DispatchStackOptions {
   readonly work: string;
 }
 
-const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
-const READY_TIMEOUT_MS = 120_000;
-const STOP_GRACE_MS = 10_000;
-
-/** Builds the Dispatch server from this checkout into `bin`, as `bin/dispatch`. */
-async function buildServer(bin: string): Promise<void> {
-  if (Bun.which("go") === null) {
-    throw new Error("the Dispatch stack needs go on PATH to build ./cmd/dispatch");
-  }
-  // An -o ending in a separator names a directory: the main package's binary goes in it, named
-  // after the package's directory.
-  const build = Bun.spawn(["go", "build", "-o", `${bin}${path.sep}`, "./cmd/dispatch"], {
-    cwd: ENVOY_MODULE,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stderr, code] = await Promise.all([new Response(build.stderr).text(), build.exited]);
-  if (code !== 0) {
-    throw new Error(`go build ./cmd/dispatch in ${ENVOY_MODULE} exited ${code}: ${stderr}`);
-  }
-}
-
-/** The last lines of a log file, for an error that names why the server failed. */
-function tail(file: string): string {
-  try {
-    return readFileSync(file, "utf8").trimEnd().split("\n").slice(-20).join("\n");
-  } catch {
-    return "(no log)";
-  }
-}
-
-/** Polls `ready` until it holds, throwing when `child` exits first or the timeout passes. */
-async function awaitReady(child: Subprocess, log: string, ready: () => Promise<boolean>) {
-  const deadline = Date.now() + READY_TIMEOUT_MS;
-  for (;;) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `Dispatch exited (${child.exitCode ?? child.signalCode}) before it was ready: ${tail(log)}`
-      );
-    }
-    if (await ready().catch(() => false)) return;
-    if (Date.now() > deadline) {
-      throw new Error(`Dispatch was not ready within ${READY_TIMEOUT_MS} ms: ${tail(log)}`);
-    }
-    await Bun.sleep(100);
-  }
-}
+// The server migrates a database of its own as it boots, and a cold `go build` of ./cmd/dispatch
+// comes first, so it is given twice the Envoy stack's budget; 20 lines of its log say why a boot
+// that never answered stopped.
+const DISPATCH_READY: ReadyBudget = { timeoutMs: 120_000, tailLines: 20 };
 
 /** The test server's DSN, or the error that says the run has none. */
 function testDatabaseServer(): string {
@@ -141,10 +105,8 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     if (child !== undefined) {
       const stopping = child;
       child = undefined;
-      stopping.kill("SIGINT");
-      const timer = setTimeout(() => stopping.kill("SIGKILL"), STOP_GRACE_MS);
-      await stopping.exited;
-      clearTimeout(timer);
+      // SIGINT is the stop the server takes: it closes its listener and its pool on it.
+      await stopProcess(stopping, "SIGINT");
     }
     // Dropped with force: the server's pool is gone with the process above, and a connection the
     // run left behind must not keep the database on the shared test server.
@@ -156,7 +118,12 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     // (testdb.create): the server applies its migrations into it at boot.
     await admin.unsafe(`create database ${database} strategy file_copy`);
     const bin = path.join(work, "bin");
-    await buildServer(bin);
+    await buildGoBinaries({
+      bin,
+      packages: ["./cmd/dispatch"],
+      stack: "Dispatch",
+      binaries: "./cmd/dispatch",
+    });
     const [port] = await freePorts(1);
     const url = `http://127.0.0.1:${port}`;
     const token = `dispatch-stack-${crypto.randomUUID()}`;
@@ -183,7 +150,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       stderr: out,
     });
     closeSync(out);
-    await awaitReady(child, log, async () => {
+    await awaitReady("Dispatch", child, log, DISPATCH_READY, async () => {
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });

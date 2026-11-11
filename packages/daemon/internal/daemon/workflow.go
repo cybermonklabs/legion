@@ -432,31 +432,27 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // waiting on its approval is never. A boot that cannot write the rows fails the boot, as the
 // project's gated-steps publication does.
 //
-// A done issue is left out: a gate is live for Dispatch's advice only while the issue holding it
-// is not done there (the spec's R5). A closed tree refuses no READY, and its close deletes no gate
-// row, so publishing its set would have Dispatch print a clause for a gate that holds nothing
-// back. The status read is DispatchStatus, what Dispatch last showed, rather than Status, which is
-// what the daemon means by the issue.
+// A done issue is left out, by the read itself (record.GatedIssues): a gate is live for
+// Dispatch's advice only while the issue holding it is not done there (the spec's R5). A closed
+// tree refuses no READY, and its close deletes no gate row, so publishing its set would have
+// Dispatch print a clause for a gate that holds nothing back. The status read is dispatch_status,
+// what Dispatch last showed, rather than status, which is what the daemon means by the issue.
 //
 // It queues at every boot, as the project's list does, because the daemon keeps no record of what
-// it last published. A boot costs the record two queries — the gated records, then their gates —
-// and one enqueue each, and the enqueue writes nothing for a row whose payload is already what it
-// would write (EnqueueDesignGates), so a restart loop queues no second row and a set Dispatch
-// already holds costs no Dispatch write. The lane is woken on commit (projectRecords), which
-// before attach reaches nothing: the outbox's first sweep runs whatever this pass left.
+// it last published, so each boot does cost Dispatch one write for every live gated issue: the
+// enqueue's payload comparison (EnqueueDesignGates) matches only a row still waiting in the
+// outbox, and a row the lane has delivered is gone. What it buys is a restart loop, where the
+// rows of the boot before are still pending and a second boot queues no row beside them. A boot
+// costs the record two queries — the issues to publish, then their gates — and one enqueue each.
+// The lane is woken on commit (projectRecords), which before attach reaches nothing: the outbox's
+// first sweep runs whatever this pass left.
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		gated, err := w.records.GatedIssues(scoped, tx, w.dispatchProject)
+		live, err := w.records.GatedIssues(scoped, tx, w.dispatchProject)
 		if err != nil {
 			return err
-		}
-		live := make([]string, 0, len(gated))
-		for _, issue := range gated {
-			if issue.DispatchStatus != record.DoneStatus {
-				live = append(live, issue.Key)
-			}
 		}
 		gates, err := w.records.Gates(scoped, tx, live)
 		if err != nil {

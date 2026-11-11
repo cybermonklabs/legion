@@ -173,13 +173,15 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	// The registration is the path that binds a step to a document, so it is the one that most
 	// often moves the issue's pairs; a re-registration of the document the step already names
-	// queues nothing (record.PublishChangedGates).
-	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
+	// queues nothing (record.PublishChangedGates). Its read of the issue's gates, made after the
+	// write in this transaction, is the set the registration leaves, so what the pending READY
+	// below is decided on is that set rather than this row patched into the one read before.
+	gates, err = record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now())
+	if err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
 		"version", version, "open", classify.DesignGateOpen(gate), "changes_requested", changesRequested, "gated_steps", e.cfg.Steps)
-	gates[step] = gate
 	if err := e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation}); err != nil {
 		return intake.Result{}, err
 	}
@@ -496,7 +498,8 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 	// Every gate write asks the same question of the issue's pairs, this one included: these
 	// writes clear a review mark and leave each step on the document it named, so the answer is
 	// that nothing is published.
-	return record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
+	_, err = record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
+	return err
 }
 
 // mirrorRegisteredRequest writes the mirror row of the approval request a registration read open
@@ -554,14 +557,15 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 		return intake.Result{}, err
 	}
 	// The reset keeps the step on the document it named, so the pairs stand as they were and
-	// nothing is published; the question is asked of every gate write.
-	if err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
+	// nothing is published; the question is asked of every gate write. Its read after the write
+	// is the set the reset leaves, which is what the pending READY below is decided on.
+	gates, err = record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now())
+	if err != nil {
 		return intake.Result{}, err
 	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
 		return intake.Result{}, e.applyArtifact(ctx, tx, reset, fact.Read, false)
 	}
-	gates[reset.Step] = reset
 	return intake.Result{}, e.advancePendingReady(ctx, tx, issue.Key, gates)
 }
 
@@ -699,7 +703,8 @@ func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.Desi
 	if err := e.store.PutGate(ctx, tx, classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.Version, fact.Mark)); err != nil {
 		return err
 	}
-	return record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
+	_, err = record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
+	return err
 }
 
 // artifactIgnored says why an artifact event changes no gate state, if it does not: ungated when
@@ -892,23 +897,22 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err := e.store.PutGate(ctx, tx, updated); err != nil {
 		return err
 	}
-	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
+	after, err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now())
+	if err != nil {
 		return err
 	}
 	// What the tree does next is the whole issue's question, not this row's: every step the
 	// deployment gates must be open before a member starts or a refused READY is released
 	// (classify.DesignGatesOpen; the waiting line, where record.Waiting classes such a member
-	// LineFirstPhase and StartFirstPhase runs it, and advancePendingReady). A row this event
-	// leaves closed is one the deployment gates - an ungated row returned above - so it holds the
-	// work whatever the other rows say, and the read would buy nothing: the nil map answers
-	// DesignGatesOpen false, as the closed row itself does. So the issue is read only when this
-	// row is open; the write above is in this transaction, so the read answers this row as it now
-	// stands.
+	// LineFirstPhase and StartFirstPhase runs it, and advancePendingReady). The publish above
+	// read the issue's gates after the write, in this transaction, so that set answers this row
+	// as it now stands and the question is answered without reading the rows again. A row this
+	// event leaves closed is one the deployment gates - an ungated row returned above - so it
+	// holds the work whatever the other rows say, and the pass below is given nothing: the nil
+	// map answers DesignGatesOpen false, as the closed row itself does.
 	var gates map[record.DesignStep]record.DesignGate
 	if isOpen {
-		if gates, err = e.store.GatesOf(ctx, tx, key); err != nil {
-			return err
-		}
+		gates = after
 	}
 	if tell {
 		if err := e.tellChangesOnce(ctx, tx, gate.Step, fact, true); err != nil {
