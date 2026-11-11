@@ -521,6 +521,32 @@ What each part is for:
   none.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
+- **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
+  your own variables for every agent, and `OTEL_RESOURCE_ATTRIBUTES` is composed rather than
+  refused. Under Kubernetes it is the second such name beside `PI_CONFIG_FILES`, whose overlays
+  each role's own are added after; under tmux `PI_CONFIG_FILES` is the runtime's own and refused
+  in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
+  the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
+  billed under (`theorem.project=widgets`), and each launch carries them with its own
+  `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
+  serves. The agent takes the last value a key is given, which is why Legion's two pairs come
+  last. Both keys reach the spend collector today, and its keep-list of six `theorem.*`
+  attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
+  issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
+  The project controller serves no issue and carries the role alone. The image probe's container
+  runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
+  role either and keeps it with its trailing commas and whitespace dropped and nothing added.
+  Legion reads that value for its content as well as its name, and refuses a member the agent's
+  OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
+  value, one with an empty key, one whose key or value does not percent-decode or runs past 255
+  characters once decoded, and one naming `legion.issue` or `legion.role`, which
+  Legion writes itself. The refusal names that one member and what is wrong with it, never the
+  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  One such member would cost a launch every attribute of the variable, your own
+  `theorem.project` among them, because the detector's caller catches the throw with an empty
+  hand. Like every other variable here, the attributes reach a role with the start command of its
+  next launch and travel in no pod specification, so no pod is replaced and a role already
+  running keeps what it started with.
 - **`runtime.kubernetes.session_store`** is required, and must name a store that keeps every
   pod's Oh My Pi conversation in a database, with that store's key. There are two:
   `postgres`, whose `session_dsn_secret` names the key of the providers Secret

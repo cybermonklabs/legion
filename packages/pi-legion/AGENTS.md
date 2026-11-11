@@ -94,8 +94,16 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 59's end of fix-attempt
-counting and its two recovery operations (the settings block of `GET /legion/v1/state` no longer
+number is the one `DaemonAPIVersion` declares, last bumped by contract 64's launch spend
+attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
+issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
+after the attributes the deployment's own `runtime.kubernetes.pod.env` or
+`runtime.tmux.pane_env` sets, so every launch's attributes name the issue it serves, and a
+spend row grouped by issue follows once the spend collector keeps those two keys, which
+dispatch://INFRA-1835 adds to its `theorem.*` keep-list; the project controller's launch serves
+no issue and carries the role alone), after contract 59's end of
+fix-attempt counting and its two recovery operations
+(the settings block of `GET /legion/v1/state` no longer
 carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict
 reader every worker's `read_record` parses the state through requires, so the boot gate and
 `legion probe-image` hold plugin and daemon equal and neither order of the two ever runs; the
