@@ -122,6 +122,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_ci_tools_test: check-ci-tools.test.sh and what it tests."
         type: string
         required: true
+      ci_tools_proof_test:
+        description: "ci.yaml's needs.changes.outputs.ci_tools_proof_test: ci-tools-proof.test.sh and what it tests."
+        type: string
+        required: true
       check_action_pins_test:
         description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
         type: string
@@ -359,9 +363,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'
         run: .github/scripts/mirror-ci-images.test.sh
 
-      # The three tool scripts, in the order they depend on each other: the fetch helper every
-      # install goes through, the filler that puts the bytes in the copy that helper reads, and
-      # the gate that holds every row to its pin.
+      # The tool scripts, in the order they depend on each other: the fetch helper every
+      # install goes through, the filler that puts the bytes in the copy that helper reads, the
+      # gate that holds every row to its pin, and the rig that drives that helper against a
+      # fault in the tool-fallback job.
       - name: Test the tool fetch helper
         if: inputs.changes-result != 'success' || inputs.ci_tools_test == 'true'
         run: .github/scripts/ci-tools.test.sh
@@ -373,6 +378,10 @@ jobs:
       - name: Test the tool manifest check
         if: inputs.changes-result != 'success' || inputs.check_ci_tools_test == 'true'
         run: .github/scripts/check-ci-tools.test.sh
+
+      - name: Test the tool fallback rig
+        if: inputs.changes-result != 'success' || inputs.ci_tools_proof_test == 'true'
+        run: .github/scripts/ci-tools-proof.test.sh
 
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
@@ -464,7 +473,7 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
 
-      - name: Test the disk watch
+      - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
 

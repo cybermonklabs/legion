@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   controllerToken,
+  LISTENER_CALL_TIMEOUT_MS,
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
 } from "@legion/contracts";
@@ -20,7 +21,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { completeLines, endsWhole, writtenLines } from "@legion/test-fixtures/transcript-lines";
-import { connect, NatsError, StringCodec } from "nats";
+import { connect, ErrorCode, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
@@ -46,6 +47,41 @@ const omp = process.env.LEGION_TEST_OMP;
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 const skip = (omp === undefined || natsUrl === undefined) && !onActions;
+
+/**
+ * Which arm the case "a card published as soon as the role is claimed comes after the start turn"
+ * runs, from LEGION_TEST_CONTROLLER_NOTICE. Unset is the shipped shape and the only one CI runs:
+ * the notice goes out from inside the registration that follows the controller topic's
+ * subscription (`StandinHooks.onNoticeInterest`), on the server's word that something holds the
+ * subject (`ControllerInbound.noticeOnceHeld`). `at-claim` publishes it from the role claim
+ * instead, with the same proof, which is a moment at which that subscription does not exist yet:
+ * the probe reads answers that the server delivered it to nobody until it does, and the case
+ * still passes. `at-claim-unproven` publishes it from the role claim with the bare
+ * `ControllerInbound.notice()`, which is a publish into whatever the server holds at that moment:
+ * it holds nothing, the frame is dropped, and the case fails at its 150-second bound on
+ * `timed out waiting for the next model request, or the session settled with the card and the
+ * notice read` — the red the probe exists to remove. `dead-subject` runs the probe where the
+ * shipped shape runs it but on a subject no session holds, so it reaches its cap and the case
+ * fails carrying the probe's own message — the red that shows the probe can fail at all.
+ * Nothing in CI, in the harness or anywhere in this repository sets the variable: it is a lever a
+ * person sets by hand, to see this case red without the probe. A value that is none of the three
+ * is refused here, as the file loads, naming the variable, the value read and what it accepts,
+ * rather than read as unset: a typo would otherwise run the shipped shape under a title claiming
+ * another arm.
+ */
+const NOTICE_ARMS = ["at-claim", "at-claim-unproven", "dead-subject"] as const;
+type NoticeArm = (typeof NOTICE_ARMS)[number];
+const noticeArm: NoticeArm | undefined = ((): NoticeArm | undefined => {
+  const given = process.env.LEGION_TEST_CONTROLLER_NOTICE;
+  if (given === undefined) return undefined;
+  if (!(NOTICE_ARMS as readonly string[]).includes(given)) {
+    throw new Error(
+      `LEGION_TEST_CONTROLLER_NOTICE is ${JSON.stringify(given)}, which is none of ` +
+        `${NOTICE_ARMS.join(", ")}; leave it unset for the shipped shape`
+    );
+  }
+  return given as NoticeArm;
+})();
 
 /** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
 function setup(): { readonly binary: string; readonly nats: string } {
@@ -222,6 +258,16 @@ interface StandinHooks {
    */
   readonly register?: (body: Record<string, unknown>) => Response | Promise<Response>;
   /**
+   * Called with the claiming session's id inside the controller role's claim (`/v1/roles/set`
+   * for `legion-legion-controller`), synchronously, before the stand-in writes that claim's
+   * answer. The controller session claims the role and only then subscribes to the controller
+   * topic (packages/pi-legion/src/controller-session.ts:334-339), so a publish made from here
+   * finds that subject closed every run, where a publish made from `onRoleClaim`, which
+   * `setImmediate` fires once the answer is produced, finds it closed only usually: about one
+   * run in ten the test process is descheduled past the subscribe and the frame lands.
+   */
+  readonly beforeRoleClaimAnswer?: (sid: string) => void;
+  /**
    * Called with the claiming session's id once the stand-in has answered the controller role's
    * claim (`/v1/roles/set` for `legion-legion-controller`): the next turn of its event loop, after
    * the answer went out.
@@ -249,6 +295,16 @@ interface StandinHooks {
    * start-turn mark set sent right before it.
    */
   readonly ready?: Hold;
+  /**
+   * An error a stand-in callback recorded, which every wait of either starter's session throws
+   * (their `until` loops). A callback cannot fail the case by throwing: `serveStandin` answers a
+   * throw with 500 and envoy-client sends the call again (@legion/contracts,
+   * packages/contracts/src/envoy-session.ts:72, `LISTENER_CALL_ATTEMPTS = 2`), so the failure
+   * never reaches the case and the case dies at its own deadline carrying the wait's text
+   * instead of the failure's. A case keeps the error in a box of its own and gives this hook to
+   * read it.
+   */
+  readonly fault?: () => Error | undefined;
 }
 
 /** A controller's scratch root, and the stand-in it runs against. */
@@ -346,6 +402,7 @@ async function serveController(
     hooks.onListener?.(sid);
     if (url.pathname === "/v1/roles/set") {
       if (body.role === registered.claimToken && roleHolder === "") {
+        hooks.beforeRoleClaimAnswer?.(sid);
         setImmediate(() => hooks.onRoleClaim?.(sid));
         noticeInterestDue = true;
       }
@@ -448,6 +505,11 @@ async function startController(
           `omp exited (${exitCode}) while waiting for ${what}; its screen:\n${terminal.screen()}`
         );
       }
+      // Beside the exit check, and for the same reason: a failure a stand-in callback recorded
+      // (`StandinHooks.fault`) is the case's answer, so every wait ends on it rather than on its
+      // own deadline.
+      const fault = hooks.fault?.();
+      if (fault !== undefined) throw fault;
       const value = await probe();
       if (value !== undefined) return value;
       if (Date.now() > deadline) {
@@ -595,6 +657,10 @@ async function startDaemonController(hooks: StandinHooks): Promise<DaemonControl
     const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
     for (;;) {
       if (closed.error !== undefined) throw closed.error;
+      // As in `startController`: a failure a stand-in callback recorded (`StandinHooks.fault`)
+      // is the case's answer, so every wait ends on it rather than on its own deadline.
+      const fault = hooks.fault?.();
+      if (fault !== undefined) throw fault;
       const value = await probe();
       if (value !== undefined) return value;
       if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -679,6 +745,90 @@ interface SentCard {
 }
 
 /**
+ * How long one attempt of `ControllerInbound.noticeOnceHeld` waits for the server's answer.
+ * Nothing answers a notice (`expectsLaneReceipt`, packages/envoy-client/src/delivery.ts,
+ * acknowledges only a frame on the session's own agent subject), so this timeout is the ordinary
+ * end of an attempt and every run pays it once. An answer that arrived after the bound would be
+ * read as delivery and the notice would be lost, so the bound stands at least five times the
+ * worst single answer measured under load (two busy workers against this pod's two CPUs): 600 ms
+ * is 5.4 times the 110.87 ms worst of the tester's sample of 1500 answers and 6.2 times the
+ * 96.35 ms worst of the implementer's own 1500, and of those 3000 answers none reached 600 ms.
+ * The cap below is bought with the interval and the allowance; this number is never traded down
+ * for it.
+ */
+const NOTICE_PROBE_TIMEOUT_MS = 600;
+
+/**
+ * How long `noticeOnceHeld` waits after an answer that the server held no subscription: the poll
+ * `startController`'s `until` already uses for everything this file waits on. The cap below is a
+ * count of answers read at this interval, and was measured at it, so the two move together.
+ */
+const NOTICE_PROBE_INTERVAL_MS = 25;
+
+/**
+ * How many answers of "the server delivered it to nobody" `noticeOnceHeld` reads before it gives
+ * up. The arms that publish from `beforeRoleClaimAnswer` read answers on every run, since they
+ * publish before the role claim's answer and so before the subscription can exist, and the
+ * shipped shape can read them too: the probe runs on the first `/v1/interests/subscribe` after
+ * the role claim, whichever caller sent it, so it can meet a subject the server does not hold
+ * yet. In the 50 loaded runs at this head's parent the shipped shape read no answer and held
+ * the bound alone; the counts measured are the claim arms'. Over the tester's eighteen loaded
+ * at-claim runs the probe read 51, 45, 40, 37, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2 and 2
+ * answers: a median of 3 and a worst of 51, where the rule asks for twice the worst, so this is
+ * 2.45 times it. What it covers is a run whose own worst count is 62, some 2.2 s of waiting for
+ * the session to subscribe, and 62 is as far as it reaches: at the bound and allowance above
+ * and below, the cap may not pass 125 and hold the allowance under the listener's call timeout.
+ * A later sample worse than 62 asks for a wider interval and the counts measured again, not for
+ * a lower bound.
+ */
+const NOTICE_PROBE_ANSWER_CAP = 125;
+
+/**
+ * What the hold allowance below allows one answer beyond the interval that follows it. It is a
+ * p99 and not a worst case: 10 ms stands above the 9.01 ms p99 of the implementer's sample of
+ * 1500 answers under load and the 6.03 ms p99 of the tester's, while the worst answer of those
+ * samples is ten times it (110.87 ms). What the expression below gives is therefore an allowance
+ * over a run of answers rather than a bound on any single one, which is why the measured
+ * `dead-subject` hold stands beside it.
+ */
+const NOTICE_PROBE_ANSWER_ALLOWANCE_MS = 10;
+
+/**
+ * What `noticeOnceHeld` allows itself to hold the caller that awaits it: the attempt that ends
+ * it, plus every answer the cap allows with the interval after each. 600 + 125 * (25 + 10) =
+ * 4_975 ms, under LISTENER_CALL_TIMEOUT_MS (@legion/contracts,
+ * packages/contracts/src/envoy-session.ts:56, 5_000 ms), which is the bound that matters: the
+ * probe runs inside the handler that answers the registration `subscribeNotice` sends, and a
+ * handler held for LISTENER_CALL_TIMEOUT_MS or more makes the session send that registration
+ * again. Built on the p99 of one answer, this is an allowance and not the longest the probe can
+ * hold. Two arms hold a handler at all, both of which run the probe from `onNoticeInterest`: the
+ * shipped shape, which reads answers whenever the first `/v1/interests/subscribe` after the role
+ * claim is some other caller's and the controller topic is not held yet, though over the 50
+ * loaded runs at this head's parent it read none and the hold was the bound alone, and
+ * `dead-subject`, which runs to the cap and whose hold measured 3452.08 ms on this
+ * content, 3437.34 ms at the previous head and 3427.29 to 3788.46 ms over the tester's runs
+ * of it. The arms that publish from `beforeRoleClaimAnswer` hold nothing,
+ * since the stand-in drops that hook's result.
+ */
+const NOTICE_PROBE_HOLD_ALLOWANCE_MS =
+  NOTICE_PROBE_TIMEOUT_MS +
+  NOTICE_PROBE_ANSWER_CAP * (NOTICE_PROBE_INTERVAL_MS + NOTICE_PROBE_ANSWER_ALLOWANCE_MS);
+
+// The arithmetic above is kept by the program and not by a reader, since the allowance is read
+// only inside the throw at the cap, which a green run never reaches: a module-load refusal fails
+// every case of this file the moment one of the four constants moves the hold to the listener's
+// call timeout or past it.
+if (NOTICE_PROBE_HOLD_ALLOWANCE_MS >= LISTENER_CALL_TIMEOUT_MS) {
+  throw new Error(
+    `the notice probe's hold allowance ${NOTICE_PROBE_HOLD_ALLOWANCE_MS} ms is not under ` +
+      `LISTENER_CALL_TIMEOUT_MS (${LISTENER_CALL_TIMEOUT_MS} ms): NOTICE_PROBE_TIMEOUT_MS ` +
+      `${NOTICE_PROBE_TIMEOUT_MS} + NOTICE_PROBE_ANSWER_CAP ${NOTICE_PROBE_ANSWER_CAP} * ` +
+      `(NOTICE_PROBE_INTERVAL_MS ${NOTICE_PROBE_INTERVAL_MS} + ` +
+      `NOTICE_PROBE_ANSWER_ALLOWANCE_MS ${NOTICE_PROBE_ANSWER_ALLOWANCE_MS}).`
+  );
+}
+
+/**
  * What reaches a controller session over the real NATS server: a card on the controller role's
  * lane, as the Envoy listener forwards it to the session's agent subject, and a daemon notice on
  * the controller topic, as the listener publishes what the daemon's controller-notice executor
@@ -699,11 +849,34 @@ interface ControllerInbound {
    * shows that the session's NATS connection has taken everything published before it.
    */
   repeat(sid: string, card: Card): Promise<unknown>;
+  /** The controller topic of the project, which a notice goes on and a case derives from. */
+  readonly noticeSubject: string;
   /**
    * Publishes one triage notice on the controller topic and returns its summary (`triage on
    * <issue>`, the daemon's `noticeSummary`), whose issue key no other notice shares.
    */
   notice(): string;
+  /**
+   * Publishes one triage notice and returns its summary, as `notice()` does, but only on the
+   * server's word that it holds a subscription on `subject` (`legionControllerNoticeSubject` of
+   * the project unless a caller names another, a subject no session holds for one): the frame
+   * goes as a core request, which a server holding no subscription refuses with no-responders
+   * instead of dropping in silence, and the same frame goes again after every such refusal. Any
+   * reply means the server took the frame, and so does the request's own timeout, which is the
+   * ordinary ending since nothing replies to a notice — but only on a connection that is still
+   * the live one the attempt started on, which the guard in the loop below tests, since the
+   * pinned client gives a closed connection and a server that went away that same timeout.
+   *
+   * What the answer proves, and what it does not: the server answers that some subscriber holds
+   * the subject, never which one, so it is this session's subscription only while one controller
+   * session of the project `legion` holds that subject at a time on the NATS server a run uses.
+   * This file is the only one of the suite that opens a subject of that project: in
+   * packages/pi-legion, `claim-boot-order-omp.test.ts` claims the role `implementer`
+   * (`legion-claim-boot-order-infra-1573-implementer`, on the role lane, never a Legion notice
+   * subject) and `legion-background-subagent-omp.test.ts` runs the project `bgsub`, and no other
+   * case of this file runs a second controller beside the one it started.
+   */
+  noticeOnceHeld(subject?: string): Promise<string>;
 }
 
 /**
@@ -735,7 +908,32 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
   const noticeSubject = legionControllerNoticeSubject(PROJECT);
   const receipt = (sid: string, frame: Uint8Array): Promise<unknown> =>
     connection.request(`notifications.agent.${sid}`, frame, { timeout: RECEIPT_TIMEOUT_MS });
+  /**
+   * One daemon notice frame for `subject`, with the summary it carries (`triage on <issue>`, the
+   * daemon's `noticeSummary`), whose issue key no other notice shares. A probe that sends its
+   * notice again sends the bytes this built once, so the summary the case reads off a request is
+   * the one the server took.
+   */
+  const noticeFrame = (subject: string): { text: string; frame: Uint8Array } => {
+    const text = `triage on LEGION-${100_000 + Math.floor(Math.random() * 900_000)}`;
+    const frame = codec.encode(
+      JSON.stringify({
+        event_id: randomUUID(),
+        // The daemon names no source, so the listener's default.
+        source: "agent",
+        source_event_id: randomUUID(),
+        topic: subject,
+        dedupe_key: `legion-outbox:${randomUUID()}`,
+        issued_at: Date.now(),
+        payload_summary: text,
+        payload: JSON.stringify({ kind: "triage" }),
+        trace_id: randomUUID(),
+      })
+    );
+    return { text, frame };
+  };
   return {
+    noticeSubject,
     card(sid, label) {
       const summary = `CARD-${label}-${randomUUID().slice(0, 8)}`;
       const key = `${label}-${randomUUID()}`;
@@ -756,25 +954,93 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     },
     repeat: (sid, card) => receipt(sid, card.frame),
     notice() {
-      const text = `triage on LEGION-${100_000 + Math.floor(Math.random() * 900_000)}`;
-      connection.publish(
-        noticeSubject,
-        codec.encode(
-          JSON.stringify({
-            event_id: randomUUID(),
-            // The daemon names no source, so the listener's default.
-            source: "agent",
-            source_event_id: randomUUID(),
-            topic: noticeSubject,
-            dedupe_key: `legion-outbox:${randomUUID()}`,
-            issued_at: Date.now(),
-            payload_summary: text,
-            payload: JSON.stringify({ kind: "triage" }),
-            trace_id: randomUUID(),
-          })
-        )
-      );
+      const { text, frame } = noticeFrame(noticeSubject);
+      connection.publish(noticeSubject, frame);
       return text;
+    },
+    async noticeOnceHeld(subject = noticeSubject) {
+      const { text, frame } = noticeFrame(subject);
+      const startedAt = performance.now();
+      let unheld = 0;
+      for (;;) {
+        const sentAt = performance.now();
+        // The connection's server-assigned id as the attempt starts, for the third test below.
+        const idBefore = (connection.info as { client_id?: number } | undefined)?.client_id;
+        try {
+          await connection.request(subject, frame, { timeout: NOTICE_PROBE_TIMEOUT_MS });
+        } catch (error) {
+          const code = error instanceof NatsError ? error.code : undefined;
+          if (code === ErrorCode.NoResponders) {
+            unheld += 1;
+            if (unheld === NOTICE_PROBE_ANSWER_CAP) {
+              throw new Error(
+                `nothing holds ${subject}: the server answered ${unheld} times, over ` +
+                  `${(performance.now() - startedAt).toFixed(2)} ms, that it delivered the ` +
+                  `notice to nobody. The probe allows itself ` +
+                  `${NOTICE_PROBE_HOLD_ALLOWANCE_MS} ms for a run of answers, an allowance and ` +
+                  `not a bound on the hold above.`
+              );
+            }
+            await Bun.sleep(NOTICE_PROBE_INTERVAL_MS);
+            continue;
+          }
+          // Any other failure, a closed connection for one, is the probe's own: it is no answer
+          // from the server, and reading it as a publish would put back the inference that lost
+          // the notice.
+          if (code !== ErrorCode.Timeout) throw error;
+          // A timeout reads as delivery only on the connection the attempt started on, still
+          // live. Four endings of one muxed request, driven in this pod against a nats-server
+          // 2.10.22 of the drive's own with the pinned `nats` 2.29.3 (`request`, default mux,
+          // bound 600 ms):
+          //
+          //   1 nothing holds it:     503;     closed false; flushes true;  client_id 6 -> 6
+          //   2 held, never answered: TIMEOUT; closed false; flushes true;  client_id 6 -> 6
+          //   3 closed under it:      TIMEOUT; closed true;  flushes false; client_id 7 -> closed
+          //   4 server gone and back: TIMEOUT; closed false; flushes true;  client_id 8 -> 6,
+          //     with the status events disconnect, reconnecting, update, reconnect
+          //
+          // Endings 2, 3 and 4 share one code, which is why this guard exists. The timeout is the
+          // ordinary ending, and it is also what a connection closed under the attempt is rejected
+          // with (node_modules/nats/lib/nats-base-client/muxsubscription.js `close()`, called from
+          // protocol.js `_close`), and what a server that went away and came back leaves behind.
+          // `isClosed()` catches 3 and nothing else does; the flush catches a server that is gone;
+          // the server-assigned `client_id` catches 4, which neither of the other two sees. Ending
+          // 2 is the ordinary ending the shipped shape meets on every run, so the id test may
+          // never throw on an id it cannot read: when either reading gives no id, the probe passes
+          // that test, uses the other two and goes on.
+          if (connection.isClosed()) {
+            throw new Error(
+              `the notice on ${subject} was not taken: the attempt ended in the request ` +
+                `timeout and the probe's connection is closed (isClosed), which is the ending ` +
+                `a connection closed under the attempt leaves.`
+            );
+          }
+          try {
+            await connection.flush();
+          } catch (flushed) {
+            throw new Error(
+              `the notice on ${subject} was not taken: the attempt ended in the request ` +
+                `timeout and the flush after it failed (${String(flushed)}), so the connection ` +
+                `has no server that could have taken the frame.`
+            );
+          }
+          const idAfter = (connection.info as { client_id?: number } | undefined)?.client_id;
+          if (idBefore !== undefined && idAfter !== undefined && idAfter !== idBefore) {
+            throw new Error(
+              `the notice on ${subject} was not taken: the attempt ended in the request ` +
+                `timeout on a connection the server re-made under it (client_id ${idBefore} -> ` +
+                `${idAfter}), so the frame went to a server that is gone.`
+            );
+          }
+        }
+        const attempt = performance.now() - sentAt;
+        console.log(
+          `notice probe on ${subject}: ${unheld} answers delivered it to nobody, ` +
+            `the attempt that ended it took ${attempt.toFixed(2)} ms, ` +
+            `the whole hold ${(performance.now() - startedAt).toFixed(2)} ms`
+        );
+        return text;
+      }
     },
   };
 }
@@ -919,6 +1185,9 @@ test.skipIf(skip)(
 // queued: the first request carries the start message, and each of them reaches the model after
 // it, as a steer into the start turn or in a later turn. The card's lane receipt shows the session
 // took it, and the repeat's receipt that its connection took the notice published before it.
+// The notice goes through `ControllerInbound.noticeOnceHeld`, which publishes it only on the
+// server's word that something holds the controller topic; the arms of
+// LEGION_TEST_CONTROLLER_NOTICE above move that proof or take it away.
 test.skipIf(skip)(
   "a card published as soon as the role is claimed comes after the start turn",
   async () => {
@@ -926,14 +1195,54 @@ test.skipIf(skip)(
     let sid: string | undefined;
     let sent: SentCard | undefined;
     let notice: string | undefined;
+    // A stand-in callback cannot fail this case by throwing (`StandinHooks.fault` says why), so
+    // the probe throws nowhere: whatever it raises goes in this box, which `fault` below hands to
+    // every wait of the session, and the case ends on the probe's own message.
+    let probeFault: Error | undefined;
+    // The three arms LEGION_TEST_CONTROLLER_NOTICE takes, and the shipped shape it leaves unset,
+    // in one place: which stand-in hook publishes the notice, whether that publish waits on the
+    // server's word that something holds the subject, and the subject the frame goes on. The two
+    // claim arms publish from `beforeRoleClaimAnswer`, which the stand-in calls before it writes
+    // the claim's answer; the shipped shape and `dead-subject` publish from `onNoticeInterest`,
+    // the registration that follows the controller topic's subscription. The claim arms publish
+    // before the answer because the session subscribes to that topic only once the answer
+    // returns: from there the control arm `at-claim-unproven` publishes into a subject nothing
+    // holds on every run, where from `onRoleClaim`, which runs after the answer, the test
+    // process was descheduled past the subscribe about one run in ten and the notice landed.
+    // `dead-subject`'s subject is the project's controller topic with one segment more, which no
+    // subscription of a run matches: a session subscribes to the exact subject
+    // (packages/pi-legion/src/controller-session.ts:336) and `expandSubscriptionTopics`
+    // (packages/envoy-client/src/transport.ts:475-493) widens only a topic that ends in `.>`, so
+    // nothing holds it and the probe runs to its cap.
+    const atClaim = noticeArm === "at-claim" || noticeArm === "at-claim-unproven";
+    const proven = noticeArm !== "at-claim-unproven";
+    const subject = noticeArm === "dead-subject" ? `${inbound.noticeSubject}.unheld` : undefined;
+    const publish = async (): Promise<void> => {
+      try {
+        notice = proven ? await inbound.noticeOnceHeld(subject) : inbound.notice();
+      } catch (error) {
+        probeFault = error instanceof Error ? error : new Error(String(error));
+      }
+    };
     const session = await startController({
+      beforeRoleClaimAnswer: () => {
+        // Started, not awaited: the stand-in drops this hook's result and writes the claim's
+        // answer at once, so the two claim arms go on differing only in the probe, and
+        // `at-claim-unproven` reaches `inbound.notice()`, a synchronous publish, through the
+        // same path as `at-claim` reaches the probe.
+        if (atClaim) void publish();
+      },
       onRoleClaim: (claimed) => {
         sid = claimed;
         sent = inbound.card(claimed, "role-claim");
       },
-      onNoticeInterest: () => {
-        notice = inbound.notice();
+      onNoticeInterest: async () => {
+        // Awaited: the registration that follows the controller topic's subscription is answered
+        // only once the server has taken the notice, which is the hold
+        // `NOTICE_PROBE_HOLD_ALLOWANCE_MS` keeps under the listener's call timeout.
+        if (!atClaim) await publish();
       },
+      fault: () => probeFault,
     });
     const { card, receipt } = await session.until("the controller role's claim", () => sent);
     await receipt;

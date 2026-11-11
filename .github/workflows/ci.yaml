@@ -286,6 +286,7 @@ jobs:
       ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_test }}
       mirror_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_tools_test }}
       check_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_tools_test }}
+      ci_tools_proof_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_proof_test }}
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
@@ -1039,6 +1040,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261110235320_test.go'
               - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -1287,6 +1289,12 @@ jobs:
               # check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and
               # check-ci-tools.test.sh:103 links it into every fixture.
               - '.github/scripts/repo-paths.sh'
+            ci_tools_proof_test: &ci_tools_proof_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/ci-tools-proof.test.sh'
+              - '.github/scripts/ci-tools-proof.sh'
             check_action_pins_test: &check_action_pins_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1522,6 +1530,7 @@ jobs:
               - *ci_tools_test
               - *mirror_ci_tools_test
               - *check_ci_tools_test
+              - *ci_tools_proof_test
               - *check_action_pins_test
               - *check_private_names_test
               - *check_plugin_names_test
@@ -1702,6 +1711,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261110235320_test.go'
               - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -1891,6 +1901,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261110235320_test.go'
               - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -2271,6 +2282,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
               - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261110235320_test.go'
               - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -3901,8 +3913,8 @@ jobs:
   # Dockerfile, the manifest and the helper beside it, and the eight actions, so
   # a step of it that waited on a release host would turn every pull request touching one of
   # those files red on exactly the day the fallback is doing its work.
-  # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
-  # only callers.
+  # .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
+  # the test job runs its ladder-report verb as well, over logs of its own.
   # It needs ci-images for order, since that job fills the copy this proof reads, and carries
   # `!cancelled()` so a run that selected this job and not that one still runs: the ci_images
   # filter names what the ci-images job reads and nothing more, so it is no superset of this
@@ -4077,6 +4089,7 @@ jobs:
       ci_tools_test: ${{ needs.changes.outputs.ci_tools_test }}
       mirror_ci_tools_test: ${{ needs.changes.outputs.mirror_ci_tools_test }}
       check_ci_tools_test: ${{ needs.changes.outputs.check_ci_tools_test }}
+      ci_tools_proof_test: ${{ needs.changes.outputs.ci_tools_proof_test }}
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
@@ -4739,6 +4752,13 @@ jobs:
   # Its longest property waits out that horizon and one reaper pass: the role claim reaper runs
   # at ENVOY_ROLE_CLAIM_REAP_INTERVAL, which the rig sets to two seconds, so the suite costs the
   # horizon rather than the five minutes that reaper's own default would cost it.
+  # The live Dispatch-stack suite rides this job too (dispatch://INFRA-1727). It builds
+  # packages/envoy's ./cmd/dispatch, makes a database of its own on DISPATCH_TEST_DATABASE_URL and
+  # runs the real `dispatch` CLI against that server (packages/envoy-client/test/dispatch-stack.ts),
+  # so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane to have: the
+  # envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
+  # there for ever. The filter envoy_session_stall already selects packages/envoy/** and
+  # packages/envoy-client/**, so the suite brings no new path into this job's closure.
   envoy-session-stall:
     needs: changes
     if: needs.changes.outputs.envoy_session_stall == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

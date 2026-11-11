@@ -1413,9 +1413,10 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:134 symlinks in the grammar both scripts read a row with"),
         (".github/ci-images.yaml", "mirror-ci-images.test.sh:322-351 builds its ordering fixture from this repository's own rows"),
     ]),
-    # The three tool scripts, in the order the job runs them: the fetch helper every install
-    # goes through, the filler that puts the bytes in the copy that helper reads, and the gate
-    # that holds every row to its pin.
+    # The tool scripts, in the order the job runs them: the fetch helper every install goes
+    # through, the filler that puts the bytes in the copy that helper reads, the gate that holds
+    # every row to its pin, and the rig that drives that helper against a fault in the
+    # tool-fallback job (main's #3576 gave that rig a harness of its own).
     harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
         (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
         (".github/ci-tools.yaml", "ci-tools.test.sh:525-532 reads every row of this repository's own manifest"),
@@ -1430,6 +1431,9 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
         (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and "
                                      "check-ci-tools.test.sh:103 links it into every fixture"),
+    ]),
+    harness("ci_tools_proof_test", "Test the tool fallback rig", f"{SCRIPTS}/ci-tools-proof.test.sh", [
+        (f"{SCRIPTS}/ci-tools-proof.sh", "the script under test"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -1517,7 +1521,7 @@ SCRIPT_TEST_GATES = [
     harness("race_memory_test", "Test the race memory sampler", f"{SCRIPTS}/race_memory.test.sh", [
         (f"{SCRIPTS}/race_memory.py", "the module under test"),
     ]),
-    harness("disk_watch_test", "Test the disk watch", f"{SCRIPTS}/disk_watch.test.sh", [
+    harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
@@ -2271,8 +2275,8 @@ GATES = [
         (".github/scripts/repo-paths.sh",
          f"{at('envoy-smoke', SCHEMA_STEP)}: it derives the download URL the build stamps in"),
         (".github/scripts/disk_watch.py",
-         f"{at('envoy-smoke', 'Start the disk watch over the live tests')} and "
-         f"{at('envoy-smoke', 'Report the disk the live tests used')} run it"),
+         f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
+         f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
         (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`), and "
                                        f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
         (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
@@ -2332,9 +2336,15 @@ GATES = [
 
     gate("envoy_session_stall", STALL, runs=[
         script_run("packages/envoy-client/test/envoy-stack.ts",
-                   'const build = Bun.spawn(["go", "build", "-o", `${bin}${path.sep}`, ...packages], {',
-                   f"buildBinaries, run by {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
+                   'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
+                   f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
+                   f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
                    f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+        script_run("packages/envoy-client/test/dispatch-stack.ts",
+                   'packages: ["./cmd/dispatch"],',
+                   f"the packages that rig hands buildGoBinaries, run by "
+                   f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
+                   ENVOY, ["./cmd/dispatch"], mode="build"),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
@@ -2444,8 +2454,9 @@ GATES = [
         (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
                                         "bytes through it, and the two steps above source it for a row's fields"),
         (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
-                                              "of this job that drives the proof does; this job and tool-fallback-arm "
-                                              "are its only callers"),
+                                              "of this job that drives the proof does; tool-fallback-arm drives it "
+                                              "too, and the test job runs its ladder-report verb over logs of its "
+                                              "own"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "

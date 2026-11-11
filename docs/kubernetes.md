@@ -136,7 +136,7 @@ It carries:
     — a declaration the capability report renders, not a network control this repository ships;
     the package's setuid `/usr/lib/openssh/ssh-keysign` and setgid `/usr/bin/ssh-agent` lose those bits in the `runtime-base` stage, and the build's final step refuses an image where any file under `/usr/lib/openssh` or `/usr/bin/ssh-agent` carries one)
 
-  - `psql` (from `postgresql-client`: the Dispatch browser suite `bun run e2e`, which a reader-facing Dispatch change must pass before it merges, reaches `psql` through `packages/dispatch/e2e/psql.ts` — `packages/dispatch/e2e/seed.ts` calls it for every spec's database reset
+  - `psql` (from `postgresql-client`: the Dispatch browser suite, which a reader-facing Dispatch change must pass before it merges, is the pair `bun run e2e` and `bun run e2e:clock`, the second running the three wall-clock projects that are out of the first's selection, and both reach `psql` through `packages/dispatch/e2e/psql.ts` — `packages/dispatch/e2e/seed.ts` calls it for every spec's database reset
     — and the local stack `bun run dispatch:local` (`packages/dispatch/e2e/local-instance.ts`) refuses to start without `go`, `psql`, `flock`, `openssl` and `python3` on `PATH`, and without `docker` too unless a `DATABASE_URL` is given;
     the image carries `go`, `flock`, `openssl` and `python3`, a `DATABASE_URL` stands in for `docker`, and `psql` was the one a role had no way to supply, so a role on a digest without it cannot run the suite its own change owes
     — Debian's `psql` is a Perl wrapper around the versioned client, and it resolves because `perl-base` is in the image)
@@ -5128,6 +5128,14 @@ each issue's pod (every role of it alike) and the image probe's.
   — every role's state home is under the issue's scratch on the issue's volume, which the `/legion` mount fence already covers
   — but a mount there would still land on what that init container writes, so it is refused here rather than left to fail in a pod).
   `legion start --check-config` runs the same check.
+  `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
+  the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
+  The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, a launch spec may not set the name, and the spend collector's `theorem.*` keep-list drops both keys today.
+  A row grouped by issue follows when that collector keeps them (dispatch://INFRA-1835).
+  The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
+  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
+  One such member costs the launch every attribute of the variable, the operator's own `theorem.project` among them, because the detector's caller catches the throw with an empty hand, and `legion start --check-config` gives boot's verdict before a restart.
+  Like every `pod.env` variable, the attributes reach a role with the start command of its next generation, in no pod specification, so no pod is replaced.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
   a `models.yml` and a settings overlay from a ConfigMap, and a mounted token its key command reads.
   Its README lists what an operator supplies and how `pod` and `provider_keys` compose.

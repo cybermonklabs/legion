@@ -1020,11 +1020,14 @@ jobs:
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
       # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
-      # one did; for a kept measurement outside the window the rig holds it to; for a fetch
-      # that stayed on the ladder, spent one and then failed, which is a fault shape the
-      # stand-in's rule did not recognise; and for a fetch the stand-in shortened that then
-      # served the bytes, which is the reading that holds the shorten-ladder step at its
-      # position.
+      # one did; for a kept measurement outside the window the rig holds it to; for more
+      # fetches carrying CI_TOOLS_PROOF_FULL_LADDER than the bound the rig holds that count to,
+      # which is a second step's `env:` carrying that variable, or a kept case that makes more
+      # requests than it did; for a fetch that stayed on the ladder, spent one and then
+      # failed, which is a fault shape the stand-in's rule did not recognise; and for a fetch
+      # the stand-in shortened that then served the bytes, which is the reading that holds the
+      # shorten-ladder step at its position. Every run of it that reads the log through prints
+      # that count beside the bound, whether the reading passes or refuses.
       - name: Read what the stand-in curl measured of every fetch
         run: .github/scripts/ci-tools-proof.sh ladder-report
 

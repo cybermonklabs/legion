@@ -152,22 +152,25 @@ jobs:
         id: docker-plugin
         uses: ./.github/actions/install-docker-plugin
       # The live tests build container images on this runner's disk, and a job that runs out of
-      # space says only that it did. The pair around the step measures it: `start` prints what
-      # each file system the job writes to has free and leaves a sampler watching the one that
-      # holds /tmp, `report` stops the sampler and prints the free space the step began with,
-      # the least it ever had and the difference, with `margin short` when the step used more
-      # than half of what it started with (dispatch://INFRA-1085). The report prints and never
-      # fails the job: this is the measurement, not a new gate. The two steps share their state
-      # through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every later step of the
-      # job would inherit and check-ci-filters.sh treats as reaching the job's go commands.
-      - name: Start the disk watch over the live tests
+      # space says only that it did. The pair around the step measures it, and measures the two
+      # readings beside it: `start` prints what each file system the job writes to has free and
+      # leaves a sampler watching the one that holds /tmp, the memory the kernel reports
+      # available and the one-minute load, one line per second; `report` stops the sampler and
+      # prints the worst each of them reached, with the free space the step began with, the
+      # least it ever had and the difference, and `margin short` when the step used more than
+      # half of what it started with (dispatch://INFRA-1085, dispatch://INFRA-2605). The report
+      # prints and never fails the job: this is the measurement, not a new gate. The two steps
+      # share their state through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every
+      # later step of the job would inherit and check-ci-filters.sh treats as reaching the job's
+      # go commands.
+      - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
         run: go test -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
-      - name: Report the disk the live tests used
+      - name: Report what the live tests ran on
         if: always()
         run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
       # The schema carries both of the things the release build stamps into the plugin: the
