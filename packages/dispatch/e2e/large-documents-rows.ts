@@ -60,17 +60,32 @@ export interface ServedLate {
   readonly waitedMs: number;
 }
 
+/** When the reader's page served the frame carrying one of another person's words: the wall
+ *  clock it served it on, which `large-documents-measured.e2e.ts` prints, and the turn of the
+ *  page's own loop it was served in, which is the whole of what that row reads. A turn is a
+ *  number the page hands itself, one per task (`whatTheBuildServes` there): a word whose turn
+ *  is the swap's own or an earlier one was served by the build, and one whose turn is later
+ *  was served by a page that had already taken a fresh turn of work ahead of it. */
+export interface ServedWord {
+  readonly atMs: number;
+  readonly turn: number;
+}
+
 /** The build's own window on the page's clock, as `whatTheBuildServes` sees it: the frame its
  *  first batch was found in, the frame the finished editor was named in, the moment the page
  *  was free again after the swap that ends a build - the adoption, the reveal and the margin's
  *  first placement - which the page says by serving a task it was handed in that frame, and
  *  the end of the turn it said that in, which the page says by serving a task it handed over
- *  from inside that turn. A reader's build is over at the third of these, not the second, and
- *  the fourth is the last moment that build can still be what served something. */
+ *  from inside that turn. A reader's build is over at the third of these, not the second.
+ *
+ *  `swapTurn` is the turn that third stamp was written in, and it is the only one of these the
+ *  liveness reading uses. The three clock stamps are printed - where the swap's turn ended,
+ *  how far past the window that was, and the margin - and held to nothing. */
 export interface TheBuildRan {
   firstBatchMs?: number;
   openedMs?: number;
   swappedMs?: number;
+  swapTurn?: number;
   freeTurnEndedMs?: number;
 }
 
@@ -141,12 +156,13 @@ declare global {
      *  makes the row's answer mean anything. */
     __firstBlockPlace?: { grew: boolean; moved: number; started: number };
     /** What `whatTheBuildServes` recorded: how long each timer the page handed the browser
-     *  waited to be run, `Date.now()` as the page served the socket frame carrying each word
-     *  another person wrote, and the build's own window, which says which of them the build
-     *  was given. `__theirWordsSent` is the same stamp in the page that wrote them, taken as
+     *  waited to be run, the turn of the page's own loop each word another person wrote was
+     *  served in - with `Date.now()` as it served the frame carrying it, which is printed and
+     *  nothing more - and the build's own window, which says which of them the build was
+     *  given. `__theirWordsSent` is the same wall clock in the page that wrote them, taken as
      *  the frame left it (`whenTheirWordsAreSent`). */
     __servedTimers?: ServedLate[];
-    __theirWordsServed?: Record<string, number>;
+    __theirWordsServed?: Record<string, ServedWord>;
     __theirWordsSent?: Record<string, number>;
     __theBuildRan?: TheBuildRan;
     /** Where the editor was when another person's word reached its first block

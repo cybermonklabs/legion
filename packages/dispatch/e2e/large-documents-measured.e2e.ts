@@ -73,6 +73,7 @@ import {
   drawnBlocks,
   everythingOwedFinished,
   type ServedLate,
+  type ServedWord,
   seedDocument,
   type TheBuildRan,
   topLevelBlocks,
@@ -291,11 +292,14 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
  * promise belongs in a spec version a person approves. **Do not restore that bound here.**
  *
  * **The one thing the row holds the words to is liveness.** Every word their page sent inside
- * the build is served, inside the build or inside the swap that ends it, which the page
- * stamps itself: the reading is against the end of the turn the page says it is free again in
- * (`TheBuildRan`'s `freeTurnEndedMs`), because a word served in that turn was served by that
- * swap. A page that stops serving while it builds fails there, and so does one that holds a
- * word into a later turn.
+ * the build is served, inside the build or inside the swap that ends it, and the page says
+ * which by itself: it numbers the turns of its own loop, stamps each word it serves with the
+ * turn it served it in and its swap's own end with the turn that fell in (`TheBuildRan`'s
+ * `swapTurn`), and a word whose turn is the swap's own or an earlier one was served by that
+ * build. A page that stops serving while it builds fails there, and so does one that holds a
+ * word into a later turn. No clock is in that reading - no tolerance, no allowance and
+ * nothing of this machine's speed - and the clock stamps beside it are printed and held to
+ * nothing.
  *
  * **The gap between servings is printed and held to nothing.** The longest the page went
  * without serving a word already waiting carries the relay between two browsers - the writer's
@@ -402,20 +406,34 @@ const theirWordsInFramesUnderBytes = 16_384;
 /**
  * Records what the page's own posted tasks cost it while the editor is being built: every
  * timer the page hands the browser, the build's own window, and - where `theirWords` names a
- * pattern - `Date.now()` the moment the page serves the socket frame carrying each word
- * another person wrote, so the row can read what the build made each of them wait.
+ * pattern - the turn of its own loop the page served the socket frame carrying each word
+ * another person wrote in, so the row can read whether the build was still what served it.
+ *
+ * **A turn is the page's own number for the task it is in.** The page keeps a counter and
+ * hands it out lazily: the first thing recorded in a task takes `++turns` and queues a
+ * microtask that drops it again, so everything recorded in that task is given the same
+ * number and the next task takes a fresh one. That is exact rather than close, because the
+ * checkpoint that drops the number is the one the browser runs when the stack empties at the
+ * end of a callback, which no task spans: two records share a number only if one task served
+ * them both, and a larger number means a later task, whatever the machine's speed. Nothing
+ * the page already publishes can say that - `performance.now()` and the `longtask` entries
+ * are a clock, an animation frame is several tasks wide, and a `MessageChannel` message or a
+ * posted task has no identity to carry - so the counter is what the swap's own write and each
+ * served word are stamped with, and the row's liveness reading is those two numbers and
+ * nothing else.
  *
  * A timer is handed over from an animation frame, because a frame is the one thing that does
  * run through a starved build and so the one place a probe can be handed over from.
  *
  * A word is read out of the frame's own bytes, which is what pairs it with the moment the
- * other person's page sent it (`whenTheirWordsAreSent`): the two stamps are the one machine's
- * wall clock, so the difference is what the reader's thread made that edit wait. Nothing of
- * the frame's arrival is read here, because no clock inside the page holds it - a
- * `MessageEvent` is stamped in the task that dispatches it, and the browser's own
- * `Network.webSocketFrameReceived` is stamped in this renderer as Blink takes the frame off
- * the pipe, which a thread the build owns delays as surely as it delays the event. Both read
- * zero behind a page held for two seconds, measured (dispatch://INFRA-341).
+ * other person's page sent it (`whenTheirWordsAreSent`): the two wall-clock stamps are the one
+ * machine's, so the difference is what the reader's thread made that edit wait, which the row
+ * prints and holds to nothing. Nothing of the frame's arrival is read here, because no clock
+ * inside the page holds it - a `MessageEvent` is stamped in the task that dispatches it, and
+ * the browser's own `Network.webSocketFrameReceived` is stamped in this renderer as Blink
+ * takes the frame off the pipe, which a thread the build owns delays as surely as it delays
+ * the event. Both read zero behind a page held for two seconds, measured
+ * (dispatch://INFRA-341).
  *
  * A frame larger than `theirWordsInFramesUnderBytes` is left unread: the document's own state
  * frame is hundreds of kilobytes and carries no word of theirs, and decoding it would be this
@@ -441,11 +459,27 @@ async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void
       words: string | undefined;
     }) => {
       const timers: ServedLate[] = [];
-      const servedWords: Record<string, number> = {};
+      const servedWords: Record<string, ServedWord> = {};
       const ran: TheBuildRan = {};
       window.__servedTimers = timers;
       window.__theirWordsServed = servedWords;
       window.__theBuildRan = ran;
+      /** The turn of the page's own loop this probe is recording in, handed out lazily: the
+       *  first record of a task takes the next number and queues the microtask that drops it,
+       *  which the browser runs when the stack empties at the end of that task, so every
+       *  record of one task carries one number and the next task's records carry a larger
+       *  one. This is the whole of the row's liveness reading and it holds no clock. */
+      let turns = 0;
+      let held: number | undefined;
+      const thisTurn = (): number => {
+        if (held === undefined) {
+          held = ++turns;
+          queueMicrotask(() => {
+            held = undefined;
+          });
+        }
+        return held;
+      };
       let recording = false;
       const theirs = words === undefined ? undefined : new RegExp(words, "g");
       const read = new TextDecoder();
@@ -460,8 +494,9 @@ async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void
             const servedAt = Date.now();
             const data: unknown = event.data;
             if (!(data instanceof ArrayBuffer) || data.byteLength > under) return;
+            const servedIn = thisTurn();
             for (const [word] of read.decode(data).matchAll(theirs)) {
-              servedWords[word] ??= servedAt;
+              servedWords[word] ??= { atMs: servedAt, turn: servedIn };
             }
           });
           return socket;
@@ -499,20 +534,19 @@ async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void
           // adopting the document, the editor being revealed, and the margin placing its cards
           // over it for the first time. The page says when that is over rather than leaving it
           // to be inferred from a run of `longtask` entries: a task handed over now runs after
-          // the work already queued, so the frame it is served in is the page's own word that
-          // it is free again.
+          // the work already queued, so the task it is served in is the page's own word that
+          // it is free again - and that task's own turn is the last one the build can still be
+          // what served something in. The page stamps the turn there, which is the number the
+          // row reads, and the clock beside it, which the row only prints.
           //
-          // The turn that word is written in is the one the row's liveness reading ends at,
-          // so the page stamps the end of that turn too, handed over from inside it. That
-          // task is served once the page has got through everything it was already holding,
-          // so every socket frame the swap left waiting - the words it still owed - is served
-          // before this stamp: a word served at or before it was served by the build, and one
-          // served after it is one the page took a fresh turn of work ahead of. Measured on
-          // this pod the page took 1.5 to 18 s to reach it, which is the backlog that build
-          // left rather than any tolerance - a `MessageChannel` message posted in its place
-          // read the same.
+          // The end of that turn is stamped too, from a task handed over inside it, and it is
+          // printed and nothing more: it is served once the page has got through everything it
+          // was already holding, which on this pod is 1.5 to 21 s of the backlog a build
+          // leaves - a measurement of what the page carries out of a build, and no part of any
+          // reading. The reading is `swapTurn` against the turn each word was served in.
           requestAnimationFrame(() => {
             setTimeout(() => {
+              ran.swapTurn = thisTurn();
               ran.swappedMs = performance.now();
               setTimeout(() => {
                 ran.freeTurnEndedMs = performance.now();
@@ -577,27 +611,35 @@ async function whenTheirWordsAreSent(page: Page, theirWords: string): Promise<vo
   }, theirWords);
 }
 
-/** One word the other person wrote, on the reader's page's own clock: when their page sent it,
- *  and when the reader's page served the frame carrying it, `undefined` where it never did. */
+/** One word the other person wrote: when their page sent it and when the reader's page served
+ *  the frame carrying it, both on the one machine's wall clock and both printed, and the turn
+ *  of the reader's page's own loop it was served in, which is what the row reads it by.
+ *  `undefined` where that page never served it at all. */
 interface TheirWord {
   readonly sentMs: number;
   readonly servedMs: number | undefined;
+  readonly servedTurn: number | undefined;
   readonly word: string;
 }
 
 /** Every word their page sent, in the order it sent them, each read onto the reader's clock so
- *  the build's own window and its tasks can be read against them. */
+ *  the build's own window and its tasks can be read against them, and each carrying the turn
+ *  the reader's page served it in. */
 function theirWordsOfTheBuild(
   sent: Readonly<Record<string, number>>,
-  served: Readonly<Record<string, number>>,
+  served: Readonly<Record<string, ServedWord>>,
   timeOriginMs: number
 ): TheirWord[] {
   return Object.entries(sent)
-    .map(([word, sentAt]) => ({
-      sentMs: sentAt - timeOriginMs,
-      servedMs: served[word] === undefined ? undefined : served[word] - timeOriginMs,
-      word,
-    }))
+    .map(([word, sentAt]) => {
+      const servedWord = served[word];
+      return {
+        sentMs: sentAt - timeOriginMs,
+        servedMs: servedWord === undefined ? undefined : servedWord.atMs - timeOriginMs,
+        servedTurn: servedWord?.turn,
+        word,
+      };
+    })
     .sort((one, next) => one.sentMs - next.sentMs);
 }
 
@@ -780,18 +822,23 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const longestTask = tasks.reduce((worst, task) => Math.max(worst, task.ms), 0);
     // When the page said it was free again after the swap that ends the build, which is the
     // page's own stamp and no reading of this side's (`whatTheBuildServes`). Printed, to say
-    // how far past the window the swap carried; the words are read against the end of its
-    // turn below, not against this.
+    // how far past the window the swap carried; nothing below is read from it.
     const swappedMs = ran.swappedMs ?? ran.openedMs ?? 0;
-    // The end of the turn the page said that in, which is the page's own stamp too: the
-    // first task it was handed from inside that turn, served after everything the page was
-    // already holding then. The words are read against it and not against `swappedMs`
-    // because a word served in that same turn was served by the build, and holding one to
-    // the instant of that stamp judges the order of two writes inside one turn - which no
-    // reader can tell apart, and which failed this row on CI by 0 ms. A page that never
-    // wrote it never finished its swap, and the earlier stamps stand in so the liveness
-    // reading below fails rather than passing on a missing number.
+    // The end of the turn the page said that in, the page's own stamp too: the first task it
+    // was handed from inside that turn, served once it had got through everything it was
+    // already holding. Printed, and read by nothing - that backlog was 1.5 to 21 s on this
+    // pod, so a row reading its words against it would have an allowance made of the thing it
+    // is measuring, and a page that served nothing while it built and drained every word
+    // afterwards would pass.
     const freeTurnEndedMs = ran.freeTurnEndedMs ?? swappedMs;
+    // The turn the page wrote the first of those stamps in, and the whole of the liveness
+    // reading below: a word served in that turn or an earlier one was served by the build and
+    // the swap that ends it, and a word served in a later one is a word the page took a fresh
+    // turn of work ahead of. The page hands these numbers out itself, one per task
+    // (`whatTheBuildServes`), so the reading holds no clock, no tolerance and nothing of this
+    // machine. No turn is 0, so a page that never finished its swap fails the reading rather
+    // than passing on a missing number.
+    const swapTurn = ran.swapTurn ?? 0;
     // The longest the page went without serving a word that was already waiting, over the
     // words the build itself served. Printed, asserted against nothing: it carries the relay
     // between two browsers as well as this page's own serving (the block above
@@ -802,21 +849,22 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
       )
     );
     const heldPastTheSwap = inTheBuild.filter(
-      (word) => word.servedMs === undefined || word.servedMs > freeTurnEndedMs
+      (word) => word.servedTurn === undefined || word.servedTurn > swapTurn
     );
-    // The words the build itself did not serve: when he sent each, how far past the window
-    // the page served it and how long before the end of the swap's own turn, so the output
-    // shows the shape of the end of a build rather than a verdict on it. Time to spare there
-    // is the swap serving the word; a negative margin is a word served past that turn, which
-    // is what the reading below fails on.
+    // The words the page served after the window closed: when he sent each, the turn it was
+    // served in against the swap's own, and the clock beside that - how far past the window
+    // and how far before the end of the swap's turn - so the output shows the shape of the
+    // end of a build rather than a verdict on it. A turn of the swap's own or an earlier one
+    // is the swap serving the word; a later one is what the reading below fails on.
     const servedInTheSwap = inTheBuild
       .filter((word) => word.servedMs !== undefined && word.servedMs > (ran.openedMs ?? 0))
       .map(
         (word) =>
-          `${word.word} sent ${Math.round(word.sentMs - began)} ms into the build, served ` +
+          `${word.word} sent ${Math.round(word.sentMs - began)} ms into the build, served in ` +
+          `turn ${word.servedTurn ?? 0} against the swap's own ${swapTurn}, ` +
           `${Math.round((word.servedMs ?? 0) - (ran.openedMs ?? 0))} ms past the window and ` +
-          `${Math.round(freeTurnEndedMs - (word.servedMs ?? 0))} ms before the end of the ` +
-          "swap's own turn"
+          `${Math.round(freeTurnEndedMs - (word.servedMs ?? 0))} ms before the end of that ` +
+          "turn"
       )
       .join("; ");
     const worstWait = inTheBuild.reduce(
@@ -824,9 +872,9 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         word.servedMs === undefined ? worst : Math.max(worst, word.servedMs - word.sentMs),
       0
     );
-    // The margin the reading below came down to: the last of his words the page served, and
-    // how long before the end of the swap's turn it served it. Printed so a run says how
-    // close it was rather than only that it passed.
+    // The margin, on the clock the reading does not use: the last of his words the page
+    // served, and how long before the end of the swap's turn it served it. Printed so a run
+    // says how much room that end of a build had rather than only that it passed.
     const servedLastMs = inTheBuild.reduce(
       (last, word) => (word.servedMs === undefined ? last : Math.max(last, word.servedMs)),
       Number.NEGATIVE_INFINITY
@@ -844,10 +892,12 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `${Math.round(longestWait(timers))} ms (target ${aTimerWaitsAtMostMs} ms, and one ` +
         `served every ${aTimerEveryMs} ms of the build); ${inTheBuild.length} of the ` +
         `${theirs.length} word(s) his page sent were sent inside it, ` +
-        `${inTheBuild.length - heldPastTheSwap.length} of those served by the time the ` +
-        `swap's own turn ended, which the page put ${Math.round(freeTurnEndedMs - (ran.openedMs ?? 0))} ms ` +
-        `past the window, saying it was free again ${Math.round(swappedMs - (ran.openedMs ?? 0))} ms ` +
-        `past it and ${Math.round(freeTurnEndedMs - swappedMs)} ms before that turn's end; ` +
+        `${inTheBuild.length - heldPastTheSwap.length} of those served in the swap's own ` +
+        `turn (${swapTurn}) or an earlier one, which is the whole of the reading; on the ` +
+        `clock beside it, which no reading uses, the page put the end of that turn ` +
+        `${Math.round(freeTurnEndedMs - (ran.openedMs ?? 0))} ms past the window, saying it ` +
+        `was free again ${Math.round(swappedMs - (ran.openedMs ?? 0))} ms past it and ` +
+        `${Math.round(freeTurnEndedMs - swappedMs)} ms before that turn's end; ` +
         `${margin}; the longest it went without serving one that was already waiting ` +
         `${Math.round(withoutServing.gapMs)} ms (${withoutServing.word}; reported, held to ` +
         `nothing - it carries the relay between two browsers as well as this page's own ` +
@@ -899,21 +949,24 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // document, the editor being revealed and the margin placing its cards, which is when a
     // reader's build is really over.
     //
-    // It is read against the end of the turn the page said it was free in (`freeTurnEndedMs`,
-    // the page's own stamp again) and not against that word itself, because a word served in
-    // that same turn was served by the build, and holding it to the instant of the stamp
-    // would be judging the order of two writes inside one task - which no reader can tell
-    // apart, and which failed this row on CI by 0 ms. Nothing is allowed past that turn:
-    // there is no tolerance here, so a word the page served in a later task is a failure, and
-    // so is one never served at all, whatever the machine's speed.
+    // It is read in turns of the page's own loop and in nothing else: a word whose turn is
+    // the swap's own or an earlier one was served by that build, and one whose turn is later
+    // was served by a page that had already taken fresh work. Two records share a turn only
+    // when one task made them both, so a word served in the swap's own task passes - no
+    // reader can tell the order of two writes inside one task apart, and reading that order
+    // failed this row on CI by 0 ms - while a word one task later fails. There is no clock
+    // here and so no tolerance and no allowance: not a millisecond of this pod's speed, of
+    // the relay between two browsers, or of the backlog a build leaves behind it is in the
+    // reading. A word never served at all fails the same way.
     expect(
       heldPastTheSwap.map(
         (word) =>
           `${word.word} sent ${Math.round(word.sentMs - began)} ms into the build, ` +
-          `${word.servedMs === undefined ? "never served" : `served ${Math.round(word.servedMs - freeTurnEndedMs)} ms past the end of the swap's own turn`}`
+          `${word.servedTurn === undefined ? "never served" : `served in turn ${word.servedTurn}, ${word.servedTurn - swapTurn} turn(s) past the one the page's swap ended in`}`
       ),
-      `the page held the other person's words past the turn its swap ended in, which it put ` +
-        `${Math.round(freeTurnEndedMs - (ran.openedMs ?? 0))} ms past the window`
+      "the page held the other person's words past the turn its swap ended in " +
+        `(turn ${swapTurn}), which it put ${Math.round(swappedMs - (ran.openedMs ?? 0))} ms ` +
+        "past the window"
     ).toEqual([]);
   } finally {
     await bob.close();
