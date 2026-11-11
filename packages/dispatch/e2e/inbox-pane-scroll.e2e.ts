@@ -2,7 +2,7 @@ import { type Browser, expect, test } from "@playwright/test";
 
 import { createArtifactComment, editArtifact } from "./api";
 import { blockId } from "./editor";
-import { inboxList, inboxPane, paneScroller, selectedRow, selectRow } from "./inbox-pane";
+import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
 import {
   ANCHORED_LINE,
   APPROVAL_FOOT,
@@ -13,8 +13,10 @@ import {
   DOCUMENT_FOOT,
   documentTextRead,
   FAILING_NOTE,
+  FIRST_APPROVAL_SUMMARY,
   focusAfterStaleness,
   headingOffset,
+  holdInboxList,
   holdThreadReplies,
   INSERTED_HEADING,
   inboxAt,
@@ -28,6 +30,7 @@ import {
   QUESTION_BLOCK,
   type QuestionRun,
   RECOVERY_NOTE,
+  reopenApproval,
   restingColumn,
   SECOND_APPROVAL_SUMMARY,
   SECOND_BLOCK,
@@ -515,21 +518,32 @@ test("a second approval request opens at the start of the column, with its own q
     const pane = inboxPane(page);
 
     await page.goto(inboxAt(seed.firstAskId));
+    await expect(pane.getByTestId("pane-approval-question")).toContainText(FIRST_APPROVAL_SUMMARY);
     await expect(pane.getByRole("region", { name: "Document version 1" })).toBeVisible();
     await expect(pane).toContainText(APPROVAL_FOOT);
     await moveColumnTo(page, 900);
     expect((await restingColumn(page)).top).toBeGreaterThan(400);
-    const scroller = await paneScroller(page).elementHandle();
-    if (scroller === null) {
-      throw new Error("the reading column has no scroller");
-    }
 
-    // The one scroller outlives the row, so the second request would open where the first was
-    // left unless the column is sent back to its start.
-    await selectRow(page, seed.secondAskId);
+    // One document carries one open request: the route renews the one it finds rather than
+    // opening a second, so the first is withdrawn and the document asked about again. The
+    // list's own read is held across both writes, so it comes back once, with the first
+    // request gone and the second in its place, and the selection passes through no other row.
+    const held = await holdInboxList(page);
+    const secondAskId = await reopenApproval(seed);
+    await held.release();
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", secondAskId);
     await expect(pane.getByTestId("pane-approval-question")).toContainText(SECOND_APPROVAL_SUMMARY);
+
+    // The second request opens at the start of the column, with the version it is about drawn
+    // under its own question. The column itself is rebuilt on the way: the Inbox draws no
+    // reading column for the commit in which the selected row leaves the list, since the
+    // reader has neither an answer out on it nor a draft in it (`pane-selection.ts`,
+    // `paneRow`). So this row reads where a second request opens, and not that the write which
+    // sends it there happened: that is `ReadingPane.test.tsx`'s, where the one scroller is held
+    // across the two requests.
+    await expect(pane.getByRole("region", { name: "Document version 1" })).toBeVisible();
+    await expect(pane).toContainText(APPROVAL_FOOT);
     await expect.poll(async () => (await restingColumn(page)).top).toBe(0);
-    expect(await scroller.evaluate((node) => node.isConnected)).toBe(true);
   } finally {
     await alice.close();
   }

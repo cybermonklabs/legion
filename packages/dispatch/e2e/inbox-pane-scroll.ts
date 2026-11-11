@@ -23,6 +23,7 @@ import {
   getInbox,
   patchIssue,
   requestApproval,
+  resolveAsk,
   withOpenedAsk,
 } from "./api";
 import { replyRowId } from "./inbox-threads";
@@ -475,49 +476,52 @@ export async function seedApprovalWithMarks(): Promise<ApprovalMarksSeed> {
 }
 
 // ---------------------------------------------------------------------------
-// Two approval requests the reader steps between.
+// Two approval requests of one document, one after the other.
 // ---------------------------------------------------------------------------
 
-const FIRST_APPROVAL_SUMMARY = "The ledger-first rollout.";
-export const SECOND_APPROVAL_SUMMARY = "The lease handover draft.";
+export const FIRST_APPROVAL_SUMMARY = "The ledger-first rollout.";
+export const SECOND_APPROVAL_SUMMARY = "The mirror-first rollout, asked again.";
 
 export interface TwoApprovalsSeed {
+  artifactId: string;
   firstAskId: string;
-  secondAskId: string;
+}
+
+/** One document, long enough to scroll, with the first request open on it and nothing approved
+ *  before it. */
+export async function seedTwoApprovals(): Promise<TwoApprovalsSeed> {
+  await createProject(PROJECT);
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT.key,
+    spec: approvalSpec,
+    title: APPROVAL_NAME,
+  });
+  await patchIssue(issue.key, { priority: 1 });
+  const first = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: FIRST_APPROVAL_SUMMARY }, session)
+  );
+  expect(first.version).toBe(1);
+  return { artifactId: issue.primary_artifact_id, firstAskId: first.ask.id };
 }
 
 /**
- * Two approval requests, neither of the two documents approved before.
- *
- * One document cannot carry two of them: the route renews the open request rather than opening a
- * second (`OpenApprovalAskForDocuments`). So the two stand on two documents, which is the rule's
- * other half - with neither approved, neither request waits on a baseline read, so stepping from
- * one to the other draws no baseline skeleton of its own.
+ * Withdraws the open request and asks about the same document again, which is the only way one
+ * document carries a second request: the route renews the request it finds open rather than
+ * opening a second (`OpenApprovalAskForDocuments`), and a renewal keeps the ask's id, which the
+ * column's write is not keyed on. A retraction records no review, so neither request has an
+ * approved version to be marked against and neither waits on a baseline read.
  */
-export async function seedTwoApprovals(): Promise<TwoApprovalsSeed> {
-  await createProject(PROJECT);
-  const first = await createIssue({
-    force: true,
-    project: PROJECT.key,
-    spec: body([`# ${APPROVAL_NAME}`, ...notes("Rollout", 79), APPROVAL_FOOT]),
-    title: APPROVAL_NAME,
-  });
-  await patchIssue(first.key, { priority: 1 });
-  const second = await createIssue({
-    force: true,
-    project: PROJECT.key,
-    spec: body(["# Lease handover", ...notes("Handover", 60)]),
-    title: "Lease handover",
-  });
-  await patchIssue(second.key, { priority: 2 });
-  const [requestedFirst, requestedSecond] = await Promise.all([
-    requestApproval(first.primary_artifact_id, { summary: FIRST_APPROVAL_SUMMARY }, session),
-    requestApproval(second.primary_artifact_id, { summary: SECOND_APPROVAL_SUMMARY }, session),
-  ]);
-  return {
-    firstAskId: withOpenedAsk(requestedFirst).ask.id,
-    secondAskId: withOpenedAsk(requestedSecond).ask.id,
-  };
+export async function reopenApproval(seed: TwoApprovalsSeed): Promise<string> {
+  await resolveAsk(
+    seed.firstAskId,
+    { kind: "retracted", reason: "The rollout is asked about again." },
+    session
+  );
+  const second = withOpenedAsk(
+    await requestApproval(seed.artifactId, { summary: SECOND_APPROVAL_SUMMARY }, session)
+  );
+  return second.ask.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +689,23 @@ export interface HeldReplies {
  *  block is drawn only once the row lets it be. */
 export async function holdThreadReplies(page: Page, artifactId: string): Promise<HeldReplies> {
   const read = `**/api/v1/artifacts/${artifactId}/comments`;
+  const held = Promise.withResolvers<void>();
+  await page.route(read, async (route) => {
+    await held.promise;
+    await route.continue();
+  });
+  return {
+    release: async () => {
+      held.resolve();
+      await page.unroute(read);
+    },
+  };
+}
+
+/** Holds the Inbox list's own read, so a row can make two writes - a request withdrawn and
+ *  another opened - and let the list come back once, with both of them in it. */
+export async function holdInboxList(page: Page): Promise<HeldReplies> {
+  const read = "**/api/v1/inbox";
   const held = Promise.withResolvers<void>();
   await page.route(read, async (route) => {
     await held.promise;
