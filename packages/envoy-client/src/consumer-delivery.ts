@@ -58,9 +58,11 @@ export const RELAY_PROGRESS_INTERVAL_MS = 20_000;
 export const FOLLOW_CLOCK_ALLOWANCE_MS = 2_000;
 
 /**
- * How many deliveries of one frame may fail in the host (its `deliver` threw) before the frame is
- * answered `done` and its failure notice shown (`DeliveryLedger.liveFailed`) instead of `nak`: a
- * frame the host can never show must not come back every second forever.
+ * How many deliveries of one frame may fail in the host (its `deliver` threw) before the session
+ * is told of the frame it was never shown (`DeliveryLedger.liveFailed`) instead of the frame
+ * coming again: a frame the host can never show must not come back every second forever. The
+ * frame is then answered `done` only when that telling reached somebody, and `nak` when it did
+ * not, so a give-up nobody heard of leaves the message on the stream (`failed`).
  */
 const RELAY_ATTEMPTS_BEFORE_FAILED = 3;
 
@@ -201,7 +203,8 @@ export interface ConsumerDeliveryHost {
   /**
    * Hands a frame to the session. Frames come in stream order, one at a time: the next waits until
    * this returns or the frame is released or settled. A throw on an unsettled frame answers `nak`,
-   * or, from its third delivery on, `done` with the frame's failure notice (`ledger.liveFailed`).
+   * or, from its third delivery on, shows the frame's failure notice (`ledger.liveFailed`) and
+   * answers `done` when that notice reached somebody and `nak` when it did not.
    */
   deliver(frame: ConsumerFrame): void | Promise<void>;
   /** Tells the session once that messages may be missing. */
@@ -435,6 +438,15 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const alreadyWritten = (identity: DedupeIdentity | undefined): boolean =>
     identity !== undefined && ledger.delivered(identity);
 
+  // The frame's last delivery failed. Below the attempt limit it comes again; at it, the session
+  // is told what it was never shown, and the frame is settled on whether that telling reached
+  // anybody. `done` takes the frame off the consumer, so it is answered only once the notice is
+  // written or the host has taken it on: with the notice shown, the session holds a record of the
+  // message and can read it again. When nobody was told - the host moved to another session while
+  // this one's frame was failing, or it refused the notice - the frame goes back instead, and the
+  // stream holds it for whoever takes this session next. Acking it there would lose the message
+  // with nothing anywhere that names it, which is the one thing a session's own consumer exists
+  // to prevent.
   const failed = (entry: Entry, error: unknown) => {
     if (entry.settled) return;
     if (entry.frame.delivered < RELAY_ATTEMPTS_BEFORE_FAILED) {
@@ -442,17 +454,41 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       settle(entry, "nak");
       return;
     }
-    // The frame is not coming back: the session is told what it was never shown.
     log(
       `frame ${entry.frame.streamSeq} failed and does not come again; its session gets the notice`,
       error
     );
+    let telling: Promise<boolean> | undefined;
     safely("failure notice", () => {
       const { subject, data } = entry.frame;
       const { envelope } = renderInbound(data, sessionID, subject);
-      if (envelope !== undefined) void ledger.liveFailed(sessionID, envelope, error);
+      if (envelope !== undefined) telling = ledger.liveFailed(sessionID, envelope, error);
     });
-    settle(entry, "done");
+    // No envelope to name, so no notice can ever be shown for this frame and a frame sent again
+    // would fail the same way: it is settled rather than left to come back for ever.
+    if (telling === undefined) {
+      log(`frame ${entry.frame.streamSeq} carries no envelope to report; it is dropped`);
+      settle(entry, "done");
+      return;
+    }
+    // The reply waits on the notice, which the progress heartbeat holds the frame open for.
+    void telling.then(
+      (told) => {
+        if (told) {
+          settle(entry, "done");
+          return;
+        }
+        log(`frame ${entry.frame.streamSeq} was reported to nobody; it goes back to the stream`);
+        settle(entry, "nak");
+      },
+      (thrown: unknown) => {
+        log(
+          `frame ${entry.frame.streamSeq} could not be reported; it goes back to the stream`,
+          thrown
+        );
+        settle(entry, "nak");
+      }
+    );
   };
 
   const handOff = (entry: Entry) => {

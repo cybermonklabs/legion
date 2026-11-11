@@ -86,7 +86,7 @@ import { nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
-import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
+import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import {
   type CommandContext,
@@ -20022,6 +20022,9 @@ describe("consumer delivery", () => {
        *  message an event carried in part (`wholeCarriedBody`). A row whose host moves inside
        *  that read answers it from an async callback, as Dispatch's own answer takes time. */
       readonly dispatch?: (url: URL) => Response | undefined | Promise<Response | undefined>;
+      /** The session the host has open, read at each call: a row moves the host by changing what
+       *  it answers, with no session event fired for the move. */
+      readonly hostSessionID?: () => string;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -20128,6 +20131,7 @@ describe("consumer delivery", () => {
         ...base.sessionManager,
         getBranch: () => [...prior, ...fixture.entries, ...written],
         getEntries: () => [...prior, ...fixture.entries, ...written],
+        ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
       },
       setInterval: (callback) => {
         intervals.push(callback);
@@ -20358,6 +20362,40 @@ describe("consumer delivery", () => {
         .map((entry) => entry.data as Record<string, unknown>)
         .filter((state) => "follows" in state)
     ).toEqual([]);
+  });
+
+  // What main's INFRA-812 row proved of the replay engine's state, carried onto the ledger that
+  // replaced it: a state entry carries the whole of this session's state - the topics it follows
+  // - and a session restores the newest state its file holds as its own, whatever session wrote
+  // it. So an entry appended once the host has moved would make the conversation the host moved
+  // to follow this session's topics. The guard is the ledger's own bind (`transcriptSessionID`,
+  // which answers nothing once the host's session is not this one), and the first follow below
+  // is the control: it shows the ledger does write its state here when the host is on this
+  // session (dispatch://INFRA-812).
+  test("appends no ledger state of this session to the conversation the host moved to", async () => {
+    const kept = dispatchIssueSubject("INFRA-812", ">");
+    let live = SESSION;
+    const session = await bootConsumer("consumer-state-not-carried", {
+      hostSessionID: () => live,
+    });
+    const ledgerStates = () =>
+      session.fixture.entries.filter((entry) => entry.customType === REPLAY_STATE_ENTRY);
+
+    await session.follow(kept);
+    await settle();
+    expect(JSON.stringify(ledgerStates())).toContain(kept);
+
+    // The host is on another conversation from here on, with no handler fired for the move, so
+    // every entry written now lands in that conversation's file.
+    const mark = session.fixture.entries.length;
+    live = "ses_after_state";
+    await session.follow("notifications.team.moved-to");
+    await settle();
+
+    const appended = session.fixture.entries.slice(mark);
+    expect(appended.filter((entry) => entry.customType === REPLAY_STATE_ENTRY)).toEqual([]);
+    expect(JSON.stringify(appended)).not.toContain(kept);
+    expect(JSON.stringify(appended)).not.toContain("notifications.team.moved-to");
   });
 
   // The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS

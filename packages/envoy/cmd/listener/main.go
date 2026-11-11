@@ -1623,12 +1623,10 @@ const (
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
-	// stopLaneGrace is the role lane's whole stop: stopLaneDrain for its client, then
-	// roleForwardTimeout, which roleLane.drain waits the handed-over forwards out for after it.
-	// Main sized this with roleReceiptTimeout, the lane receipt's own wait; this change answers
-	// a forward with the stream's store rather than a receipt, so the forward's timeout is what
-	// the drain waits (role_lane.go), and it is the shorter of the two, so the pod's grace,
-	// which is rendered from stopBudget, still covers the stop.
+	// stopLaneGrace is the role lane's whole stop, and the invariant is the two waits the drain
+	// makes in order: stopLaneDrain for the lane's own client, then the wait roleLane.drain gives
+	// the handed-over forwards, which is roleForwardTimeout (role_lane.go). Every pod's grace is
+	// rendered from stopBudget, so a change to either wait moves the rendered grace with it.
 	stopLaneGrace = stopLaneDrain + roleForwardTimeout
 	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
 	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).

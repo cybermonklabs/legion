@@ -174,14 +174,20 @@ export interface DeliveryLedger {
    */
   recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<boolean>;
   /**
-   * The host could not show a frame addressed to the session `sessionID`, and it is not coming
-   * back (the relay gave up on it): shows its failure notice at once, and records it when shown,
-   * so the session learns of a message it was never given rather than losing it silently. The
-   * notice is the addressed session's: a frame that failed because the host moved on names a
-   * session that is no longer open, and nothing is shown or recorded for it then - the
-   * conversation the host moved to is told nothing of a message nobody sent it. It never rejects.
+   * The host could not show a frame addressed to the session `sessionID`, and the relay has given
+   * up on it: shows its failure notice at once, and records it when shown, so the session learns
+   * of a message it was never given rather than losing it silently. The notice is the addressed
+   * session's: a frame that failed because the host moved on names a session that is no longer
+   * open, and nothing is shown or recorded for it then - the conversation the host moved to is
+   * told nothing of a message nobody sent it.
+   *
+   * Answers whether the frame was reported: `true` when the notice was written or the host took
+   * it on, `false` when nobody was told - that closed session, a host that refused the notice, or
+   * one that moved while the notice was in flight. A caller told `false` must leave the frame on
+   * the stream (`nak`) rather than settle it, since nothing else holds a copy of it. It never
+   * rejects.
    */
-  liveFailed(sessionID: string, envelope: FailureNoticeEnvelope, error: unknown): Promise<void>;
+  liveFailed(sessionID: string, envelope: FailureNoticeEnvelope, error: unknown): Promise<boolean>;
   /**
    * Replaces everything the ledger holds with what a host persisted for the session it is on now.
    * Entries recorded 72 hours ago or more are dropped; the state is kept at any age, so a session
@@ -311,18 +317,28 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
 
   // A notice written settles the frame for good, here and after a restart; one the host queued is
   // the host's to record once written.
-  const showFailureNotice = async (notice: FailureNotice, alive: () => boolean): Promise<void> => {
+  //
+  // Answers whether the frame was reported: `true` when the notice is written, or queued, which
+  // is the host taking it on. `false` says nobody was told - the host refused the notice, or it
+  // moved off this session while the notice was in flight - and the frame is then the relay's to
+  // hold rather than to settle, since the stream's copy is the only one left (`liveFailed`).
+  const showFailureNotice = async (
+    notice: FailureNotice,
+    alive: () => boolean
+  ): Promise<boolean> => {
     let queued: boolean;
     try {
       queued = (await host.showFailureNotice(notice)) === "queued";
     } catch (error) {
-      if (!alive()) return;
+      if (!alive()) return false;
       safely("failure notice warning", () => host.failureNoticeFailed(notice, error));
-      return;
+      return false;
     }
-    if (!alive() || queued) return;
+    if (!alive()) return false;
+    if (queued) return true;
     record(ledgerIdentity(notice.envelope));
     await flush(alive);
+    return true;
   };
 
   return {
@@ -357,18 +373,20 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
       // the frame failed: the host moved on, and that session is closed here now. Bound to it,
       // nothing is shown and nothing is recorded, rather than a notice carded in the
       // conversation the host moved to and a record of this frame in its transcript. The line
-      // below is what says here that nobody was told of the frame.
+      // below is what says here that nobody was told of the frame, and the `false` it answers is
+      // what keeps the frame on the stream for whoever takes that session next.
       const alive = bindTo(sessionID, currentSession)?.alive;
       if (alive === undefined) {
         log(
           "delivery ledger: a failed frame was not reported here; the session it names is closed"
         );
-        return;
+        return false;
       }
       try {
-        await showFailureNotice(failureNotice(envelope, messageFor(error)), alive);
+        return await showFailureNotice(failureNotice(envelope, messageFor(error)), alive);
       } catch (thrown) {
         log("delivery ledger: could not report a frame the session was not shown", thrown);
+        return false;
       }
     },
     restore(snapshot) {

@@ -166,9 +166,7 @@ export interface RelayFrame {
  * table and the one case per row that drives it are what make the next word a row rather than a
  * round.
  */
-export const relayFirstAnswers: Readonly<
-  Record<RelayReply, { readonly takes: boolean; readonly means: string }>
-> = {
+export const relayFirstAnswers = {
   received: { takes: true, means: "the frame decoded, so the session took it" },
   progress: {
     takes: false,
@@ -179,10 +177,24 @@ export const relayFirstAnswers: Readonly<
     means: "a frame the session could not decode and dropped, when it comes first",
   },
   nak: { takes: false, means: "the session cannot take the frame" },
-};
+} as const satisfies Readonly<
+  Record<RelayReply, { readonly takes: boolean; readonly means: string }>
+>;
+
+/**
+ * The words of that table a frame is taken by, derived from the table itself rather than written
+ * again: a row added with `takes: true` is a take here the moment it is added, and a row the
+ * producing client's `RelayReply` does not hold is a compile error. Today that is `received`
+ * alone.
+ */
+export type RelayTake = {
+  [Word in keyof typeof relayFirstAnswers]: (typeof relayFirstAnswers)[Word]["takes"] extends true
+    ? Word
+    : never;
+}[keyof typeof relayFirstAnswers];
 
 /** What the table says of `word`, which holds no row for a word outside the protocol. */
-export function relayAnswerMeaning(
+function relayAnswerMeaning(
   word: string
 ): { readonly takes: boolean; readonly means: string } | undefined {
   return (
@@ -192,19 +204,15 @@ export function relayAnswerMeaning(
   )[word];
 }
 
-/**
- * The one word of that table a frame is taken by. The table is typed against the producing
- * client's own `RelayReply`, so a word it does not know is a compile error rather than a row
- * nobody drives, and a row the client adds is a missing key rather than a silent refusal; this
- * stays the one word every caller may read as a take, and a second take word would be a change
- * made here deliberately.
- */
-export type RelayTake = "received";
-
-/** Whether `word`, a session's first answer, is that one, read from the table alone. */
+/** Whether `word`, a session's first answer, is one of those, read from the table alone. */
 function relayTakes(word: string): word is RelayTake {
-  return word === "received" && relayFirstAnswers.received.takes;
+  return relayAnswerMeaning(word)?.takes === true;
 }
+
+/** How long a send waits for a session to take its frame when the caller names no bound of its
+ *  own: long enough for a real Oh My Pi to start and register, since most sends are made before
+ *  the session subscribes its deliver subject. */
+const RELAY_SEND_DEFAULT_MS = 30_000;
 
 /**
  * Sends one frame as the listener's relay of a session's consumer sends it: the stored subject,
@@ -220,7 +228,9 @@ function relayTakes(word: string): word is RelayTake {
  * would otherwise read a frame the session dropped, or one it refused, as a frame it took.
  */
 export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
-  const deadline = Date.now() + (frame.withinMs ?? 30_000);
+  // Read once, so the refusal below names the bound this send actually kept.
+  const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
+  const deadline = Date.now() + within;
   for (;;) {
     const headers = frame.newHeaders();
     headers.set(RelayHeader.subject, frame.subject);
@@ -240,7 +250,7 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
       if (Date.now() > deadline) {
         throw new Error(
           `${frame.sessionID} took no relay frame on ${frame.subject} within ` +
-            `${frame.withinMs ?? 30_000} ms: ${String(error)}`
+            `${within} ms: ${String(error)}`
         );
       }
       // A real clock, deliberately: a session that has not yet subscribed its deliver subject

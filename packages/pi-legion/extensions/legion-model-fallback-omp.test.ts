@@ -484,9 +484,18 @@ test.skipIf(skip)(
     );
     // And the return did come, which is what says the arming survived at all: a life that had
     // restored nothing would have stayed on the weaker model for good.
+    //
+    // Measured from this life's own first served turn rather than from the restored due time: a
+    // relaunched pane pays its whole boot before it serves anything - the process start, a NATS
+    // connect, its subscribes, the claim's registration and the consumer answer that registration
+    // waits on - and under parallel load that boot alone can outlast the cooldown, which would
+    // red this row with nothing wrong behind it. What the bound is for is the return itself: once
+    // this life is serving turns, the restored arming must give the stronger model back inside
+    // one cooldown rather than holding the weaker one for good.
+    const resumedFrom = Math.max(dueAt, resumed[0]?.at ?? 0);
     const returned = pane.returnedAt(dueAt);
     expect(returned).toBeDefined();
-    expect((returned ?? 0) - dueAt).toBeLessThan(RESUME_COOLDOWN_MS);
+    expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
   },
   300_000
 );

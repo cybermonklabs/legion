@@ -51,15 +51,14 @@ function createHost(followed: string[]) {
     log(message: string) {
       host.logs.push(message);
     },
-    writeWith: (): unknown => undefined,
+    writeWith: (): void | Promise<void> => undefined,
     async write(change: LedgerChange) {
       host.writes.push({
         delivered: change.delivered,
         state: change.state,
         snapshot: change.snapshot,
       });
-      const held = host.writeWith();
-      if (held instanceof Promise) await held;
+      await host.writeWith();
     },
   };
   return host;
@@ -151,7 +150,7 @@ describe("the frames a session was shown", () => {
   // The write is queued behind the writes before it, and the host can move while it waits: the
   // answer says the record never reached that session, so its caller reports the loss rather
   // than reading a `true` that nothing was written for.
-  test("recorded for a session the host leaves before the queued write runs answer false", async () => {
+  test("recorded for a session the host leaves before the queued write runs answers false", async () => {
     const writing = Promise.withResolvers<void>();
     const landing = Promise.withResolvers<void>();
     host.writeWith = () => {
@@ -177,7 +176,7 @@ describe("the frames a session was shown", () => {
 
   // A write the host refuses keeps its records for the next write, and the caller is told the
   // record did not reach the host, so the loss is reported rather than read as kept.
-  test("whose write the host refuses answer false, and the next write carries the record", async () => {
+  test("whose write the host refuses answers false, and the next write carries the record", async () => {
     host.writeWith = () => {
       host.writeWith = () => undefined;
       return Promise.reject(new Error("the state file could not be written"));
@@ -264,7 +263,10 @@ describe("a frame the session could not be shown", () => {
 
     host.session = "ses-other";
     host.writeSession = "ses-other";
-    await ledger.liveFailed(SESSION, frame, new Error("the session it names is closed"));
+    // The answer is what the relay settles on: nobody was told, so the frame stays on the stream.
+    expect(
+      await ledger.liveFailed(SESSION, frame, new Error("the session it names is closed"))
+    ).toBe(false);
 
     expect(host.notices).toEqual([]);
     expect(host.writes).toEqual([]);
@@ -276,7 +278,9 @@ describe("a frame the session could not be shown", () => {
     // The host is back on the session the frame named: its failure is told there.
     host.session = SESSION;
     host.writeSession = SESSION;
-    await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"));
+    expect(await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"))).toBe(
+      true
+    );
 
     expect(host.notices.map((notice) => notice.eventId)).toEqual(["evt-elsewhere"]);
     expect(ledger.delivered(frame)).toBe(true);
@@ -285,7 +289,10 @@ describe("a frame the session could not be shown", () => {
   test("whose notice the host queued is left for the host to record", async () => {
     host.noticeWith = () => "queued";
 
-    await ledger.liveFailed(SESSION, envelope({ event_id: "evt-queued" }), new Error("busy"));
+    // Queued is the host taking the notice on, so the frame is reported and the relay may ack it.
+    expect(
+      await ledger.liveFailed(SESSION, envelope({ event_id: "evt-queued" }), new Error("busy"))
+    ).toBe(true);
 
     expect(ledger.delivered({ event_id: "evt-queued" })).toBe(false);
     expect(host.writes).toEqual([]);
@@ -294,7 +301,10 @@ describe("a frame the session could not be shown", () => {
   test("whose notice failed too is warned about, and recorded nowhere", async () => {
     host.noticeWith = () => new Error("the card could not be written");
 
-    await ledger.liveFailed(SESSION, envelope({ event_id: "evt-twice" }), new Error("busy"));
+    // The notice itself failed, so nobody was told and the relay must keep the frame.
+    expect(
+      await ledger.liveFailed(SESSION, envelope({ event_id: "evt-twice" }), new Error("busy"))
+    ).toBe(false);
 
     expect(host.notices).toEqual([]);
     expect(host.noticeWarnings.map((notice) => notice.eventId)).toEqual(["evt-twice"]);

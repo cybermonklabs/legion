@@ -65,8 +65,10 @@ host work, and hands the host the frames one at a time in stream order
 (`ConsumerDeliveryHost.deliver`): the next waits until `deliver` returns or the host calls
 `release`, `done` or `nak`. The host calls `done` once it wrote the frame, or skipped or refused
 it, and `nak` when the session cannot take it; `progress` goes out every 20 s until then. A frame
-whose `deliver` throws is answered `nak`, and from its third delivery `done`, with the delivery
-ledger's `liveFailed` showing its failure notice instead. A frame the ledger holds, one on
+whose `deliver` throws is answered `nak`, and from its third delivery the delivery ledger's
+`liveFailed` shows its failure notice instead; the frame is answered `done` when that notice
+reached somebody and `nak` when it did not, so a give-up nobody was told of waits on the stream
+for whoever takes the session next. A frame the ledger holds, one on
 a subject no followed topic matches, and one stored before its topic was followed (`setFollowed`)
 are answered `done` and never handed over. A frame delivered
 before, or stored before the current epoch began, is `late`, and a host runs no side turn for it.
@@ -121,7 +123,8 @@ on its third delivery the host shows a notice naming it instead (`showFailureNot
 delivery path failed a frame outside the relay calls `liveFailed(sessionID, envelope, error)`,
 which shows that notice at once, to the session the frame was addressed to and to no other: a
 frame that failed because the host moved on names a session that is closed here now, and nothing
-is shown or recorded for it then. `failureNoticeFields` words that card, and
+is shown or recorded for it then. It answers whether the frame was reported, so the relay settles
+a give-up nobody was told of with `nak` rather than acking a message that then exists nowhere. `failureNoticeFields` words that card, and
 `envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
 holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
 `sessionID()` names another.

@@ -35,6 +35,8 @@ interface RelayInput {
   readonly streamID?: string;
   readonly eventID?: string;
   readonly reply?: string;
+  /** The frame's bytes, for a row driving what the client does with a frame it cannot read. */
+  readonly payload?: string;
 }
 
 function relay(input: RelayInput): RelayMessage {
@@ -48,7 +50,8 @@ function relay(input: RelayInput): RelayMessage {
   };
   return {
     data: new TextEncoder().encode(
-      JSON.stringify({ event_id: input.eventID ?? `evt-${input.seq}`, source: "agent" })
+      input.payload ??
+        JSON.stringify({ event_id: input.eventID ?? `evt-${input.seq}`, source: "agent" })
     ),
     headers: { get: (name) => headers[name] ?? "" },
     reply: input.reply ?? `_INBOX.${input.seq}.${input.delivered ?? 1}`,
@@ -112,6 +115,9 @@ function setup(
   // the notice belongs to the session the frame was addressed to, not to whatever the host has
   // open when the frame gives up.
   const failed: Array<{ readonly session: string; readonly eventID: string | undefined }> = [];
+  // What the ledger answers a notice with: whether anybody was told. A session the host has left
+  // is told nothing, and the relay must then leave the frame on the stream.
+  const notice = { told: true };
   const logs: string[] = [];
   // The snapshots the host was asked to write.
   const persisted: ConsumerDeliverySnapshot[] = [];
@@ -135,6 +141,7 @@ function setup(
       delivered: (identity) => options.ledger?.delivered(identity) ?? false,
       liveFailed: async (session, envelope) => {
         failed.push({ session, eventID: envelope.event_id });
+        return notice.told;
       },
     },
     persist: (snapshot) => {
@@ -145,13 +152,16 @@ function setup(
     every: timers.every,
   };
   const delivery = createConsumerDelivery(config);
-  /** Waits until every hand-off the host started has finished, those they let go included. */
+  /** Waits until every hand-off the host started has finished, those they let go included, and
+   *  then drains the microtasks a give-up's notice settles through: the relay answers a frame it
+   *  gave up on only once the ledger says whether anybody was told (`failed`). */
   const settled = async () => {
     let seen: number;
     do {
       seen = running.length;
       await Promise.allSettled(running);
     } while (running.length !== seen);
+    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
   };
   return {
     clock,
@@ -160,6 +170,7 @@ function setup(
     handed,
     gaps,
     failed,
+    notice,
     logs,
     state,
     delivery,
@@ -276,6 +287,49 @@ describe("replies", () => {
       "consumer delivery: frame 1 failed; it comes again",
       "consumer delivery: frame 1 failed and does not come again; its session gets the notice",
     ]);
+  });
+
+  // The silent loss this change exists to prevent: `done` takes the frame off the consumer, so a
+  // give-up nobody was told of would leave the message nowhere - not in the transcript, not in the
+  // ledger, and, with the replay sweep gone, not on any later read of the stream. The relay holds
+  // it instead, and the stream keeps it for whoever takes this session next.
+  test("a give-up the ledger reported to nobody goes back to the stream rather than being acked", async () => {
+    const { delivery, logs, notice, replies, failed, state, settled } = setup();
+    state.deliver = () => Promise.reject(new Error("render failed"));
+    // The host has moved to another session, so the ledger shows the notice to nobody.
+    notice.told = false;
+
+    delivery.receive(relay({ seq: 1, delivered: 3, reply: "_INBOX.gone" }));
+    await settled();
+
+    expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
+    expect(repliesTo(replies, "_INBOX.gone")).toEqual(["received", "nak"]);
+    expect(logs).toEqual([
+      "consumer delivery: frame 1 failed and does not come again; its session gets the notice",
+      "consumer delivery: frame 1 was reported to nobody; it goes back to the stream",
+    ]);
+
+    // The frame is not written either: nothing below it is settled, so the resume point stays
+    // under it and the session that takes it next is shown it.
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 0 });
+  });
+
+  // A frame whose bytes name no envelope can never be reported, and a frame sent again would fail
+  // the same way, so it is the one give-up that is still acked.
+  test("a give-up whose frame names no envelope is dropped rather than sent again for ever", async () => {
+    const { delivery, logs, replies, failed, state, settled } = setup();
+    state.deliver = () => Promise.reject(new Error("render failed"));
+
+    delivery.receive(
+      relay({ seq: 1, delivered: 3, reply: "_INBOX.bare", payload: "not an envelope" })
+    );
+    await settled();
+
+    expect(failed).toEqual([]);
+    expect(repliesTo(replies, "_INBOX.bare")).toEqual(["received", "done"]);
+    expect(logs.at(-1)).toBe(
+      "consumer delivery: frame 1 carries no envelope to report; it is dropped"
+    );
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {
