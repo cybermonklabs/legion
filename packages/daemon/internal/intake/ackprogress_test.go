@@ -720,9 +720,10 @@ func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *tes
 		held.hold(ctx)
 		return Result{}, nil
 	}))()
-	// The hold the rows above put on the same window: three of them, so the handling outlasts the
-	// window by a margin no scheduling delay closes. releaseAfter returns once the fact is held,
-	// so the delivery has happened by the time the waits below start.
+	// Three windows of this row's own 200 ms, as each row above holds three of its own two
+	// seconds, so the handling outlasts the window by a margin no scheduling delay closes.
+	// releaseAfter returns once the fact is held, so the delivery has happened by the time the
+	// waits below start.
 	held.releaseAfter(t, 3*spec.AckWait)
 
 	// consumeMessage writes the line between the handler's end and the one acknowledgement, so a

@@ -456,8 +456,10 @@ Two kinds of row keep an exact count.
   count is what it proves. Such a row needs a window above the measured distribution of the first
   report of the progress keeper, the goroutine that reports a running handler in progress so that
   the broker holds its message. A window above the handler's own work is not enough. Until the
-  keeper has reported once, the window alone stands between the handler and a redelivery. The
-  held-fact rows of `packages/daemon/internal/intake/ackprogress_test.go` are of this kind.
+  keeper has reported once, the window alone stands between the handler and a redelivery.
+  `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce` and its control
+  `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal`
+  (`packages/daemon/internal/intake/ackprogress_test.go`) are of this kind.
 
 The comment beside such a count names the window and the measurement that sized it. A later reader
 changes the window, the handler or the keeper's period, and that comment is what tells the reader

@@ -58,8 +58,9 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// nak: each ends in a redelivery. The cleanup below prints what separates them - the
 	// consumer's own log, and for each durable its delivery count, its delivery sequence, its
 	// acknowledgement floor and its counts of pending and redelivered messages. It is registered
-	// after testJetStream's own cleanup, so it runs before the fixture deletes the stream:
-	// cleanups run last in, first out.
+	// after testJetStream, so it runs before that fixture's own cleanup closes the connection its
+	// consumer reads go through and before the shared server is released to the next test, which
+	// empties it: cleanups run last in, first out.
 	t.Cleanup(func() {
 		if !t.Failed() {
 			return

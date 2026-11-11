@@ -1175,11 +1175,24 @@ notice comes once per handoff commit, from whichever pass finds it first.
   minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
 - **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
-  than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the
-  delivery for `took` rather than let JetStream deliver the event a second time. The fact was
-  applied: this is a fact that is slow, not one that failed, and this is the only line that says
-  how long a fact took. One of them asks nothing of an operator; a `took` creeping towards the
-  handler limit, or many at once, names where to look for the slow read behind them.
+  than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake reported
+  the delivery in progress for `took`, which usually keeps JetStream from delivering the event a
+  second time. It is no promise: a progress report, or the acknowledgement itself, that reaches
+  the server after the window has lapsed still has the event delivered again, and the line's
+  `delivered` says which happened. The fact was applied: this is a fact that is slow, not one
+  that failed, and this is the only line that says how long a fact took. One of them asks nothing
+  of an operator; a `took` creeping towards the handler limit, or many at once, names where to
+  look for the slow read behind them.
+- **`an intake fact was delivered again and dropped as already applied`** (an info line with
+  `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`).
+  Intake was handed a fact it had already applied, so it ran no handler, wrote no record and
+  acknowledged the message. `delivered` says where the second copy came from: above 1 is a
+  JetStream redelivery of the same message, and 1 is another copy of one fact, which the
+  listener publishes on each mention topic of a review or comment that mentions the trigger
+  beside its own topic. The line asks nothing of an operator on its own. It is what the rate of
+  a second handling is read from, which is the cost of taking the fact lock before the
+  deduplication (`ApplyFact`), so a rising count of the redeliveries among them is the evidence
+  for reading `processed_events` first.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not
