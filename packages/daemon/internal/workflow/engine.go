@@ -32,6 +32,13 @@ type Hook struct {
 	Prompt string // the words, read at boot
 }
 
+// HookEventWorkBack is the one event a hook of this engine stands on: an issue's work went back
+// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
+// It is the word the configuration spells as well (config.HookEventWorkBack), written out again
+// here because this package imports no configuration: a hook reaches the engine with its event
+// as the operator wrote it, and recordRound fires the hooks that name this one.
+const HookEventWorkBack = "work_back"
+
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
 // outbox deadlines. Zero limits take their shipped defaults. MergeQueueRole is the project's
 // `merge_queue_role`, the role the merger's READY is published to, and its withdrawal when the
@@ -921,11 +928,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// own for a red CI verdict or a head that conflicts with its base. The round tells each pass
 	// through a phase from the last (api/handoff.go): a pass that counted none would give a
 	// completion reporting the last pass's carrying commit that pass's key, answered as already
-	// received instead of refused as a handoff not written anew. The pull request goes with it
-	// because the cap reads it: a move made while the record holds this head as conflicting with
-	// its base is a conflict round, which review_round_cap does not count (recordRound).
+	// received instead of refused as a handoff not written anew. The move's two phases go with it
+	// because the count is kept by the move's own pair, and a hook of the deployment stands on
+	// that pair. The pull request goes with it because the cap reads it: a move made while the
+	// record holds this head as conflicting with its base is a conflict round, which
+	// review_round_cap does not count and no pair counts either (recordRound).
 	if phase.MovesBack(issue.Phase, row.To) {
-		if err := e.recordRound(ctx, tx, issue.Key, pr); err != nil {
+		if err := e.recordRound(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
 	}
