@@ -328,6 +328,96 @@ test("a queued pick that fails rolls back to the priority the server last confir
   }
 });
 
+// R6 of dispatch://INFRA-299. A pick replaces a pick of the same field that is still waiting its
+// turn: the two picks that have not gone out are one request, the newest, and the engine shows
+// the person nothing for the one it took out - no error, no Retry, and no roll-back of the
+// control or the lists, since the engine, not the server, is what dropped it.
+test("a pick replaces a pick of the same priority control still waiting its turn, quietly", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "3");
+    await user.selectOptions(select(), "2");
+
+    // P3 never went out and never will: the person sees their newest pick and nothing of the
+    // one it replaced.
+    expect(select().value).toBe("2");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 2 },
+      otherSummary,
+    ]);
+    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([{ ...inboxRow, priority: 2 }]);
+
+    await act(async () => {
+      first.resolve({ ...issue, priority: 0 });
+      await first.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    // Two picks that had not gone out, one request: the newest.
+    expect(patchIssue.mock.calls.map(([, update]) => update.priority)).toEqual([0, 2]);
+    expect(select().value).toBe("2");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  } finally {
+    await act(async () => {
+      second.resolve({ ...issue, priority: 2 });
+      await second.promise;
+    });
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R6 of dispatch://INFRA-299. The server refuses an older pick while a newer one stands in the
+// line: the screen keeps the newer value, the control reports the refusal, and no Retry is
+// offered, because a Retry joins the back of the line and would store the older pick last.
+test("a refused pick is reported with no Retry while a newer pick stands in the line", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "2");
+    expect(select().value).toBe("2");
+
+    act(() => {
+      first.reject(new Error("offline"));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not update the priority of CORE-1."
+    );
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(select().value).toBe("2");
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 2 },
+      otherSummary,
+    ]);
+  } finally {
+    await act(async () => {
+      second.resolve({ ...issue, priority: 2 });
+      await second.promise;
+    });
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 test("PriorityControl keeps mouse, pointer and touch presses on the select out of a draggable parent", () => {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },

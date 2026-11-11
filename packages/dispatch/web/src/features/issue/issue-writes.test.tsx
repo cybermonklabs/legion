@@ -869,7 +869,13 @@ test("IssuePage renders the server's reason when a title save is refused, with n
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "Renamed" }, keyedAttempt)
     );
 
-    await screen.findByText(refusal);
+    // The blur that saves closed the editor, so the heading is what the person reads: it keeps
+    // the title they typed, and the reason stands in the header's own alert beneath it, not in
+    // the editor's `aria-describedby`, which names the local "Title is required." alone.
+    const reported = await screen.findByText(refusal);
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Renamed");
+    expect(reported.id).toBe("issue-title-error");
+    expect(reported).toHaveAttribute("role", "alert");
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
     // Dispatch refuses the same title every time, so nothing offers to send it again.
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
