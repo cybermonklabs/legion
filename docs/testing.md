@@ -324,6 +324,25 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A Go test that opens a NATS client
+
+The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`
+hands it to one test at a time (`URL`, `JetStream`). A test that wants a client of its own takes
+it from `testnats.Connect(t, url)`, which names it after the test and closes it when the test
+ends. A test that dials the shared server itself leaves a connection nobody named.
+
+The fixture reads the server's client connections when a test takes it and again when that test
+ends, so a connection that was not there at the start and is still there at the end fails the
+test that left it, naming each one by the id the server gave it and the name its client carries
+(`packages/daemon/internal/testnats/leakcheck.go`). A client the fixture opened it also closes,
+so the next test still gets the server empty; one it never opened — a child process's, or a raw
+`nats.Connect` — it records, and the next test to take the server fails at once naming the test
+that left it, because nothing in this process can close another client's connection.
+
+The daemon's own production clients are named too: `natsauth.Connect` takes the name as a
+parameter rather than an option, so no call site can leave one empty, and an operator reading
+`/connz` on the Envoy NATS sees which process holds each connection.
+
 ## A test that reads `GET /api/v1/references?since=` reads again
 
 A since read answers only the edges at or below the event log's safe horizon (`getReferences` and

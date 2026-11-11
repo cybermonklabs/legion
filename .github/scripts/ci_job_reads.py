@@ -1802,8 +1802,9 @@ GATES = [
 
     gate("broker_client", "broker-client", reads=reads(
         ("packages/broker-client/**", f"{at('broker-client', 'Typecheck the broker client')} and test in "
-                                      "packages/broker-client; its modules import only one another, node:, bun: and "
-                                      "the third-party packages its manifest names"),
+                                      "packages/broker-client; its modules import one another, node:, bun:, the "
+                                      "third-party packages its manifest names and @legion/contracts"),
+        (CONTRACTS_SRC, "packages/broker-client/src/token-client.ts imports @legion/contracts/trailing-slash"),
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
     ) + bun_job("broker-client")),
 
