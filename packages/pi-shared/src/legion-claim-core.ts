@@ -263,17 +263,27 @@ async function withinBudget<T>(
  * role, the issue and the tree its host read from the environment), the daemon it called, the
  * call that failed and why, the claim where one was registered and that there is none where none
  * was, and what the process does now. It carries no boot token, no secret and no part of the
- * registration body: the line goes to a log an operator and a controller read. */
-function claimBootFailureLine(
-  host: LegionClaimHost,
-  call: string,
-  cause: unknown,
-  claimToken: string | undefined
-): string {
-  const { role, issue, tree, daemonUrl } = host.identity;
+ * registration body: the line goes to a log an operator and a controller read.
+ *
+ * It is exported because a host has endings of its own before the boot is called — the Claude
+ * Code host waits for its transcript first — and one sentence read in one place is what keeps
+ * every ending of a claim that never registered readable as the same event. */
+export function claimBootFailureLine(ending: {
+  readonly identity: LegionClaimIdentity;
+  /** What the host's `stop` does, as {@link LegionClaimHost.stopping} words it. */
+  readonly stopping: string;
+  /** The call or step that failed: a daemon route by its path, a host's step by its name. */
+  readonly call: string;
+  readonly cause: unknown;
+  /** The claim the registration issued, and undefined where none had answered yet. */
+  readonly claimToken?: string | undefined;
+}): string {
+  const { role, issue, tree, daemonUrl } = ending.identity;
   const claimed =
-    claimToken === undefined ? "no claim was registered" : `the claim ${claimToken} was registered`;
-  return `claim boot failed: role ${told(role)}, issue ${told(issue)}, tree ${told(tree)}, daemon ${told(daemonUrl)}; ${call} failed: ${messageFor(cause)}; ${claimed}; ${host.stopping}`;
+    ending.claimToken === undefined
+      ? "no claim was registered"
+      : `the claim ${ending.claimToken} was registered`;
+  return `claim boot failed: role ${told(role)}, issue ${told(issue)}, tree ${told(tree)}, daemon ${told(daemonUrl)}; ${ending.call} failed: ${messageFor(ending.cause)}; ${claimed}; ${ending.stopping}`;
 }
 
 /** An identity value the host's environment did not carry, as the line shows it. */
@@ -288,12 +298,13 @@ function told(value: string | undefined): string {
 function endBoot(host: LegionClaimHost, error: unknown, claimToken: string | undefined): void {
   const failed = error instanceof ClaimBootStepFailure;
   host.log(
-    claimBootFailureLine(
-      host,
-      failed ? error.call : "the claim boot",
-      failed ? error.failure : error,
-      claimToken
-    )
+    claimBootFailureLine({
+      identity: host.identity,
+      stopping: host.stopping,
+      call: failed ? error.call : "the claim boot",
+      cause: failed ? error.failure : error,
+      claimToken,
+    })
   );
   host.stop();
 }

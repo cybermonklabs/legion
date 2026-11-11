@@ -2,12 +2,16 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
-import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
+import type { ClaimBootBounds, LegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import {
+  bootLegionClaim,
+  claimBootFailureLine,
+  type LegionClaimBoot,
+  type LegionClaimIdentity,
+} from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
@@ -75,10 +79,28 @@ export function endPane(): void {
   process.kill(process.ppid, "SIGTERM")
 }
 
+/** What the pane does at every ending of its claim boot that is not a registered claim, in the
+ * words the line reporting it ends with: the core's own endings say it (`stopping`), the line a
+ * failure the core never saw writes says it, and so does `stopPane`. */
+const STOPPING_THE_PANE = "stopping the pane so the daemon launches it again"
+
 /** Logs why the pane cannot run, then ends it (`endPane`). */
 export function stopPane(why: string): void {
-  logLegion(`${why}; stopping the pane so the daemon launches it again`)
+  logLegion(`${why}; ${STOPPING_THE_PANE}`)
   endPane()
+}
+
+/** The one line a failure of the claim boot that `bootLegionClaim` never saw writes — the
+ * transcript waits, and everything else {@link startLegionClaim} does before it calls the boot:
+ * the core's own sentence (`claimBootFailureLine`), so every ending of a claim that never
+ * registered reads as the same event, wherever it was met. */
+function paneBootFailureLine(identity: LegionClaimIdentity, cause: unknown): string {
+  return claimBootFailureLine({
+    identity,
+    stopping: STOPPING_THE_PANE,
+    call: "the claim boot before claims/register",
+    cause,
+  })
 }
 
 /**
@@ -194,9 +216,12 @@ export interface LegionClaim {
  * capability report, again each time the heartbeat regains the role, and claims the claim
  * token's Envoy role soft last of all — at this session's first turn (`onFirstTurn`) or at the
  * bound this pane's environment names, whichever comes first — recording it with the channel
- * session, whose heartbeat re-asserts it. A failure the core stops on ends the pane through
- * `stop`; a failure before a registration is logged and leaves the pane to the daemon's
- * registration deadline.
+ * session, whose heartbeat re-asserts it. Every ending of that boot which is not a registered
+ * claim writes one line and ends the pane through `stop`, and the daemon launches the pane
+ * again: the endings the core itself takes, and the failures it never saw — the transcript
+ * waits, and everything this function does before it calls the boot. Only a boot the server's
+ * own shutdown aborted ends nothing, since that process is already going
+ * (dispatch://INFRA-2883).
  *
  * A claim the listener refuses naming this very session is waited out rather than stopped on:
  * the pane the daemon relaunched with `--resume` meets the standing claim of the process it
@@ -242,11 +267,27 @@ export function startLegionClaim(deps: {
    * will not wait 30 seconds. */
   readonly env?: NodeJS.ProcessEnv
   readonly pollMs?: number
+  /** The boot's two bounds, handed to `bootLegionClaim`. The server passes none, so the boot
+   * takes `CLAIM_BOOT_ATTEMPT_TIMEOUT_MS` and `CLAIM_BOOT_BUDGET_MS`
+   * (`@legion/pi-shared/daemon-client`); a test passes its own, since no test can wait out the
+   * production budget. */
+  readonly bounds?: ClaimBootBounds
 }): LegionClaim {
   let capability: ClaimCapability | undefined
   const { sessionID } = deps
   const roleWaitMs = deps.roleWaitMs ?? ROLE_CLAIM_WAIT_MS
   const roleRetryMs = deps.roleRetryMs ?? ROLE_CLAIM_RETRY_MS
+  const env = deps.env ?? process.env
+  // Who the line of an ending that registered no claim names, from the pane's own environment
+  // and its daemon's address: the registration carries a boot token and no claim
+  // (`LegionClaimIdentity`). Both endings write it — the core's own, and the one below for a
+  // failure the core never saw — so both read this.
+  const identity: LegionClaimIdentity = {
+    role: configuredValue(env["LEGION_ROLE"]),
+    issue: configuredValue(env["LEGION_ISSUE"]),
+    tree: configuredValue(env["LEGION_TREE"]),
+    daemonUrl: deps.pane.daemonUrl,
+  }
 
   const boot = async (): Promise<LegionClaimBoot> => {
     const transcript = await waitForTranscript(
@@ -267,15 +308,10 @@ export function startLegionClaim(deps: {
         agentId: sessionID,
         pluginContract: legion.daemonApiVersion,
       },
-      // Who the line of a boot that registers no claim names, from the pane's own environment
-      // and its daemon's address: the registration carries a boot token and no claim
-      // (`LegionClaimIdentity`).
-      identity: {
-        role: configuredValue((deps.env ?? process.env)["LEGION_ROLE"]),
-        issue: configuredValue((deps.env ?? process.env)["LEGION_ISSUE"]),
-        tree: configuredValue((deps.env ?? process.env)["LEGION_TREE"]),
-        daemonUrl: deps.pane.daemonUrl,
-      },
+      identity,
+      // The bounds this pane was given, where it was given its own: the boot takes production's
+      // two where none are passed, and neither number is written again here.
+      ...(deps.bounds === undefined ? {} : { bounds: deps.bounds }),
       setCapability: (registered) => {
         capability = registered
       },
@@ -325,10 +361,10 @@ export function startLegionClaim(deps: {
       onFirstTurn: deps.onFirstTurn,
       // The pane's own bound, read from its environment as the reminder's four numbers are
       // (`stallLimits` in `./legion-phase-hook`), and warned about on the pane's own log line.
-      firstTurnBoundMs: claimFirstTurnBoundMs(deps.env ?? process.env, paneReminderLog(deps.log)),
+      firstTurnBoundMs: claimFirstTurnBoundMs(env, paneReminderLog(deps.log)),
       onRoleRegained: (listener) => deps.session.onRoleRegained(listener),
       log: deps.log,
-      stopping: "stopping the pane so the daemon launches it again",
+      stopping: STOPPING_THE_PANE,
       // A boot the shutdown aborted stops nothing: this server is already going, and `stop`
       // would SIGTERM the `claude` it runs under on its way out.
       stop: () => {
@@ -337,14 +373,18 @@ export function startLegionClaim(deps: {
     })
   }
 
-  // A boot that failed before a registration claims nothing, and says so with a `claimed` that
-  // is already settled: a caller waiting on the name is not left waiting for a step that is
-  // never coming.
+  // A boot that ended with no registered claim claims nothing, and says so with a `claimed`
+  // that is already settled: a caller waiting on the name is not left waiting for a step that
+  // is never coming. The failures that reach here are the ones `bootLegionClaim` never saw —
+  // the transcript waits, and everything above before it is called — and they end the pane as
+  // the boot's own endings do, since a pane that runs on with no claim is a role with no
+  // `legion` tool, which can finish no phase and which nothing else notices
+  // (dispatch://INFRA-2883). A boot the server's own shutdown aborted is the one exception: it
+  // stops nothing, as the core's `stop` above does not, since that process is already going.
   const started = boot().catch((error: unknown): LegionClaimBoot => {
     if (!deps.signal.aborted) {
-      deps.log(
-        `claim boot failed before a registration; the daemon's registration deadline relaunches the pane: ${messageFor(error)}`,
-      )
+      deps.log(paneBootFailureLine(identity, error))
+      deps.stop()
     }
     return { claimed: Promise.resolve() }
   })

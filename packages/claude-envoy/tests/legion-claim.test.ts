@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
-import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { CLAIM_BOOT_BUDGET_MS, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
@@ -64,6 +64,14 @@ function daemonAnswering(answer: (path: string) => Response): {
   }) as typeof fetch
   return { posted, fetch: stub }
 }
+
+/** The one line every ending of the boot that is not a registered claim writes
+ * (`claimBootFailureLine`, `@legion/pi-shared/legion-claim-core`), as the rows below read it:
+ * who the pane is — nothing, since each of those rows passes an environment of its own, which
+ * carries no `LEGION_ROLE`, `LEGION_ISSUE` or `LEGION_TREE` — the daemon it was launched for,
+ * the step that failed and why, the claim where one was registered, and the pane stopped. */
+const bootFailureLine = (call: string, why: string, claimToken?: string): string =>
+  `claim boot failed: role (unset), issue (unset), tree (unset), daemon http://daemon.test; ${call} failed: ${why}; ${claimToken === undefined ? "no claim was registered" : `the claim ${claimToken} was registered`}; stopping the pane so the daemon launches it again`
 
 test("a session with no boot token is no Legion pane", () => {
   expect(legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
@@ -247,9 +255,15 @@ test("a registration the daemon refuses logs the refusal, stops the pane, and cl
       stops += 1
     },
     onFirstTurn: firstTurnNow,
+    env: {},
   })
   await claim.claimed
-  expect(lines).toEqual([`claims/register registration failed (409): ${refusal["error"]}`])
+  expect(lines).toEqual([
+    bootFailureLine(
+      "claims/register",
+      `POST /legion/v1/claims/register failed with 409: ${refusal["error"]}`,
+    ),
+  ])
   expect(stops).toBe(1)
   expect(setRoles).toEqual([])
   expect(claim.capability()).toBeUndefined()
@@ -280,6 +294,7 @@ test("a role another live session holds stops the pane after it has said it is r
       stops += 1
     },
     onFirstTurn: firstTurnNow,
+    env: {},
   })
   await claim.claimed
   // The role is claimed after `claims/ready`, so the daemon has already been told this pane is
@@ -290,7 +305,11 @@ test("a role another live session holds stops the pane after it has said it is r
     "/legion/v1/claims/ready",
   ])
   expect(lines).toEqual([
-    `claim boot failed after claims/register registered ${registered["claimToken"]}; stopping the pane so the daemon launches it again: Envoy role ${registered["claimToken"]} is held by live session ses_other`,
+    bootFailureLine(
+      "claimRole",
+      `Envoy role ${registered["claimToken"]} is held by live session ses_other`,
+      String(registered["claimToken"]),
+    ),
   ])
   expect(stops).toBe(1)
 })
@@ -485,6 +504,7 @@ test("a claim under this session's own id that is never granted stops the pane o
     roleRetryMs: 5,
     roleWaitMs: 40,
     onFirstTurn: firstTurnNow,
+    env: {},
   })
   await claim.claimed
 
@@ -495,22 +515,145 @@ test("a claim under this session's own id that is never granted stops the pane o
   ])
   expect(setRoles.length).toBeGreaterThan(1)
   expect(lines.at(-1)).toBe(
-    `claim boot failed after claims/register registered ${token}; stopping the pane so the daemon launches it again: Envoy role ${token} is still claimed under this session by another process after 40 ms of asking`,
+    bootFailureLine(
+      "claimRole",
+      `Envoy role ${token} is still claimed under this session by another process after 40 ms of asking`,
+      token,
+    ),
   )
   expect(stops).toBe(1)
 })
 
-test("a registration the daemon failed (5xx) is logged and leaves the pane to the registration deadline", async () => {
+test("a registration the daemon failed (5xx) is sent again, and the attempt that registers stops nothing", async () => {
+  // A daemon restarting under a pane's boot fails a call the next attempt would answer, so the
+  // boot asks again inside its budget rather than ending a pane that was about to register.
   const configDir = await tempDir()
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
-  const { fetch } = daemonAnswering(() =>
-    Response.json({ error: "register failed" }, { status: 503 }),
-  )
+  let registrations = 0
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (!path.endsWith("/claims/register")) return new Response(null, { status: 204 })
+    registrations += 1
+    return registrations === 1
+      ? Response.json({ error: "register failed" }, { status: 503 })
+      : Response.json(registeredClaim)
+  })
+  const remembered: string[] = []
   const lines: string[] = []
   let stops = 0
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (): Promise<SetRoleResult> => ({
+        claimed: true,
+        interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+      }),
+    },
+    session: {
+      rememberRole: async (role) => {
+        remembered.push(role)
+      },
+      onRoleRegained: () => undefined,
+    },
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      stops += 1
+    },
+    onFirstTurn: firstTurnNow,
+    env: {},
+    // The row's own bounds: the next attempt falls 50 ms after the refusal rather than inside
+    // production's 6 and 20 seconds, which no row can wait out.
+    bounds: { attemptMs: 50, budgetMs: 2_000 },
+    pollMs: 5,
+  })
+  await claim.claimed
+
+  const token = String(registeredClaim["claimToken"])
+  expect(posted.map(({ path }) => path)).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
+  ])
+  expect(claim.capability()?.claimToken).toBe(token)
+  expect(remembered).toEqual([token])
+  expect(stops).toBe(0)
+  expect(lines).toEqual([])
+})
+
+test("a daemon that never answers is asked again, and the spent budget stops the pane on one line", async () => {
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  // A daemon that takes the connection and answers nothing at all: every attempt is aborted at
+  // its own bound and the next goes out, so what ends this boot is the budget.
+  const bounds: AbortSignal[] = []
+  const hung = (async (_input, init) => {
+    const signal = init?.signal
+    if (!signal) throw new TypeError("the claim boot's call carried no bound of its own")
+    bounds.push(signal)
+    const answer = Promise.withResolvers<Response>()
+    signal.addEventListener("abort", () => answer.reject(signal.reason), { once: true })
+    return await answer.promise
+  }) as typeof fetch
+  const lines: string[] = []
+  let stops = 0
+  const started = Date.now()
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", hung),
+    clientInstanceID: INSTANCE,
+    client: { setRole: async () => ({ claimed: false, holder: "x" }) },
+    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      stops += 1
+    },
+    onFirstTurn: firstTurnNow,
+    env: {},
+    bounds: { attemptMs: 20, budgetMs: 120 },
+    pollMs: 5,
+  })
+  await claim.claimed
+  const spent = Date.now() - started
+
+  // Each attempt carried its own bound and was aborted at it, so no call of this boot hangs.
+  expect(bounds.length).toBeGreaterThan(1)
+  expect(bounds.every((signal) => signal.aborted)).toBe(true)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toStartWith(
+    "claim boot failed: role (unset), issue (unset), tree (unset), daemon http://daemon.test; claims/register failed: claims/register got no answer inside the claim boot's budget of 120 ms, which is spent",
+  )
+  expect(lines[0]).toEndWith(
+    "no claim was registered; stopping the pane so the daemon launches it again",
+  )
+  expect(stops).toBe(1)
+  expect(claim.capability()).toBeUndefined()
+  // The boot decides its own ending inside the budget every host shares; this row passes a
+  // smaller one of its own, since no row can wait out production's 20 seconds.
+  expect(spent).toBeLessThan(CLAIM_BOOT_BUDGET_MS)
+})
+
+test("a failure of the pane's own steps before claims/register stops the pane on one line", async () => {
+  // What is left for the pane's own catch, now that the core ends every boot it saw: the
+  // transcript waits, and everything `startLegionClaim` does before it calls `bootLegionClaim`.
+  // The row drives one by handing the pane a configuration directory that is no path at all, so
+  // the wait for the transcript throws before a daemon call is made.
+  const { posted, fetch } = daemonAnswering(() => Response.json(registeredClaim))
+  const lines: string[] = []
+  let stops = 0
+  const claim = startLegionClaim({
+    pane: {
+      daemonUrl: "http://daemon.test",
+      bootToken: "boot-1",
+      configDir: undefined as unknown as string,
+      launcherSaves: false,
+    },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", fetch),
     clientInstanceID: INSTANCE,
@@ -522,15 +665,58 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
       stops += 1
     },
     onFirstTurn: firstTurnNow,
+    env: {},
+    pollMs: 5,
   })
-  // A boot that failed before a registration claims nothing, and says so at once rather than
-  // leaving a caller waiting for a step that is never coming.
   await claim.claimed
-  expect(lines).toEqual([
-    "claims/register registration failed (503): register failed",
-    "claim boot failed before a registration; the daemon's registration deadline relaunches the pane: POST /legion/v1/claims/register failed with 503: register failed",
-  ])
+
+  expect(posted).toEqual([])
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toStartWith(
+    "claim boot failed: role (unset), issue (unset), tree (unset), daemon http://daemon.test; the claim boot before claims/register failed: ",
+  )
+  expect(lines[0]).toEndWith(
+    "no claim was registered; stopping the pane so the daemon launches it again",
+  )
+  expect(stops).toBe(1)
+  expect(claim.capability()).toBeUndefined()
+})
+
+test("a boot the server's own shutdown aborted stops nothing and says nothing", async () => {
+  // The same kind of failure under a shutdown: the transcript never appears, and the server's
+  // own abort is what ends the wait. Stopping would SIGTERM the `claude` this server runs under
+  // on its way out, and the line would report the shutdown as a failure of the pane's.
+  const configDir = await tempDir()
+  const shutdown = new AbortController()
+  const { posted, fetch } = daemonAnswering(() => Response.json(registeredClaim))
+  const lines: string[] = []
+  let stops = 0
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    clientInstanceID: INSTANCE,
+    client: { setRole: async () => ({ claimed: false, holder: "x" }) },
+    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    signal: shutdown.signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      stops += 1
+    },
+    onFirstTurn: firstTurnNow,
+    env: {},
+    pollMs: 5,
+  })
+  // A real wait, deliberately: the boot is polling the real filesystem for a transcript nothing
+  // writes, and the only sign of it is a registration that does not come.
+  await Bun.sleep(20)
+  expect(posted).toEqual([])
+
+  shutdown.abort()
+  await claim.claimed
+  expect(lines).toEqual([])
   expect(stops).toBe(0)
+  expect(claim.capability()).toBeUndefined()
 })
 
 /** Boots a claim on the pane `env` describes, with its transcript already written, and returns
