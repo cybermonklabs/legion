@@ -62,7 +62,7 @@ export function TableHeaderCell<Row>({
             ? "descending"
             : undefined
       }
-      className={`sticky top-0 border-b px-1 ${compact ? "py-1 [&_button[aria-label^='About']]:hidden" : "py-2"} pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      className={`sticky top-0 border-b px-1 ${compact ? "py-0 [&_button]:min-h-6 [&_button]:min-w-6 [&_button[aria-label^='About']]:hidden" : "py-2"} pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}

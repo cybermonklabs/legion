@@ -494,7 +494,7 @@ export function DataTable<Row>({
           }}
         >
           <span
-            className={`line-clamp-2 break-words ${textMutedOnCanvas}`}
+            className={`block w-full min-w-0 line-clamp-2 break-words ${textMutedOnCanvas}`}
             title={String(title.getValue())}
           >
             {flexRender(title.column.columnDef.cell, title.getContext())}

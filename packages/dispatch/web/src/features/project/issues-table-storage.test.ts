@@ -6,6 +6,6 @@ test("each built-in view keeps its own column layout except All open", () => {
   expect(layoutKeyOf("ACME", "open")).toBe("ACME");
   expect(layoutKeyOf("ACME", "finished")).toBe("ACME.finished");
   expect(tableStorageKey(layoutKeyOf("ACME", "finished"))).toBe(
-    "dispatch.project-table.ACME.finished"
+    "dispatch.project-table.v2.ACME.finished"
   );
 });

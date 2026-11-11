@@ -55,9 +55,18 @@ export function LabelPill({
   return <Pill tone={selected ? "selected-label" : "label"}>{children}</Pill>;
 }
 
-export function StatusPill({ children }: { children: ReactNode }): ReactNode {
+export function StatusPill({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}): ReactNode {
   return (
-    <Pill className="gap-1.5 font-semibold tracking-wide uppercase" tone="status">
+    <Pill
+      className={`gap-1.5 font-semibold tracking-wide uppercase ${className ?? ""}`}
+      tone="status"
+    >
       <span aria-hidden="true" className={`size-1.5 rounded-full ${statusPillDot}`} />
       {children}
     </Pill>

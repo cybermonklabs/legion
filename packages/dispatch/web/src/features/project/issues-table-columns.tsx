@@ -272,7 +272,11 @@ const renderings = (
     sortingFn: (a, b) =>
       issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
-    cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
+    cell: ({ getValue }) => (
+      <StatusPill className="max-w-full px-1 text-[0.625rem] !whitespace-normal sm:px-2 sm:text-xs">
+        {statusLabel(getValue<IssueStatus>())}
+      </StatusPill>
+    ),
   },
   phase: {
     header: () => (
@@ -690,21 +694,25 @@ export function LegionPhaseCell({
   const label = legionPhaseLabel(phase.label, phase.card.phase);
   return (
     <span
-      className="flex flex-col gap-1"
+      className="flex min-w-0 flex-col gap-1"
       data-cell="phase"
       data-legion-phase={phase.id}
       data-value={phase.card.phase}
     >
       {href === undefined ? (
-        <span>{label}</span>
+        <span className={phaseNameOnly ? "text-[0.625rem]" : undefined}>{label}</span>
       ) : (
-        <Link className={`${linkText} ${linkHoverText}`} data-timeline-link to={href}>
+        <Link
+          className={`${linkText} ${linkHoverText} ${phaseNameOnly ? "text-[0.625rem]" : ""}`}
+          data-timeline-link
+          to={href}
+        >
           {label}
         </Link>
       )}
       {phaseNameOnly ? null : (
         <span
-          className={`text-xs ${textMutedOnCanvas}`}
+          className={`hidden text-xs sm:block ${textMutedOnCanvas}`}
           data-legion-fact="phase-time"
           title={timing.at ?? "Phase entry time unknown"}
         >

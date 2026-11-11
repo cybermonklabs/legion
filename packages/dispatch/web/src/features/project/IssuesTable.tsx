@@ -67,7 +67,6 @@ import { issueIsUnread } from "./UnreadDot";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
-
 const PHONE_PRIMARY: Record<BuiltInViewId, readonly ColumnId[]> = {
   open: ["status", "phase"],
   triage: ["created"],
@@ -299,6 +298,11 @@ function IssuesTableContent({
     () => viewCount(activeView, allItems, hasLegion, Date.now()),
     [activeView, allItems, hasLegion]
   );
+  const compactPhase =
+    (typeof window !== "undefined" &&
+      ((window.visualViewport?.width ?? window.innerWidth) < 640 || window.screen.width < 640)) ||
+    activeView.id === "waiting" ||
+    activeView.id === "in-flight";
 
   const columns = useIssueTableColumns(
     userState.data,
@@ -306,7 +310,7 @@ function IssuesTableContent({
     hasLegion,
     phase,
     timelineHref,
-    activeView.id === "waiting" || activeView.id === "in-flight"
+    compactPhase
   );
   const tableColumns = useMemo(
     () =>
@@ -787,7 +791,7 @@ function IssuesTableContent({
                 index={index}
                 measure={measure}
                 moved={moved}
-                onStartNext={(key) => startNext([key])}
+                onStartNext={model.narrow ? undefined : (key) => startNext([key])}
                 row={row}
               />
             )}
