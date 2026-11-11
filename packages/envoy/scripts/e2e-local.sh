@@ -54,12 +54,17 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 
 # The delay this run was given, read once, refused here rather than inside the window it would
-# break. The range is the one the header states.
+# break. The two ends are the header's, held in constants the check and its refusal both read, and
+# the pattern takes a decimal written plainly: bash reads a leading zero as octal, so `08` is no
+# number to it at all and `02000` is 1024 where the stand-in would sleep 2000 ms (review round 34).
+readonly ack_delay_min_ms=1000
+readonly ack_delay_max_ms=2500
 readonly ack_delay_ms="${E2E_SESSION_ACK_DELAY_MS:-0}"
-if [[ ! "$ack_delay_ms" =~ ^[0-9]+$ ]] ||
-  { ((ack_delay_ms != 0)) && ((ack_delay_ms < 1000 || ack_delay_ms > 2500)); }; then
-  printf 'ERR: E2E_SESSION_ACK_DELAY_MS is %s; it must be 0, or from 1000 to 2500. Below 1000 the ack can reach the server before the clean stop reads the consumer floor, so this run would assert the re-offer case against a build that is right; above 2500 the windows own waits run out on the injection.\n' \
-    "$ack_delay_ms" >&2
+if [[ ! "$ack_delay_ms" =~ ^(0|[1-9][0-9]*)$ ]] ||
+  { ((ack_delay_ms != 0)) &&
+    ((ack_delay_ms < ack_delay_min_ms || ack_delay_ms > ack_delay_max_ms)); }; then
+  printf 'ERR: E2E_SESSION_ACK_DELAY_MS is %s; it must be 0, or a decimal from %s to %s written without a leading zero. Below %s the ack can reach the server before the clean stop reads the consumer floor, so this run would assert the re-offer case against a build that is right; above %s the windows own waits run out on the injection.\n' \
+    "$ack_delay_ms" "$ack_delay_min_ms" "$ack_delay_max_ms" "$ack_delay_min_ms" "$ack_delay_max_ms" >&2
   exit 2
 fi
 
@@ -693,43 +698,65 @@ wait_for_consumer_frame_count() {
 }
 
 # wait_for_acks_settled returns once the server says a session consumer has nothing left to ack
-# and its ack floor covers the last frame the session wrote. That is what the no-delay case of
-# this run needs before it deletes a consumer: the delete records the consumer ack floor, and the
-# assertions below require that floor to stand at the sequence the session acked, which it does
-# only once the ack has reached the server. Nothing else in the run orders those two - the frames
-# wait above returns when a frame arrives, the stand-in answers done after that, and the listener
-# relay acks the stream message after that again - so without this wait a correct build can
-# record a floor one short and fail this lane (review round 33).
+# and its ack floor covers the last frame the transport offered the session. That is what the
+# no-delay case of this run needs before it deletes a consumer, for the reason this file's header
+# gives; under E2E_SESSION_ACK_DELAY_MS it returns at once, since there the delete is meant to
+# land before the ack. Every caller calls it the same way and reads nothing back: it prints the
+# line that says what the session acked, and ends the run by name when the acks never settle, so
+# no caller carries a branch of its own.
+#
+# The target is the highest sequence of the session's offers file, which the stand-in writes as
+# each frame arrives and so before the frames wait that precedes this call returns. The cursor
+# file is not read here: the stand-in writes that one after it answers done, which is the very
+# event this waits for, so a target taken from it can lag a frame and let the wait pass on a
+# consumer that still owes an ack. An offers file this cannot read a sequence from ends the run
+# by name, since the wait would otherwise check nothing (review round 34).
 #
 # The observable is the consumer own state, read with a JetStream CONSUMER.INFO request over the
 # NATS connection this helper opens ($JS.API.CONSUMER.INFO.<stream>.<consumer>), which is the
 # request a monitoring endpoint answers from as well. It is read this way rather than from a
 # monitor port because it needs no second listening socket, no flag of natsd and no parse of a log
 # line for a port: the rig already speaks this protocol, and the answer is the consumer record
-# itself.
-#
-# It is never called under E2E_SESSION_ACK_DELAY_MS, where the delete is meant to land before the
-# ack: that is the other case this run drives.
+# itself. A request that times out is asked again inside the one 15 s bound, so a slow answer
+# under load costs a retry rather than the run.
 wait_for_acks_settled() {
   local settle_session_id=$1
-  local cursor_file=$2
-  local target
-  target="$(jq -r '.seq // 0' "$cursor_file" 2>/dev/null || printf '0')"
-  (
+  local offers_file=$2
+  local before=$3
+  local target settled
+  ((ack_delay_ms == 0)) || return 0
+  target="$(jq -s 'map(.seq) | max // empty' "$offers_file" 2>/dev/null)" || target=""
+  if [[ ! "$target" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ERR: %s names no frame sequence this wait could read for %s, so the ack it waits for is unknown.\n' \
+      "$offers_file" "$settle_session_id" >&2
+    exit 1
+  fi
+  settled="$(
     cd "$repo_root"
-    exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$settle_session_id" E2E_TARGET_SEQ="${target:-0}" bun -e '
+    exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$settle_session_id" E2E_TARGET_SEQ="$target" bun -e '
       import { connect, StringCodec } from "nats";
 
       const url = process.env.E2E_NATS_URL;
       const sessionID = process.env.E2E_SESSION_ID;
-      const target = Number(process.env.E2E_TARGET_SEQ ?? "0");
+      const target = Number(process.env.E2E_TARGET_SEQ);
+      if (!Number.isInteger(target) || target < 1) {
+        throw new Error(`the sequence this wait was given for ${sessionID} is no frame: ${process.env.E2E_TARGET_SEQ}`);
+      }
       const codec = StringCodec();
       const connection = await connect({ servers: url, name: `envoy-e2e-acks-${sessionID}` });
       const subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
       const deadline = Date.now() + 15000;
       let last = "no answer";
       while (Date.now() < deadline) {
-        const reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
+        let reply;
+        try {
+          reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
+        } catch (error) {
+          // A slow answer is asked again inside this same bound; only the bound ends the wait.
+          last = `the consumer info request failed: ${String(error)}`;
+          await Bun.sleep(100);
+          continue;
+        }
         const answer = JSON.parse(codec.decode(reply.data));
         if (answer.error) throw new Error(`the server refused the consumer info of ${sessionID}: ${JSON.stringify(answer.error)}`);
         const pending = answer.num_ack_pending ?? 0;
@@ -745,10 +772,11 @@ wait_for_acks_settled() {
       await connection.close();
       throw new Error(`the consumer of ${sessionID} did not settle its acks within 15 s: ${last}`);
     '
-  ) || {
-    printf 'ERR: the acks of %s had not settled before this run deletes its consumer.\n' "$settle_session_id" >&2
-    return 1
+  )" || {
+    printf 'ERR: the acks of %s had not settled before %s.\n' "$settle_session_id" "$before" >&2
+    exit 1
   }
+  printf '%s acked through sequence %s before %s\n' "$settle_session_id" "$settled" "$before"
 }
 
 direct_message=$'Direct acceptance summary.\n\nDirect second paragraph.\n\nDirect third paragraph.'
@@ -1085,15 +1113,10 @@ jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_
 # consumer away with its record, so a frame still in flight to that consumer would otherwise move
 # the cursor after the registration had read it.
 #
-# With no ack delay the delete must also land after those frames have been acked, since the floor
-# it records is the consumer ack floor and this run then requires every sequence to be offered
-# once; under the delay it must land before, which is that case. So the settle wait runs in the
-# no-delay case alone (wait_for_acks_settled).
+# The delete must also follow those frames' acks, since the floor it records is the consumer ack
+# floor; the wait that makes it do so decides for itself which case this run is (below).
 wait_for_consumer_frame_count 5
-if ((ack_delay_ms == 0)); then
-  session_settled_floor="$(wait_for_acks_settled "$session_id" "$session_cursor_file")" || exit 1
-  printf 'the session acked through sequence %s before its deregistration\n' "$session_settled_floor"
-fi
+wait_for_acks_settled "$session_id" "$session_offers_file" "its deregistration"
 curl -fsS -X DELETE "${listener_url}/v1/sessions/${session_id}" >/dev/null
 wait_for_unregistered
 lapsed_status="$(curl -sS -o "$lapsed_role_response_file" -w '%{http_code}' \
@@ -1262,10 +1285,8 @@ jq -es --arg session_id "$session_id" --arg role_topic "notifications.role.${rol
 # above, then the registration carrying no resume and the one carrying its cursor - so every
 # repeat the recorded floor and that cursor are meant to prevent would show here.
 #
-# With no ack delay the run waited for each delete to follow the acks (wait_for_acks_settled), so
-# no sequence is offered twice; under E2E_SESSION_ACK_DELAY_MS a delete lands between a frame and
-# its ack and that frame is offered again on purpose, which is the one case where the two counts
-# differ and the ledger is what makes them agree again.
+# Which case this run is, and why the two counts differ under the delay alone, is this file's
+# header.
 session_offer_repeats="$(jq -s 'group_by([.stream_id, .seq]) | map(select(length > 1)) | length' \
   "$session_offers_file")"
 if ((ack_delay_ms == 0)) && [[ "$session_offer_repeats" != "0" ]]; then
@@ -1544,15 +1565,9 @@ printf 'no-cursor window: %s took the message as one frame of its own consumer\n
 # consumer, whose ack floor the listener records on the session's resume lane before it deletes
 # it (bus.SessionResumeSubject), goes with it.
 #
-# With no ack delay this window asserts that the floor stands at the frame the session acked and
-# that nothing was offered a second time, so the stop must land after that ack; under the delay it
-# asserts the other case and must land before it. The settle wait is what makes the first true,
-# rather than the stop happening to win a race it never waited out (review round 33).
-if ((ack_delay_ms == 0)); then
-  nocursor_settled_floor="$(wait_for_acks_settled "$nocursor_session_id" "$nocursor_cursor_file")" || exit 1
-  printf 'no-cursor window: %s acked through sequence %s before its clean stop\n' \
-    "$nocursor_session_id" "$nocursor_settled_floor"
-fi
+# The settle wait is what orders the stop against the ack this window reads, rather than the stop
+# happening to win a race it never waited out (review round 33).
+wait_for_acks_settled "$nocursor_session_id" "$nocursor_offers_file" "the clean stop of the no-cursor window"
 curl -fsS -X DELETE "${listener_url}/v1/sessions/${nocursor_session_id}" >/dev/null
 wait_for_unregistered "$nocursor_session_id" "$nocursor_registry_response_file"
 printf 'no-cursor window: the clean stop removed the registration of %s\n' "$nocursor_session_id"

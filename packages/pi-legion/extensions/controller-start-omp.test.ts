@@ -8,6 +8,7 @@ import {
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
@@ -930,18 +931,21 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
 }
 
 // The control for every `await taken` above: that promise is what a case reads as "the session
-// took the frame", so it has to fail when the session took nothing. Both ways of taking nothing
-// are held here - an id nothing subscribes at all, which NATS answers at once with no responders,
-// and a subscriber that takes the frame and never replies, which runs each request's own 1 s
-// timeout out. The relay retries either until its bound and then refuses by name
-// (`sendRelayFrame`, packages/pi-shared/test/omp-harness.ts), naming the session and the subject,
-// and this case gives it a bound of its own rather than the 30 s a card is allowed, since one
-// retry is all it has to outlast. It needs the NATS server and not the binary, so it runs
-// wherever one is configured, and its name holds no "card", so the `-t card` measurement does not
-// count its two deliberate failures.
+// took the frame", so it has to resolve when a session takes the frame and fail when none does -
+// and each way of failing has to be the one this case names, since the relay refuses both in the
+// same words (`sendRelayFrame`, packages/pi-shared/test/omp-harness.ts, whose message carries the
+// cause it last met). The three halves here are those three: a session that answers `received`,
+// where the send resolves; an id nothing subscribes, where the server answers 503 no responders;
+// and a subscriber that takes the frame and never answers, where each request runs its own 1 s
+// timeout out. The two failing halves are held to their own cause, so a half pointed at the wrong
+// subject - main's `notifications.agent.<sid>`, where no session listens for a frame - reads as
+// the no-responders half and is caught rather than passing as the timeout half. The case gives
+// the relay a bound of its own rather than the 30 s a card is allowed, since one retry is all it
+// has to outlast, and it needs the NATS server and not the binary, so it runs wherever one is
+// configured.
 const RELAY_REFUSAL_MS = 3_000;
 test.skipIf(natsUrl === undefined && !onActions)(
-  "a relay frame nobody takes is refused by name, so awaiting one proves the session took it",
+  "a relay frame is answered by the session that takes it, and refused by its own cause when none does",
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
@@ -959,16 +963,27 @@ test.skipIf(natsUrl === undefined && !onActions)(
         withinMs: RELAY_REFUSAL_MS,
       });
 
+    // A session takes the frame on its own deliver subject and answers it as a session does, so
+    // this half is what `await taken` means everywhere else in this file.
+    const taker = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => taker.close());
+    const heard = `heard-${randomUUID()}`;
+    const taken = taker.subscribe(deliverSubject(heard));
+    void (async () => {
+      for await (const message of taken) message.respond(codec.encode("received"));
+    })();
+    await taker.flush();
+    await expect(send(heard)).resolves.toBeDefined();
+
     const unheard = `nobody-${randomUUID()}`;
-    await expect(send(unheard)).rejects.toThrow(`${unheard} took no relay frame`);
+    await expect(send(unheard)).rejects.toThrow(
+      new RegExp(`${unheard} took no relay frame.*503`, "s")
+    );
 
     const silent = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => silent.close());
     const sid = `silent-${randomUUID()}`;
-    // The subject a frame travels is the session's own deliver subject (`deliverSubject`), which
-    // is where a session that answers nothing has to be listening for this half to be the second
-    // way of taking nothing rather than the first again.
-    const subscription = silent.subscribe(`notifications.envoy.deliver.${sid}`);
+    const subscription = silent.subscribe(deliverSubject(sid));
     void (async () => {
       for await (const _message of subscription) {
         // Taken and never answered, which is the shape the bound exists for.
@@ -976,7 +991,7 @@ test.skipIf(natsUrl === undefined && !onActions)(
     })();
     await silent.flush();
     const started = Date.now();
-    await expect(send(sid)).rejects.toThrow(`${sid} took no relay frame`);
+    await expect(send(sid)).rejects.toThrow(new RegExp(`${sid} took no relay frame.*TIMEOUT`, "s"));
     expect(Date.now() - started).toBeGreaterThanOrEqual(RELAY_REFUSAL_MS);
   },
   RELAY_REFUSAL_MS * 2 + 60_000

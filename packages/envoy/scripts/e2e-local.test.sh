@@ -41,6 +41,28 @@ fi
 }
 printf 'PASS: rejects unsupported arguments and starts no server\n'
 
+# The ack delay is the run's own control over which case it asserts, so a value the run cannot
+# honour is refused before anything is built or started, with exit 2 and the range named. The
+# values here are the three shapes that refusal exists for: one below the range, one above it, and
+# one bash would read as octal, which the pattern refuses as the number it is not (`08` is no
+# number at all to bash, and `02000` is 1024 where the stand-in would sleep 2000 ms). A run that
+# started on any of them would assert the wrong case and fail a build that is right.
+for delay in 1 5000 02000 abc; do
+  status=0
+  E2E_SESSION_ACK_DELAY_MS="$delay" bash "$driver" >"$output_file" 2>&1 || status=$?
+  [[ "$status" == 2 ]] || {
+    printf 'the driver answered %s for E2E_SESSION_ACK_DELAY_MS=%s, want exit 2\n' "$status" "$delay" >&2
+    cat "$output_file" >&2
+    exit 1
+  }
+  [[ "$(<"$output_file")" == *"E2E_SESSION_ACK_DELAY_MS is ${delay}"* &&
+    "$(<"$output_file")" == *"from 1000 to 2500"* ]] || {
+    cat "$output_file" >&2
+    exit 1
+  }
+done
+printf 'PASS: refuses an ack delay outside its range, a leading-zero one included, and starts no server\n'
+
 # An explicit port is used as given, so one already in use fails the run with "address already in
 # use"; the driver never moves to another port. The port here is held by this test's own greeter
 # for the whole test, so it is in use for every run below. For E2E_NATS_PORT the greeter answers
