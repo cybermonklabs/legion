@@ -3776,6 +3776,9 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A runtime must therefore allow about twenty-eight seconds after SIGTERM (ten for HTTP, five for the role lane, thirteen for NATS):
   the compose files set `stop_grace_period: 30s` (`deploy/compose/listener.compose.yml`, `single-node.compose.yml`), the on-prem fleet's Pulumi a 30 s `stopTimeout` (`infra/host/listener.go`), the GCP hub's unit `docker stop -t 30` (`infra/gcp/cloudconfig.go`), and ECS's default `stopTimeout`, which the Fargate listener's task definition leaves unset, is 30 seconds.
 
+- The two Kubernetes listener pods, the clustered hub's (`infra/gcp/clusteredhub_listener.go`) and `gcp:Dispatch`'s (`infra/gcp/dispatch_kube.go`), ask for 40 s of grace, of which the preStop hook spends 5, so the stop above keeps 35.
+  The 7 s over the stop's 28 covers the kubelet's own latency between that hook's return and SIGTERM, the container's teardown and a late tick on a loaded node, and the grace stays under the listener's own 135 s bind deadline.
+
 - The listener refuses to bind its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
   It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a bind that cannot succeed.
   Deleting the durable lets the next start recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).

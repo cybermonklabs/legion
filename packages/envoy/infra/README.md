@@ -454,7 +454,7 @@ first `pulumi up`:
   (`ENVOY_API_ALLOW_UNAUTHENTICATED=1`, and the component takes no token input for it). A caller
   the policy admits reaches `/v1` with `Host: localhost`, so the listener's own `Host` check stops
   a page that rebinds its own name and not such a caller. A cluster whose network plugin does not
-  enforce NetworkPolicy accepts the object and admits every caller, and the deployment looks
+  enforce NetworkPolicy accepts both objects and admits every caller, and the deployment looks
   healthy either way. Google Managed Prometheus's managed collection is on, so the `PodMonitoring`
   kind exists.
 - `namespace` exists, and so does the PriorityClass `priorityClassName` names, if any.
@@ -1316,10 +1316,10 @@ number moves both, since a wait the grace period does not cover is paid for out 
 drain, which spends its document service's reserve and kills a slow write mid-commit. The
 listener asks for 40 seconds: the five of the wait added to its own stop of 28 seconds, with a
 margin of 7 seconds for the kubelet's own latency between the pre-stop hook's return and SIGTERM,
-the container's teardown and a late tick on a loaded node.
-Whether five seconds is enough to lose no request across a real release is unmeasured; the
-consuming stack's release measures it, with a poll every 250 milliseconds. The front door drains
-its node instead ([The front door](#the-front-door)).
+the container's teardown and a late tick on a loaded node. Whether five seconds is enough to lose
+no request across a real release is unmeasured; the consuming stack's release measures it, with a
+poll every 250 milliseconds. The front door drains its node instead
+([The front door](#the-front-door)).
 
 Above one replica the app runs that many `envoy-dispatch` processes against one Postgres and one
 NATS, and a rolling update runs the previous build beside the new one: "Running more than one
