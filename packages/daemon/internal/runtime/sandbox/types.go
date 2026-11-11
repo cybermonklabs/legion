@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -201,6 +202,16 @@ type Options struct {
 	// every process in it, so a server a role started would die with that generation and take
 	// every sibling role's test database with it.
 	TestPostgres bool
+	// VolumeTrim is what the launcher of an issue pod is told its cache trimmer should run by,
+	// handed to it on the daemon's answer to its hello (LauncherResolver). Nil is a deployment
+	// that runs no trimmer, which is the absence the launcher reads as "run none". The
+	// controller's pod takes none however this is set: its launcher never reaches the block that
+	// would run one, and the volume it works on is no issue's.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
+	// pod is built from it — a launcher is told it on every hello, a reconnect after a daemon
+	// restart included — so a pod whose shape predates it has drifted from nothing.
+	VolumeTrim *shimwire.LauncherVolumeTrim
 	// BootTimeout bounds each wait of a relaunch, its wait for the API server to answer one of its
 	// requests other than overloaded included (resend), and is how long a pod may stay unscheduled
 	// before it counts as gone (worker_boot_timeout_seconds).

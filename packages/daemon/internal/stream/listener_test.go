@@ -183,8 +183,8 @@ func TestNarrowKeepsTheNamedClaimsAndAnswersOnlyLaunchers(t *testing.T) {
 	if event := h.next(); event != (Hello{Claim: otherClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want the other claim's hello", event)
 	}
-	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) {
-		return &launcherServe{frames: make(chan shimwire.Frame, 4)}, ""
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
+		return &launcherServe{frames: make(chan shimwire.Frame, 4)}, nil, ""
 	})
 
 	h.listener.Narrow(func(token claim.Token) bool { return token == testClaim })
@@ -504,9 +504,9 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
 	var got shimwire.LauncherHello
-	h.listener.SetLauncherResolver(func(hello shimwire.LauncherHello) (LauncherHandler, string) {
+	h.listener.SetLauncherResolver(func(hello shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
 		got = hello
-		return served, ""
+		return served, nil, ""
 	})
 	p := dial(t, h.listener.Addr())
 	hello := shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"}
@@ -532,6 +532,36 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	}
 }
 
+// What an accepted launcher's cache trimmer runs by travels on the ack the listener writes, and is
+// read here from that line as a launcher reads it: an acceptor that hands settings has them reach
+// the launcher whole, and one that hands none writes an ack with no member at all, the one absence
+// that means "run no trimmer" (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
+func TestTheLauncherHelloAckCarriesWhatItsAcceptorHanded(t *testing.T) {
+	for name, handed := range map[string]*shimwire.LauncherVolumeTrim{
+		"a daemon with trimmer settings": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a daemon with none":             nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := startListener(t, harnessOptions{})
+			served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
+				return served, handed, ""
+			})
+			p := dial(t, h.listener.Addr())
+			p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+			ack := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+			switch {
+			case handed == nil && ack.VolumeTrim != nil:
+				t.Fatalf("the ack carries %+v, want no member at all", *ack.VolumeTrim)
+			case handed != nil && ack.VolumeTrim == nil:
+				t.Fatal("the ack carries no settings, want the ones its acceptor handed")
+			case handed != nil && *ack.VolumeTrim != *handed:
+				t.Fatalf("the ack carries %+v, want %+v", *ack.VolumeTrim, *handed)
+			}
+		})
+	}
+}
+
 // A launcher the acceptor refuses, or one that arrives before any acceptor is registered, is
 // closed with nothing sent and its reason logged.
 func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
@@ -545,7 +575,9 @@ func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := startListener(t, harnessOptions{})
 			if tc.register {
-				h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) { return nil, tc.reason })
+				h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
+					return nil, nil, tc.reason
+				})
 			}
 			p := dial(t, h.listener.Addr())
 			p.send(shimwire.LauncherHello{Token: "stale", Sandbox: "s", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})

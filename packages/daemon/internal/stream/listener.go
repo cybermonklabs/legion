@@ -50,8 +50,11 @@ var ErrListenerClosed = errors.New("worker stream listener closed")
 type HelloResolver func(bootToken string) (c claim.Token, generation uint64, stale bool, ok bool, err error)
 
 // LauncherResolver accepts a role launcher's independent hello. It is separate from HelloResolver:
-// a launcher never binds a claim's child shim connection or emits an agent Event.
-type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, string)
+// a launcher never binds a claim's child shim connection or emits an agent Event. An accepted
+// launcher's settings are what its cache trimmer runs by, written into the ack the listener sends
+// it (shimwire.LauncherHelloAck.VolumeTrim); nil is an ack with no member at all, the one thing
+// that means this daemon sends no trimmer settings (INFRA-2009). A refusal returns nil settings.
+type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string)
 
 // LauncherHandler owns one authenticated launcher connection after the listener has written its
 // acknowledgement. It reads launcher state/results and writes start/stop commands; returning ends
@@ -346,7 +349,7 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		if resolver == nil {
 			return nil, nil, "launcher acceptor unavailable"
 		}
-		handler, reason := resolver(launcherHello)
+		handler, trim, reason := resolver(launcherHello)
 		if handler == nil {
 			if reason == "" {
 				reason = "launcher refused"
@@ -356,7 +359,7 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		if err := nc.SetReadDeadline(time.Time{}); err != nil {
 			return nil, nil, "connection closed before launcher_hello_ack"
 		}
-		if err := shimwire.NewWriter(nc).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
+		if err := shimwire.NewWriter(nc).WriteFrame(shimwire.LauncherHelloAck{VolumeTrim: trim}); err != nil {
 			return nil, nil, "connection closed before launcher_hello_ack"
 		}
 		return nil, handler, ""

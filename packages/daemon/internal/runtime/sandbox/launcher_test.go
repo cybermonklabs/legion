@@ -36,7 +36,7 @@ func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T)
 	}
 	accept := g.r.LauncherResolver()
 	valid := shimwire.LauncherHello{Token: token(claim.RoleTester), Sandbox: name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := accept(valid); handler == nil {
+	if handler, _, reason := accept(valid); handler == nil {
 		t.Fatalf("the tester's own launcher was refused: %s", reason)
 	}
 	for label, edit := range map[string]func(*shimwire.LauncherHello){
@@ -49,8 +49,40 @@ func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T)
 		t.Run(label, func(t *testing.T) {
 			hello := valid
 			edit(&hello)
-			if handler, reason := accept(hello); handler != nil || reason == "" {
+			if handler, _, reason := accept(hello); handler != nil || reason == "" {
 				t.Fatalf("accepted %+v (reason %q)", hello, reason)
+			}
+		})
+	}
+}
+
+// An accepted issue-pod launcher is handed what its cache trimmer runs by, the deployment's own
+// settings (Options.VolumeTrim), and a deployment that configured none hands none: the absence its
+// launcher reads as "run no trimmer" (INFRA-2009).
+func TestAnAcceptedIssueLaunchersResolverHandsItTheDeploymentsTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(workerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleTester)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, trim, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the tester's own launcher was refused: %s", reason)
+			}
+			switch {
+			case configured == nil && trim != nil:
+				t.Fatalf("the launcher was handed %+v, want none: this deployment configured none", *trim)
+			case configured != nil && trim == nil:
+				t.Fatal("the launcher was handed no settings, want the deployment's own")
+			case configured != nil && *trim != *configured:
+				t.Fatalf("the launcher was handed %+v, want %+v", *trim, *configured)
 			}
 		})
 	}
@@ -96,7 +128,7 @@ func TestABindingWriteRefusedAsAConflictIsRetriedOnceOverAFreshRead(t *testing.T
 		t.Errorf("the retry wrote over the gh files written between read and write: %q", after.Data[GitHubHostsKey("sjawhar")])
 	}
 	hello := shimwire.LauncherHello{Token: string(after.Data[LauncherTokenFile]), Sandbox: loc.Sandbox.Name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := g.r.LauncherResolver()(hello); handler == nil {
+	if handler, _, reason := g.r.LauncherResolver()(hello); handler == nil {
 		t.Errorf("the bound pod's launcher was refused: %s", reason)
 	}
 }
@@ -171,7 +203,7 @@ func TestALauncherHelloIsAcceptedWhenTheConfiguredProjectCarriesCharactersAClaim
 		PodUID:     loc.Sandbox.PodUID,
 		LauncherID: "l-1",
 	}
-	if handler, reason := g.r.LauncherResolver()(hello); handler == nil {
+	if handler, _, reason := g.r.LauncherResolver()(hello); handler == nil {
 		t.Fatalf("the architect's own launcher, of a project whose label carries characters its claim token drops, was refused: %s", reason)
 	}
 }
@@ -279,7 +311,7 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 	g.kube.ClearActions()
 	for range 20 {
 		for _, name := range []string{loc.Sandbox.Name, "unknown-sandbox"} {
-			if handler, reason := accept(shimwire.LauncherHello{
+			if handler, _, reason := accept(shimwire.LauncherHello{
 				Token: "wrong-token", Sandbox: name, Role: "tester", PodUID: loc.Sandbox.PodUID, LauncherID: "attacker",
 			}); handler != nil || reason == "" {
 				t.Fatal("unauthenticated launcher was accepted")

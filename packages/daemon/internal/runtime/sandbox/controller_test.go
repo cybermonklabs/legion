@@ -451,7 +451,7 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 	token := string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile])
 	accept := g.r.LauncherResolver()
 	valid := shimwire.LauncherHello{Token: token, Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := accept(valid); handler == nil {
+	if handler, _, reason := accept(valid); handler == nil {
 		t.Fatalf("the controller's own launcher was refused: %s", reason)
 	}
 	for label, edit := range map[string]func(*shimwire.LauncherHello){
@@ -465,8 +465,35 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 		t.Run(label, func(t *testing.T) {
 			hello := valid
 			edit(&hello)
-			if handler, reason := accept(hello); handler != nil || reason == "" {
+			if handler, _, reason := accept(hello); handler != nil || reason == "" {
 				t.Fatalf("accepted %+v (reason %q)", hello, reason)
+			}
+		})
+	}
+}
+
+// The controller's pod takes no cache trimmer, however the deployment configured one: its
+// launcher's single-role form returns before the background block that would run one, and the
+// volume it works on is its own Sandbox's, no issue's cache (Options.VolumeTrim).
+func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(controllerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, trim, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the controller's own launcher was refused: %s", reason)
+			}
+			if trim != nil {
+				t.Fatalf("the controller's launcher was handed %+v, want none", *trim)
 			}
 		})
 	}
