@@ -35,10 +35,11 @@
 #       The whole reset of decision D6, in order, its duration recorded.
 #   vm.sh step --config FILE [--run ID] NAME FACTOR [--duration 10m] [--warmup 30s]
 #       One step: the reset, the VM sampler, Postgres's own collectors, loadgen run at FACTOR,
-#       Dispatch's state snapshots read from its own machine at the end of the measured window
-#       -- the CPU profile of that window is `loadgen run`'s own, through the step's tunnel --
-#       cgroup-merge, cloudsql-cpu and tables. A step that ends before its window is out -- a
-#       refusal, a failure, an operator's interrupt -- takes its remote work with it.
+#       cgroup-merge, cloudsql-cpu and tables. Every profile of the window -- its CPU profile
+#       and the three state snapshots at its end -- is `loadgen run`'s own, taken from inside
+#       the run through the step's tunnel, and this driver asks Dispatch for nothing. A step
+#       that ends before its window is out -- a refusal, a failure, an operator's interrupt --
+#       takes its remote work with it.
 #   vm.sh series --config FILE [--run ID] [--duration 10m] [--long 60m] [--long-warmup 5m]
 #       The baseline, 1x and 2x steps at --long after a --long-warmup warm-up, then the grid 3,
 #       4, 6, 8, 12, 16 and 20 at --duration, stopping at the first failing step, then the
@@ -71,18 +72,24 @@
 #   and seed -- and every `loadgen run` run there, the stub embedder serves from there,
 #   and the near end of a step's profiling tunnel listens there;
 #   the machine Dispatch runs on, which .containers.dispatch names, so the file says it once and
-#   cannot say it twice over: it is the far end of that tunnel, the machine a step fetches its
-#   profiles from, and the machine the stub embedder's certificate is put on.
+#   cannot say it twice over: it is the far end of that tunnel, the machine every profile of a
+#   step is read from through it, and the machine the stub embedder's certificate is put on.
 #
 # A container .containers does not place, a machine no container runs on, and a .load_vm that is
 # not one of the machines are each refused by name before anything is started.
 #
 # Dispatch runs with host networking because its profiling port binds 127.0.0.1 only
 # (cmd/dispatch/pprof.go), so that port answers on its own machine's loopback and nowhere else.
-# Two readers need it, and each reaches it its own way. The profiles a step keeps are fetched
-# after the load from the machine Dispatch runs on, over ssh. The in-run sampler reads
-# Dispatch's goroutines, its pool acquire waiters and its heap while the step runs
-# (sample.go:325, :453 and :508), and it runs inside `loadgen run` on the load machine, so step
+# One reader reaches it, `loadgen run` on the load machine, and everything a step keeps of that
+# port is what it reads through the tunnel: the CPU profile of the window and the three state
+# snapshots at that window's end (run.go step.profile), and the 5 s sampler's goroutines, pool
+# acquire waiters and heap while the step runs (sample.go:325, :453 and :508). This driver asks
+# that port for nothing at all, which is what leaves the window one owner: the driver's clock
+# starts when it forks the load's ssh and loadgen opens its window seconds later, after its own
+# checks and its registrations, so a driver reading "at the window's end" read inside the window
+# it was measuring -- a stop-the-world goroutine dump and a 500 MB heap?debug=1 render inside
+# loadgen's own CPU profile, and three files a healthy step then dropped for loadgen's own
+# (dispatch://INFRA-988). So step
 # opens a tunnel for the life of the load -- `ssh -N -L <ports.pprof_tunnel>:127.0.0.1:<ports.
 # pprof> <the machine Dispatch runs on>`, run on the load machine -- and gives loadgen
 # `-pprof http://127.0.0.1:<ports.pprof_tunnel>`. The step proves that tunnel answers
@@ -373,35 +380,19 @@ CERT_IN_CONTAINER=/etc/ssl/stub-embed.pem
 # The environment variables whose values are credentials: check proves each one is set and never
 # prints or compares its value.
 SECRET_VARS=" DISPATCH_AGENT_TOKEN ENVOY_TOKEN ENVOY_API_TOKEN DISPATCH_AZURE_EMBED_KEY DATABASE_URL "
-# The state snapshots a step reads from the machine Dispatch runs on, in the order `loadgen
-# run` reads its own (run.go step.profile), so a step holds the same files whichever of the two
-# took them. Each row is the pprof path and the file it is written to. Each is what the process
-# holds at the moment it is read and not an interval, and heap?debug=1 is last because with a
-# heap of tens of GiB it is over 500 MB (README.md, the step directory's table).
-PPROF_FETCHES=(
-  "goroutine?debug=2 goroutines.txt"
-  "heap heap.pprof"
-  "heap?debug=1 heap.txt"
-)
-# The CPU profile of a step's window, which no fetch of this driver's ever asks for: Go serves
-# one CPU profile at a time ("cpu profiling already in use", runtime/pprof), and `loadgen run`
-# asks for profile?seconds=<window> at its own window's start through the step's tunnel (run.go
-# step.profile), which every step has because a step whose tunnel does not open is refused
-# before any load (run_step). A second profile beside loadgen's is refused with a 500, and a
-# driver that got in first took the profiler and left loadgen's window-exact one refused
-# instead (dispatch://INFRA-988). The name is here so that profiles.txt can say who wrote the
-# file, or that no one did (profiles_keep).
+# Every profile of a step's window is `loadgen run`'s own, in the order it writes them (run.go
+# step.profile): the CPU profile of the window itself, then the three state snapshots it reads
+# at that window's end, heap?debug=1 last because with a heap of tens of GiB it is over 500 MB
+# (README.md, the step directory's table). This driver asks Dispatch's machine for none of
+# them. For the CPU profile it never could: Go serves one at a time ("cpu profiling already in
+# use", runtime/pprof), so a second request beside loadgen's is answered 500, and a driver that
+# got in first took the profiler and left loadgen's window-exact one refused instead. For the
+# other three it should not: each is what the process holds at the moment it is read, and the
+# moment worth reading is the end of the window, which only the run inside knows (the paragraph
+# on the tunnel above). The names are here so that profiles.txt can say of each file whether
+# loadgen wrote it (profiles_keep).
 PPROF_CPU_FILE=cpu.pprof
-# How long one state snapshot's fetch is given. It is the ten minutes `loadgen run` gives the
-# largest of the three (run.go step.profile): a heap?debug=1 of tens of GiB is over 500 MB,
-# and a fetch cut short leaves a heap.txt with no `# runtime.MemStats` block, which `loadgen
-# codepaths` then shows as `-` in every row from it. A fetch that answers takes seconds, so
-# the bound costs a healthy step nothing.
-PPROF_SNAPSHOT_SECONDS=600
-# How long the wait for the end of a step's window naps at a time, so that a load which ended
-# before its window was out is noticed within one nap rather than at an end that is not coming
-# (profiles_window_end).
-PPROF_NAP_SECONDS=60
+PPROF_FILES=("$PPROF_CPU_FILE" goroutines.txt heap.pprof heap.txt)
 
 # The deployment's own shape, read out of the deployment file by check_placement before any
 # command does anything: every machine in the file's order, the machine each container runs on,
@@ -2332,14 +2323,6 @@ load_wait() {
   return "$rc"
 }
 
-# load_running: whether the ssh that carries the step's load is still running. It is what the
-# wait for the end of a step's window asks between its naps (profiles_window_end): the window
-# of a load that has gone never ends.
-load_running() {
-  local pid=${LOAD_SSH_PID:-}
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
-}
-
 # load_stop: the local ssh ended, and the loadgen on the load machine killed by the pid it
 # recorded there. Both, because neither does the other's work: the ssh's death leaves the load
 # running on that machine, and the remote kill alone leaves this pod waiting on an ssh with
@@ -2380,18 +2363,15 @@ load_kill() {
 }
 
 # step_cleanup: everything a step started, ended, whatever ended the step -- the load on the load
-# machine with the ssh that carries it, the fetch of Dispatch's state snapshots, the sampler,
-# Postgres's collector, the step's credential file on this pod and the tunnel. run_step sets it
-# as its EXIT trap before it starts any of them, and step_interrupt runs it on INT and TERM, so
-# a refusal, an interrupt, a failure of the ssh that carries the load and a failure of the
-# collection after it all leave nothing behind: a sampler left running holds one ssh per
-# machine open and goes on appending to a finished step's cgroup.jsonl, a loadgen left running
-# on the load machine goes on loading the deployment the next step measures, and a snapshot
-# fetch left running holds an ssh to Dispatch's machine and a half-written .part in the step's
-# directory. Each part is ended by its own pid and does nothing a second time.
+# machine with the ssh that carries it, the sampler, Postgres's collector, the step's credential
+# file on this pod and the tunnel. run_step sets it as its EXIT trap before it starts any of
+# them, and step_interrupt runs it on INT and TERM, so a refusal, an interrupt, a failure of the
+# ssh that carries the load and a failure of the collection after it all leave nothing behind: a
+# sampler left running holds one ssh per machine open and goes on appending to a finished step's
+# cgroup.jsonl, and a loadgen left running on the load machine goes on loading the deployment
+# the next step measures. Each part is ended by its own pid and does nothing a second time.
 step_cleanup() {
   load_stop
-  profiles_stop
   sampler_stop
   pg_watch_stop
   pg_step_secret_remove
@@ -2407,7 +2387,7 @@ step_interrupt() {
   local signal=$1 code=143
   trap - EXIT INT TERM
   [ "$signal" != INT ] || code=130
-  note "step ${STEP_NAME:-} is stopped by SIG$signal: the load on the $LOAD_VM VM, the snapshot fetch on the $DISPATCH_VM VM, the profiling tunnel, the sampler and Postgres's collector are ended with it"
+  note "step ${STEP_NAME:-} is stopped by SIG$signal: the load on the $LOAD_VM VM, the profiling tunnel, the sampler and Postgres's collector are ended with it"
   step_cleanup
   exit "$code"
 }
@@ -2488,139 +2468,27 @@ loop_listener_urls() {
   printf '%s\n' "$out"
 }
 
-# profiles_nap SECONDS: a nap this step's traps are reached during. bash runs no trap while the
-# command in front of it runs, so a sleep in the foreground would hold an operator's INT for
-# the whole of it; a sleep started with & and waited for is left the moment the signal comes,
-# which is load_wait's rule too. The pid is cleared after the wait and never before it, so the
-# trap that runs out of the wait still finds something to kill (profiles_stop).
-profiles_nap() {
-  sleep "$1" &
-  PPROF_FETCH_PID=$!
-  wait "$PPROF_FETCH_PID" || true
-  PPROF_FETCH_PID=""
-}
-
-# profiles_window_end WARMUP WINDOW: the wait from the load's start to the end of the step's
-# measured window, both in seconds. It returns 1 when the load ended first, so that a step
-# whose load died in its second minute reads Dispatch then rather than waiting out a window
-# that is not coming. The warm-up is one nap and the window is napped PPROF_NAP_SECONDS at a
-# time, so a load that ends during the warm-up is noticed at the first nap after it.
-profiles_window_end() {
-  local warmup=$1 left=$2 nap
-  profiles_nap "$warmup"
-  while ((left > 0)); do
-    load_running || return 1
-    nap=$left
-    ((nap <= PPROF_NAP_SECONDS)) || nap=$PPROF_NAP_SECONDS
-    profiles_nap "$nap"
-    left=$((left - nap))
-  done
-  load_running || return 1
-  return 0
-}
-
-# profiles_fetch DIR WARMUP WINDOW: Dispatch's state snapshots, read on its own machine into
-# DIR at the end of the step's measured window, with the load still on it. WARMUP and WINDOW
-# are the step's own two, in seconds. The profiling port binds 127.0.0.1 only
-# (cmd/dispatch/pprof.go) and Dispatch runs with host networking, so that machine's own
-# loopback is the one place these can be had, which is why the driver reads them over ssh
-# rather than the load machine's loadgen doing it.
+# profiles_keep DIR: the step's profiles.txt, written after step_copy_back so that whatever
+# `loadgen run` wrote of the window is already here. Every profile of a step is loadgen's own:
+# it takes the CPU profile of the window and the three state snapshots at that window's end
+# from inside the run that knows when the window began and ended (run.go step.profile), and the
+# copy back brings them. This driver reads nothing of Dispatch's profiling port, so there is no
+# second copy of any file to choose between and nothing to rename here.
 #
-# No CPU profile is asked for here, and that is the point of the shape: Go serves one CPU
-# profile at a time and `loadgen run` is already profiling the window through the step's tunnel
-# (PPROF_CPU_FILE). These three are not exclusive that way -- each is what the process holds at
-# the moment it is read -- so they are read where loadgen reads its own, at the window's end
-# with the load still on, which is the state R6 asks about.
-#
-# In the healthy case every file of a step is `loadgen run`'s: it takes the CPU profile and
-# these three from inside the run, and the copy back brings them. This fetch is the backstop
-# for the step whose tunnel died under it, so every file lands as <file>.part and profiles_keep
-# puts one in place only where loadgen wrote none. A fetch that fails is a note, never a step
-# failure: the step's measurements stand without its snapshots.
-profiles_fetch() {
-  local dir=$1 warmup=$2 window=$3 entry path file url rc
-  PPROF_DIR=$dir
-  profiles_window_end "$warmup" "$window" ||
-    note "step ${STEP_NAME:-}: the load ended before its ${window}s window was out, so Dispatch's state snapshots are read now rather than at a window's end that is not coming"
-  note "step ${STEP_NAME:-}: Dispatch's state snapshots are read on the $DISPATCH_VM VM now the ${window}s window is out; the CPU profile of that window is loadgen run's own"
-  ssh_cmd
-  for entry in "${PPROF_FETCHES[@]}"; do
-    path=${entry%% *} file=${entry##* }
-    url="http://127.0.0.1:$(port_of pprof)/debug/pprof/$path"
-    rc=0
-    # The bounded ssh is started here rather than run through on_vm_for because a command in
-    # front of this shell holds every trap of the step until it returns, which for a snapshot
-    # is up to PPROF_SNAPSHOT_SECONDS; started with & and waited for, it is the step's to kill
-    # the moment an operator stops the step (profiles_stop). A fetch orphaned in the instant
-    # between the & and the pid being recorded ends on its own timeout, and the .part it writes
-    # into has been unlinked by then.
-    timeout "$PPROF_SNAPSHOT_SECONDS" "${SSH[@]}" "$(vm_ssh "$DISPATCH_VM")" \
-      "$(remote_argv curl -fsS --max-time "$PPROF_SNAPSHOT_SECONDS" "$url")" >"$dir/$file.part" 2>/dev/null &
-    PPROF_FETCH_PID=$!
-    wait "$PPROF_FETCH_PID" || rc=$?
-    PPROF_FETCH_PID=""
-    ((rc == 0)) && [ -s "$dir/$file.part" ] || {
-      rm -f -- "$dir/$file.part"
-      note "the $DISPATCH_VM VM gave no $file from $url; the step is whole without it"
-    }
-  done
-  # From here the .part files are profiles_keep's and no longer the stop's: the step's own
-  # cleanup runs before the copy back, and it clears them only while a fetch of this step could
-  # still be in flight.
-  PPROF_DIR=""
-}
-
-# profiles_stop: the snapshot fetch ended with the step, however the step ended, and nothing of
-# it left behind -- no ssh of this pod talking to Dispatch's machine, and no half-written .part
-# in the step's directory for a reader or `loadgen step-check` to take for a profile. run_step
-# has it in step_cleanup, so it runs on the trap path too, and it does each thing once: the
-# .part files go whenever PPROF_DIR still names the step's directory, which is while a fetch is
-# in flight and not after the last of them has returned.
-profiles_stop() {
-  local pid=${PPROF_FETCH_PID:-} dir=${PPROF_DIR:-} entry
-  if [ -n "$pid" ]; then
-    PPROF_FETCH_PID=""
-    kill -TERM "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-  fi
-  [ -n "$dir" ] || return 0
-  PPROF_DIR=""
-  for entry in "${PPROF_FETCHES[@]}"; do
-    rm -f -- "$dir/${entry##* }.part"
-  done
-  return 0
-}
-
-# profiles_keep DIR: what the snapshot fetch read, put in place -- after step_copy_back, so
-# that whatever `loadgen run` wrote of the same window is already here. A file loadgen wrote is
-# never replaced and this driver's copy of it is dropped: loadgen reads its own from inside the
-# run that knows when the window began and ended (run.go step.profile). The order is what makes
-# the rule hold rather than race: the only rename is here, and it is of a name the copy back
-# has already had its chance to write.
-#
-# Which of the two wrote each file a reader is holding is DIR/profiles.txt, one line per
-# profile: the file, the process that wrote it, and what it covers. cpu.pprof has a line there
-# and no fetch here, because it is loadgen's alone (PPROF_CPU_FILE): a step whose tunnel died
-# under it holds no CPU profile at all, and the line says so rather than leaving a reader to
-# work out which process lost it.
+# What a reader needs is where each file came from, and that is DIR/profiles.txt: one line per
+# profile -- the file, the process that wrote it, and what it covers -- naming `none` with the
+# reason for a file the step does not hold. A step whose tunnel died under it holds no profile
+# at all, and the line says so rather than leaving a reader to work out who lost it.
 profiles_keep() {
-  local dir=$1 entry file rows=()
-  if [ -e "$dir/$PPROF_CPU_FILE" ]; then
-    rows+=("$PPROF_CPU_FILE	loadgen run	the measured window, profiled from inside the run through the step's tunnel")
-  else
-    rows+=("$PPROF_CPU_FILE	none	loadgen run wrote none and vm.sh asks for none: Go profiles one CPU at a time, and the window's profile is loadgen's to take")
-  fi
-  for entry in "${PPROF_FETCHES[@]}"; do
-    file=${entry##* }
+  local dir=$1 file covers rows=()
+  for file in "${PPROF_FILES[@]}"; do
+    covers="Dispatch's state at the end of that window, read from inside the run"
+    [ "$file" != "$PPROF_CPU_FILE" ] ||
+      covers="the whole of the measured window, profiled from inside the run"
     if [ -e "$dir/$file" ]; then
-      rm -f -- "$dir/$file.part"
-      rows+=("$file	loadgen run	read at the window's end from inside the run and copied back with the step")
-    elif [ -s "$dir/$file.part" ]; then
-      mv -- "$dir/$file.part" "$dir/$file"
-      rows+=("$file	vm.sh	read over ssh on the $DISPATCH_VM VM at the end of the step's window")
+      rows+=("$file	loadgen run	$covers")
     else
-      rm -f -- "$dir/$file.part"
-      rows+=("$file	none	neither loadgen run nor vm.sh could read it; the step is whole without it")
+      rows+=("$file	none	loadgen run wrote none and vm.sh asks Dispatch's machine for nothing; the step is whole without it")
     fi
   done
   printf '%s\n' "${rows[@]}" >"$dir/profiles.txt"
@@ -2702,10 +2570,8 @@ run_step() {
   [ -z "$ROUTE_MIX_REMOTE" ] || args+=(-route-mix "$ROUTE_MIX_REMOTE")
   args+=("${ENDPOINTS[@]}")
   load_start "$dir" "$seconds" "$remote" "${args[@]}"
-  # Dispatch's state snapshots, read at the end of the step's measured window while the load
-  # is still on it. The CPU profile of that window is `loadgen run`'s own and this asks for
-  # none, because Go serves one CPU profile at a time (profiles_fetch).
-  profiles_fetch "$dir" "$(duration_seconds "$warmup")" "$(duration_seconds "$duration")"
+  # Nothing of this driver's reaches Dispatch while the load is on: every profile of the window
+  # is loadgen's own, taken from inside the run through the step's tunnel (PPROF_FILES).
   load_wait || rc=$?
   # The statements, the lock waits and the end size, read now the load has ended and before the
   # step lets go of the credential they are read with.
@@ -2719,9 +2585,8 @@ run_step() {
   fi
   ((rc == 0)) || note "step $name: loadgen run ended with exit $rc (see $dir/loadgen.out)"
   step_copy_back "$name" "$dir"
-  # The snapshots read at the window's end, put in place now the copy back has brought
-  # whatever `loadgen run` wrote of the same window; a file of loadgen's is kept over this
-  # driver's own, and DIR/profiles.txt says which of the two wrote each (profiles_keep).
+  # The step's profiles.txt, written now the copy back has brought whatever `loadgen run` wrote
+  # of the window; it names the writer of each file, or that the step holds none (profiles_keep).
   profiles_keep "$dir"
   loadgen_local cgroup-merge "$dir" "$CGROUP_JSONL" || note "step $name: loadgen cgroup-merge failed"
   loadgen_local cloudsql-cpu -step "$dir" -project "$(cfg_valid name .project)" \

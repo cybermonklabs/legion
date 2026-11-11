@@ -50,11 +50,11 @@
 # -loop-listeners, -driver-topics, -receipt-deadline, -event-mix and -loop-event-mix), with the
 # rates the factor gives, gives -route-mix a file it has itself put on the load machine and that
 # holds the loop's routes there, read off the step's own argument rather than off the deployment
-# file's setting, reads Dispatch's three state snapshots from its own machine at the end of the
-# window it measures -- after the step's warm-up, while the load is on -- and asks that machine
-# for no CPU profile at all, keeps a file `loadgen run` wrote of the same window over its own
-# and names the writer of each in the step's profiles.txt, naming none for the CPU profile a
-# step whose loadgen wrote none holds, and runs cgroup-merge,
+# file's setting, reads nothing of Dispatch's profiling port -- every profile of the window is
+# `loadgen run`'s own, taken from inside the run through the step's tunnel -- and names in the
+# step's profiles.txt the writer of each of the four files, keeping what loadgen wrote and
+# naming none, with the reason, for each file a step whose loadgen wrote none holds, and runs
+# cgroup-merge,
 # cloudsql-cpu and tables, and is refused -- naming the setting and the path it resolved to,
 # with no load sent -- when the route_mix names no file on this pod;
 # (h) a step at factor 0 carries both seeds and both mixes just as a loop step does, its loop
@@ -133,11 +133,9 @@
 # own directory -- reading the size and resetting the statistics after the reset of the
 # deployment and before the load, sampling the lock waits for the length of the load, reading
 # the end size when the load has ended, and taking the credential all of it is read with away
-# with the step; (aa) a step stopped by SIGTERM or SIGINT takes its remote work with it,
-# whether the signal comes while its load runs or after its load has ended with a snapshot
-# fetch in flight: no loadgen run left on the load machine, no profiling tunnel, no sampler,
-# no collector, no snapshot fetch left in flight, and no pid file or half-written profile of
-# any of them; and
+# with the step; (aa) a step stopped by SIGTERM or SIGINT takes its remote work with it: no
+# loadgen run left on the load machine, no profiling tunnel, no sampler, no collector and no
+# pid file of any of them; and
 # (bb) a reset whose database still carries the sessions its
 # stopped containers left behind waits out the ones that are going by themselves, ends the rest
 # over pg_stat_activity and drops it all the same, the seed's rename of that database does the
@@ -146,10 +144,7 @@
 # it -- is refused by the server with those sessions attached; and (cc) up tells a psql that did
 # not answer from an instance that answered it holds no database: a psql that fails refuses up
 # by name, with what psql said, and no create database of that database is run, while a psql
-# that answers with no row has up make it once. And one case of a fake rather than of vm.sh:
-# (dd) the fake curl refuses a second `profile?seconds=` read that overlaps another in the
-# status and the words Go's own handler refuses it with, which is the rule the driver's shape
-# rests on now that it asks for no CPU profile of its own.
+# that answers with no row has up make it once.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -396,38 +391,11 @@ case $url in
       kill -0 "$(awk '{print $1}' "$up")" 2>/dev/null && [ "$(awk '{print $2}' "$up")" = "$port" ] ||
         { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
     fi
-    # Go serves one CPU profile at a time. Measured against a Go program serving
-    # net/http/pprof, two reads of profile?seconds=3 with the second issued 300 ms into the
-    # first: the first answered 200 with a profile, the second answered 500 in 0 s with the
-    # body below and no profile at all. So this fake refuses the second of two overlapping
-    # CPU reads in those bytes, with nothing on its standard output, and curl's own status 22
-    # for a 500 under -f.
-    #
-    # The driver asks for no CPU profile at all (vm.sh profiles_fetch), so no step of this
-    # suite should ever meet this refusal. That is the reason it is here: the overlap went by
-    # deletion and not by arrangement, and a fake that served two profiles at once would pass
-    # the step that brought it back (dispatch://INFRA-988).
-    lock=$FAKE_DIR/cpu-profile-lock
-    case $url in
-      *profile\?seconds=*)
-        if ! mkdir "$lock" 2>/dev/null; then
-          printf 'Could not enable CPU profiling: cpu profiling already in use\n' >&2
-          printf 'curl: (22) The requested URL returned error: 500\n' >&2
-          exit 22
-        fi
-        trap 'rmdir "$lock" 2>/dev/null || true' EXIT
-        trap 'rmdir "$lock" 2>/dev/null || true; exit 143' TERM INT
-        : >"$FAKE_DIR/cpu-profile-fetched"
-        ;;
-    esac
-    # A read of Dispatch's own profiling port is recorded when it is asked for and again when
-    # it answers, and with FAKE_DIR/pprof-hangs it stays open between the two, as a real read
-    # stays open until Dispatch answers it: that is how a case stops a step while one of its
-    # reads is in flight. Nothing is written until the read answers, as nothing of a real
-    # profile is. The second record is what the fake `loadgen run` below holds its load for.
+    # A read of Dispatch's own profiling port is recorded here. vm.sh asks that port for
+    # nothing of its own (vm.sh PPROF_FILES): every profile of a step's window is `loadgen
+    # run`'s, taken from inside the run through the step's tunnel, so this file is how a case
+    # sees that the driver asked for nothing.
     if [ "$port" = "$(cat "$FAKE_DIR/pprof-port")" ]; then
-      printf '%s\n' "${url#*/debug/pprof/}" >>"$FAKE_DIR/pprof-started"
-      while [ -d "$FAKE_DIR" ] && [ -f "$FAKE_DIR/pprof-hangs" ]; do "$REAL_SLEEP" 0.2; done
       printf '%s\n' "${url#*/debug/pprof/}" >>"$FAKE_DIR/pprof-reads"
     fi
     printf 'fake profile of %s\n' "$url"
@@ -715,9 +683,6 @@ case $cmd in
     mkdir -p "$out"
     printf '{"start": "2026-11-03T00:00:00Z", "name": "%s"}\n' "$(flag name)" >"$out/meta.json"
     printf '{"config": {"loop_factor": %s}}\n' "$(flag loop-factor)" >"$out/summary.json"
-    # The load machine is loading from here until this run ends, which is what the fake
-    # sleep's wait for a step's warm-up ends on.
-    : >"$FAKE_DIR/load-on"
     # The window's own profiles, which a real `loadgen run` fetches itself whenever it can
     # reach the profiling port through the step's tunnel (run.go step.profile) and which the
     # copy back then brings to this pod with the rest of the step. With
@@ -737,25 +702,9 @@ case $cmd in
       trap 'exit 0' TERM INT
       while :; do "$REAL_SLEEP" 0.2; done
     fi
-    # The other load that lasts, for the cases that ask when something happened rather than
-    # whether it happened: with FAKE_DIR/run-holds-for-window-profiles this run holds its load
-    # until the driver has read the last of the profiles it takes of the window
-    # (heap?debug=1), as a real load lasts the window and the grace after it while the driver
-    # takes them. A read taken during the load and a read taken after it then fall on
-    # different sides of the loadgen-end line below whatever the two processes' scheduling,
-    # which is the order such a case is asking about. A driver that reads nothing while the
-    # load is on waits out this bound and gets that line, which is the answer.
-    if [ -f "$FAKE_DIR/run-holds-for-window-profiles" ]; then
-      held=0
-      while ! grep -qxF 'heap?debug=1' "$FAKE_DIR/pprof-reads" 2>/dev/null && [ "$held" -lt 100 ]; do
-        "$REAL_SLEEP" 0.1
-        held=$((held + 1))
-      done
-    fi
     # When the load ended, which is the other end of every order a case reads out of the
-    # action log: the line above says the load started, and the load machine stops loading
-    # here. The subcommand is written again because `$*` has lost it to the shift that read it.
-    rm -f "$FAKE_DIR/load-on"
+    # action log: the line above says the load started. The subcommand is written again
+    # because `$*` has lost it to the shift that read it.
     printf 'loadgen-end\t%s %s\n' "$cmd" "$*" >>"$FAKE_DIR/actions.log"
     ;;
   pg-statements)
@@ -821,36 +770,13 @@ esac
 exit 0
 EOF
 
-cat >"$bin/sleep" <<EOF
+cat >"$bin/sleep" <<'EOF'
 #!/usr/bin/env bash
-REAL_SLEEP=$REAL_SLEEP
-EOF
-cat >>"$bin/sleep" <<'EOF'
-# The fake sleep: returns at once, so a poll's naps cost the test no wall clock.
-#
-# The one wait it makes is a step's warm-up, and only while FAKE_DIR/warmup-ends-with-load
-# says so: there it waits until the load machine is loading (FAKE_DIR/load-on, which the fake
-# `loadgen run` writes after it has recorded its start). A warm-up that has passed is a
-# deployment with the load running on it, and a warm-up that costs no wall clock at all would
-# let a driver's profile of the window reach the action log before the load it profiles,
-# leaving a case that reads that order reading the scheduler. Every poll of vm.sh naps for
-# five seconds or less and every warm-up is tens of seconds, which is the line drawn here. The
-# wait is bounded: a load that never starts is this wait and then whatever the driver does
-# next, which is the answer such a case wants.
+# The fake sleep: it records the wait and returns at once, so a poll's naps cost the test no
+# wall clock. No order a case reads rests on a wait of vm.sh's: the driver reads nothing of
+# Dispatch, so every wait it makes is for something of its own to end.
 set -u
 printf 'sleep\t%s\n' "$*" >>"$FAKE_DIR/actions.log"
-if [ -f "$FAKE_DIR/warmup-ends-with-load" ]; then
-  case ${1:-0} in
-    '' | *[!0-9]*) ;;
-    *)
-      waited=0
-      while [ "$1" -ge 10 ] && [ ! -e "$FAKE_DIR/load-on" ] && [ "$waited" -lt 100 ]; do
-        "$REAL_SLEEP" 0.1
-        waited=$((waited + 1))
-      done
-      ;;
-  esac
-fi
 exit 0
 EOF
 
@@ -1544,15 +1470,8 @@ reset_fake
 run_vm up --config "$config"
 ((RC == 0)) || fail "up failed before the step case"
 seeded_run
-# This step's load is held to both ends of the order the profile case below reads out of the
-# action log, so that what it reads is the order the two processes ran in and never the order
-# they happened to be scheduled in: its warm-up ends when the load machine is loading, and its
-# load lasts until the driver has read the last profile it takes of the window.
-: >"$fake/warmup-ends-with-load"
-: >"$fake/run-holds-for-window-profiles"
 run_vm step --config "$config" 2x 2 --duration 10m
 ((RC == 0)) || fail "step failed: see the output above"
-rm -f "$fake/warmup-ends-with-load" "$fake/run-holds-for-window-profiles"
 line=$(tail -n1 "$fake/loadgen-run.log")
 
 # The route mix the step named, read off the step's own argument -- never off the deployment
@@ -1599,60 +1518,37 @@ pass "step runs loadgen run with both seeds, both event mixes, and the totals an
 
 step=$(run_dir)/steps/2x
 
-# The step asks Dispatch's own machine for no CPU profile at all, and reads its three state
-# snapshots at the end of the window it measures. Go serves one CPU profile at a time, and
-# `loadgen run` asks for profile?seconds=<window> at its own window's start through the step's
-# tunnel, which every step has: a second profile beside it is refused with a 500, and a driver
-# that got in first took the profiler and left loadgen's window-exact profile refused instead
-# (dispatch://INFRA-988). The snapshots are not exclusive that way, and each is the state at
-# the moment it is read, so they belong at the window's end with the load still on -- which the
-# action log answers in order, the load's start and its end being two lines of it.
-run_at=$(line_at '^loadgen	run -name 2x ')
-end_at=$(line_at '^loadgen-end	run -name 2x ')
-copy_at=$(line_at "^ssh	$gen_target	tar -C $remote/work/steps/2x ")
-for pair in "the load's start:$run_at" "the load's end:$end_at" "the copy back:$copy_at"; do
-  [ -n "${pair#*:}" ] ||
-    fail "the action log holds no line for ${pair%%:*}, so this case would prove nothing of when the step read Dispatch"
+# The step asks the machine Dispatch runs on for nothing at all. Every profile of a step's
+# window is `loadgen run`'s own: it takes the CPU profile of the window and, at that window's
+# end, the three state snapshots, from inside the run through the step's tunnel (run.go
+# step.profile). A driver that reads that port of its own cannot read the window it is
+# measuring. For the CPU profile Go refuses it -- one profile at a time, so one of the two
+# requests is answered 500 and the window's profile is the one that may be lost. For the three
+# snapshots the clock is wrong: the driver's window starts when it forks the load's ssh, and
+# loadgen opens its own seconds later, after its stack check, its dashboard probe, a 5 s
+# box_busy read and the registration of every session, so a driver reading "at the window's
+# end" reads inside the window -- a stop-the-world goroutine dump and a 500 MB heap?debug=1
+# render inside loadgen's own CPU profile -- and a healthy step then drops the three files
+# that cost, because loadgen's own are the ones kept (dispatch://INFRA-988).
+#
+# So the question this case asks is not when the driver read Dispatch but whether it read it at
+# all, which the action log answers without any clock: it holds every command the step ran, and
+# the fake curl records every read of that port in FAKE_DIR/pprof-reads besides.
+read_lines=$(grep -- "^ssh	$app_target	curl .*debug/pprof/" "$fake/actions.log" | tr '\n' ';' || true)
+[ -z "$read_lines" ] ||
+  fail "the step read Dispatch's profiling port on its own machine: $read_lines. Every profile of the window is loadgen run's, taken from inside the run through the step's tunnel; a read of the driver's falls inside the window it measures and inside loadgen's CPU profile, and a healthy step drops what it cost"
+[ ! -s "$fake/pprof-reads" ] ||
+  fail "Dispatch's own profiling port was read for $(tr '\n' ' ' <"$fake/pprof-reads")during the step: only this driver reads it on that machine, loadgen reads its own through the tunnel"
+# And a step whose loadgen wrote no profile holds none and says so, file by file: nothing but
+# `loadgen run` writes one, so a reader is told who wrote each rather than being left to work
+# out which process lost it.
+for file in cpu.pprof goroutines.txt heap.pprof heap.txt; do
+  [ ! -e "$step/$file" ] ||
+    fail "the step holds a $file although its loadgen wrote none and the driver reads nothing: $(cat "$step/$file")"
+  grep -qF "$(printf '%s\tnone\t' "$file")" "$step/profiles.txt" ||
+    fail "the step's profiles.txt does not record that no process wrote its $file: $(cat "$step/profiles.txt" 2>/dev/null)"
 done
-asked=$(grep -c "^ssh	$app_target	curl .*debug/pprof/profile?seconds=" "$fake/actions.log" || true)
-[ "$asked" = 0 ] ||
-  fail "the step asked Dispatch's machine for $asked CPU profile(s) of its own: loadgen run is profiling the same window through the step's tunnel, and Go serves one CPU profile at a time, so one of the two is refused and the step loses the profile of its window"
-[ ! -e "$fake/cpu-profile-fetched" ] ||
-  fail "a CPU profile was asked for on Dispatch's profiling port, and only the driver could have asked: $(grep -F 'debug/pprof/profile' "$fake/actions.log" | tr '\n' ';')"
-# The warm-up is waited out first: the snapshots are of the window's end, and the window begins
-# where the warm-up ends. The step's warm-up is the only wait of exactly 30 s a step makes.
-warmup_at=$(line_at '^sleep	30$')
-[ -n "$warmup_at" ] || fail "the step waited out no 30 s warm-up: $(grep -c '^sleep' "$fake/actions.log") sleeps in the action log"
-first_at=""
-prev=$warmup_at
-for path in 'goroutine?debug=2' heap 'heap?debug=1'; do
-  at=$(line_at "^ssh	$app_target	curl .*127.0.0.1:6060/debug/pprof/$path$")
-  [ -n "$at" ] || fail "step read no /debug/pprof/$path from the loopback of Dispatch's own machine"
-  ((prev < at)) ||
-    fail "step read /debug/pprof/$path at line $at, before the warm-up and the reads in front of it (line $prev): they are read in loadgen's own order, heap?debug=1 last because it is the one that costs 500 MB"
-  [ -n "$first_at" ] || first_at=$at
-  prev=$at
-done
-((run_at < first_at)) ||
-  fail "step read Dispatch's state at line $first_at, before its load started at line $run_at: that is the state of an idle deployment"
-((prev < end_at)) ||
-  fail "step read its state snapshots at line $prev, after its load ended at line $end_at: a goroutine dump and a heap of a deployment with no load on it are the state of an idle process"
-((prev < copy_at)) ||
-  fail "step read its state snapshots at line $prev, after the copy back at line $copy_at: that is the hour after the load, not the window"
-for file in goroutines.txt heap.pprof heap.txt; do
-  [ -f "$step/$file" ] || fail "step kept no $file from Dispatch's machine"
-  grep -qF "$(printf '%s\tvm.sh\t' "$file")" "$step/profiles.txt" ||
-    fail "the step's profiles.txt does not name vm.sh as the writer of the $file it fetched: $(cat "$step/profiles.txt" 2>/dev/null)"
-done
-# And the CPU profile of a step whose loadgen wrote none is absent and says so: nothing but
-# `loadgen run` writes one, so a reader is told that no one did rather than meeting a file.
-[ ! -e "$step/cpu.pprof" ] ||
-  fail "the step holds a cpu.pprof although its loadgen wrote none: $(cat "$step/cpu.pprof")"
-grep -qF "$(printf 'cpu.pprof\tnone\t')" "$step/profiles.txt" ||
-  fail "the step's profiles.txt does not record that no process wrote its cpu.pprof: $(cat "$step/profiles.txt" 2>/dev/null)"
-left=$(find "$step" -name '*.part' -printf '%f ' 2>/dev/null || true)
-[ -z "$left" ] || fail "the step left half-written profiles in its own directory: $left"
-pass "step reads Dispatch's three state snapshots at the end of the window it measures -- after the warm-up, while the load is on -- and asks that machine for no CPU profile of its own"
+pass "a step reads nothing of Dispatch's profiling port -- every profile of its window is loadgen run's own -- and its profiles.txt names none, with the reason, for each file its loadgen wrote none of"
 
 [ -f "$step/cgroup.json" ] || fail "step ran no loadgen cgroup-merge"
 [ -f "$step/cloudsql-cpu.json" ] || fail "step ran no loadgen cloudsql-cpu"
@@ -1668,13 +1564,13 @@ grep -q -- "-vm $nats_target:nats=.*,hub-listener=" "$fake/vm-sample.log" ||
   fail "step's sampler does not read the NATS machine's containers at their cgroups"
 pass "step samples every machine and runs the merge, the Cloud SQL read and the tables"
 
-# A file `loadgen run` wrote of that same window is never replaced. It fetches the four itself
+# What `loadgen run` wrote of the window is what the step keeps. It fetches the four itself
 # whenever it can reach the profiling port through the step's tunnel (run.go step.profile),
 # from inside the run that knows to the second when its window began and ended, and the copy
-# back brings them here; the driver's three snapshots are the backstop for a step whose tunnel
-# died under it, and the CPU profile has no backstop at all because Go serves one at a time.
-# The driver's fetch was a `mv` onto whatever the copy back had put there, so loadgen's profile
-# of the window was replaced by one of the idle deployment after it (dispatch://INFRA-988).
+# back brings them here; nothing of the driver's is written beside them, so a step whose tunnel
+# died under it holds no profile at all. The driver's own fetch was a `mv` onto whatever the
+# copy back had put there, so loadgen's profile of the window was replaced by one of the idle
+# deployment after it (dispatch://INFRA-988).
 : >"$fake/run-writes-profiles"
 run_vm step --config "$config" tunnelprof 2 --duration 10m
 ((RC == 0)) || fail "the step whose loadgen wrote its own profiles failed: see the output above"
@@ -1686,9 +1582,7 @@ for file in cpu.pprof goroutines.txt heap.pprof heap.txt; do
   grep -qF "$(printf '%s\tloadgen run\t' "$file")" "$tunnel_step/profiles.txt" ||
     fail "the step's profiles.txt does not name loadgen run as the writer of $file: $(cat "$tunnel_step/profiles.txt" 2>/dev/null)"
 done
-left=$(find "$tunnel_step" -name '*.part' -printf '%f ' 2>/dev/null || true)
-[ -z "$left" ] || fail "the step left its own fetch beside the profiles loadgen wrote: $left"
-pass "a profile loadgen run wrote of the window is kept over the driver's own fetch of it, and profiles.txt names which of the two wrote each file"
+pass "the profiles loadgen run wrote of the window are the ones the step keeps, and profiles.txt names it as the writer of each"
 
 run_vm step --config "$config" baseline 0 --duration 2m
 ((RC == 0)) || fail "the baseline step failed: see the output above"
@@ -3338,181 +3232,101 @@ pass "both collectors read the step database over a file of mode 600 under the r
 # kill over a second connection ends the load, and this case stops a step in the middle of its
 # window and reads both machines afterwards.
 #
-# The read of Dispatch's state that the step has in flight is the other thing a stop has to
-# take with it: each snapshot's ssh is bounded by ten minutes, so a stop that leaves one leaves
-# this pod talking to Dispatch's machine and a half-written file in the step's directory.
-# FAKE_DIR/pprof-hangs holds that read open here, and each case below stops the step while it
-# is open -- once while the load still runs, which is where an operator stops a series, and
-# once with the load already ended, which is the wait the driver is in while it reads Dispatch
-# and the wait a stop used to miss altogether (dispatch://INFRA-988).
+# The load is the one wait a step makes of its own, so the signal comes during it. The driver
+# reads nothing of Dispatch's profiling port any more -- every profile of the window is
+# `loadgen run`'s, taken from inside the run (vm.sh profiles_keep) -- so there is no fetch of
+# the driver's left to stop, and what a stop has to take with it is the load on the load
+# machine, the tunnel, the sampler and Postgres's collector.
 
 reset_fake
 run_vm up --config "$config"
 ((RC == 0)) || fail "up failed before the interrupted step case"
 seeded_run
-: >"$fake/pprof-hangs"
 run_secrets=$remote/work/runs/$(cat "$LOADTEST_VM_ROOT/current")
-for shape in loading ended; do
-  for signal in TERM INT; do
-    name=stopped-$shape-$signal
-    : >"$fake/run-alive"
-    rm -f "$fake/tunnel-up" "$fake/pprof-started"
-    # `loading`: the fake `loadgen run` holds the load machine until something kills it there,
-    # as a real one holds it for its whole window. `ended`: it returns by itself, so the load
-    # is over before the signal and the only remote work left is the read of Dispatch.
-    if [ "$shape" = loading ]; then : >"$fake/run-hangs"; else rm -f "$fake/run-hangs"; fi
-    # Job control for the launch, and for nothing else. A shell with job control off makes every
-    # command it starts with & ignore SIGINT, and a shell cannot trap a signal that was ignored
-    # when it started, so without `set -m` this case would watch its own launch swallow the INT
-    # and say nothing about vm.sh. An operator's Ctrl-C reaches a vm.sh in the foreground, which
-    # is what job control gives it here; `set -m` also puts the step in a process group of its
-    # own, so the kill below reaches the driver alone and nothing it started.
-    set -m
-    bash "$vm" step --config "$config" "$name" 1 --duration 10m >"$tmp/out" 2>&1 &
-    step_pid=$!
-    set +m
-    load_pid=""
-    waited=0
-    if [ "$shape" = loading ]; then
-      # The load is on: the fake `loadgen run` says it holds the load machine by writing its pid.
-      while [ ! -s "$fake/run-alive" ]; do
-        ((waited < 600)) ||
-          fail "no loadgen run reached the load machine within 60 s, so SIG$signal would prove nothing: $(cat "$tmp/out")"
-        "$REAL_SLEEP" 0.1
-        waited=$((waited + 1))
-      done
-      load_pid=$(tail -n1 "$fake/run-alive")
-    else
-      # The load is over: the fake `loadgen run` records its end in the action log.
-      while ! grep -q "^loadgen-end	run -name $name " "$fake/actions.log"; do
-        ((waited < 600)) ||
-          fail "the load of $name had not ended within 60 s, so SIG$signal would prove nothing of a stop after it: $(cat "$tmp/out")"
-        "$REAL_SLEEP" 0.1
-        waited=$((waited + 1))
-      done
-    fi
-    # And in the middle of a read of Dispatch's profiling port, which the fake curl holds open:
-    # it records the path it was asked for in FAKE_DIR/pprof-started and answers nothing until
-    # pprof-hangs goes, so from here until the stop that read is in flight.
-    waited=0
-    while [ ! -s "$fake/pprof-started" ]; do
-      ((waited < 600)) ||
-        fail "the step read nothing of Dispatch's profiling port within 60 s, so SIG$signal would prove nothing of a fetch in flight: $(cat "$tmp/out")"
-      "$REAL_SLEEP" 0.1
-      waited=$((waited + 1))
-    done
-    tunnel_pid=$(awk '{print $1}' "$fake/tunnel-up" 2>/dev/null || true)
-    [ -n "$tunnel_pid" ] || fail "the step opened no profiling tunnel before its load, so this case would prove nothing of one"
-    [ -z "$load_pid" ] || kill -0 "$load_pid" 2>/dev/null ||
-      fail "the load machine's loadgen run (pid $load_pid) was gone before the step was stopped"
-    kill -"$signal" "$step_pid"
-    # A step that does not stop is the defect itself: without a trap for the signal the driver
-    # waits on an ssh that never returns, so the wait is bounded rather than endless here.
-    waited=0
-    while kill -0 "$step_pid" 2>/dev/null; do
-      ((waited < 900)) || {
-        kill -KILL "$step_pid" 2>/dev/null || true
-        fail "the step was still running 90 s after SIG$signal: a script with no trap for the signal waits on the ssh in front of it, which has ten minutes to go"
-      }
-      "$REAL_SLEEP" 0.1
-      waited=$((waited + 1))
-    done
-    set +e
-    wait "$step_pid"
-    step_rc=$?
-    set -e
-    # What the step left behind comes first, because it is what the operator had to clean up by
-    # hand: a status and a line of output say nothing about the deployment's state.
-    # The load machine: no loadgen run of the step, and no pid file naming one.
-    [ -z "$load_pid" ] || ! kill -0 "$load_pid" 2>/dev/null ||
-      fail "SIG$signal left the step's loadgen run (pid $load_pid) loading the deployment from the load machine: ssh carries no signal to the command it runs, so the step's own stop has to kill it over a connection of its own"
-    [ ! -e "$run_secrets/loadgen-run.pid" ] ||
-      fail "the stopped step left its load's pid file on the load machine ($run_secrets/loadgen-run.pid)"
-    # The tunnel, and the sampler, which have a step's life too.
-    ! kill -0 "$tunnel_pid" 2>/dev/null ||
-      fail "SIG$signal left the step's profiling tunnel running on the load machine (pid $tunnel_pid), holding the port the next step needs"
-    [ ! -e "$remote/work/pprof-tunnel.pid" ] ||
-      fail "the stopped step left its tunnel's pid file on the load machine"
-    left=$(pgrep -af -- "vm-sample -out $(run_dir)/cgroup.jsonl" | tr '\n' ';' || true)
-    [ -z "$left" ] ||
-      fail "SIG$signal left the step's sampler running: $left. It goes on reading every machine and appending to the run's cgroup.jsonl"
-    left=$(pgrep -af -- "pg-statements -step $(run_dir)/steps/$name" | tr '\n' ';' || true)
-    [ -z "$left" ] ||
-      fail "SIG$signal left the step's Postgres collector running: $left"
-    # And nothing local is left carrying the load: the ssh and the timeout around it both go, or
-    # the next step meets a machine two drivers are talking to.
-    left=$(pgrep -af -- "$run_secrets/loadgen-run.pid" | tr '\n' ';' || true)
-    [ -z "$left" ] ||
-      fail "SIG$signal left the local ssh that carries the step's load running: $left"
-    # And nothing of the read of Dispatch that was in flight: no ssh of this pod reading that
-    # machine, and no half-written .part in the step's own directory, which a reader -- or
-    # `loadgen step-check`, which asks what profiles the step holds -- would meet there.
-    left=$(pgrep -af -- "timeout .*debug/pprof" | tr '\n' ';' || true)
-    [ -z "$left" ] ||
-      fail "SIG$signal left the ssh that reads Dispatch's profiling port running: $left. It holds a connection to Dispatch's machine with up to ten minutes to go"
-    left=$(find "$(run_dir)/steps/$name" -name '*.part' -printf '%f ' 2>/dev/null || true)
-    [ -z "$left" ] ||
-      fail "SIG$signal left a half-written profile in the stopped step's directory: $left"
-    # And the stop reads as a stop: the status a shell killed by that signal has, and a line
-    # naming what went with it.
-    want_rc=143
-    [ "$signal" != INT ] || want_rc=130
-    [ "$step_rc" = "$want_rc" ] ||
-      fail "the step stopped by SIG$signal ended with $step_rc, not the $want_rc of a shell killed by it: $(cat "$tmp/out")"
-    grep -q "is stopped by SIG$signal" "$tmp/out" ||
-      fail "the step stopped by SIG$signal says nothing of what it ended with it: $(cat "$tmp/out")"
+for signal in TERM INT; do
+  name=stopped-$signal
+  : >"$fake/run-alive"
+  rm -f "$fake/tunnel-up"
+  # The fake `loadgen run` holds the load machine until something kills it there, as a real one
+  # holds it for the whole of its window.
+  : >"$fake/run-hangs"
+  # Job control for the launch, and for nothing else. A shell with job control off makes every
+  # command it starts with & ignore SIGINT, and a shell cannot trap a signal that was ignored
+  # when it started, so without `set -m` this case would watch its own launch swallow the INT
+  # and say nothing about vm.sh. An operator's Ctrl-C reaches a vm.sh in the foreground, which
+  # is what job control gives it here; `set -m` also puts the step in a process group of its
+  # own, so the kill below reaches the driver alone and nothing it started.
+  set -m
+  bash "$vm" step --config "$config" "$name" 1 --duration 10m >"$tmp/out" 2>&1 &
+  step_pid=$!
+  set +m
+  waited=0
+  # The load is on: the fake `loadgen run` says it holds the load machine by writing its pid.
+  while [ ! -s "$fake/run-alive" ]; do
+    ((waited < 600)) ||
+      fail "no loadgen run reached the load machine within 60 s, so SIG$signal would prove nothing: $(cat "$tmp/out")"
+    "$REAL_SLEEP" 0.1
+    waited=$((waited + 1))
   done
+  load_pid=$(tail -n1 "$fake/run-alive")
+  tunnel_pid=$(awk '{print $1}' "$fake/tunnel-up" 2>/dev/null || true)
+  [ -n "$tunnel_pid" ] || fail "the step opened no profiling tunnel before its load, so this case would prove nothing of one"
+  kill -0 "$load_pid" 2>/dev/null ||
+    fail "the load machine's loadgen run (pid $load_pid) was gone before the step was stopped"
+  kill -"$signal" "$step_pid"
+  # A step that does not stop is the defect itself: without a trap for the signal the driver
+  # waits on an ssh that never returns, so the wait is bounded rather than endless here.
+  waited=0
+  while kill -0 "$step_pid" 2>/dev/null; do
+    ((waited < 900)) || {
+      kill -KILL "$step_pid" 2>/dev/null || true
+      fail "the step was still running 90 s after SIG$signal: a script with no trap for the signal waits on the ssh in front of it, which has ten minutes to go"
+    }
+    "$REAL_SLEEP" 0.1
+    waited=$((waited + 1))
+  done
+  set +e
+  wait "$step_pid"
+  step_rc=$?
+  set -e
+  # What the step left behind comes first, because it is what the operator had to clean up by
+  # hand: a status and a line of output say nothing about the deployment's state.
+  # The load machine: no loadgen run of the step, and no pid file naming one.
+  ! kill -0 "$load_pid" 2>/dev/null ||
+    fail "SIG$signal left the step's loadgen run (pid $load_pid) loading the deployment from the load machine: ssh carries no signal to the command it runs, so the step's own stop has to kill it over a connection of its own"
+  [ ! -e "$run_secrets/loadgen-run.pid" ] ||
+    fail "the stopped step left its load's pid file on the load machine ($run_secrets/loadgen-run.pid)"
+  # The tunnel, and the sampler, which have a step's life too.
+  ! kill -0 "$tunnel_pid" 2>/dev/null ||
+    fail "SIG$signal left the step's profiling tunnel running on the load machine (pid $tunnel_pid), holding the port the next step needs"
+  [ ! -e "$remote/work/pprof-tunnel.pid" ] ||
+    fail "the stopped step left its tunnel's pid file on the load machine"
+  left=$(pgrep -af -- "vm-sample -out $(run_dir)/cgroup.jsonl" | tr '\n' ';' || true)
+  [ -z "$left" ] ||
+    fail "SIG$signal left the step's sampler running: $left. It goes on reading every machine and appending to the run's cgroup.jsonl"
+  left=$(pgrep -af -- "pg-statements -step $(run_dir)/steps/$name" | tr '\n' ';' || true)
+  [ -z "$left" ] ||
+    fail "SIG$signal left the step's Postgres collector running: $left"
+  # And nothing local is left carrying the load: the ssh and the timeout around it both go, or
+  # the next step meets a machine two drivers are talking to.
+  left=$(pgrep -af -- "$run_secrets/loadgen-run.pid" | tr '\n' ';' || true)
+  [ -z "$left" ] ||
+    fail "SIG$signal left the local ssh that carries the step's load running: $left"
+  # And nothing of the step's own is left reading Dispatch: this driver asks that machine for
+  # nothing, so an ssh of this pod to it would be a fetch brought back (case (g) above).
+  left=$(pgrep -af -- "timeout .*debug/pprof" | tr '\n' ';' || true)
+  [ -z "$left" ] ||
+    fail "SIG$signal left an ssh of this pod reading Dispatch's profiling port: $left. The driver reads nothing of that port, and a read it does make falls inside the window loadgen is measuring"
+  # And the stop reads as a stop: the status a shell killed by that signal has, and a line
+  # naming what went with it.
+  want_rc=143
+  [ "$signal" != INT ] || want_rc=130
+  [ "$step_rc" = "$want_rc" ] ||
+    fail "the step stopped by SIG$signal ended with $step_rc, not the $want_rc of a shell killed by it: $(cat "$tmp/out")"
+  grep -q "is stopped by SIG$signal" "$tmp/out" ||
+    fail "the step stopped by SIG$signal says nothing of what it ended with it: $(cat "$tmp/out")"
 done
-rm -f "$fake/run-hangs" "$fake/pprof-hangs"
-pass "a step stopped by SIGTERM or SIGINT takes its remote work with it, whether its load was running or had ended with a read of Dispatch in flight: no loadgen run on the load machine, no profiling tunnel, no sampler, no collector and no profile fetch left, and no pid file or half-written profile of any of them"
-
-# ---- (dd) the fake refuses the overlap Dispatch refuses --------------------------------------
-
-# This one case is of a fake rather than of vm.sh, and it is here because the suite is the only
-# place the rule is written down now. Go serves one CPU profile at a time: measured against a
-# Go program serving net/http/pprof, a second read of profile?seconds= issued 300 ms into a
-# first answered 500 at once, with "cpu profiling already in use" and no profile, while the
-# first answered 200. The driver asks for no CPU profile today, so no step meets this -- and
-# that is why the fake has to refuse it: the overlap went by deleting the driver's fetch, not
-# by arranging the two in time, and a fake that served two profiles at once would pass the next
-# change that brought a second fetch back (dispatch://INFRA-988).
-
-reset_fake
-: >"$fake/pprof-hangs"
-cpu_url="http://127.0.0.1:6060/debug/pprof/profile?seconds=600"
-"$bin/curl" -fsS --max-time 600 "$cpu_url" >"$tmp/first.out" 2>"$tmp/first.err" &
-first_pid=$!
-waited=0
-while [ ! -e "$fake/cpu-profile-fetched" ]; do
-  ((waited < 600)) || { kill "$first_pid" 2>/dev/null || true; fail "the fake curl answered no CPU profile within 60 s"; }
-  "$REAL_SLEEP" 0.1
-  waited=$((waited + 1))
-done
-# The second read is bounded here, because a fake that serves two profiles at once answers it
-# only when the first is released: a read still open after 30 s is one that was served
-# alongside the other, which is the thing Dispatch's handler never does.
-set +e
-timeout 30 "$bin/curl" -fsS --max-time 600 "$cpu_url" >"$tmp/second.out" 2>"$tmp/second.err"
-second_rc=$?
-set -e
-((second_rc != 124)) ||
-  fail "the fake curl held a second CPU profile read open for 30 s beside the first instead of refusing it: Dispatch answers that one at once, and a step that waited for it would wait out the window"
-((second_rc == 22)) ||
-  fail "the second CPU profile read ended with $second_rc, not the 22 curl answers a 500 with under -f: $(cat "$tmp/second.err")"
-grep -qxF 'Could not enable CPU profiling: cpu profiling already in use' "$tmp/second.err" ||
-  fail "the refused read does not carry the body Go's handler answers with: $(cat "$tmp/second.err")"
-[ ! -s "$tmp/second.out" ] ||
-  fail "the refused read wrote a profile: $(cat "$tmp/second.out")"
-rm -f "$fake/pprof-hangs"
-set +e
-wait "$first_pid"
-first_rc=$?
-set -e
-((first_rc == 0)) || fail "the first CPU profile, which held the profiler, ended with $first_rc: $(cat "$tmp/first.err")"
-[ -s "$tmp/first.out" ] || fail "the first CPU profile wrote nothing although it answered"
-# And the profiler is free again once that read has answered, so a later one is served.
-"$bin/curl" -fsS --max-time 600 "$cpu_url" >"$tmp/third.out" 2>"$tmp/third.err" ||
-  fail "the fake curl refused a CPU profile asked for after the first had answered: $(cat "$tmp/third.err")"
-pass "the fake curl refuses a second CPU profile read that overlaps another, in the words and the status Go's own handler refuses it with, and serves one asked for after the first has answered"
+rm -f "$fake/run-hangs"
+pass "a step stopped by SIGTERM or SIGINT takes its remote work with it: no loadgen run on the load machine, no profiling tunnel, no sampler and no collector left, and no pid file of any of them"
 
 printf 'PASS: packages/envoy/loadtest/vm/vm.test.sh\n'

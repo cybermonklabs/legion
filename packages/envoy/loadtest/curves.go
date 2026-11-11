@@ -263,10 +263,21 @@ func configFactor(c summaryConfig) float64 {
 // every step is scaled against a 1x baseline of 60 requests a second, so that division is how a
 // cluster step's factor is known at all.
 func (se *curveSeries) stepFactor(c summaryConfig) float64 {
-	if se.ownFactorsOnly && c.LoopFactor <= 0 {
+	if se.noOwnFactor(c) {
 		return 0
 	}
 	return configFactor(c)
+}
+
+// noOwnFactor is a step of this series that carries no factor of its own: the series' steps
+// each offer their own rates (ownFactorsOnly) and this step's summary names no loop factor, so
+// it drove none of the series' load and reads factor 0. stepFactor and droveNoSeriesLoad both
+// ask it, and they are one predicate because they must answer together: a step that reads
+// factor 0 and is not a control joins the knee walk at 0, where a passing baseline in front of
+// a failing 1x brackets the knee at (0, 1) and writes a 0.5x refinement the series never asked
+// for (INFRA-988).
+func (se *curveSeries) noOwnFactor(c summaryConfig) bool {
+	return se.ownFactorsOnly && c.LoopFactor <= 0
 }
 
 // nameFactor is the factor a step name starts with, "<f>x", as the cluster script names steps.
@@ -318,12 +329,8 @@ func (s *curveStep) classify() curveKind {
 
 // droveNoSeriesLoad is a step that drove none of its series' load, which is a control row and
 // no point of the curve. A step that offered no event drove none of any series'. A step of a
-// series whose steps each offer their own rates (ownFactorsOnly) drove none of that series'
-// when its summary carries no loop factor: the factor is what the series' own rates are
-// multiplied by, so such a step is the baseline population alone and it reads factor 0
-// (stepFactor). Without this rule it joined the knee walk at factor 0, where a passing
-// baseline in front of a failing 1x brackets the knee at (0, 1) and writes a 0.5x refinement
-// the series never asked for (INFRA-988).
+// series whose steps each offer their own rates drove none of that series' when its summary
+// carries no loop factor (noOwnFactor, which stepFactor reads the same way).
 //
 // It is not what keeps the run's own baselines out of the walk: those ran 3,600 s, and the
 // hour rule above, which is tested first, takes them and every other 60-minute step of that
@@ -334,7 +341,7 @@ func (s *curveStep) droveNoSeriesLoad() bool {
 	if s.noSummary {
 		return false
 	}
-	return s.sum.Config.EventsPerS == 0 || (s.se.ownFactorsOnly && s.sum.Config.LoopFactor <= 0)
+	return s.sum.Config.EventsPerS == 0 || s.se.noOwnFactor(s.sum.Config)
 }
 
 // kindName is the step's kind as curves.csv names it.

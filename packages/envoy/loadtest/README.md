@@ -2007,7 +2007,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | `heap-start.pprof`, `heap-end.pprof` | Under `-source replay`: Dispatch's heap profile at the window's start and end (The replay, above). |
 | `end_state.json` | Under `-source replay`: the end state of every document the run wrote, read after the drain, and its sha256 (`replay.end_state`, The replay, above). |
 | `last-reset.json` | A `--replay` step's copy of `$LOADTEST_ROOT/replay/last-reset.json` (The replay, above). |
-| `heap.txt` | The same heap profile as text (`/debug/pprof/heap?debug=1`), with the runtime's memory statistics (`# runtime.MemStats`, which `loadgen codepaths` reads). It is fetched once, after the window, the CPU profile, the goroutine dump and `heap.pprof`, so its cost falls outside the CPU profile. Its fetch has 10 minutes, since with a heap of tens of GiB the text is over 500 MB; a fetch cut short leaves no `# runtime.MemStats` block, and `loadgen codepaths` then shows `-` in each row from runtime.MemStats, with a note saying why. |
+| `heap.txt` | The same heap profile as text (`/debug/pprof/heap?debug=1`), with the runtime's memory statistics (`# runtime.MemStats`, which `loadgen codepaths` reads). `loadgen run` fetches it once, after the window, the CPU profile, the goroutine dump and `heap.pprof`, so its 500 MB render falls outside the window and outside the CPU profile; on the VM deployment nothing else reads Dispatch's profiling port either (The profiling tunnel, below). Its fetch has 10 minutes, since with a heap of tens of GiB the text is over 500 MB; a fetch cut short leaves no `# runtime.MemStats` block, and `loadgen codepaths` then shows `-` in each row from runtime.MemStats, with a note saying why. |
 | `goroutines.txt` | Dispatch's goroutine dump (`debug=2`) at the end of the window, after the CPU profile. |
 | `goroutines.summary.txt` | The goroutines that wait for a pool connection, the goroutines in `events.(*Broker).Append`, other request and document goroutines, and the top states. |
 | `cpu.top.txt`, `cpu.cum.txt` | `go tool pprof -top` of `cpu.pprof`: by own time (40 nodes) and by cumulative time (80 nodes). |
@@ -3298,8 +3298,11 @@ its cores and working set from `cgroup.json`. It also holds:
 - Where a step sits comes from the run, not from its name. With a `meta.json` `copy` that names
   the phase (the cluster step's `copy-meta.json`): the hour is the phase `soak` or a window of an
   hour or more; the 4 vCPU step is a copy whose Postgres has fewer than 16 vCPUs
-  (`copy.postgres.cpu`, the knee series' tier); the control is a step the run marked `reads_only`
-  or one that offered no event; every other step is in the knee series. Without such a copy (a
+  (`copy.postgres.cpu`, the knee series' tier); the control is a step the run marked `reads_only`,
+  one that offered no event, or one that drove none of this series' load — for a series whose
+  steps each offer their own rates (the loop series), a step whose summary carries no
+  `config.loop_factor`, which reads factor 0 (`droveNoSeriesLoad`); every other step is in the
+  knee series. Without such a copy (a
   `run-step.sh` run on the local stack, or a run from before `cluster.sh` recorded the phase,
   whose `copy` names the series' tier for every step) the step's name says it: `-hour`, `-db4`,
   `-reads`. The name is the row's label either way.
@@ -3450,7 +3453,7 @@ when that key was last imported, `cgroup.jsonl`, `steps/`, `curves/` and `logs/`
 | `check --config FILE [--run ID]` | The read-back: every container's CPU, memory and image, Dispatch's network mode, the instance's own settings from the Cloud SQL Admin API, every machine's run-time limit from the Compute API, every endpoint setting of every container, and that each production address the file names is refused from every machine. One markdown table of expected beside found, and exit 1 on any difference. |
 | `seed --config FILE [--run ID] [--embed-timeout 8h] [--workers 8]` | Both seeds a step draws on: `loop-seed-plan`, `loop-seed-write` on the load machine, `loop-seed-check`, `loop-seed-export`, then the baseline population's own seed (`loadgen seed` on the load machine, into `paths.remote_work`/`seed.json`), then `seed-finish` with the embedding gate, whose one wait covers the items of both seeds; each phase's wall clock and the gate's coverage progress in `<run>/seed.json`; then the template database. A deployment is seeded once and every later run adopts that seeding (below). A phase is idempotent: a `seed.json` already on the load machine with the deployment's own shape — projects, and at least `load.baseline.sessions` issues, each with a key and its route — is left as it is rather than written a second time. |
 | `reset --config FILE [--run ID]` | The whole reset (below), its duration recorded. |
-| `step --config FILE [--run ID] NAME FACTOR [--duration 10m] [--warmup 30s]` | One step: the reset, the VM sampler, the profiling tunnel (below), Postgres's own collectors (below), `loadgen run` at FACTOR, the profiles fetched from the machine Dispatch runs on, then `cgroup-merge`, `cloudsql-cpu` and `tables`. A step stopped before its window is out takes its remote work with it (below). |
+| `step --config FILE [--run ID] NAME FACTOR [--duration 10m] [--warmup 30s]` | One step: the reset, the VM sampler, the profiling tunnel (below), Postgres's own collectors (below), `loadgen run` at FACTOR, then `cgroup-merge`, `cloudsql-cpu` and `tables`. Every profile of the window is `loadgen run`'s own, taken through the tunnel; the driver reads nothing of Dispatch's profiling port (below). A step stopped before its window is out takes its remote work with it (below). |
 | `series --config FILE [--run ID] [--duration 10m] [--long 60m] [--long-warmup 5m]` | The baseline, 1x and 2x at `--long` after a `--long-warmup` warm-up, then the grid 3, 4, 6, 8, 12, 16 and 20 at `--duration`, stopping at the first failing step, then the refinement `loadgen curves` asks for until `refine.txt` is empty. |
 | `collect --config FILE [--run ID]` | `loadgen curves -series loop` over the run's steps, in the order they ran, into `<run>/curves`. |
 | `down --config FILE [--run ID]` | Stops every container and the stub embedder, and removes the run's credential files from the load machine. The machines and the instance are left alone. |
@@ -3786,15 +3789,17 @@ reads there:
   `500`, and a driver that got in first would take the profiler and leave loadgen's
   window-exact profile refused instead. A step whose tunnel died under it therefore keeps no
   CPU profile at all.
-- The three state snapshots (`goroutines.txt`, `heap.pprof`, `heap.txt`) are each what the
-  process holds at the moment they are read, so a second reader costs no measurement anything.
-  `step` reads them from Dispatch's own machine over ssh at the end of the measured window,
-  with the load still on, which is where `loadgen run` reads its own. A fetch that fails is a
-  note, never a step failure: the step's measurements stand without its snapshots. Where
-  `loadgen run` reached the profiling port through the tunnel below and wrote these files
-  itself, its copies are the ones the step keeps and the driver's are dropped; `profiles.txt`
-  in the step directory names the writer of each file, and names `none` for one that neither
-  wrote.
+- The three state snapshots (`goroutines.txt`, `heap.pprof`, `heap.txt`) are `loadgen run`'s
+  own too, read through the same tunnel at the end of its own window, directly after the CPU
+  profile of that window (`run.go` `step.profile`). The driver reads none of them either, and
+  that is what leaves the window one owner. Its clock starts when it forks the load's `ssh`,
+  and `loadgen` opens its window seconds later — after its stack check, its dashboard probe,
+  a 5 s `box_busy` read and the registration of every session — so a driver reading "at the
+  window's end" read inside the window it was measuring: a stop-the-world goroutine dump and
+  a 500 MB `heap?debug=1` render inside `loadgen`'s own CPU profile, and three files a healthy
+  step then dropped for `loadgen`'s own, which are the ones it keeps (dispatch://INFRA-988).
+  `profiles.txt` in the step directory names the writer of each of the four files and what it
+  covers, and names `none` with the reason for one the step does not hold.
 - The 5 s sampler inside `loadgen run` reads Dispatch's goroutines, its pool acquire waiters and
   its heap **while the step runs**, and it runs on the load machine.
 
