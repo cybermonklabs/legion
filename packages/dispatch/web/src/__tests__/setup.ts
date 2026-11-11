@@ -63,9 +63,11 @@ expect.extend(reportableJestDomMatchers());
 // three times of three with two scratch files beside it and passed with one, and what file of a
 // run kept it and what file lost it did not reproduce the same way twice; and the
 // `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
-// files get. It cuts no larger deadline a file sets for itself: the largest is
-// `MarkdownBody.test.tsx`'s own 40 s, below this number and still above the 25 s wait that row
-// must let run out.
+// files get. It cuts no deadline a file sets for itself: the largest are the 60 s of
+// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:43` and
+// `psql-session.test.ts:61,70`, equal to the flag, and then `MarkdownBody.test.tsx`'s 40 s,
+// which is still above the 25 s wait that row must let run out. Lowering the flag would cut
+// those three first.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed
