@@ -2169,8 +2169,25 @@ function artifactNameExistsProblem(held: Artifact, owner: string): string {
   return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
 }
 
+/**
+ * How much of one line a refusal quotes whole. A line of a document is bounded by the document
+ * itself, so one differing line can be as long as the whole text, and a quote nobody can read
+ * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
+ * text below, and the cut is named the same way.
+ */
+const STORED_LINE_QUOTED = 200;
+
+/** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
+ *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
+function quotedStoredLine(line: string): string {
+  if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
+  const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
+  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
+}
+
 /** The first line the store would write otherwise, which is the line a reader fixes first. The
- *  two texts differ, so one of the three arms answers. */
+ *  two texts differ, so one of the three arms answers. Each quote is bounded, since the line it
+ *  names can be as long as the document itself. */
 function firstStoredDifference(given: string, stored: string): string {
   const written = given.split("\n");
   const holds = stored.split("\n");
@@ -2178,9 +2195,10 @@ function firstStoredDifference(given: string, stored: string): string {
     const wrote = written[line];
     const held = holds[line];
     if (wrote === held) continue;
-    if (wrote === undefined) return `the store writes a line ${line + 1}, ${JSON.stringify(held)}`;
-    if (held === undefined) return `the store drops line ${line + 1}, ${JSON.stringify(wrote)}`;
-    return `line ${line + 1} reads ${JSON.stringify(wrote)} and is stored as ${JSON.stringify(held)}`;
+    if (wrote === undefined)
+      return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
+    if (held === undefined) return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
+    return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
   }
   return "the stored text differs from the text given";
 }
@@ -2237,13 +2255,17 @@ function storedTextCheckFailed(error: unknown): string {
 }
 
 /**
- * Whether the round trip failed because the server holds no such route: the 404 or 405 a Dispatch
- * older than POST /api/v1/markdown/round-trip answers. Such a server cannot say what it would
- * store, and refused the upload itself before this check existed, so the upload goes on and that
- * server makes its own answer. Every other failure says nothing about the route.
+ * Whether the round trip failed because Dispatch itself holds no such route: the 404 or 405 a
+ * Dispatch older than POST /api/v1/markdown/round-trip answers, as its own JSON. Such a server
+ * cannot say what it would store, and refused the upload itself before this check existed, so
+ * the upload goes on and that server makes its own answer.
+ *
+ * A 404 or 405 page from an ingress, a proxy or a load balancer is `DispatchGatewayError`,
+ * which says nothing about the route, so `dispatchAnswered` is what this asks: reading such a
+ * page as an absent route would skip the check and store the respelled text it exists to stop.
  */
 function roundTripRouteAbsent(error: unknown): boolean {
-  return error instanceof DispatchServiceError && (error.status === 404 || error.status === 405);
+  return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
 }
 
 /** `text` without a final line feed, which is what the stored-text check compares. The store
@@ -5736,7 +5758,9 @@ export async function executeDispatchTool(
         try {
           stored = await client.markdownRoundTrip(content);
         } catch (error) {
-          if (!roundTripRouteAbsent(error)) throw new Error(storedTextCheckFailed(error));
+          if (!roundTripRouteAbsent(error)) {
+            throw new Error(storedTextCheckFailed(error), { cause: error });
+          }
         }
         // The store ends a document with a line feed the writer's own text need not carry, and
         // that one line feed is no other spelling: both sides lose at most one before they are

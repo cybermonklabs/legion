@@ -10563,6 +10563,50 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // One line can be as long as the document, so the quote of the line that differs is bounded
+  // as the stored text below it is, and names its own cut (review round 2, finding G).
+  test("cuts a long quoted line in the refusal and says what it cut", async () => {
+    const long = `* ${"one two three ".repeat(40)}`;
+    const content = `# Notes\n\n${long}\n`;
+    const storedLine = long.replace("*", "-");
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: `# Notes\n\n${storedLine}\n` });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    expect(problem).toContain(
+      `${JSON.stringify(long.slice(0, 200))} (cut after 200 of its ${long.length} characters)`
+    );
+    expect(problem).toContain(
+      `${JSON.stringify(storedLine.slice(0, 200))} (cut after 200 of its ${storedLine.length} characters)`
+    );
+    // The whole line never reaches the refusal.
+    expect(problem).not.toContain(long);
+  });
+
   // INFRA-1522 R15: the store ends every document it holds with a line feed, so text written
   // without one comes back with one and nothing else changed. That is no other spelling, and the
   // upload goes on. The server's own test pins it ("one" is stored as "one\n",
@@ -10635,6 +10679,53 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toContain("Uploaded notes.md as version 1");
     expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
+  });
+
+  // A 404 or 405 from an ingress, a proxy or a load balancer is no answer of Dispatch's, so it
+  // says nothing about the route and the upload stops: reading such a page as an absent route
+  // would store the respelled text this check exists to stop (review round 2, finding C).
+  test.each([
+    [404, "<html><head><title>404 Not Found</title></head><body>nginx</body></html>"],
+    [405, "<html><body>405 Method Not Allowed</body></html>"],
+  ])("refuses the upload when a gateway answers %i for the round trip", async (status, page) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return new Response(page, { status, headers: { "content-type": "text/html" } });
+      }
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = failure instanceof Error ? failure.message : String(failure);
+    expect(message).toContain("Dispatch could not say how it would store this text");
+    // The upload never left, and the failure carries what the gateway answered.
+    expect(posts).toEqual([]);
+    expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
   });
 
   // Every other failure leaves open what the store would write, so the upload stops rather than

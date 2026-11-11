@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,5 +154,57 @@ func TestMarkdownRoundTripNamesWhatTheStoreChanges(t *testing.T) {
 				t.Fatalf("the round trip of %q answers %q, want %q", test.markdown, answered, test.want)
 			}
 		})
+	}
+}
+
+// The route's body limit, which is the largest text an inline upload stores and not a JSON
+// body's megabyte (markdownRoundTripLimit). The text this route is asked about is the text an
+// upload is about to send, and `dispatch artifact` refuses that upload on every failure of
+// this route but its absence, so a 413 here tells a writer to send again an upload no repeat
+// could ever get through — for a document the store itself would have taken.
+//
+// A markdown document of maxDocumentMarkdownBytes is that largest text: the upload refuses one
+// byte more (artifacts.go). Its body is longer than the text, by the object around the string
+// and by a byte for every character JSON escapes, so a megabyte of body refuses it
+// (dispatch://INFRA-1522).
+func TestMarkdownRoundTripTakesTheLargestTextAnInlineUploadStores(t *testing.T) {
+	handler := newTestHandler(t)
+	// One paragraph line of words is its own canonical rendering, so the answer is the text
+	// itself and the size is the whole of what this test is about.
+	words := strings.Repeat("word ", maxDocumentMarkdownBytes/len("word "))
+	largest := words[:len(words)-1] + "s\n"
+	if len(largest) != maxDocumentMarkdownBytes {
+		t.Fatalf("the text is %d bytes, want a document at the cap of %d", len(largest), maxDocumentMarkdownBytes)
+	}
+
+	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
+		"markdown": largest,
+	}, "alice")
+	if answered.Code != http.StatusOK {
+		t.Fatalf("the round trip of the largest text an inline upload stores: status=%d body=%.300s",
+			answered.Code, answered.Body.String())
+	}
+	if stored := decodeBody[markdownRoundTripResponse](t, answered).Markdown; stored != largest {
+		t.Fatalf("the round trip answers %d bytes, want the %d it was given unchanged", len(stored), len(largest))
+	}
+
+	// The upload that text is checked for takes it, which is what the limit is measured
+	// against: this route refuses no text the store would hold.
+	issue := createArtifactIssue(t, handler)
+	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "largest.md", "content": largest,
+	}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("the inline upload of that text: status=%d body=%.300s", uploaded.Code, uploaded.Body.String())
+	}
+
+	// The limit is still a limit: a body past it is this route's own refusal, and the text is
+	// never parsed.
+	past := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
+		"markdown": strings.Repeat("a", markdownRoundTripLimit),
+	}, "alice")
+	if code, _ := refusalOf(t, past); past.Code != http.StatusRequestEntityTooLarge || code != "CAP_EXCEEDED" {
+		t.Fatalf("a body past the route's own limit: status=%d body=%.300s, want 413 CAP_EXCEEDED",
+			past.Code, past.Body.String())
 	}
 }

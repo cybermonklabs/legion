@@ -312,8 +312,10 @@ Each item below names a task and where its code is, then notes on it.
 
   - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request, compare with nothing for `no_pull_request_or_branch`:
     their results stand at no basis and no pass of them stands, since Dispatch holds every head such an issue will ever have.
-    A check whose repository the App cannot read compares with nothing for `repository_unreadable`, and each of its results and its own `pass_stands` answer `unknown`, as they do wherever a read of a branch failed and no branch carried the commit;
-    a read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
+    A `before_merge` check whose repository the App cannot read compares with nothing for `repository_unreadable`, and each of its results and its own `pass_stands` answer `unknown`.
+    A branch check of such a repository still compares with every branch Dispatch can name — the branch its issue merged into, read from the database, and the default branch this process last resolved — because a `branch_commits` yes is keyed by a branch and stands for good, so a stored answer still places the commit (`branchBases`);
+    a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
+    A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).

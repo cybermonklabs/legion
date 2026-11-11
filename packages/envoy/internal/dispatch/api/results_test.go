@@ -155,6 +155,41 @@ func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number in
 	}
 }
 
+// recordMerge records one issue's merged pull request as production records a merge, through
+// the writer that seeds the one fact the merge itself proves: the base branch held the merge
+// commit, written as a branch_commits yes that is kept for good
+// (delivery.UpsertPullRequestHead). The head is headCommit and the merge commit
+// baseMergeCommit, which is what every caller here means by them.
+func recordMerge(t *testing.T, database *store.Store, repo string, number int, issueKey, baseRef string) {
+	t.Helper()
+	attributed := issueKey
+	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+		Repo: repo, Number: number, HeadSHA: headCommit, HeadRef: "legion/work",
+		BaseRef: baseRef, State: "merged", IssueKey: &attributed, AttributionSource: "title",
+		AttributionComplete: true, Title: "A change",
+		URL:            fmt.Sprintf("https://github.com/%s/pull/%d", repo, number),
+		MergeCommitSHA: baseMergeCommit,
+	}); err != nil {
+		t.Fatalf("record the merge of %s#%d into %s: %v", repo, number, baseRef, err)
+	}
+}
+
+// writeBranchAnswer stores what Dispatch holds about one commit of one branch, as a compare
+// read records it (delivery's writeBranchCommit): a yes is kept for good and a no for
+// delivery.BranchCommitStaleAfter, and either is read before any call to GitHub. The row is
+// keyed by the lowercased repository, as both of delivery's own statements over the table
+// are.
+func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha string, onBranch bool) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into branch_commits (repo, branch, sha, on_branch, checked_at)
+		values (lower($1), $2, $3, $4, now())
+		on conflict (repo, branch, sha) do update set on_branch = excluded.on_branch, checked_at = excluded.checked_at
+	`, repo, branch, sha, onBranch); err != nil {
+		t.Fatalf("store whether %s@%s is on %s: %v", repo, sha, branch, err)
+	}
+}
+
 // The pull-request body line carries the reading the role recorded, because that is the record
 // a reader of the pull request cannot see anywhere else: the check's own words are on the
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
@@ -1174,17 +1209,7 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 		})
 	issue := issueInRepository(t, handler, "RESD2", "acme/widgets", "Merged into a branch since deleted")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-	// Recorded as production records a merge, through the writer that seeds the one fact the
-	// merge itself proves: the base branch held the merge commit.
-	attributed := issue.Key
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
-		Repo: "acme/widgets", Number: 48, HeadSHA: headCommit, HeadRef: "legion/work",
-		BaseRef: "integration/x", State: "merged", IssueKey: &attributed, AttributionSource: "title",
-		AttributionComplete: true, Title: "A change", URL: "https://github.com/acme/widgets/pull/48",
-		MergeCommitSHA: baseMergeCommit,
-	}); err != nil {
-		t.Fatalf("record the merge of the issue's pull request: %v", err)
-	}
+	recordMerge(t, database, "acme/widgets", 48, issue.Key, "integration/x")
 
 	// mergeCommit is the squash the trunk carries, baseMergeCommit the merge GitHub made on
 	// the branch it has since deleted, and strayCommit a commit neither ever carried.
@@ -1238,17 +1263,7 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 		})
 	issue := issueInRepository(t, handler, "RESD3", "acme/widgets", "Merged, then the App lost the repository")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-	// Recorded as production records a merge, through the writer that seeds the one fact the
-	// merge itself proves: the base branch held the merge commit.
-	attributed := issue.Key
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
-		Repo: "acme/widgets", Number: 51, HeadSHA: headCommit, HeadRef: "legion/work",
-		BaseRef: "integration/x", State: "merged", IssueKey: &attributed, AttributionSource: "title",
-		AttributionComplete: true, Title: "A change", URL: "https://github.com/acme/widgets/pull/51",
-		MergeCommitSHA: baseMergeCommit,
-	}); err != nil {
-		t.Fatalf("record the merge of the issue's pull request: %v", err)
-	}
+	recordMerge(t, database, "acme/widgets", 51, issue.Key, "integration/x")
 
 	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
 	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
@@ -1283,11 +1298,109 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 	}
 	// A commit no branch holds a stored answer for is unknown all the same: nothing can be
 	// asked while the App cannot read the repository, and that is no evidence about the work.
+	// It reads repository_unreadable and not read_failed, which is the word for a read of
+	// Dispatch's own that did not answer: the two part what a reader does next, give the App
+	// the repository or ask again (model.go, the reasons).
 	unplaced := standsAt(t, read, "k2", stray.Result.ID,
 		"an after-merge result at a commit nothing is stored for, the App having lost the repository",
 		model.CommitUnknown, false)
-	if unplaced.Reason != model.ReasonReadFailed {
-		t.Fatalf("that result is unknown for %q, want %q", unplaced.Reason, model.ReasonReadFailed)
+	if unplaced.Reason != model.ReasonRepositoryUnreadable {
+		t.Fatalf("that result is unknown for %q, want %q", unplaced.Reason, model.ReasonRepositoryUnreadable)
+	}
+}
+
+// The merged issue of a repository this process has never named a default branch for: the
+// restart whose first `GET /repos/{owner}/{repo}` failed, which delivery.Branches holds for
+// delivery.BranchCommitStaleAfter, and every repository of a deployment holding no App key.
+// The branch the work merged into is read from the database (delivery.BaseBranchMergedFor)
+// and costs no call to GitHub, so the check compares with that branch alone and the stored
+// yes at it places the merge commit.
+//
+// This pins the second half of the reviewer's finding on pull request #3530
+// (dispatch://INFRA-1522): branchBases answered nothing at all as soon as the default branch
+// had no name, so a branch nothing about GitHub turns on was never asked, and the squash
+// merge of a deleted base branch — which nothing else can ever place — read `unknown`.
+//
+// A commit no stored row answers for is unknown rather than another commit: the trunk, which
+// would have decided, was never asked, and "not on the branch the work merged into" is no
+// evidence about it.
+func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *testing.T) {
+	// The issue resolves to acme/hidden, which the App is not installed on, so no read of
+	// this process ever names that repository's default branch: server.branches holds no name
+	// for it, as it holds none for any repository after a restart whose first read failed.
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+		func(string, string) string { return "diverged" })
+	issue := issueInRepository(t, handler, "RESD4", "acme/hidden", "Merged, the repository never read")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	recordMerge(t, database, "acme/hidden", 52, issue.Key, "integration/x")
+
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	read := readResults(t, handler, issue.Key)
+	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 || compared[0].Branch != "integration/x" {
+		t.Fatalf("the after-merge check of a repository with no default branch named compared with %+v, want the merged branch alone", compared)
+	}
+	stands := standsAt(t, read, "k2", merge.Result.ID,
+		"an after-merge result at the merge commit, no default branch named for its repository",
+		model.CommitAtBasis, false)
+	if stands.Basis == nil || stands.Basis.Branch != "integration/x" {
+		t.Fatalf("the merge commit stands at %+v, want the base branch integration/x", stands.Basis)
+	}
+	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes {
+		t.Fatalf("the check answers pass_stands %+v, want yes: the pass at the merge commit stands", stood)
+	}
+	unplaced := standsAt(t, read, "k2", stray.Result.ID,
+		"an after-merge result at a commit nothing is stored for, no default branch named",
+		model.CommitUnknown, false)
+	if unplaced.Reason != model.ReasonRepositoryUnreadable {
+		t.Fatalf("that result is unknown for %q, want %q", unplaced.Reason, model.ReasonRepositoryUnreadable)
+	}
+}
+
+// The same merged issue in a deployment holding no App key, where deps.GitHub is nil, every
+// read of GitHub answers githubapp.ErrNoAppKey and no repository has a default branch named.
+// The branch the issue merged into is a fact of Dispatch's own database and the yes at it a
+// row kept for good, so the merge commit stands at that branch with no GitHub at all — which
+// is the whole of what such a deployment can answer, and more than the nothing it answered
+// before (dispatch://INFRA-1522).
+//
+// A commit the stored row says that branch does not carry is unknown and never another
+// commit: the walk is short of the default branch, which nothing could name, so the branch
+// that would have decided — the trunk an integration branch lands on — was never asked.
+func TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	if deps.GitHub != nil {
+		t.Fatalf("the fixture holds a GitHub client, want the deployment that holds no App key")
+	}
+	issue := issueInRepository(t, handler, "RESD5", "acme/widgets", "Merged, no App key")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	recordMerge(t, database, "acme/widgets", 53, issue.Key, "integration/x")
+	// The answer a compare read of the merged branch left behind before the App key went
+	// away: that branch does not carry this commit. It is read before any call to GitHub, so
+	// the walk ends on it rather than on a read nobody can make (delivery.CommitOnBranch).
+	writeBranchAnswer(t, database, "acme/widgets", "integration/x", strayCommit, false)
+
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	read := readResults(t, handler, issue.Key)
+	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 || compared[0].Branch != "integration/x" {
+		t.Fatalf("the after-merge check of a deployment with no App key compared with %+v, want the merged branch alone", compared)
+	}
+	stands := standsAt(t, read, "k2", merge.Result.ID,
+		"an after-merge result at the merge commit, the deployment holding no App key",
+		model.CommitAtBasis, false)
+	if stands.Basis == nil || stands.Basis.Branch != "integration/x" {
+		t.Fatalf("the merge commit stands at %+v, want the base branch integration/x", stands.Basis)
+	}
+	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes {
+		t.Fatalf("the check answers pass_stands %+v, want yes: the pass at the merge commit stands", stood)
+	}
+	unplaced := standsAt(t, read, "k2", stray.Result.ID,
+		"an after-merge result the merged branch is stored as not carrying, with no default branch to ask",
+		model.CommitUnknown, false)
+	if unplaced.Reason != model.ReasonRepositoryUnreadable {
+		t.Fatalf("that result is unknown for %q, want %q", unplaced.Reason, model.ReasonRepositoryUnreadable)
 	}
 }
 

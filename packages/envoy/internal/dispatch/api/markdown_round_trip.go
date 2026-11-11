@@ -40,6 +40,36 @@ func storedMarkdown(text string) string {
 	return stored
 }
 
+// markdownRoundTripPattern is the route's pattern, and markdownRoundTripRoute that route: with
+// the handoff write, one of the two JSON routes whose body limit is its own rather than
+// maxJSONRequestBytes (routeBody).
+const (
+	markdownRoundTripPattern = "/api/v1/markdown/round-trip"
+	markdownRoundTripRoute   = http.MethodPost + " " + markdownRoundTripPattern
+)
+
+// markdownRoundTripLimit is the most this route's request may hold, derived from the largest
+// text it is ever asked about. That text is the one an inline upload is about to store, which
+// is a markdown document of at most maxDocumentMarkdownBytes - the upload refuses a byte more
+// (artifacts.go) - and it travels here as a JSON string, whose escaping can make each byte of
+// it up to six on the wire (a client that writes `<` as \u003c, or a byte of a two-byte
+// character as \u00e9), which is how the handoff write's own limit counts the same escaping
+// (handoffRequestLimit). The kilobyte beside it carries the object around that string.
+//
+// A megabyte would refuse text the upload itself takes, since JSON adds a byte for every
+// newline, quote, backslash and tab of a document already at the cap. `dispatch artifact`
+// refuses the upload on every failure of this route but its absence, so such a writer would
+// be told to send an upload again that no repeat could ever get through.
+const markdownRoundTripLimit = 6*maxDocumentMarkdownBytes + 1<<10
+
+// errMarkdownRoundTripTooLarge is this route's answer to a body past its limit, which the
+// drain, the keyed layer and the handler all give alike (routeBody). It names the text's own
+// bound rather than the body's alone, since a caller past the wire limit is a caller whose
+// text no upload would store either.
+var errMarkdownRoundTripTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED",
+	"request body exceeds %d bytes: the markdown a round trip reads is at most %d bytes",
+	markdownRoundTripLimit, maxDocumentMarkdownBytes)
+
 // markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: the text a caller is
 // about to store as a Markdown document.
 type markdownRoundTripInput struct {
@@ -54,12 +84,16 @@ type markdownRoundTripResponse struct {
 // postMarkdownRoundTrip answers POST /api/v1/markdown/round-trip. It writes nothing and reads no
 // row: it parses the text and renders it again, as a document write does, and answers what that
 // write would store. A caller compares the two and refuses its own call where they differ.
+//
+// The body is read within this route's own limit, not a JSON body's megabyte, so no text an
+// inline upload would store is refused here (markdownRoundTripLimit).
 func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	var input markdownRoundTripInput
-	if err := decodeJSON(r, &input); err != nil {
+	limit, tooLarge := routeBody(http.MethodPost, markdownRoundTripPattern)
+	if err := decodeJSONWithin(r, &input, limit, tooLarge); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

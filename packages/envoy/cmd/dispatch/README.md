@@ -3484,12 +3484,13 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A check compared with nothing says why in `compared_nothing`:
     `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
-    `repository_unreadable` where the App cannot read that repository;
+    `repository_unreadable` where the App cannot read that repository and Dispatch can name no branch of it to ask a stored answer about;
     `read_failed` where a read of Dispatch's own did not answer.
 
   - `commit_stands` is `{answer: "at_basis", basis}` where one of those commits is the result's own, or one of those branches carries it, `{answer: "other_commit"}` where none of them does, and `{answer: "unknown", reason}` where Dispatch cannot say.
-    A repository the App cannot read is unknown, whatever the check's `when`, and so is a read of Dispatch's own that failed:
+    A commit of a repository the App cannot read is unknown wherever nothing places it, whatever the check's `when`, and so is one left by a read of Dispatch's own that failed:
     a commit there may head a pull request Dispatch was never able to learn.
+    A branch check still places a commit a stored `branch_commits` yes carries, since that answer is keyed by a branch and stands for good.
     An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
     Every other failure of that read, a rate limit, a 5xx, a timeout or a request whose caller went away, leaves the answer `unknown` wherever no branch carries the commit, and never `other_commit`.
     An issue that resolves to no repository is never unknown: Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit.
