@@ -60,8 +60,9 @@ func recordedModelChanges(t *testing.T, path string) []string {
 // the control reads the pin the saving turn wrote, which is the only thing it was ever asking
 // about, and it reads the same on either build.
 //
-// The resumes leave the session's earlier bytes alone and add no second file, which is why the
-// flag rides every launch and not the resuming one alone (TestInnerCommand).
+// The resumes leave the session's earlier bytes alone and add no second file. That is worth
+// checking but explains nothing about role resolution: the flag rides every launch because the
+// operator's current role is resolved per launch (TestInnerCommand).
 func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
