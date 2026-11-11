@@ -140,6 +140,15 @@ const designs: readonly Design[] = [early, standing, unapproved, mid];
 /** The project the staged issue is filed under. The daemon's own token for a claim is this key
  *  in lower case, which is what the pane the shell composes is launched for. */
 const projectKey = "DRIVE";
+/** The repository and default branch the composed prompt's addressing names, which the claim
+ *  carries and the composer requires (daemon-pane.ts's `WorkerClaim`; daemon-pane.go refuses a
+ *  request naming neither). The drive's own world is the staged issue and nothing else — its
+ *  session is given no workspace, no jj and no GitHub for that issue, and its task has it record
+ *  nothing and open no pull request — so these name the repository that issue stands for and no
+ *  repository any call of the run reaches. Both arms are composed with the same two, since the
+ *  one thing the arms differ in is the daemon module the prompt comes from. */
+const repository = "example/plan-pointer-drive";
+const defaultBranch = "main";
 /** How many versions plan.md holds when the session begins. */
 const versionsAtStart = 8;
 /** The first plan.md version `standing` is written at. */
@@ -516,7 +525,7 @@ function compose(runDir: string, daemonModule: string, issue: string): void {
   const pane = workerPane(
     { port: 1, profile: process.env.OMP_PROFILE ?? "default", rig: path.join(runDir, "pane") },
     process.env,
-    { issue, project: projectKey.toLowerCase(), role: "implementer" },
+    { issue, project: projectKey.toLowerCase(), role: "implementer", repository, defaultBranch },
     { daemonModule, ghPath: process.env.LEGION_GH_PATH, systemPrompt: true }
   );
   const argument = pane.systemPromptArgument ?? "";

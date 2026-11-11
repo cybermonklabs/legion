@@ -189,8 +189,27 @@ test("a claim the listener refuses is logged naming the claim token and what sto
     "stop",
   ]);
   expect(lines).toEqual([
-    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
+    `claim boot failed at claimRole after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
   ]);
+});
+
+// Catches: the one sentence that served every failure after the registration, naming neither
+// the step it died at nor the daemon it was talking to. Six runs of 2026-11-11 were stopped
+// through it with `ECONNREFUSED` and nothing in the line said whether the dial that was refused
+// was the daemon's `claims/ready` or Envoy's role claim, so not one of the six could be
+// attributed. The boot's own steps and the role claim that runs after it are the two ends of
+// that sentence: the row above is the second, and this is the first.
+test("a failure in the boot's own steps names that step and the daemon it dialled", async () => {
+  const { host, lines, steps } = claimHost({
+    ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
+  });
+
+  await bootLegionClaim(host);
+
+  expect(lines).toEqual([
+    `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
+  ]);
+  expect(steps.at(-1)).toBe("stop");
 });
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {

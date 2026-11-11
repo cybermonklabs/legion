@@ -309,11 +309,22 @@ work=$(realpath -m -- "$work")
 
 # The worker world (worker_fixture below), which tester-proof, reviewer-text-findings and
 # threads-closed share: its repository and default branch, and the run's own issue, which each
-# scenario's runner sets once seed.ts has filed it. The repository and the branch are written
-# here and read everywhere the world states them — the remote and the checkout fixture_open
-# opens, the pull request fixture_write serves, the daemon stand-in's record and the pane's own
-# addressing (worker_boot) — so no part of the rig can name a repository or a branch the world
-# has not got.
+# scenario's runner sets once seed.ts has filed it.
+#
+# These two are written here and nowhere else in the rig. fixture_write puts them into the
+# world the run keeps, $R/world.json, and every part that states a repository or a branch reads
+# them back from there: the remote and the checkout fixture_open opens, the pull request and the
+# routes the gh stand-in serves, the record the daemon stand-in answers a `read_record` with
+# (daemon-standin.ts) and the addressing of the pane's own system prompt (worker-pane.ts). This
+# is the one place that story is told, and every other comment on it points here.
+#
+# A second name is a second world, and an agent follows whichever name it is given. Of the forty
+# runs recorded on 2026-11-10, six submitted their review to a repository their world has not
+# got: four to `sjawhar/legion-smoke`, which the daemon stand-in's record named while the world
+# was this one, their other queries answering 404, and two to `skills-rig/project`, which the
+# pane's own addressing named — one of those two agents wrote that the architect's note and the
+# addressing line gave two repositories. The scorer read those reviews as no review at all
+# (score.ts's `reviewsRoute`).
 worker_key=''
 worker_repo=example/widgets
 worker_base=main
@@ -687,6 +698,10 @@ base_env() {
 # nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
 # its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
+#
+# It opens no record: a scenario that reads none needs no file, and the two whose score reads
+# this one are worker runs, whose boot opens it by running this `gh` itself, the one the pane's
+# PATH resolves to, with `--open` (worker_boot).
 standins() {
   local bun_real
   bun_real=$(bun -e 'console.log(process.execPath)')
@@ -1608,7 +1623,10 @@ text_finding_trigger=' and on every push to main'
 # which answers success, as GitHub answers a role with write access and as it does in every world
 # of this fixture. Each world adds its own routes around it, in the order the stand-in matches
 # them (gh-standin.ts). No world routes `gh pr diff`: the stand-in answers that from the run's own
-# remote at the call, since a diff frozen here would read the same whatever the run pushed.
+# remote at the call, since a diff frozen here would read the same whatever the run pushed. No
+# world routes the submit of a review (`…/reviews/<id>/events`) either: the stand-in answers that
+# from what the run has already done, since what GitHub answers there turns on the review's own
+# state and no frozen answer could tell a pending review from a submitted one.
 round_world() {
   [ $# = 5 ] || fail "round_world: expected INDEX START GUARD DOC_LINE TRIGGER, got $# argument(s)"
   local index=$1 start=$2 guard=$3 doc_line=$4 workflow_trigger=$5
@@ -1729,15 +1747,17 @@ $entries"
   # approval. Nothing here records what a run did: the score reads the calls the stand-in
   # recorded, never these answers.
   #
-  # The submit route (`…/reviews/<id>/events`) answers before the create route and refuses, as
-  # GitHub refuses it here: that endpoint submits a review that is still pending, and every review
-  # of this world is submitted by the call that created it, so there is no pending review to
-  # submit and GitHub answers 422. Measured on 2026-11-11 in the text-fixes head arm: a reviewer
-  # approved correctly and then made that call again, the create route matched it, and the
-  # stand-in answered a review object with no `commit_id` — an approval at no head, which GitHub
-  # never writes and which the score then read as the submission that stands, failing a run whose
-  # reviewer had done its work. A world that answers what GitHub refuses is the same defect as a
-  # record naming another repository.
+  # The submit of a review (`…/reviews/<id>/events`) is routed by no world: GitHub answers it from
+  # the review's own state, and the gh stand-in answers it for every world of this rig
+  # (gh-standin.ts's reviewSubmission) — the review itself for the one review a run left pending,
+  # and 422 for every other, which is every review of this world, each submitted by the call that
+  # created it. Measured on 2026-11-11 in the text-fixes head arm: a reviewer approved correctly
+  # and then made that call again, the create route matched it, and the stand-in answered a review
+  # object with no `commit_id` — an approval at no head, which GitHub never writes and which the
+  # score then read as the submission that stands, failing a run whose reviewer had done its work.
+  # A world that answers what GitHub refuses is the same defect as a record naming another
+  # repository, and a refusal written here would have been one world's while the defect control
+  # that passed on it was built by review_world.
   extra=$(jq -n --argjson resolve "$resolve_route" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
     --argjson threads "$threads" --argjson reviews "$reviews" '[
     $resolve,
@@ -1749,9 +1769,6 @@ $entries"
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
        nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
          comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
-    {match:("^gh api (?=.*(-X|--method) ?POST).*pulls/" + ($number|tostring) + "/reviews/[0-9]+/events"),
-     stderr:"gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n",
-     exit:1},
     {match:("^gh api (?=.*(-X|--method) ?POST).*pulls/" + ($number|tostring) + "/reviews"),
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
@@ -1871,13 +1888,16 @@ EOF
 # the push log, so the only pushes it holds are the run's own: the fixture's own two pushes are
 # the world being built and no act of the run. It creates nothing else. The run's other two
 # records — the gh and bun stand-ins' calls (calls.jsonl) and the daemon stand-in's answers
-# (daemon.log) — are each written by the stand-in that keeps it, so a stand-in that wrote
-# nothing leaves no file, and the score reads that absence as the record nobody wrote rather
-# than as no call and no move, which is what a passing run shows (score.ts's `unscored`: a
-# missing record is a rig error naming it, an empty one a reading of the run the row names).
-# Creating them here cost that distinction: the audit of 2026-11-10 deleted all three from a
-# recorded failing run and it scored a pass, and a code-defect head whose gh stand-in never ran
-# passed on an empty calls.jsonl. The push log stays emptied because the post-receive hook has
+# (daemon.log) — are each opened by the stand-in that keeps it, with one line of its own that
+# says it was there and records no act: the gh stand-in's when a worker run boots (worker_boot),
+# the daemon stand-in's when it starts listening. So the score can tell a record holding that
+# line alone, which is the run that called nothing or moved nothing, from a record that is not
+# there at all, which is one nothing ever wrote (score.ts's `unscored`: a missing record is a
+# rig error naming it, a record with no act in it a reading of the run the row names).
+# A file this function created would say neither: the audit of 2026-11-10 deleted all three
+# from a recorded failing run and it scored a pass, and a code-defect head whose gh stand-in
+# never ran passed on an empty calls.jsonl, which was the rig's own file and no evidence that
+# the stand-in had ever run. The push log stays emptied because the post-receive hook has
 # already written the fixture's own pushes into it, so the empty file is the reading "no push",
 # which is what a review round leaves.
 fixture_head_commit() {
@@ -1973,7 +1993,12 @@ $2
 # this gate reads. Both are ahead of the check-runs route, which matches the word `status`
 # anywhere in the call, and the jq the rule writes for the protection read holds it
 # (`required_status_checks`); the rules route is ahead of the branch route, whose regex matches
-# the rules path too. The stand-in answers from the first route that matches the whole call.
+# the rules path too, and so is the protection route, which that same regex matches: a call on
+# GitHub's protection endpoint, `…/branches/<base>/protection`, answered from the branch route
+# got the branch object and 200, where GitHub answers a branch nothing protects 404 `Branch not
+# protected`. A reviewer reading that 200 is told this base's protection by a body that is no
+# answer to the call it made. The stand-in answers from the first route that matches the whole
+# call.
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
@@ -1994,6 +2019,8 @@ fixture_write() {
       {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
       {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
       {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
+      {match:("^gh api .*/branches/" + $base + "/protection"),
+       stderr:"gh: Branch not protected (HTTP 404)\n", exit:1},
       {match:("^gh api .*/branches/" + $base),
        stdout:{name:$base, protected:false,
          protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
@@ -2050,7 +2077,7 @@ run_project() {
 # while the run keeps one calls.jsonl, one pushes.log and one record of what reached the daemon,
 # $R/daemon.log, which every stand-in of the run appends to.
 worker_boot() {
-  local name=$1 project=$2 role=$3 phase=${4:-} state port
+  local name=$1 project=$2 role=$3 phase=${4:-} state port pane_gh pane_vars
   state=$R/state
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
@@ -2079,26 +2106,30 @@ worker_boot() {
   fi
   mkdir -p "$sessions_dir"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  # The repository is the world's own ($worker_repo, which fixture_write writes into world.json),
-  # so the record the agent reads names the repository its gh calls reach: a stand-in naming
-  # another sends the run's review to a repository the world has not got.
+  # It is given the run directory, not a repository: the record it answers names the world's own
+  # repository and default branch, which it reads out of $R/world.json (the worker world comment).
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" \
-    "$project" "$worker_key" "$worker_repo" "$role" "$phase"
+    "$project" "$worker_key" "$R" "$role" "$phase"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
   # The pane the label's checkout's daemon would give that role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
-  # recording stand-in, as the pane's real gh. The repository and default branch are the world's
-  # own ($worker_repo and $worker_base), as the daemon stand-in's are: the addressing the pane's
-  # system prompt carries then names the repository the agent's gh calls reach and the one the
-  # architect's note in its prompt gives, where an addressing of its own sent a recorded run's
-  # review to a repository the world has not got.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co" \
-    "$worker_repo" "$worker_base"
+  # recording stand-in, as the pane's real gh. It reads the repository and the default branch its
+  # addressing names out of $R/world.json too, as the daemon stand-in does.
+  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
+  # The run's Envoy is the batch's own listener, named once. The daemon's pane carries an
+  # ENVOY_URL of its own — the default it gives a pane whose environment configures no Envoy
+  # (daemon-pane.ts's DEFAULT_ENVOY_URL) — and $services_env carries the listener this batch
+  # started, so the file held the address twice and `launch`'s `env -i` decided which one the
+  # agent got by the order of the two lines. The pane's line is dropped here: one fact, one
+  # line, and a reader of pane.env sees the address the run's sessions actually reach. `sed`
+  # rather than `grep -v`, which exits 1 on a worker.env whose every line it dropped and would
+  # take `set -e` with it.
   {
-    cat "$R/worker.env" "$services_env"
+    sed '/^ENVOY_URL=/d' "$R/worker.env"
+    cat "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
     echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
     echo "GIT_CONFIG_COUNT=0"
@@ -2108,6 +2139,28 @@ worker_boot() {
     echo "GH_REPO=$worker_repo"
     echo "SKILL_SCENARIO_AGENT=$role"
   } >"$R/pane.env"
+  # The record of the run's calls is opened here, before the agent starts, by the `gh` the pane's
+  # own PATH resolves to, run in the pane's own environment: the file above is the one `launch`
+  # gives the agent, so `command -v` on its PATH finds the gh the agent's own calls will reach —
+  # whatever stands between it and the stand-in, since the daemon's pane leads PATH with its
+  # launcher directory — and `env -i` hands that gh the variables `launch` hands the agent, the
+  # run it records under (SKILL_SCENARIO_RUN) among them. `--open` writes the one line that says
+  # the stand-in was there and records no call, as record-publishes.ts writes its `recording`
+  # line. So a run whose agents call neither gh nor bun leaves calls.jsonl there holding that
+  # line alone, which the score reads as the run that called nothing, where a record nothing
+  # wrote is absent and stays the rig error (score.ts's `unscored`; fixture_head_commit tells
+  # the audit behind it). An empty file written by this script would say neither, and neither
+  # would the stand-in run by its own path: a $R/bin/gh that cannot start, a pane PATH that
+  # reaches no gh, or a pane that names no run would leave the opening line there and have the
+  # run read as one that called nothing, when no call of its agents could have been recorded at
+  # all. Opened this way the line means what the score reads it as — this run's own gh reached
+  # the stand-in — and a broken wrapper, PATH or pane is the rig error it is, with the record
+  # absent. The second agent of a run opens nothing: the record is open.
+  mapfile -t pane_vars <"$R/pane.env"
+  pane_gh=$(PATH=$(sed -n 's/^PATH=//p' "$R/pane.env" | tail -n 1); command -v gh) ||
+    fail "worker_boot: $R/pane.env names no PATH with a gh on it, so no call of this run could reach the gh stand-in"
+  env -i "${pane_vars[@]}" "$pane_gh" --open ||
+    fail "worker_boot: the pane's gh ($pane_gh) could not open $R/calls.jsonl"
   launch "$name"
   booted=$role
 }

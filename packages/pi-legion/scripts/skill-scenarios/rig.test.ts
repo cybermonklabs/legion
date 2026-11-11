@@ -695,9 +695,10 @@ describe("scenario_case", () => {
 // stand-ins' calls, and the daemon stand-in's answers. The fixture leaves the push log empty,
 // because the remote's post-receive hook has already written its own two pushes into it and
 // those are the world being built, not acts of the run; it creates neither of the other two,
-// because each is written by the stand-in that keeps it and an absent one is the score's way of
-// saying nothing wrote it (score.ts's `unscored`: a missing record is a rig error naming it, an
-// empty one a reading of the run). Catches: a rig that pre-creates a record, which made a
+// because each is opened by the stand-in that keeps it, with one line of its own, and a record
+// that is not there at all is the score's way of saying nothing wrote it (score.ts's
+// `unscored`: a missing record is a rig error naming it, one holding no line of the run's own a
+// reading of the run). Catches: a rig that pre-creates a record, which made a
 // stand-in that never ran read as a run that called nothing — a code-defect head passed on an
 // empty calls.jsonl, and the missing-file rig error fired only for a run that never got a
 // world.
@@ -787,23 +788,59 @@ describe("round_world and the worlds' own text findings", () => {
 // What worker_boot hands the daemon stand-in and the pane. Catches: a project computed a second
 // time here
 // rather than taken from the run (the recorder would subscribe to one project's topics while the
-// agents published on another's, and every send would read as never made); a record naming a
-// repository the world has not got, which had agents query two repositories and the second
-// answer 404; a pane whose addressing names a repository or a branch of its own, which sent a
-// recorded run's review to repos/skills-rig/project; and a boot that names no phase, which
+// agents published on another's, and every send would read as never made); a repository or a
+// branch handed to either of them here, which is a second place the world's own names could
+// drift from the world (rig.sh's worker world comment: both read $R/world.json, so the boot
+// hands each the run directory and no name of its own); and a boot that names no phase, which
 // serves the role's own phase to a loop the daemon starts no phase for.
 describe("worker_boot", () => {
+  /** The `gh` rig.sh's standins leaves in $R/bin: the stand-in behind a wrapper, as the pane's
+   * PATH reaches it, with the arguments it was given kept beside the run so a row can see what
+   * the boot ran it for. */
+  const recordingGh = (dir: string) =>
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >>"${path.join(dir, "pane-gh-args")}"`,
+      `exec "${process.execPath}" "${path.join(import.meta.dir, "gh-standin.ts")}" gh "$@"`,
+      "",
+    ].join("\n");
+
   /** worker_boot for ROLE in PHASE, with every process it starts stubbed, on a run whose world
-   * fixture_write wrote: what it handed the daemon stand-in, what it handed the pane
-   * (worker-pane.ts, through the stubbed `bun`), and that world's own repository. */
-  function boot(role: string, phase: string) {
+   * fixture_write wrote, and the boot's own result unjudged. `gh` writes the pane's own gh,
+   * `panePath` the PATH the pane file carries, which is where the boot looks for it, and
+   * `paneRun` the run that file records calls under: a row breaks one of the three to say what
+   * a run whose agents could reach no stand-in must leave behind. */
+  function bootResult(
+    role: string,
+    phase: string,
+    {
+      gh = recordingGh,
+      panePath = (dir: string) => `${path.join(dir, "bin")}:${childEnv.PATH}`,
+      paneRun = (dir: string) => dir,
+    } = {}
+  ) {
     const dir = freshDir(`worker-boot-${role}`);
     mkdirSync(path.join(dir, "logs"), { recursive: true });
+    mkdirSync(path.join(dir, "bin"), { recursive: true });
     writeFileSync(path.join(dir, "logs", "daemon.log"), "listening on http://127.0.0.1:4321\n");
-    writeFileSync(path.join(dir, "worker.env"), "");
-    writeFileSync(path.join(dir, "services.env"), "");
+    writeFileSync(path.join(dir, "bin", "gh"), gh(dir), { mode: 0o755 });
+    // The pane the daemon would give, carrying the Envoy address a pane whose environment
+    // configures none gets (daemon-pane.ts's DEFAULT_ENVOY_URL), the PATH it hands the agent
+    // (daemon-pane.ts's `path`, the run's own bin first), the run every call of that agent's is
+    // recorded under (base_env's SKILL_SCENARIO_RUN, which the daemon's pane keeps), and the
+    // batch's services file, carrying the listener it started: the two addresses the run's
+    // pane.env is built from.
+    writeFileSync(
+      path.join(dir, "worker.env"),
+      `ENVOY_URL=http://127.0.0.1:9020\nPI_NO_TITLE=1\nSKILL_SCENARIO_RUN=${paneRun(dir)}\nPATH=${panePath(dir)}\n`
+    );
+    writeFileSync(
+      path.join(dir, "services.env"),
+      "ENVOY_URL=http://127.0.0.1:34567\nENVOY_NATS_URL=nats://127.0.0.1:4222\n"
+    );
     const result = bash(
       [
+        fn("fail"),
         fn("worker_boot"),
         fn("fixture_write"),
         'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; }',
@@ -821,43 +858,142 @@ describe("worker_boot", () => {
       ].join("\n"),
       [dir, import.meta.dir, "example/widgets", "skillsproject1", role, phase]
     );
+    return { dir, result };
+  }
+
+  /** A boot that went through: the run directory, what it handed the daemon stand-in, what it
+   * handed the pane (worker-pane.ts, through the stubbed `bun`), and that world's own
+   * repository and branch. */
+  function boot(role: string, phase: string) {
+    const { dir, result } = bootResult(role, phase);
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    const bunArgs = readFileSync(path.join(dir, "bun-args"), "utf8").trim().split("\n");
     return {
+      dir,
       started: readFileSync(path.join(dir, "started-daemon"), "utf8").trim(),
-      pane: readFileSync(path.join(dir, "bun-args"), "utf8").trim(),
+      bunArgs,
+      pane: bunArgs.find((line) => line.includes("worker-pane.ts")) ?? "",
       world: JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")),
     };
   }
 
-  test("the stand-in is given the run's project, the world's repository and the phase", () => {
-    const { started, world } = boot("implementer", "accepting");
+  // Catches: the pane's own ENVOY_URL left in beside the batch's, which is one fact in two
+  // lines of one file. `launch` runs the agent under `env -i` with those lines, so the address
+  // the session reaches is whichever came last, and a reader of pane.env is told two. The
+  // run's Envoy is the listener the batch started, and the daemon's pane default is no address
+  // of this rig's.
+  test("the pane file names the batch's Envoy listener, once", () => {
+    const { dir } = boot("implementer", "accepting");
+    const pane = readFileSync(path.join(dir, "pane.env"), "utf8").split("\n");
+    expect(pane.filter((line) => line.startsWith("ENVOY_URL="))).toEqual([
+      "ENVOY_URL=http://127.0.0.1:34567",
+    ]);
+    // The rest of the pane the daemon gave is kept whole.
+    expect(pane).toContain("PI_NO_TITLE=1");
+    expect(pane).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4222");
+  });
+
+  // Catches: a run whose record of its calls nothing opens, where a run that called no gh and
+  // no bun leaves no calls.jsonl at all and scores as the rig error of a record nothing wrote
+  // rather than as the run that called nothing (score.ts's `unscored`). The line is the gh
+  // stand-in's own, which gh-standin.test.ts holds it to; this is the boot asking for it,
+  // before the agent starts — and asking the gh the pane's PATH resolves to, in the pane's own
+  // environment, not the stand-in script by its path, so the line says the run's own gh reached
+  // the stand-in. The record lands under the run the pane file names and the boot adds nothing
+  // to that environment, so a record at all is that environment having been the agent's.
+  test("the gh the pane's PATH resolves to opens the record of the run's calls", () => {
+    const { dir, result } = bootResult("merger", "merging");
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    // The arguments the pane's own gh was run with, which the wrapper kept: the flag alone.
+    expect(existsSync(path.join(dir, "pane-gh-args"))).toBe(true);
+    expect(readFileSync(path.join(dir, "pane-gh-args"), "utf8")).toBe("--open\n");
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(true);
+    expect(
+      readFileSync(path.join(dir, "calls.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as unknown)
+    ).toMatchObject([{ opened: "calls.jsonl" }]);
+    // The stand-in is reached through that wrapper and never run by its own path.
+    expect(readFileSync(path.join(dir, "bun-args"), "utf8")).not.toContain("gh-standin.ts");
+  });
+
+  // Catches: an opening line the rig writes where no call of the run could have been recorded.
+  // The record is opened by running the pane's own gh, so a wrapper that cannot start leaves no
+  // record at all, which score.ts's `unscored` reads as the rig error it is
+  // (score.test.ts:7094-7105), rather than a record holding the opening line alone, which it
+  // reads as the run that called nothing.
+  test("a pane gh that cannot start opens no record, and the boot says so", () => {
+    // A wrapper that cannot start: the interpreter it execs is not there, as a $R/bin/gh
+    // written against a bun that has gone would be.
+    const { dir, result } = bootResult("merger", "merging", {
+      gh: () => '#!/bin/sh\nexec /nonexistent/bun /nonexistent/gh-standin.ts gh "$@"\n',
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(`skill-scenarios: worker_boot: the pane's gh (${dir}/bin/gh)`);
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  // The other half of that rule: a pane PATH the stand-in is not on. Every call the agent made
+  // would reach the real gh or nothing, and none of them would be recorded, so the record stays
+  // absent here too.
+  test("a pane PATH that reaches no gh opens no record, and the boot says so", () => {
+    const { dir, result } = bootResult("merger", "merging", {
+      panePath: (run: string) => path.join(run, "empty"),
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      `skill-scenarios: worker_boot: ${dir}/pane.env names no PATH with a gh on it`
+    );
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  // The third way the opening line could say what is not so: a pane that names no run. The
+  // stand-in records under SKILL_SCENARIO_RUN, which it reads from the environment `launch`
+  // gives the agent and the boot hands it unchanged, so a pane file that lost the variable
+  // records no call of the agent's either, and leaves no record here.
+  test("a pane file that names no run opens no record, and the boot says so", () => {
+    const { dir, result } = bootResult("merger", "merging", { paneRun: () => "" });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("gh-standin: SKILL_SCENARIO_RUN is unset");
+    expect(result.stderr).toContain(`skill-scenarios: worker_boot: the pane's gh (${dir}/bin/gh)`);
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  test("the stand-in is given the run's project, the run's own directory and the phase", () => {
+    const { dir, started, world } = boot("implementer", "accepting");
     expect(started.split(" ").slice(-5)).toEqual([
       "skillsproject1",
       "LWEVAL-1",
-      "example/widgets",
+      dir,
       "implementer",
       "accepting",
     ]);
-    // The record the agent reads and the world its gh calls reach name one repository.
-    expect(started.split(" ").at(-3)).toBe(world.repo);
+    // The repository is no argument of the boot: the stand-in reads it, and the branch beside
+    // it, out of the world in that directory.
+    expect(started.split(" ")).not.toContain(world.repo);
+    expect(world).toMatchObject({ repo: "example/widgets", base: "main" });
   });
 
-  // The pane's addressing is the world's own, as the stand-in's record is: worker-pane.ts is
-  // given the repository and the default branch last, and a worker follows the addressing its
-  // system prompt carries. The pane named skills-rig/project on trunk while every world is
-  // example/widgets on main, and two of the forty runs recorded on 2026-11-10 posted their
-  // review to the repository the addressing named, where the scorer's repository rule read it
-  // as no review at all.
-  test("the pane is given the world's own repository and default branch", () => {
-    const { pane, world } = boot("reviewer", "accepting");
-    expect(pane.split(" ").slice(-2)).toEqual(["example/widgets", "main"]);
-    expect(pane.split(" ").at(-2)).toBe(world.repo);
-    expect(pane.split(" ").at(-1)).toBe(world.base);
+  // The pane's addressing is the world's own, as the stand-in's record is, and worker-pane.ts
+  // reads both out of the world in the run directory it is given first. A worker follows
+  // the addressing its system prompt carries: the pane named skills-rig/project on trunk while
+  // every world is example/widgets on main, and two of the forty runs recorded on 2026-11-10
+  // posted their review to the repository the addressing named, where the scorer's repository
+  // rule read it as no review at all.
+  test("the pane is given the run directory and no repository or branch of its own", () => {
+    const { dir, pane, world } = boot("reviewer", "accepting");
+    const given = pane.split(" ");
+    expect(given[1]).toBe(dir);
+    expect(given.at(-1)).toBe(`${dir}/c`);
+    expect(given).not.toContain(world.repo);
+    expect(given).not.toContain(world.base);
   });
 
   // A boot that names no phase leaves the phase to the stand-in, which serves the role's own.
   test("a boot that names no phase hands the stand-in an empty one", () => {
-    expect(boot("tester", "").started.split(" ").slice(-2)).toEqual(["example/widgets", "tester"]);
+    const { dir, started } = boot("tester", "");
+    expect(started.split(" ").slice(-2)).toEqual([dir, "tester"]);
   });
 });
 
@@ -985,14 +1121,16 @@ describe("run_threads_closed", () => {
 // base-branch reads the merge gate prescribes, where GitHub answers both and the rule has a
 // refused read reported rather than guessed around (91 of them in the batch of 2026-11-10).
 describe("fixture_write", () => {
-  /** The world fixture_write writes under a directory of its own, and `gh <args…>` answered out
-   * of it by the stand-in. */
-  function world() {
+  /** The world fixture_write writes under a directory of its own, open against BASE, and
+   * `gh <args…>` answered out of it by the stand-in. Every world of this rig is on one base,
+   * which fixture_write writes into each of its answers from `$worker_base`, so a row that
+   * builds another base reads whether those answers are the world's own. */
+  function world(base = "main") {
     const dir = freshDir("fixture-routes");
     const result = bash(
       [
         fn("fixture_write"),
-        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        `R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=${base}`,
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "fixture_write '[]' '\"\"' '[]'",
@@ -1036,6 +1174,18 @@ describe("fixture_write", () => {
     });
   });
 
+  // Catches: the protection endpoint answered from the branch route, whose regex matches that
+  // path too. `…/branches/main/protection` is GitHub's own protection read, and GitHub answers
+  // a branch nothing protects 404 `Branch not protected` there; the branch object and a 200
+  // tell a reviewer this base's protection in a body that answers another call, and the rule
+  // has a refused read reported to the architect rather than guessed around.
+  test("the world refuses the base branch's protection endpoint, as GitHub refuses an unprotected branch's", () => {
+    const refused = world()("api", "repos/example/widgets/branches/main/protection");
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout.toString()).toBe("");
+    expect(refused.stderr.toString()).toBe("gh: Branch not protected (HTTP 404)\n");
+  });
+
   test("the world answers a listing of the pull requests open on its branch", () => {
     const listed = world()(
       "pr",
@@ -1053,6 +1203,23 @@ describe("fixture_write", () => {
     );
     expect(listed.stdout.toString().trim()).toBe("1001");
     expect(listed.exitCode).toBe(0);
+  });
+
+  // Catches: the pull request's base written here as the word every world of this rig happens
+  // to carry rather than as the world's own `$worker_base`. The base is the other side of the
+  // diff the stand-in serves from the run's own remote, the branch the merge gate's two reads
+  // are of, and the default branch the pane's addressing names (worker-pane.ts), so a world
+  // built on another base and answering `main` tells each of those a branch this pull request
+  // is not open against. This world is built on `trunk`, and every answer that names the base
+  // names it.
+  test("the pull request is open against the world's own base branch, not a word of this rig's", () => {
+    const gh = world("trunk");
+    const view = gh("pr", "view", "1001", "--json", "baseRefName", "--jq", ".baseRefName");
+    expect([view.exitCode, view.stdout.toString().trim()]).toEqual([0, "trunk"]);
+    const api = gh("api", "repos/example/widgets/pulls/1001", "--jq", ".base.ref");
+    expect([api.exitCode, api.stdout.toString().trim()]).toEqual([0, "trunk"]);
+    const branch = gh("api", "repos/example/widgets/branches/trunk", "--jq", ".name");
+    expect([branch.exitCode, branch.stdout.toString().trim()]).toEqual([0, "trunk"]);
   });
 });
 
@@ -1103,15 +1270,25 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return dir;
   }
-  /** What the gh stand-in answers for `gh <args…>` in the world under `dir`, and its status. */
-  function answer(dir: string, ...args: string[]) {
-    const call = Bun.spawnSync(
+  /** What the gh stand-in answers for `gh <args…>` in the world under `dir`: its status, its
+   * stdout and its stderr, which is where a refusal's own text goes. */
+  function call(dir: string, ...args: string[]) {
+    const made = Bun.spawnSync(
       ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
       {
         env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
       }
     );
-    return { code: call.exitCode, out: call.stdout.toString().trim() };
+    return {
+      code: made.exitCode,
+      out: made.stdout.toString().trim(),
+      err: made.stderr.toString(),
+    };
+  }
+  /** The same answer without its stderr, for the rows that read what the world served. */
+  function answer(dir: string, ...args: string[]) {
+    const { code, out } = call(dir, ...args);
+    return { code, out };
   }
   /** A thread resolved as review-threads.md resolves one, reading the mutation's own answer
    * back: the call every world's `resolveReviewThread` route answers. */
@@ -1175,6 +1352,161 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     const dir = built("review_world");
     expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
     expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOrig0001" });
+  });
+
+  /** The route GitHub submits one review of this world's pull request on, as `gh api` takes it:
+   * without the leading slash, which `submit` writes, and with it, which a route copied from
+   * GitHub's own documentation carries. */
+  const submitRoute = (id: number) => `repos/example/widgets/pulls/1001/reviews/${id}/events`;
+  /** The create of a review on the world's pull request whose body names no `event`, which is
+   * what leaves a pending one (gh-standin.ts's `pendingReview`), at `commit_id`. The id the
+   * world answers it with is the id that review is then submitted under. */
+  function createPending(dir: string, commit: string) {
+    const created = call(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews",
+      "-f",
+      `commit_id=${commit}`,
+      "-f",
+      "body=two findings"
+    );
+    expect([created.code, created.err]).toEqual([0, ""]);
+  }
+  /** The submit of a review on the world's pull request, with its status, its answer and its
+   * stderr: the call a round makes on `…/reviews/<id>/events`. */
+  function submit(dir: string, id: number, event: string) {
+    return call(dir, "api", "--method", "POST", submitRoute(id), "-f", `event=${event}`);
+  }
+  /** The world's own head, which is what a create naming no commit is pending at and what each
+   * row below creates its review at. */
+  function headOf(dir: string): string {
+    const read = JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string };
+    return read.head;
+  }
+
+  // The submit endpoint is routed by no world and answered by the stand-in for all of them
+  // (gh-standin.ts's reviewSubmission), so each world refuses the submit of a review no run of
+  // its own left pending, which is every review these worlds carry. Catches: that refusal
+  // written into one world, which is how review_world — the world both reviewer-text-findings
+  // cases boot — came to answer the call with fixture_write's generic POST route, `{id:6001}`
+  // and exit 0: a reviewer that approved wrongly and then sent REQUEST_CHANGES there had that
+  // change request read as the verdict standing, and the defect control passed a round that
+  // approved. Each world is asked with the id its own create answers (rig.sh), since the
+  // refusal is of the review and not of an id this file picked, and with each verdict a round
+  // submits, since an approval answered here is the same invention as a change request.
+  for (const [world, id] of [
+    ["review_world", 6001],
+    ["approved_world", 5002],
+  ] as const)
+    test(`${world} refuses the submit of a review that is not pending`, () => {
+      const dir = built(world);
+      for (const event of ["APPROVE", "REQUEST_CHANGES"]) {
+        const refused = submit(dir, id, event);
+        expect(refused.code).toBe(1);
+        expect(refused.err).toContain("(HTTP 422)");
+        expect(refused.err).toContain("Can not submit a review that is not pending.");
+        expect(refused.out).toBe("");
+      }
+    });
+
+  // The four rows below ask of a world rig.sh builds what gh-standin.test.ts asks of a run
+  // directory it writes itself, and neither is a copy of the other: these calls go through the
+  // world's own routes, in the order the stand-in matches them, which is what the submit
+  // endpoint's refusal survived every suite for — a world routed that call and answered it
+  // ahead of the stand-in. The rows there vary the stand-in's own state cheaply, where a world
+  // of this rig has one shape.
+  // The one review a run left pending is the one this endpoint answers, and GitHub answers
+  // every other id 422. Catches: a stand-in that answers whatever id a submit names once the
+  // run has a pending review, which would hand a round that submitted the wrong review an
+  // approval of the head the right one was created at.
+  test("a submit answers the review this run left pending, and refuses every other id", () => {
+    const dir = built("review_world");
+    const head = headOf(dir);
+    createPending(dir, head);
+    const other = submit(dir, 5003, "APPROVE");
+    expect(other.code).toBe(1);
+    expect(other.err).toContain("(HTTP 422)");
+    expect(other.out).toBe("");
+    const submitted = submit(dir, 6001, "APPROVE");
+    expect(submitted.code).toBe(0);
+    expect(JSON.parse(submitted.out)).toEqual({
+      id: 6001,
+      commit_id: head,
+      state: "APPROVED",
+    });
+  });
+
+  // A round that created a review, read it again and created another has one pending review,
+  // the last: the first was replaced rather than kept. Catches: a stand-in that answers the
+  // submit with the head the round's first create named, which is the head it had before its
+  // last reading and the one GitHub would not carry.
+  test("two pending creates leave the last one, and the submit answers the head it was created at", () => {
+    const dir = built("review_world");
+    const head = headOf(dir);
+    createPending(dir, "7".repeat(40));
+    createPending(dir, head);
+    const submitted = submit(dir, 6001, "REQUEST_CHANGES");
+    expect(submitted.code).toBe(0);
+    expect(JSON.parse(submitted.out)).toEqual({
+      id: 6001,
+      commit_id: head,
+      state: "CHANGES_REQUESTED",
+    });
+  });
+
+  // The verb decides what the call is, in every spelling gh takes it in and by the reader the
+  // score reads the same call with (`isPost`): a call naming GET is a read of that path
+  // whatever its fields say, so it is answered by the route that lists the pull request's
+  // reviews, it submits nothing, and the review it did not submit is still pending for the call
+  // that does. That last call is written with the leading slash `gh api` takes either way,
+  // which is how the route reads wherever it is copied from GitHub's own documentation.
+  // Catches: a GET answered as the submission of the pending review, which gh never sent and
+  // GitHub never answers; a GET read as the submit that left no pending review behind it, where
+  // the submit that follows would be refused 422; and a submit read as none for its leading
+  // slash, which fixture_write's generic POST route would then answer `{id:6001}` with no head
+  // on it — the approval at no head this endpoint exists to stop.
+  test("a GET of the submit route submits nothing, and a submit written with a leading slash submits", () => {
+    const dir = built("review_world");
+    const head = headOf(dir);
+    createPending(dir, head);
+    for (const verb of [["-X", "GET"], ["--method=GET"]])
+      expect(answer(dir, "api", ...verb, submitRoute(6001), "-f", "event=APPROVE")).toEqual({
+        code: 0,
+        out: "[]",
+      });
+    const submitted = call(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      `/${submitRoute(6001)}`,
+      "-f",
+      "event=APPROVE"
+    );
+    expect(submitted.code).toBe(0);
+    expect(JSON.parse(submitted.out)).toEqual({
+      id: 6001,
+      commit_id: head,
+      state: "APPROVED",
+    });
+  });
+
+  // The comparison the rule has a role read (review-threads.md step 2) is the run's own
+  // remote's, answered before the routes, and a call that writes to that path is no comparison:
+  // the stand-in reads the verb as the score does, so a POST falls through to the routes, where
+  // fixture_write's generic POST answers it. Catches: a comparison read off the path alone,
+  // which would answer a write with the two refs' diff and tell the caller its call succeeded.
+  test("a comparison is the run's own remote's, and a POST to that path is no comparison", () => {
+    const dir = built("review_world");
+    const range = "repos/example/widgets/compare/main...legion/LWEVAL-1";
+    expect(answer(dir, "api", range, "--jq", ".status")).toEqual({ code: 0, out: "ahead" });
+    expect(answer(dir, "api", "--method", "POST", range, "--jq", ".id")).toEqual({
+      code: 0,
+      out: "6001",
+    });
   });
 
   // <run>/threads.json is what threadsClosed reads the scenario's threads from, and the route
@@ -2110,5 +2442,47 @@ describe("nats_ready and the URL helpers", () => {
         "postgres://rig:secret@db.example:5432/run_x?sslmode=disable\n" +
         "postgres://127.0.0.1:5432/run_x\n"
     );
+  });
+});
+
+// scripts/e2e/plan-pointer-drive.ts composes the implementer's pane through this rig's own
+// composer (daemon-pane.ts's `workerPane`), and no tsconfig of this repository covers
+// scripts/e2e: the drive's `compose` step passed a claim with no `repository` and no
+// `defaultBranch` — the two fields that composer requires and daemon-pane.go refuses a request
+// without — and nothing typechecked it, so the drive failed where it ran and nowhere else.
+// This row is that typecheck, over the one file of that directory this rig's modules reach, and
+// the pi-legion job of .github/workflows/ci.yaml runs it with every other row of this file
+// (`bun run test` in packages/pi-legion), on a pull request that changes the drive and nothing
+// else: that job's `pi_legion` filter names this file, and ci_job_reads.py declares it a read of
+// the gate, so the two say the same thing and check-ci-filters.sh holds them to it. The program
+// is written here rather than committed
+// because the file belongs to no package: the compiler options are packages/pi-legion's own,
+// with the paths and type roots a configuration outside the tree needs.
+describe("the e2e drives that compose a pane through this rig", () => {
+  test("plan-pointer-drive.ts typechecks, claim and all", () => {
+    const dir = freshDir("e2e-typecheck");
+    const config = path.join(dir, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          lib: ["ES2023"],
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          strict: true,
+          noEmit: true,
+          types: ["bun"],
+          typeRoots: [path.join(root, "node_modules", "@types")],
+          skipLibCheck: true,
+          baseUrl: root,
+          paths: { "@legion/contracts": ["packages/contracts/src/index.ts"] },
+        },
+        files: [path.join(root, "scripts", "e2e", "plan-pointer-drive.ts")],
+      })
+    );
+    const tsc = Bun.spawnSync(["bunx", "tsc", "-p", config], { cwd: root, env: childEnv });
+    expect(`${tsc.stdout.toString()}${tsc.stderr.toString()}`).toBe("");
+    expect(tsc.exitCode).toBe(0);
   });
 });

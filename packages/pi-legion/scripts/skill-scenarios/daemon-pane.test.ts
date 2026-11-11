@@ -220,9 +220,8 @@ test.skipIf(skip)(
 // the world's. It named `skills-rig/project` on `trunk` while every world rig.sh builds is
 // `example/widgets` on `main`, and a worker follows its addressing: one of the runs recorded on
 // 2026-11-10 posted its review to repos/skills-rig/project/pulls/1006/reviews, which the
-// scorer's repository rule read as no review at all, and its agent wrote that the architect's
-// note gave the repository as example/widgets while the addressing line said
-// skills-rig/project. The gh bundle is the same fact: its one directory is the owner of that
+// scorer's repository rule read as no review at all (rig.sh's worker world comment holds that
+// story). The gh bundle is the same fact: its one directory is the owner of that
 // repository, so no part of the pane names a second one.
 test.skipIf(skip)(
   "the addressing names the world's own repository and default branch",
@@ -242,6 +241,32 @@ test.skipIf(skip)(
   600_000
 );
 
+// And a world that names no default branch is refused rather than panes built on an empty one.
+// Catches: the pane composed with `defaultBranch: ""`, whose addressing then reads "default
+// branch " with nothing after it — a worker follows its addressing, and a branch it cannot read
+// is one it would guess. The repository is read the same way, by the parser that refuses an
+// empty name, so this is the branch's own refusal beside it.
+test.skipIf(skip)(
+  "a world that names no default branch is refused",
+  () => {
+    expect(() =>
+      workerPane(
+        { rig, port: 13399, profile: "rig-profile" },
+        inherited,
+        {
+          ...claim,
+          defaultBranch: "",
+        },
+        {
+          daemonModule: DAEMON_MODULE,
+          systemPrompt: true,
+        }
+      )
+    ).toThrow("the rig's world names no default branch, which the pane's addressing names");
+  },
+  600_000
+);
+
 // The phase a worker runs in is the daemon's own: the first phase of the transition table
 // workflow.RoleFor gives the role, with the word of the handoff record that phase ends with, and
 // a role the table gives no phase is an error rather than an empty answer. daemon-standin.ts
@@ -255,6 +280,119 @@ test.skipIf(skip)(
     expect(runDaemonPane(DAEMON_MODULE, ["phase", "tester"])).toBe("testing\ntest\n");
     expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "nobody"])).toThrow(
       '"nobody" works no phase'
+    );
+  },
+  600_000
+);
+
+// The refusal a worker's completion of a phase its role does not run gets is the daemon's own
+// sentence, which the stand-in answers with and the skill has the worker quote to its
+// architect. This row holds the reading to the daemon's source: it takes the format out of
+// engine.go itself and fills it, so a reading that drifted from the daemon — a different
+// sentence, the arguments in another order — fails here.
+const ENGINE = path.join(DAEMON_MODULE, "internal", "workflow", "engine.go");
+/** The format the daemon's engine builds its HANDOFF_NOT_CURRENT_PHASE message with, read out
+ * of its source, and the pieces of text around its verbs. */
+function refusalFormat(): { format: string; pieces: string[] } {
+  const source = readFileSync(ENGINE, "utf8");
+  const [, format = ""] =
+    /refused\("HANDOFF_NOT_CURRENT_PHASE", fmt\.Sprintf\("((?:[^"\\]|\\.)*)"/.exec(source) ?? [];
+  return { format, pieces: format.split(/%[a-z]/) };
+}
+test.skipIf(skip)(
+  "refusal not-current-phase prints the daemon's own refusal, read from the daemon's code",
+  () => {
+    const { format, pieces } = refusalFormat();
+    expect(format).not.toBe("");
+    // The engine fills it with the role, the issue's phase and the issue's key, in that order.
+    const filled = ["implementer", "accepting", "LWEVAL-1"].reduce(
+      (text, value) => text.replace(/%[a-z]/, value),
+      format
+    );
+    expect(
+      runDaemonPane(DAEMON_MODULE, [
+        "refusal",
+        "not-current-phase",
+        "implementer",
+        "accepting",
+        "LWEVAL-1",
+      ])
+    ).toBe(`HANDOFF_NOT_CURRENT_PHASE\n${filled}\n`);
+    expect(pieces[1]).toBeDefined();
+  },
+  600_000
+);
+
+// And no file of the rig writes that sentence itself: a copy of it passes the row above on the
+// day it is made and goes stale the day the daemon's wording moves, with nothing to say so. What
+// a copy would carry is the words the engine writes between the role and the phase, which are
+// this refusal's own. The tail every workflow refusal ends with — `; this completion changed
+// nothing` — is no test of it: the stand-in restates two other refusals of the daemon's, the
+// record-required and record-mismatch ones, and carries that tail in each.
+test("no file of the rig restates the daemon's refusal", () => {
+  const own = refusalFormat().pieces[1] ?? "";
+  expect(own.trim().length).toBeGreaterThan(10);
+  for (const file of [
+    "daemon-standin.ts",
+    "daemon-standin.test.ts",
+    "daemon-pane.go",
+    "daemon-pane.ts",
+    "rig.sh",
+    "score.ts",
+  ]) {
+    expect(readFileSync(path.join(import.meta.dir, file), "utf8")).not.toContain(own);
+  }
+});
+
+// worker-pane.ts reads the repository its addressing names, and the branch it gives as the
+// default, out of the run's own world (rig.sh's worker world comment), so the rig names neither
+// a second time. Catches: a pane built on names of its own, which is the addressing defect
+// above in the one file that composes a real run's pane.
+test.skipIf(skip)(
+  "worker-pane.ts addresses the pane at the world the run's world.json names",
+  () => {
+    const dir = path.join(rig, "worker-pane");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        repo: "widgets-org/widgets",
+        pr: 1001,
+        branch: "legion/LWEVAL-1",
+        base: "trunk",
+        head: "0".repeat(40),
+      })
+    );
+    // The pane's real gh is the run's recording stand-in, which rig.sh's standins writes here
+    // and worker-pane.ts names: the daemon is asked for a pane, so the file has to be there.
+    mkdirSync(path.join(dir, "bin"), { recursive: true });
+    writeFileSync(path.join(dir, "bin", "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    writeFileSync(
+      path.join(dir, "base.env"),
+      Object.entries({ ...inherited, HOME: path.join(dir, "home") })
+        .map(([key, value]) => `${key}=${value}\n`)
+        .join("")
+    );
+    const built = Bun.spawnSync([
+      "bun",
+      path.join(import.meta.dir, "worker-pane.ts"),
+      dir,
+      path.join(dir, "base.env"),
+      "13399",
+      "rig-profile",
+      "skillsrig",
+      "LWEVAL-1",
+      "tester",
+      path.resolve(import.meta.dir, "../../../.."),
+    ]);
+    expect(built.stderr.toString()).toBe("");
+    expect(built.exitCode).toBe(0);
+    expect(readFileSync(path.join(dir, "system-args"), "utf8")).toContain(
+      "Your issue's repository is widgets-org/widgets (default branch trunk)"
+    );
+    expect(readFileSync(path.join(dir, "worker.env"), "utf8")).toContain(
+      `GH_CONFIG_DIR=${dir}/state/secrets/legion-skillsrig-lweval-1-tester-gh/widgets-org\n`
     );
   },
   600_000

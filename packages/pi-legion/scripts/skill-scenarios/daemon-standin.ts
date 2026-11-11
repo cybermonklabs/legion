@@ -43,19 +43,26 @@
  * Every request appends one JSON line to the log file: `{at, path, status, grantId?, sessionId?,
  * mintedGrantId?, handoffId?, handoffVersion?, to?, reason?}`, the run's record of what reached
  * the daemon; a completion's line carries the record it named, and a backward move's the phase it
- * asked for and why (score.ts threadsClosed).
+ * asked for and why (score.ts threadsClosed). The record opens with one line of its own,
+ * `{at, opened}`, written when this starts listening, as record-publishes.ts writes its
+ * `recording` line: a log holding that line alone is a run whose agent never reached the
+ * daemon, which is a reading of the run, where a log that is not there at all is one nothing
+ * ever wrote, which is a rig error (score.ts's `unscored`). No score reads the line itself.
  *
- * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <repo>
+ * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <run dir>
  * <role> [phase]`
- * The state document holds that one issue, on <repo>, which is the run's own world's repository
- * (rig.sh's $worker_repo, the same name its world.json carries): a record naming another sends
- * the agent's review to a repository the world has not got. The issue stands in [phase], or,
+ * The state document holds that one issue, on the repository and default branch of the run's own
+ * world, which it reads from <run dir>/world.json, as the gh stand-in does: a record naming
+ * another repository sends the agent's review to one the world has not got, and a record naming
+ * another branch sends its work onto a branch the world has not got (rig.sh's worker world
+ * comment). The issue stands in [phase], or,
  * where the caller names none, in the first phase its role works (daemon-pane.go's `phase
  * <role>`): the implementer works implementing and retro, and the daemon starts it in either.
  * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
  * pick).
  */
 import { randomUUID } from "node:crypto";
+import { appendFileSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
 import {
@@ -64,10 +71,11 @@ import {
   LegionPhaseBackwardRequest,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
+import { z } from "zod";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
 
 const GRANT_TTL_MS = 60_000;
-const [portArg, logFile, bootTokenFile, project, issue, repo, role, phaseArg = ""] =
+const [portArg, logFile, bootTokenFile, project, issue, runDir, role, phaseArg = ""] =
   Bun.argv.slice(2);
 if (
   portArg === undefined ||
@@ -75,11 +83,11 @@ if (
   bootTokenFile === undefined ||
   project === undefined ||
   issue === undefined ||
-  repo === undefined ||
+  runDir === undefined ||
   role === undefined
 ) {
   console.error(
-    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <repo> <role> [phase]"
+    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <run dir> <role> [phase]"
   );
   process.exit(2);
 }
@@ -87,6 +95,18 @@ if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
   process.exit(2);
 }
+/** The part of rig.sh's <run>/world.json this stand-in answers a `read_record` out of: the
+ * repository the world is on and the branch its pull request is open against, which the
+ * record's `repo` and `defaultBranch` are. Neither has a default, here or in the gh stand-in
+ * that reads the same file: fixture_write writes both into every world it builds, so a world
+ * missing one is a world this cannot serve. */
+const World = z.looseObject({ repo: z.string(), base: z.string() });
+const world = World.safeParse(JSON.parse(readFileSync(`${runDir}/world.json`, "utf8")) as unknown);
+if (!world.success) {
+  console.error(`daemon-standin: ${runDir}/world.json is no world: ${world.error.message}`);
+  process.exit(2);
+}
+const { repo, base } = world.data;
 /** The owner of the run's repository, which is the one owner the project maps. */
 const [REPO_OWNER = ""] = repo.split("/");
 if (REPO_OWNER === "" || !repo.includes("/")) {
@@ -105,13 +125,25 @@ const [ROLE_PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phas
   "\n"
 );
 /** The phase the issue stands in for this run: the caller's, or the role's own when it names
- * none. A caller that names another is a run of a loop the daemon starts no phase for, and a
- * completion there belongs to no run (`handle`'s `handoff/complete`). */
+ * none. A caller that names another is a run of a loop the daemon starts no phase for, where
+ * every completion is refused `HANDOFF_NOT_CURRENT_PHASE` (`handle`'s `handoff/complete`). */
 const PHASE = phaseArg === "" ? ROLE_PHASE : phaseArg;
+/** The daemon's own refusal of a completion of a phase this role does not run, its code and its
+ * message, read from the daemon's code at boot (daemon-pane.go's `refusal`) rather than written
+ * here: the skill has the worker quote that sentence to its architect. It is read only for a
+ * run started in a phase its role does not work, which is the only run that can serve it, and a
+ * daemon whose refusal this cannot read fails the boot rather than the completion. */
+const NOT_CURRENT_PHASE =
+  PHASE === ROLE_PHASE
+    ? undefined
+    : runDaemonPane(DAEMON_MODULE, ["refusal", "not-current-phase", role, PHASE, issue]).split(
+        "\n"
+      );
 /** `GET /legion/v1/state`: the one issue the worker holds, standing in the phase this stand-in
- * was started for, on the run's own repository. That repository is the world's, given by the
- * caller and never written twice: a record that named one repository while the run's gh
- * stand-in served another had agents query both, the second answering 404, and six of the forty
+ * was started for, on the run's own world: its repository and the branch its pull request is
+ * open against, both read from that world and written nowhere else here. A record that named
+ * one repository while the run's gh stand-in served another had agents query both, the second
+ * answering 404, and six of the forty
  * runs of 2026-11-10 submitted their review to the repository the record named. `capabilities` is the
  * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
  * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
@@ -134,7 +166,7 @@ const stateIn = (phase: string) =>
         status: "in_progress",
         tree: issue,
         repo,
-        defaultBranch: "main",
+        defaultBranch: base,
         workers: {},
       },
     },
@@ -296,16 +328,12 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       // The earlier HANDOFF_NO_RUN fence of the route is not reached: a rig half is a live
       // registered worker serving generation 1, so the route attributes its completion to a run
       // and leaves the phase to the workflow. The comparison is with ROLE_PHASE, the role's
-      // first phase, which is every phase a rig run stands in. The message is the daemon's,
-      // because the skill has the worker quote it to its architect.
-      if (PHASE !== ROLE_PHASE) {
-        return {
-          response: failure(
-            409,
-            "HANDOFF_NOT_CURRENT_PHASE",
-            `the ${role} does not run phase ${PHASE} of ${issue}; this completion changed nothing`
-          ),
-        };
+      // first phase, which is every phase a rig run stands in, and the code and the message are
+      // the daemon's own, read from its code at boot (NOT_CURRENT_PHASE), because the skill has
+      // the worker quote them to its architect.
+      if (NOT_CURRENT_PHASE !== undefined) {
+        const [code = "", message = ""] = NOT_CURRENT_PHASE;
+        return { response: failure(409, code, message) };
       }
       const { handoffId, handoffVersion } = parsed.data;
       if (HANDOFF_WORD !== "" && (handoffId === undefined || handoffVersion === undefined)) {
@@ -388,5 +416,12 @@ const server = Bun.serve({
     return response;
   },
 });
-
+// The record is opened here, with one line of its own and before any request can be answered,
+// so a run whose agent never reached the daemon leaves a log holding that line and nothing
+// else — the reading "no move" — while a log nothing wrote is absent and is the rig error it
+// has always been (score.ts's `unscored`). It is written synchronously, between the socket
+// opening and the first handler turn, so it is the record's first line whatever arrives next.
+/** The record's own name, the one the score knows it by (score.ts's RECORDS). */
+const record = logFile.slice(logFile.lastIndexOf("/") + 1);
+appendFileSync(logFile, `${JSON.stringify({ at: new Date().toISOString(), opened: record })}\n`);
 console.log(`listening on http://127.0.0.1:${server.port}`);

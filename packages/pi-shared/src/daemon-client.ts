@@ -85,6 +85,12 @@ export interface ExitInput {
 export type ActivityInput = z.input<typeof LegionActivityRequest>;
 
 export interface LegionDaemonClient {
+  /** The address every call of this client dials, as `createLegionDaemonClient` was given it and
+   * without its trailing slashes. A failure says which daemon it was talking to: a refusal of a
+   * route names the route and a transport failure names neither, and a report with no address in
+   * it leaves a reader of the log to guess which port a session could not reach (the claim
+   * boot's `stopAfterRegistration` in `src/legion-claim-core.ts`). */
+  readonly endpoint: string;
   /** The daemon's whole state. `signal` aborts the request, its answer's body included: a caller
    * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
    * check) aborts it rather than leave it open. */
@@ -466,6 +472,7 @@ export function createLegionDaemonClient(
   };
 
   return {
+    endpoint,
     state: (options) =>
       read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
     register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),

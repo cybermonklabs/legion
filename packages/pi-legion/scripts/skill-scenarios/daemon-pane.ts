@@ -91,12 +91,10 @@ export interface WorkerLaunch {
 }
 
 /** The claim a worker pane is launched for: its project, issue and role, and the repository and
- * default branch of the run's own world (rig.sh's `$worker_repo` and `$worker_base`), which the
- * pane's addressing names and whose owner the claim's gh bundle is the directory of. The world's
- * are passed rather than a placeholder of this rig's own, because an addressing naming another
- * repository sends the agent's work to one the world has not got: a run recorded on 2026-11-10
- * followed an addressing of skills-rig/project and posted its review to
- * repos/skills-rig/project/pulls/1006/reviews, which the world never saw. */
+ * default branch of the run's own world, which the pane's addressing names and whose owner the
+ * claim's gh bundle is the directory of. The caller reads both out of the run's world
+ * (worker-pane.ts); why they are the world's and no name of this rig's own: rig.sh's worker
+ * world comment, which holds that story once. */
 export interface WorkerClaim {
   readonly project: string;
   readonly issue: string;

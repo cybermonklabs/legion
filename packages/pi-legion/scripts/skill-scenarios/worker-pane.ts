@@ -7,28 +7,23 @@
 //   system-args  the pane's one `--append-system-prompt` argument, as shell text
 //
 //   worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role>
-//                  <checkout> <repository> <default branch>
+//                  <checkout>
 //
-// <repository> and <default branch> are the run's own world's (rig.sh's $worker_repo and
-// $worker_base): the pane's addressing names them, so the repository a worker is told to work in
-// is the one its gh stand-in serves and the one the architect's note in its prompt gives.
+// The repository the pane's addressing names and the branch it gives as the default are the run's
+// own world's, read from <run dir>/world.json as the gh and daemon stand-ins read them (rig.sh's
+// worker world comment).
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
+import { z } from "zod";
 import { workerPane } from "./daemon-pane";
 
-const [
-  runDir,
-  baseEnvFile,
-  port,
-  profile,
-  project,
-  issue,
-  role,
-  checkout,
-  repository,
-  defaultBranch,
-] = Bun.argv.slice(2);
+/** The part of rig.sh's <run>/world.json this reads: the repository the world is on and the
+ * branch its pull request is open against. Neither has a default, here or in the stand-ins that
+ * read the same file: fixture_write writes both into every world it builds. */
+const World = z.looseObject({ repo: z.string(), base: z.string() });
+
+const [runDir, baseEnvFile, port, profile, project, issue, role, checkout] = Bun.argv.slice(2);
 if (
   runDir === undefined ||
   baseEnvFile === undefined ||
@@ -37,12 +32,10 @@ if (
   project === undefined ||
   issue === undefined ||
   role === undefined ||
-  checkout === undefined ||
-  repository === undefined ||
-  defaultBranch === undefined
+  checkout === undefined
 ) {
   console.error(
-    "usage: worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role> <checkout> <repository> <default branch>"
+    "usage: worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role> <checkout>"
   );
   process.exit(2);
 }
@@ -60,10 +53,17 @@ for (const line of readFileSync(baseEnvFile, "utf8").split("\n")) {
   }
   base[line.slice(0, equals)] = line.slice(equals + 1);
 }
+const world = World.safeParse(
+  JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")) as unknown
+);
+if (!world.success) {
+  console.error(`worker-pane.ts: ${runDir}/world.json is no world: ${world.error.message}`);
+  process.exit(2);
+}
 const pane = workerPane(
   { rig: runDir, port: Number(port), profile },
   base,
-  { project, issue, role, repository, defaultBranch },
+  { project, issue, role, repository: world.data.repo, defaultBranch: world.data.base },
   // The pane's real gh is the recording stand-in rig.sh's standins writes to $R/bin/gh, named as
   // an operator names one with LEGION_GH_PATH: it is a script, which the daemon's own resolution
   // on PATH refuses.

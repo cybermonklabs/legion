@@ -4,6 +4,7 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -254,6 +255,44 @@ describe("the removal", () => {
     expect(treeWithHardLink).not.toBe("");
     expect(existsSync(treeWithHardLink)).toBe(false);
     expect(statSync(linkedFile).mode & 0o777).toBe(0o444);
+  });
+});
+
+/**
+ * A removal is work that grows with what a suite made, and the hooks of this file take a bound
+ * of their own in place of Bun's five-second default for that reason: the tree below holds
+ * twenty thousand directories, whose chmod walk and removal together took about nine seconds
+ * when this was written, and a hook killed part-way leaves the tree on disk. Catches: that
+ * bound dropped back to Bun's default, where a suite that made such a tree reports
+ * `a beforeEach/afterEach hook timed out for this test` and names neither the hook nor the
+ * directory — which is how the kill reads in the suites that meet it
+ * (`packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose run directories each hold
+ * a bare clone). The pair is written as the pairs above are: one row makes the tree, the next
+ * finds it gone, so the removal is read by a row with a name of its own rather than by a hook
+ * failure with none. The making is slow too, so that row takes a bound of its own; the
+ * removal's is the fixture's.
+ */
+describe("a removal larger than Bun's own hook default allows", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-slow");
+  /** The tree the first row makes, which the second finds gone. */
+  let slowTree = "";
+  /** Directories, each holding one file: the shape a suite's run directories have, and what
+   * makes the walk and the unlinking long rather than any one file's size. */
+  const DIRECTORIES = 20_000;
+
+  test("a tree whose removal takes longer than five seconds is made", () => {
+    slowTree = makeDirectory("tree");
+    for (let index = 0; index < DIRECTORIES; index += 1) {
+      const held = join(slowTree, `d${index}`);
+      mkdirSync(held);
+      writeFileSync(join(held, "held.txt"), "x");
+    }
+    expect(readdirSync(slowTree)).toHaveLength(DIRECTORIES);
+  }, 600_000);
+
+  test("and is removed whole, where a five-second bound would kill the hook part-way", () => {
+    expect(slowTree).not.toBe("");
+    expect(existsSync(slowTree)).toBe(false);
   });
 });
 

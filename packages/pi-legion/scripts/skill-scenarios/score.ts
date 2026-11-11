@@ -160,33 +160,62 @@ function lines(file: string): string[] {
     .split("\n")
     .filter((line) => line.trim() !== "");
 }
+const CALLS = "calls.jsonl";
+const PUSHES = "pushes.log";
+const DAEMON = "daemon.log";
 /** The three records a worker run leaves of what it did, each named by what it holds: the gh
  * and bun stand-ins' calls, the pushes the run's own remote logged, and the daemon stand-in's
- * answers. Nothing creates them for the run — each is written by the thing that keeps it, and
- * rig.sh only empties the push log of the pushes its own fixture made (fixture_head_commit) —
- * so a record that is there and holds no line is the run's own reading, and a record that is
- * absent is one nothing ever wrote, which is a rig error (`unscored`). */
+ * answers. Nothing creates them for the run — the two JSONL records are opened by the stand-in
+ * that keeps each, with one line of its own (`Opened`), and rig.sh only empties the push log of
+ * the pushes its own fixture made (fixture_head_commit) — so a record holding no line of the
+ * run's own is the run's own reading, and a record that is absent is one nothing ever wrote,
+ * which is a rig error (`unscored`). */
 const RECORDS: Record<string, string> = {
-  "calls.jsonl": "its gh and bun calls",
-  "pushes.log": "the pushes its remote took",
-  "daemon.log": "its daemon stand-in's answers",
+  [CALLS]: "its gh and bun calls",
+  [PUSHES]: "the pushes its remote took",
+  [DAEMON]: "its daemon stand-in's answers",
 };
-/** The records of `runDir` that are there and hold no line. The row prints them, so a reader
- * can tell a run that called nothing, pushed nothing or moved nothing from one whose record the
- * score never read: a missing record is a rig error of its own and no row at all. */
+/** The line the writer of a record opens it with: the gh stand-in's, written the first time it
+ * is invoked, and the daemon stand-in's, written when it starts listening, as
+ * record-publishes.ts writes its `recording` line. It says its writer was there and records no
+ * act of the run, so no score reads it and every reader below passes it over: a record holding
+ * it alone is the run that called nothing or moved nothing, where a record nothing wrote at all
+ * is the rig error. */
+const Opened = z.looseObject({ at: z.string(), opened: z.string() });
+/** Whether this line is that opening line. A record whose lines are no JSON (the push log, which
+ * its remote's hook writes) holds none. */
+function opening(line: string): boolean {
+  if (!line.startsWith("{")) return false;
+  try {
+    return Opened.safeParse(JSON.parse(line)).success;
+  } catch {
+    return false;
+  }
+}
+/** The records of `runDir` that are there and hold no line of the run's own. The row prints
+ * them, so a reader can tell a run that called nothing, pushed nothing or moved nothing from one
+ * whose record the score never read: a missing record is a rig error of its own and no row at
+ * all. */
 function emptyRecords(runDir: string): string[] {
   return Object.keys(RECORDS).filter(
-    (file) => existsSync(path.join(runDir, file)) && lines(path.join(runDir, file)).length === 0
+    (file) => existsSync(path.join(runDir, file)) && lines(path.join(runDir, file)).every(opening)
   );
 }
-/** Each line of a JSONL file, parsed as `schema`; a line that does not parse is the rig's fault. */
+/** Each line of a JSONL file, parsed as `schema`, less the line its writer opened the record
+ * with (`Opened`); a line that does not parse is the rig's fault. published.jsonl's own ends,
+ * `recording` and `closed`, are not that line: `PublishedLine` reads them and `recordState`
+ * requires both. */
 function parsed<T>(file: string, schema: z.ZodType<T>): T[] {
-  return lines(file).map((line, index) => {
-    const result = schema.safeParse(JSON.parse(line));
+  const records: T[] = [];
+  for (const [index, line] of lines(file).entries()) {
+    const value: unknown = JSON.parse(line);
+    if (Opened.safeParse(value).success) continue;
+    const result = schema.safeParse(value);
     if (!result.success)
       throw new Error(`${file}:${index + 1} is not a record: ${result.error.message}`);
-    return result.data;
-  });
+    records.push(result.data);
+  }
+  return records;
 }
 function json<T>(file: string, schema: z.ZodType<T>): T {
   return schema.parse(JSON.parse(readFileSync(file, "utf8")));
@@ -636,7 +665,7 @@ function askgateReview(runDir: string, run: string, label: string, askCase: stri
   // untried and tried ask the person for BILLING_READ; tried runs it first, through the gh stand-in.
   const read =
     askCase === "untried" || askCase === "tried"
-      ? ` ranRead=${parsed(path.join(runDir, "calls.jsonl"), Call).some(
+      ? ` ranRead=${parsed(path.join(runDir, CALLS), Call).some(
           (call) => call.as === "gh" && call.argv.some((arg) => arg.includes(BILLING_READ))
         )}`
       : "";
@@ -699,7 +728,7 @@ function instant(text: string, what: string): bigint {
  * orders pushes against something else reads them through `instant` and the callers that only
  * count a push read a log a fixture may hold a line of any shape in. */
 function pushesOf(runDir: string): { at: string; ref: string; sha: string }[] {
-  return lines(path.join(runDir, "pushes.log")).map((line) => {
+  return lines(path.join(runDir, PUSHES)).map((line) => {
     const [at = "", ref = "", , sha = ""] = line.split(" ");
     return { at, ref, sha };
   });
@@ -759,7 +788,7 @@ function changedFiles(runDir: string, from: string, to: string): string[] {
  * defined. */
 function testerProof(runDir: string, run: string, label: string, heads: string[]): Row {
   const world = json(path.join(runDir, "world.json"), World);
-  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const calls = parsed(path.join(runDir, CALLS), Call);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
   const own = ownSession(entries);
@@ -786,7 +815,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
         refusedIds.has(part.id ?? "")
       );
     }).length;
-  const complete = parsed(path.join(runDir, "daemon.log"), DaemonLine).find(
+  const complete = parsed(path.join(runDir, DAEMON), DaemonLine).find(
     (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
   );
   const completedAt =
@@ -918,41 +947,126 @@ type Submission = {
  * `repos/sjawhar/legion-smoke/pulls/1/reviews` and the run still scored one. The stand-in matches
  * its routes on the pull request's number alone, so it answers such a call as GitHub would answer
  * the right one, and the agent is never told: six of the 40 runs recorded on 2026-11-10
- * submitted to a repository their world does not name, where every world of those runs names
- * example/widgets. Four named sjawhar/legion-smoke, which nothing of the rig gave them. The
- * other two named skills-rig/project, which the rig's own addressing gave them: the pane's
- * system prompt said "Your issue's repository is skills-rig/project (default branch trunk)"
- * (daemon-pane.go, until that addressing was made the world's own), so those two followed the
- * rig and this rule read their review as none. */
+ * submitted to a repository their world does not name, and this rule read each of those reviews
+ * as none. Where those names came from, and why every part of the rig now reads the world's
+ * own: rig.sh's worker world comment. */
 function reviewsRoute(arg: string, repo: string): boolean {
   return /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/.exec(arg)?.[1] === repo;
 }
 /** Whether `arg` submits a pending review of `repo`'s pull request:
  * `repos/<owner>/<repo>/pulls/<n>/reviews/<id>/events`, the second call of the two-step route
  * GitHub documents beside the one-step one — a POST to `…/reviews` whose body names no event
- * creates a pending review, and this call submits it with the verdict. The rig serves both,
- * since its POST route matches the `…/pulls/<n>/reviews` prefix of the path and answers this
- * call as it answers the create (rig.sh's review_world), so a round can take that route and be
- * told nothing. A reader of the create alone scored such a round `event=""`, which prints as
+ * creates a pending review, and this call submits it with the verdict. The gh stand-in serves
+ * both, the create from the world's route and this call from the review's own state, which is
+ * the stand-in's own answer and no world's (gh-standin.ts's `reviewSubmission`), so a round can
+ * take that route and be told nothing. A reader of the create alone scored such a round
+ * `event=""`, which prints as
  * `event=none`: the row of a round that submitted nothing, which is the one thing that round
  * did not do. None of the 40 runs recorded on 2026-11-10 took it; the reviewer's prompt
  * prescribes the one-step POST. */
 function submitRoute(arg: string, repo: string): boolean {
   return /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/\d+\/events$/.exec(arg)?.[1] === repo;
 }
-/** The value one of `flags` carries in `argv`, or undefined when the call names none of them:
- * the argument after the flag, which is how gh takes `--method GET`, `-X GET`, `-R owner/repo`
- * and `--repo owner/repo`. */
-function flagValue(argv: string[], flags: string[]): string | undefined {
-  const index = argv.findIndex((arg) => flags.includes(arg));
-  return index < 0 ? undefined : argv[index + 1];
+/** The text `flag` carries in `arg`, or undefined when `arg` is not that flag: "" where the flag
+ * stands alone and its value is the argument after it, and the value where it is written against
+ * the flag — `--flag=value`, and `-Xvalue` for a short flag, both of which gh takes. */
+function written(arg: string, flag: string): string | undefined {
+  if (arg === flag) return "";
+  if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+  return !flag.startsWith("--") && arg.startsWith(flag) && arg.length > flag.length
+    ? arg.slice(flag.length)
+    : undefined;
+}
+/** Whether `argv` carries any of `flags`, in any of the spellings gh takes it in (`written`). */
+function carries(argv: readonly string[], flags: readonly string[]): boolean {
+  return argv.some((arg) => flags.some((flag) => written(arg, flag) !== undefined));
+}
+/** The value the first of `flags` carries in `argv`, or undefined when the call names none of
+ * them: the argument after the flag, which is how gh takes `--method GET`, `-X GET`,
+ * `-R owner/repo` and `--repo owner/repo`, or the value written against the flag itself
+ * (`--method=GET`, `-XGET`, `--repo=owner/repo`), which gh takes just as well. */
+export function flagValue(argv: readonly string[], flags: readonly string[]): string | undefined {
+  for (const [index, arg] of argv.entries())
+    for (const flag of flags) {
+      const value = written(arg, flag);
+      if (value !== undefined) return value === "" ? argv[index + 1] : value;
+    }
+  return undefined;
+}
+/** The flags gh names a call's verb with, the flags it takes one field by, and those two with
+ * the flag it reads a whole body from: the body of a call is its fields, its `--input`, or both. */
+const METHOD_FLAGS = ["-X", "--method"];
+const FIELD_FLAGS = ["-f", "-F", "--field", "--raw-field"];
+const BODY_FLAGS = [...FIELD_FLAGS, "--input"];
+/** Whether `argv` is a POST, which is the call that submits something rather than reading it:
+ * the verb it names when it names one — `-X POST`, `-XPOST`, `--method POST` or `--method=POST`,
+ * at any position and in any case, as gh reads it — and otherwise whether it carries a body,
+ * since gh sends a call with a field or an input as a POST and one with neither as a GET.
+ *
+ * The gh stand-in asks this same function of the call it is about to answer (gh-standin.ts), so
+ * one spelling of one verb is read one way by the world and by the score: a stand-in that
+ * answered a call as a submission the score then read as a read of the route would leave a
+ * submission no row counts, and the other way round would count one the world never made. */
+export function isPost(argv: readonly string[]): boolean {
+  if (carries(argv, METHOD_FLAGS))
+    return (flagValue(argv, METHOD_FLAGS) ?? "").toUpperCase() === "POST";
+  return carries(argv, BODY_FLAGS);
+}
+/** Each field `argv` carries, as the key and the value its `key=value` names. A `-F` whose value
+ * the stand-in read out of a file is recorded with that file's text in its place
+ * (gh-standin.ts), so what is read here is what gh sent. */
+function fieldsOf(argv: readonly string[]): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (const [index, arg] of argv.entries()) {
+    const written_ = FIELD_FLAGS.map((flag) => written(arg, flag)).find(
+      (value) => value !== undefined
+    );
+    if (written_ === undefined) continue;
+    const pair = written_ === "" ? argv[index + 1] : written_;
+    if (pair === undefined) continue;
+    const [key = "", ...value] = pair.split("=");
+    fields.set(key, value.join("="));
+  }
+  return fields;
+}
+/** The JSON body `call` sent, or undefined when it sent none: the object `--input <file>` holds
+ * (the stand-in records the file it read) or `--input -` (its stdin), with each field the call
+ * carries filling in what that object leaves out. A body that is not JSON, or JSON that is no
+ * object, holds nothing this can read: the call did send one, and the row says what the
+ * submission holds rather than making a rig error of a round whose verdict is known.
+ *
+ * The gh stand-in reads a create's body through this same function (gh-standin.ts's
+ * `pendingReview`), since a create the world read as pending and the score read as a verdict —
+ * or the other way round — is a run scored against a world that answered it something else. */
+export function sentBody(call: {
+  argv: readonly string[];
+  stdin?: string | undefined;
+  files?: Record<string, string> | undefined;
+}): Record<string, unknown> | undefined {
+  const input = flagValue(call.argv, ["--input"]);
+  const text = input === undefined ? undefined : input === "-" ? call.stdin : call.files?.[input];
+  const fields = fieldsOf(call.argv);
+  if (text === undefined && fields.size === 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = text === undefined ? {} : JSON.parse(text);
+  } catch {
+    parsed = {};
+  }
+  const body: Record<string, unknown> =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? { ...(parsed as Record<string, unknown>) }
+      : {};
+  for (const [key, value] of fields) if (!(key in body)) body[key] = value;
+  return body;
 }
 /** The review `call` submitted, or undefined when it submitted none: the
  * `gh api --method POST repos/{owner}/{repo}/pulls/{n}/reviews` the reviewer's prompt prescribes,
  * on the run's own repository and no other (`reviewsRoute`),
  * whose JSON body comes from `--input <file>` (the stand-in records the file it read),
- * `--input -` (its stdin) or `-f`/`--raw-field` fields; or a `gh pr review` of that same
- * repository, which carries its event as a flag and can name neither the head nor an inline
+ * `--input -` (its stdin) or its fields, read as the stand-in reads one (`sentBody`); or a
+ * `gh pr review` of that same repository, which carries its event as a flag and can name
+ * neither the head nor an inline
  * comment; or the call that submits a pending review (`submitRoute`), whose body carries the
  * verdict and whose create carries the rest (`reviewsIn`). A call on the reviews route that
  * carries no body submits nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews
@@ -960,7 +1074,9 @@ function flagValue(argv: string[], flags: string[]): string | undefined {
  * the verb GET: `gh api repos/…/pulls/<n>/reviews --method GET -f per_page=100` is that same
  * read with its query's parameters written as fields, and a reader that took those fields for a
  * body made it the round's last submission, carrying no event — the row of a round that
- * submitted nothing, which is the one thing such a round did not do.
+ * submitted nothing, which is the one thing such a round did not do. The verb is read in every
+ * spelling gh takes it in and in any case (`isPost`), since a GET written `--method=GET` read as
+ * a call naming none is that same false row.
  *
  * The repository is read on both routes, since a review of another repository's pull request
  * approves nothing of this one and the stand-in answers such a call as GitHub would answer the
@@ -977,38 +1093,21 @@ function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefi
     return { at: call.at, event: REVIEW_FLAGS[flag] ?? "", head: "", comments: [], submits: false };
   }
   // gh sends a call carrying a field as a POST and one carrying none as a GET, so the verb is
-  // read to tell an explicit GET — a read of the route — from a submission. It is read in any
-  // case, as gh reads it.
-  const method = (flagValue(call.argv, ["--method", "-X"]) ?? "").toUpperCase();
-  if (call.argv[0] !== "api" || method === "GET") return undefined;
+  // read to tell an explicit GET — a read of the route — from a submission, by the one reader
+  // the gh stand-in answers that call with (`isPost`).
+  if (call.argv[0] !== "api" || !isPost(call.argv)) return undefined;
   const submits = call.argv.some((arg) => submitRoute(arg, repo));
   if (!submits && !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
-  const fields = new Map<string, string>();
-  let text: string | undefined;
-  for (const [index, arg] of call.argv.entries()) {
-    const next = call.argv[index + 1];
-    if (next === undefined) continue;
-    if (arg === "--input") text = next === "-" ? call.stdin : call.files?.[next];
-    else if (arg === "-f" || arg === "--raw-field" || arg === "-F" || arg === "--field") {
-      const [key = "", ...value] = next.split("=");
-      fields.set(key, value.join("="));
-    }
-  }
-  if (text === undefined && fields.size === 0) return undefined;
-  let body: unknown;
-  try {
-    body = text === undefined ? {} : JSON.parse(text);
-  } catch {
-    body = {};
-  }
+  const body = sentBody(call);
+  if (body === undefined) return undefined;
   const read = Review.safeParse(body);
   const review = read.success ? read.data : {};
   return {
     // The time the stand-in recorded the call at, which is when the review was submitted: the
     // ordering of this loop's first message is read against it (`toldImplementer`).
     at: call.at,
-    event: review.event ?? fields.get("event") ?? "",
-    head: review.commit_id ?? fields.get("commit_id") ?? "",
+    event: review.event ?? "",
+    head: review.commit_id ?? "",
     comments: (review.comments ?? []).map((comment) => comment.path ?? ""),
     submits,
   };
@@ -1022,8 +1121,10 @@ function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefi
  * the create carries the head and the inline comments, the submit call carries the verdict, and
  * the pair takes the submit call's own place in the order, which is when the verdict was made.
  * The create it folds in is the last one before it that named no event, which is the only
- * pending review a run of this rig can have: the stand-in answers every create with review id
- * 5002 (rig.sh's review_world), so an id names no particular review here. A create no submit
+ * pending review a run of this rig can have: each world answers every create of its own with
+ * one id — `approved_world` 5002, from the reviews route of its own, and `review_world` 6001,
+ * from the POST route every world shares (rig.sh's fixture_write) — so an id
+ * names no particular review here. A create no submit
  * call follows stays as it is — a pending review is no verdict, and it scores as the empty event
  * it carries. */
 function reviewsIn(calls: z.infer<typeof Call>[], repo: string): Submission[] {
@@ -1151,7 +1252,7 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  * defined. */
 function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
   const world = json(path.join(runDir, "world.json"), World);
-  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const calls = parsed(path.join(runDir, CALLS), Call);
   const reviews = reviewsIn(
     calls.filter((call) => call.as === "gh" && call.exit === 0),
     world.repo
@@ -1302,6 +1403,12 @@ function namesHead(sha: string, named: string): boolean {
  * is read from the transcript's whole text rather than from one tool's results. */
 const CONTRACT_REFUSED =
   /([A-Z]+ \/legion\/\S+) answered \d+ with a body the daemon API contract does not describe: ([^"\\\n]+)/;
+/** The sentence the claim boot leaves in a half's own output when a session that registered
+ * could not finish booting: `claim boot failed …`, naming the step, the daemon it dialled and
+ * why (`stopAfterRegistration` in `packages/pi-shared/src/legion-claim-core.ts`). The agent then
+ * exits so the daemon would launch it again, which no run of this rig does, so the half is gone
+ * from the middle of the run (`unscored`). */
+const CLAIM_BOOT_FAILED = /claim boot failed [^\n]*/;
 /** Every word of a transcript: each text part of each message, the tool results among them. */
 function transcriptText(entries: SessionEntry[]): string {
   return entries
@@ -1610,7 +1717,7 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
   const world = json(path.join(runDir, "world.json"), World);
   const threads = json(path.join(runDir, "threads.json"), Threads);
-  const calls = parsed(path.join(runDir, "calls.jsonl"), Call).filter(
+  const calls = parsed(path.join(runDir, CALLS), Call).filter(
     (call) => call.as === "gh" && call.exit === 0
   );
   const fixCalls = calls.filter((call) => call.by === FIXES);
@@ -1690,23 +1797,32 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const listed = reviewCalls.some(listsTheThreads);
   // The reviews the run's agents submitted. The approval already on the pull request is the
   // fixture's, which no call of this run made, so a submission here is a second one; the one
-  // that stands is the reviewer's last, and it approves the head the push made, by SHA.
+  // that stands is the reviewer's own verdict — its last `APPROVE` or `REQUEST_CHANGES`
+  // (`verdictOf`), the reading reviewerTextFindings takes of the same fact — and it approves the
+  // head the push made, by SHA. A `COMMENT` review carries no verdict and withdraws none, so a
+  // reviewer that approved the fix head and then posted one more reading has approved it, where
+  // a reader of its last submission of any kind scored that round `approved=false`.
   const submissions = reviewsIn(calls, world.repo);
-  const submitted = reviewsIn(reviewCalls, world.repo).at(-1);
+  const verdict = verdictOf(reviewsIn(reviewCalls, world.repo));
   const approved =
-    submitted?.event === "APPROVE" && tip !== undefined && namesHead(tip, submitted.head);
+    verdict?.event === "APPROVE" && tip !== undefined && namesHead(tip, verdict.head);
   // The body the stand-in kept last, which is the one a reader of the pull request would see:
   // each thread's entry rewritten at the head the push made, naming the commit that closed it.
+  // Where the body names one thread on more than one line, the entry is the last of them, as
+  // the body kept last is the body that stands: an implementer that left the approval's own
+  // line above the entry it wrote — "was still open at <approved head>" over "fixed in <tip>"
+  // — has written the disposition the reader ends on, and a reader of the first line would
+  // score that run as a body still marking the thread open.
   const body = calls.findLast((call) => call.body !== undefined)?.body ?? "";
   const entries = threads.map((thread) =>
-    body.split("\n").find((line) => line.includes(thread.id))
+    body.split("\n").findLast((line) => line.includes(thread.id))
   );
   const threadsLine =
     tip !== undefined &&
     entries.every(
       (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
     );
-  const daemon = parsed(path.join(runDir, "daemon.log"), DaemonLine);
+  const daemon = parsed(path.join(runDir, DAEMON), DaemonLine);
   // The completions the stand-in refused, which are the completions this loop can have: both
   // halves are booted in `accepting`, whose phase is the architect's, so every completion of
   // theirs is answered 409 HANDOFF_NOT_CURRENT_PHASE, as the workflow answers one
@@ -1761,11 +1877,11 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // implementer that copies it in has told the architect of a head nobody has approved yet.
   const toReviewerAlone = sentOnlyTo(runDir, fixSender, RESOLVES);
   // The reviewer's wake of the architect carries the approval, so it is ordered after the
-  // approval standing on the pull request: a message written before it reports an approval
-  // nobody had made. That approval is the pull request's, whichever half submitted it, since
-  // that is the one the architect's gate reads; whether the reviewer made it, and at the head
-  // the fix landed on, is `approved`'s own question.
-  const approvedAt = submissions.findLast((review) => review.event === "APPROVE")?.at;
+  // approval it reports: a message written before it reports an approval nobody had made. The
+  // approval is the reviewer's own verdict above and no second reading of it — this wake is the
+  // reviewer's, and the head it tells the architect of is the head that verdict approved
+  // (`approved`), so one submission is read once.
+  const approvedAt = verdict?.event === "APPROVE" ? verdict.at : undefined;
   const toldArchitectOfHead =
     reviewSender !== undefined &&
     approvedAt !== undefined &&
@@ -4101,6 +4217,22 @@ function median(values: number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
+/** Every half's own output, as the file it is in and the text in it: `<run>/out-<role>.txt`,
+ * which rig.sh moves aside for each agent another is booted after, and `<run>/out.txt`, the
+ * last agent's (worker_boot). A run that booted one agent has that file alone. */
+function outputs(runDir: string): [file: string, text: string][] {
+  return readdirSync(runDir)
+    .filter((file) => /^out(-.+)?\.txt$/.test(file))
+    .sort()
+    .map((file) => [file, lines(path.join(runDir, file)).join("\n")]);
+}
+/** The time of the last request a run's daemon stand-in recorded, or undefined for a run that
+ * made none: a log holding its opening line alone, or none at all, which is itself a rig error
+ * for the scenarios that keep one (RECORDS). */
+function lastDaemonRequest(runDir: string): string | undefined {
+  return parsed(path.join(runDir, DAEMON), DaemonLine).at(-1)?.at;
+}
+
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -4108,6 +4240,10 @@ function median(values: number[]): number {
  *     searches every project of its server, so runs that share one can read each other's issue
  *     and asks, and one run's answer can be another's;
  *   - it never finished: out.txt has no `exit=` line;
+ *   - a half of it died in its claim boot: it registered with the daemon and could not finish
+ *     the boot, and the pane then exited so the daemon would launch it again, which no run of
+ *     this rig does (CLAIM_BOOT_FAILED). The half is gone from the middle of the run, so what
+ *     it had done by then answers nothing the scenario asks of it;
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
@@ -4135,16 +4271,19 @@ function median(values: number[]): number {
  *     (`unreadable`), so what reached that topic is unknown.
  *   - for a scenario whose score reads what the stand-ins recorded (RECORDED), one of the three
  *     records a worker run leaves is missing: calls.jsonl, pushes.log or daemon.log (RECORDS).
- *     Each is written by the thing that keeps it — the gh and bun stand-ins, the remote's
- *     post-receive hook, the daemon stand-in — and the rig creates none of them, emptying only
- *     the push log, of the pushes its own fixture made, so an absent
+ *     Each is kept by the thing that writes it — the gh and bun stand-ins, the remote's
+ *     post-receive hook, the daemon stand-in — and the rig creates none of them: it has the gh
+ *     stand-in open its own record with one line (`Opened`, rig.sh's worker_boot), the daemon
+ *     stand-in opens its log the same way when it starts listening, and rig.sh empties the push
+ *     log of the pushes its own fixture made. So an absent
  *     one is a record nothing ever wrote. `lines` reads it as no line at all, which is what no
  *     call, no push and no move look like, and each of those is an answer a passing run gives,
  *     so such a run would be scored on silence nobody made: the audit of 2026-11-10 deleted the
  *     three from a recorded failing run and it scored a pass. A record that is there and holds
- *     no line is the other reading — the run made no call, pushed nothing, moved nothing — and
- *     it scores, with the row naming each empty record (`emptyRecords`) so a reader can tell
- *     which of the two the score saw;
+ *     no line of the run's own — its opening line alone, or nothing at all where its writer
+ *     opens it with none — is the other reading: the run made no call, pushed nothing, moved
+ *     nothing. It scores, with the row naming each such record (`emptyRecords`) so a reader can
+ *     tell which of the two the score saw;
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
@@ -4173,6 +4312,19 @@ function unscored(
   }
   if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
     return "out.txt has no exit= line: the run never finished";
+  // A half that died in its claim boot measured nothing: it registered with the daemon, could
+  // not finish the boot — whichever step its line names — and exited so the daemon would launch
+  // it again, which no run of this rig does. Six of the twelve runs of 2026-11-11 exited 1 with
+  // `claim boot failed after claims/register registered <role>; exiting so the daemon launches
+  // it again: ECONNREFUSED`, and each was scored as a failure of the text under test, which is
+  // a scorer reading an agent that was stopped as an agent that chose. The row names the half
+  // by its own output file, the sentence it left, and when the run last reached its daemon,
+  // which is where a reader of the rig looks next.
+  for (const [file, text] of outputs(runDir)) {
+    const failed = CLAIM_BOOT_FAILED.exec(text);
+    if (failed !== null)
+      return `the agent of <run>/${file} died in its claim boot, so nothing it did is its own behaviour: ${failed[0]} (the run's last recorded daemon request: ${lastDaemonRequest(runDir) ?? "none"})`;
+  }
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
@@ -4203,12 +4355,13 @@ function unscored(
       return `${role === "" ? "the run's own agent" : `the ${role} half`} had a daemon answer refused by its own checkout's contract: ${refused[1]} ${refused[2]}`;
   }
   // The three records a worker run leaves of what it did (RECORDS). Each is written by the
-  // thing that keeps it and by nothing else — rig.sh creates none of them, and empties only the
-  // push log, of the pushes its own fixture made — so an absent one
+  // thing that keeps it and by nothing else — rig.sh creates none of them: each stand-in opens
+  // its own record with one line of its own, and rig.sh empties only the push log, of the
+  // pushes its own fixture made — so an absent one
   // is a record nothing wrote: `lines` would read it as no call, no push and no move, each of
   // which a passing run shows, so it is a rig error naming the file rather than a row scored on
-  // a file nobody wrote. A record that is there and holds no line is the other reading, and the
-  // row names it (`emptyRecords`).
+  // a file nobody wrote. A record holding no line of the run's own is the other reading, and
+  // the row names it (`emptyRecords`).
   if (RECORDED.includes(scenario)) {
     for (const [file, reads] of Object.entries(RECORDS)) {
       if (!existsSync(path.join(runDir, file)))
@@ -4585,9 +4738,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
                 ),
               ]),
         ];
-        // A record that is there and holds no line is a reading of the run and not a gap in the
-        // rig (a missing one never reaches here: `unscored` makes it a rig error), so the row
-        // says which it saw rather than leaving a reader to guess why a count is zero.
+        // A record holding no line of the run's own is a reading of the run and not a gap in
+        // the rig (a missing one never reaches here: `unscored` makes it a rig error), so the
+        // row says which it saw rather than leaving a reader to guess why a count is zero.
         const empty = RECORDED.includes(scenario) ? emptyRecords(dir) : [];
         const [first = "", ...rest] = scored.notes.split("\n");
         const row = {
@@ -4598,7 +4751,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
             ...rest,
             ...(empty.length === 0
               ? []
-              : [`  empty records: ${empty.join(", ")} — there, and holding no line`]),
+              : [
+                  `  empty records: ${empty.join(", ")} — there, and holding no line of the run's own`,
+                ]),
             ...flags.flatMap((flag) => flag.lines.map((line) => `  ${line}`)),
           ].join("\n"),
         };

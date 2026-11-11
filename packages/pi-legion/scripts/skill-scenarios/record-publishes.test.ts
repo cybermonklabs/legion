@@ -175,6 +175,9 @@ test.skipIf(skip)(
 // sent — each run of a batch has a Legion project of its own for that reason (rig.sh's
 // run_project) — and one that keeps a message of this run's project that reached no role topic
 // at all, which is a message no role of the loop reads and no step of it was taken by. And one
+// that finds this run's project anywhere in the role token rather than at its start, where a
+// topic of a project this one's name is inside — `x-legion-mine-lweval-1-`, the shape a batch
+// of runs whose tokens share a tail gives — would be recorded as this run's own wake. And one
 // that drops the body of a message longer than one line, which the listener carries as the
 // envelope's payload while its summary holds the first line alone.
 test.skipIf(skip)(
@@ -196,6 +199,15 @@ test.skipIf(skip)(
         "notifications.agent.01a0f2cc",
         JSON.stringify(
           envelope("notifications.chat.legion-mine-lweval-1-reviewer", "a word in another lane")
+        )
+      );
+      // The role token of another project, with this run's own token inside it: a recorder
+      // that asks whether the token holds the prefix rather than whether it starts with it
+      // records a message no role of this run was ever addressed by.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.role.x-legion-mine-lweval-1-reviewer", "another project's wake")
         )
       );
       run.client.publish(
@@ -258,22 +270,32 @@ test.skipIf(skip)(
 // and is not refused), so it is no defect of the listener — but the score reads who sent a
 // message by that session against each half's own transcript, so a message without one cannot be
 // read as any half's. It is written as `unreadable`, which makes its run a rig error, rather than
-// recorded with a blank sender that a transcript without a header would match.
+// recorded with a blank sender that a transcript without a header would match. The key absent
+// and the key empty are the same message to this reader, and a parse that asks only for a
+// string takes the empty one: it would be recorded with a blank sender, and `publishes` reads
+// the sender against a half's own session id, so that line is a message of nobody's that a
+// reader of either half passes over in silence.
 test.skipIf(skip)(
-  "a message with no session of its own is unreadable, not a blank sender",
+  "a message whose session is absent or empty is unreadable, not a blank sender",
   async () => {
     const run = await recording("no-session", "legion-void-lweval-1-");
     try {
       const topic = "notifications.role.legion-void-lweval-1-reviewer";
       const { source_session, ...sessionless } = envelope(topic, "a wake from no session");
       run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(sessionless));
+      // The same message with the key present and empty, which is the other shape a publish
+      // that names no session reaches a reader in.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify({ ...envelope(topic, "a wake from a blank session"), source_session: "" })
+      );
       run.client.publish(
         "notifications.agent.01a0f2cc",
         JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
       );
       await run.client.flush();
       const lines = await run.recorded("the fixes are pushed");
-      expect((await run.written()).some((line) => line.unreadable === topic)).toBe(true);
+      expect((await run.written()).filter((line) => line.unreadable === topic)).toHaveLength(2);
       expect(lines).toHaveLength(1);
       expect(lines[0]).toMatchObject({ sender: "01a0f2cc" });
     } finally {

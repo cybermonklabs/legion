@@ -8,6 +8,10 @@
 //	                         word of the handoff record that phase ends with (handoffWords), empty
 //	                         for a phase that ends with none: the first phase workflow.RoleFor
 //	                         gives to the role
+//	refusal not-current-phase <role> <phase> <issue>
+//	                         prints the code of the daemon's refusal of a completion of a phase
+//	                         the role does not run, then on a second line the daemon's own
+//	                         message for it, read out of the daemon's source (notCurrentPhase)
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
 package main
@@ -16,9 +20,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,7 +46,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -45,6 +54,8 @@ func main() {
 	switch {
 	case len(args) == 2 && args[0] == "phase":
 		err = printPhase(claim.Role(args[1]))
+	case len(args) == 5 && args[0] == "refusal" && args[1] == "not-current-phase":
+		err = printNotCurrentPhase(args[2], args[3], args[4])
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	default:
@@ -80,6 +91,112 @@ func printPhase(role claim.Role) error {
 	return fmt.Errorf("%q works no phase", role)
 }
 
+// engineFile is where the daemon builds the workflow's refusals, read relative to the module
+// this program is run inside (daemon-pane.ts).
+const engineFile = "internal/workflow/engine.go"
+
+// notCurrentPhaseCode is the refusal the daemon answers a completion of a phase the completing
+// role does not run with.
+const notCurrentPhaseCode = "HANDOFF_NOT_CURRENT_PHASE"
+
+// printNotCurrentPhase prints that refusal's code and the daemon's own message for it, for the
+// stand-in to answer such a completion with (daemon-standin.ts).
+func printNotCurrentPhase(role, issuePhase, issue string) error {
+	message, err := notCurrentPhase(role, issuePhase, issue)
+	if err != nil {
+		return err
+	}
+	fmt.Println(notCurrentPhaseCode)
+	fmt.Println(message)
+	return nil
+}
+
+// notCurrentPhase is the sentence the daemon sends a worker whose completion names a phase its
+// role does not run, read out of the daemon's own code rather than restated here: the skill has
+// the worker quote that sentence to its architect, so a stand-in answering a sentence of its own
+// would teach every agent a message the daemon never sends, and a copy goes stale the day the
+// daemon's wording moves with nothing to say so. The engine builds it in one place,
+// `refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(<format>, <arguments>...))`, so this reads
+// that call's format and fills it with the arguments the engine itself names. A daemon that
+// writes the refusal in some other shape is an error here, never a sentence this invents.
+func notCurrentPhase(role, issuePhase, issue string) (string, error) {
+	format, arguments, err := refusalMessage(notCurrentPhaseCode)
+	if err != nil {
+		return "", err
+	}
+	named := map[string]string{"fact.Role": role, "issue.Phase": issuePhase, "issue.Key": issue}
+	values := make([]any, 0, len(arguments))
+	for _, argument := range arguments {
+		value, ok := named[argument]
+		if !ok {
+			return "", fmt.Errorf("%s fills the %s message with %s, which this program has no value for", engineFile, notCurrentPhaseCode, argument)
+		}
+		values = append(values, value)
+	}
+	message := fmt.Sprintf(format, values...)
+	if strings.Contains(message, "%!") {
+		return "", fmt.Errorf("%s's %s message %q takes other arguments than the %d it names", engineFile, notCurrentPhaseCode, format, len(arguments))
+	}
+	return message, nil
+}
+
+// refusalMessage is the format string and the argument expressions, as the daemon writes them,
+// of the engine's `refused(code, fmt.Sprintf(…))` call for `code`.
+func refusalMessage(code string) (string, []string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), engineFile, nil, 0)
+	if err != nil {
+		return "", nil, fmt.Errorf("read the daemon's %s: %w", engineFile, err)
+	}
+	format, arguments, found := "", []string(nil), false
+	ast.Inspect(file, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		name, isName := call.Fun.(*ast.Ident)
+		if !isName || name.Name != "refused" || len(call.Args) != 2 {
+			return true
+		}
+		if refused, isText := stringLiteral(call.Args[0]); !isText || refused != code {
+			return true
+		}
+		sprintf, isSprintf := call.Args[1].(*ast.CallExpr)
+		if !isSprintf {
+			return true
+		}
+		printer, isSelector := sprintf.Fun.(*ast.SelectorExpr)
+		if !isSelector || printer.Sel.Name != "Sprintf" || len(sprintf.Args) == 0 {
+			return true
+		}
+		text, isText := stringLiteral(sprintf.Args[0])
+		if !isText {
+			return true
+		}
+		format, found = text, true
+		for _, argument := range sprintf.Args[1:] {
+			arguments = append(arguments, types.ExprString(argument))
+		}
+		return false
+	})
+	if !found {
+		return "", nil, fmt.Errorf("%s holds no refused(%q, fmt.Sprintf(…)) call: the daemon writes that refusal some other way now", engineFile, code)
+	}
+	return format, arguments, nil
+}
+
+// stringLiteral is the text of an interpreted string literal, and false for any other expression.
+func stringLiteral(expression ast.Expr) (string, bool) {
+	literal, isLiteral := expression.(*ast.BasicLit)
+	if !isLiteral || literal.Kind != token.STRING {
+		return "", false
+	}
+	text, err := strconv.Unquote(literal.Value)
+	return text, err == nil
+}
+
 // paneRequest is the claim a pane is launched for, and the rig's stand-ins for what the daemon
 // knows at boot. The pane's tree is its issue.
 type paneRequest struct {
@@ -95,24 +212,20 @@ type paneRequest struct {
 	// BootTokenFile is the rig's boot token file, the one its stand-in daemon checks.
 	BootTokenFile string `json:"bootTokenFile"`
 	// GHToken is the GitHub token the rig stands in for the claim's App token: it is rendered
-	// into the claim's gh bundle (runtime.GHConfigDir), the one directory of rigOwner, which the
-	// pane's GH_CONFIG_DIR names, as the daemon's tmux runtime writes it at spawn; the pane's
-	// LEGION_GH_PATH is realGH's: GHPath when the rig names one, else the first gh on Path,
-	// refused when that is a script, as the daemon resolves it at boot. "" is a daemon
+	// into the claim's gh bundle (runtime.GHConfigDir), the one directory of Repository's owner,
+	// which the pane's GH_CONFIG_DIR names, as the daemon's tmux runtime writes it at spawn; the
+	// pane's LEGION_GH_PATH is realGH's: GHPath when the rig names one, else the first gh on
+	// Path, refused when that is a script, as the daemon resolves it at boot. "" is a daemon
 	// with no GitHub credential: no files, and no gh variable on the pane.
 	GHToken string `json:"ghToken"`
 	// Path is the PATH the daemon would start under; the pane's PATH is it behind the pane's
 	// launcher directory (workerbin.Path).
 	Path string `json:"path"`
-	// Repository is the GitHub repository of the run's own world (rig.sh's $worker_repo, the name
-	// its world.json, its gh stand-in and its daemon stand-in all carry) and DefaultBranch the
-	// branch that world opens its pull request against. The pane's addressing names them, as a
-	// real pane's names its issue's, and its gh bundle is the directory of this repository's
-	// owner. They are the world's and not this program's own, because an addressing naming
-	// another repository sends the agent's work to a repository the world has not got: a run
-	// recorded on 2026-11-10 followed an addressing of skills-rig/project and posted its review
-	// to repos/skills-rig/project/pulls/1006/reviews, which the world never saw, and its agent
-	// wrote that the architect's note and the addressing line named two repositories.
+	// Repository is the GitHub repository of the run's own world and DefaultBranch the branch
+	// that world opens its pull request against. The pane's addressing names them, as a real
+	// pane's names its issue's, and its gh bundle is the directory of this repository's owner.
+	// Why they are the world's own and no name of this program's: the worker world comment of
+	// rig.sh, which holds that story once.
 	Repository    string `json:"repository"`
 	DefaultBranch string `json:"defaultBranch"`
 	// GHPath is the real gh the rig names for the pane, as an operator names one with
