@@ -246,12 +246,21 @@ func baseBuild(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read the tree of %s: %v", commit, err)
 	}
+	// The archive's stdout is the pipe tar reads, so its own failure is read from its stderr
+	// alone: asking for both, as CombinedOutput does, is `exec: Stdout already set` and the
+	// build never runs. It surfaces only on the first build of a fork point, since a later run
+	// finds the binary this one keeps.
+	var problems strings.Builder
+	archive.Stderr = &problems
 	extract.Stdin = pipe
 	if err := extract.Start(); err != nil {
 		t.Fatalf("extract the tree of %s: %v", commit, err)
 	}
-	if out, err := archive.CombinedOutput(); err != nil {
-		t.Fatalf("read the tree of %s: %v\n%s", commit, err, out)
+	if err := archive.Start(); err != nil {
+		t.Fatalf("read the tree of %s: %v", commit, err)
+	}
+	if err := archive.Wait(); err != nil {
+		t.Fatalf("read the tree of %s: %v\n%s", commit, err, problems.String())
 	}
 	if err := extract.Wait(); err != nil {
 		t.Fatalf("extract the tree of %s: %v", commit, err)
