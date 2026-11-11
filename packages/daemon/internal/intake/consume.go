@@ -126,10 +126,10 @@ type ConsumerSpec struct {
 	// I/O, so the answer is read here, before the fact is applied, only for a review that decides
 	// (PullRequestReview.Decides) and has an author, and within AckWait, which bounds this one read
 	// and not the delivery: intake reports the message in progress for as long as the handler runs
-	// (keepInProgress), which makes a redelivery of it unlikely rather than impossible, and
+	// (keepInProgress), which defers a second delivery rather than preventing one, and
 	// HandlerLimit is what ends a handling that never returns. The bound here is what keeps one
-	// slow GitHub answer from holding the fact. An author GitHub gives no write
-	// access is false; a lookup that fails is an error, and the message is retried, after NakDelay
+	// slow GitHub answer from holding the fact. An author GitHub gives no write access is false;
+	// a lookup that fails is an error, and the message is retried, after NakDelay
 	// or the longer wait a RetryLater names, rather than applied with a permission nobody read. No
 	// resolver (a test, or a daemon without one) leaves every review's AuthorCanWrite false, so
 	// only the review App's own reviews decide.
@@ -645,13 +645,15 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // The order the work is done in is the point. A poison message is decoded and terminated before
 // anything else starts, so it pays for neither a goroutine nor a ticker. Everything after it runs
 // under work, a context of spec.HandlerLimit, with keepInProgress reporting the message in
-// progress every third of AckWait for as long as that work runs, which makes another delivery of
-// the message, and a second preparation of its fact, unlikely: each report the server gets inside
-// the window starts that window again. It is no promise, and a report or the acknowledgement
-// below that reaches the server after the window has lapsed still has the message delivered again
-// (keepInProgress, ackprogress.go). The work ends the message in no way: it
-// returns a messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or
-// nak that outcome asks for follow.
+// progress every third of AckWait for as long as that work runs, which holds off another delivery
+// of the message, and a second preparation of its fact: each report the server gets inside the
+// window starts that window again. It is no promise. A report, or the acknowledgement below, that
+// reaches the server after the window has lapsed makes the message due again at the server, and
+// this consumer takes it at the pull that follows the handler's return: with consumerFetchBatch
+// of 1 (consumeConsumer's jetstream.PullMaxMessages) no pull is outstanding while the handler
+// runs, and a reconnect, which pulls again, is the one exception (keepInProgress,
+// ackprogress.go). The work ends the message in no way: it returns a messageOutcome, stop() ends
+// the keeper, and only then does the one acknowledgement or nak that outcome asks for follow.
 //
 // The keeper has to stop before that one call rather than in a defer after it. A progress signal
 // that reached the server after a nak would stretch the retry the nak asked for: nats-server's
@@ -662,10 +664,11 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // guard is the client library's, and what keeps the window between the work and the terminal call
 // free of signals is this order.
 //
-// HandlerLimit is what the held delivery costs: nothing but a signal the server gets late
-// redelivers a message reported in progress for ever, so a handler that hangs would hold its
-// message for as long as it hangs. It is cut at that limit instead, its message naked and
-// delivered again rather than left to that chance.
+// HandlerLimit is what the held delivery costs: a handler that hangs holds its message for as
+// long as it hangs. A signal the server gets late makes the message due again there, but this
+// consumer takes that delivery only at the pull that follows the handler's return, which for a
+// hung handler never comes, a reconnect excepted. The handler is cut at that limit instead, its
+// message naked and delivered again rather than held for the length of the hang.
 func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool *pgxpool.Pool, handlers []Handler) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
@@ -698,15 +701,16 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	took := time.Since(started)
 	stop()
 
-	// A fact outliving its acknowledgement window is what the progress signal usually makes
-	// harmless, so the daemon says when one did: this is the only line that reports how long a
-	// fact took, nothing else times one, and the consumer-lag warning (lagWatch) speaks only five
-	// minutes late.
+	// A fact outliving its acknowledgement window is what the progress signal makes harmless, as
+	// long as every report reaches the server inside the window, so the daemon says when one did:
+	// this is the only line that reports how long a fact took, nothing else times one, and the
+	// consumer-lag warning (lagWatch) speaks only five minutes late.
 	outlived := !outcome.nak && took > spec.AckWait
-	// A handler the limit cut is otherwise hard to see: reported in progress, it usually shows
-	// neither as repeated preparation work nor as a rising delivery count, and the nak warning
-	// nakResolve writes after it names the step and `context deadline exceeded`, which a single
-	// read cut at its own AckWait bound also says. This line is the one that names the cut.
+	// A handler the limit cut is otherwise hard to see: with a batch of one this consumer takes no
+	// second delivery while a handler runs, a reconnect excepted, so the cut handler shows neither
+	// as repeated preparation work nor as a rising delivery count, and the nak warning nakResolve
+	// writes after it names the step and `context deadline exceeded`, which a single read cut at
+	// its own AckWait bound also says. This line is the one that names the cut.
 	// A live parent context is what tells the limit from the daemon shutting its consumers down.
 	// The outcome belongs in the test because the line claims the message was naked and will be
 	// delivered again: a deadline can pass after the work committed its fact, or on a read that

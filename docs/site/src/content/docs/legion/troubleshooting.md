@@ -1071,11 +1071,13 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
   out of reach, say), or the message in hand does not finish. Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails. A handler that does not finish usually writes none of
-  those while it holds: intake reports its message in progress, which usually keeps JetStream
-  from delivering it again, and the stall is then all that shows until the handler passes the
-  intake handler limit and the daemon writes `an intake handler outran
-  its limit and was cut`, so search for that line too
+  consumer, whose `error` says what fails. A handler that does not finish writes none of those
+  while it holds: this consumer asks for one message at a time and has no pull outstanding while
+  the handler runs, so the server hands it nothing until that handler returns, except where the
+  client reconnects and asks again. What intake's progress report decides is whether a redelivery
+  follows once the handler returns, not whether one arrives while it holds. The stall is all that
+  shows until the handler passes the intake handler limit and the daemon writes `an intake handler
+  outran its limit and was cut`, so search for that line too
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
@@ -1131,9 +1133,10 @@ notice comes once per handoff commit, from whichever pass finds it first.
   per consumer. `pending` near zero with `delivered` above one is most often one event retried
   after failures, not a backlog: a retried event keeps the time it was first stored. It can also
   be an event whose progress report, or whose acknowledgement, reached the server after the
-  acknowledgement window had lapsed, which has the event delivered again with no failure of its
-  own; `an intake fact was delivered again and dropped as already applied`, under the same
-  `stream_seq`, is what names that second reading.
+  acknowledgement window had lapsed, which makes the event due again at the server with no
+  failure of its own; this consumer takes it at its next pull, once the handler that held it has
+  returned, and `an intake fact was delivered again and dropped as already applied`, under the
+  same `stream_seq`, is what names that second reading.
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
@@ -1148,15 +1151,15 @@ notice comes once per handoff commit, from whichever pass finds it first.
   the message in progress only until the limit, and the handler returns once the step that is
   running honours the cancelled context, which every step does at once today; only then is
   this warning written and the message naked. This consumer asks for one message at a time and
-  has none outstanding while the handler runs, so the event is usually sent again, and its
-  `delivered` count usually goes up by one, no sooner than that return: one nak delay (a second)
-  after the nak, or at the consumer's next pull where the step held the handler past about one
-  acknowledgement window after the limit, whichever the server takes first. A progress report
-  that reached the server late has the event delivered again before that return, and the count
-  up by one then; the reports stop at the limit, so a handler cut there has had no report for
-  whatever it ran past the limit. A step that ignored the cancelled
-  context would hold the message, and this warning, for the whole of its own run, which the
-  same late report can cut short. Between this
+  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
+  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
+  at the consumer's next pull where the step held the handler past about one acknowledgement
+  window after the limit, whichever the server takes first. A progress report that reached the
+  server late makes the event due again at the server while the handler runs, and this consumer
+  takes it at its next pull after that return all the same, which is the moment named above.
+  The reports stop at the limit, so a handler cut there has had no report for whatever it ran
+  past the limit. A step that ignored the cancelled context would hold the message, and this
+  warning, for the whole of its own run. Between this
   warning and the nak the daemon writes one more line under the same `event_id`, naming the
   step that was running, with the error `context deadline exceeded`; this warning is the one
   that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
@@ -1193,10 +1196,15 @@ notice comes once per handoff commit, from whichever pass finds it first.
 - **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
   than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake reported
-  the delivery in progress for `took`, which usually keeps JetStream from delivering the event a
-  second time. It is no promise: a progress report, or the acknowledgement itself, that reaches
-  the server after the window has lapsed still has the event delivered again, and the line's
-  `delivered` says which happened. The fact was applied: this is a fact that is slow, not one
+  the delivery in progress for `took`. Nothing was delivered to this consumer while that handler
+  ran: it asks for one message at a time and had no pull outstanding. The report defers a second
+  delivery rather than preventing one: a report, or the acknowledgement itself, that reaches the
+  server after the window has lapsed makes the event due again, and this consumer takes it at its
+  next pull after the handler returns. What says that happened is a second line under the same
+  `stream_seq`, `an intake fact was delivered again and dropped as already applied` with
+  `delivered` one higher (the entry below). This line's own `delivered` is that delivery's count:
+  the handling that outlived the window writes the line before its own acknowledgement. The fact
+  was applied: this is a fact that is slow, not one
   that failed, and this is the only line that says how long a fact took. One of them asks nothing
   of an operator; a `took` creeping towards the handler limit, or many at once, names where to
   look for the slow read behind them.

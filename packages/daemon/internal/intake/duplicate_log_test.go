@@ -30,14 +30,14 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	// handling makes, which here is the one read of whether the pull request is recorded
 	// (recordedPullRequest), since the row sets no ReviewPermission resolver, and consumerSpec's
 	// 200 ms is about the length of that work on a loaded runner, so a minute is far above it
-	// and cuts nothing the row does. That guard is what makes the count of one sound: a
-	// redelivery the count would see needs the whole minute to pass with a handler still
-	// running. The progress keeper makes a redelivery unlikely while a handler runs and promises
-	// none: a report, or the acknowledgement, that reaches the server after the window has
-	// lapsed still has the message delivered again (keepInProgress, ackprogress.go). Measured in
-	// this issue's pod at the base commit, the held-fact row of this package failed 11 of 300
-	// runs at the 200 ms window under 16 busy loops on 2 CPUs, and the keeper's first report came
-	// up to 403.7 ms after it started, against a 66.7 ms period, so up to 337 ms late.
+	// and cuts nothing the row does. The margin is what makes the count of one sound: a
+	// redelivery the count would see needs the whole minute to pass before the handling's
+	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
+	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
+	// and that trip together are a factor of about 300 below this window, 200 ms against a
+	// minute. The progress keeper reports nothing here: it ticks at a third of the window
+	// (spec.AckWait/3 in consume.go), so at 20 s, and each handling of this row acknowledges
+	// long before the first tick is due (keepInProgress, ackprogress.go).
 	spec.AckWait = time.Minute
 	stop := startConsume(t, js, spec, pool)
 	defer stop()
@@ -78,8 +78,8 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	}
 	// One delivery, by value: each publication is a stream message of its own, so the dropped
 	// copy is that message's own first delivery, and a count above one would be a JetStream
-	// redelivery. This 1 rests on the AckWait guard above, the same guard the count of one line
-	// rests on. A delivered=0 is the metadata read failing, and no reading of a drop.
+	// redelivery. This 1 rests on the same margin the count of one line above rests on.
+	// A delivered=0 is the metadata read failing, and no reading of a drop.
 	if said := logValue(line, "delivered"); said != "1" {
 		t.Errorf("the dropped duplicate's line says delivered=%s, want 1, the dropped copy's own first delivery: %s", said, line)
 	}
@@ -104,8 +104,8 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 }
 
 // logValue is what a slog text line holds for key: what follows " key=" up to the next space, or
-// "" when the line carries no such key. No field this row reads by value holds a space, so none
-// of them is quoted and none runs past the space that ends it.
+// "" when the line carries no such key. Call it only for a value slog writes unquoted: slog quotes
+// a value that holds a space, and this reads such a value only as far as that space.
 func logValue(line, key string) string {
 	_, after, found := strings.Cut(line, " "+key+"=")
 	if !found {

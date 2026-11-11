@@ -55,12 +55,12 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
 	// A failure here prints a count, and a count alone cannot tell a late progress report from a
-	// nak: each ends in a redelivery. The cleanup below prints what separates them - the
-	// consumer's own log, and for each durable its delivery count, its delivery sequence, its
-	// acknowledgement floor and its counts of pending and redelivered messages. It is registered
-	// after testJetStream, so it runs before that fixture's own cleanup closes the connection its
-	// consumer reads go through and before the shared server is released to the next test, which
-	// empties it: cleanups run last in, first out.
+	// nak: each makes the message due again at the server. The cleanup below prints what
+	// separates them - the consumer's own log, and for each durable its delivery count, its
+	// delivery sequence, its acknowledgement floor and its counts of pending and redelivered
+	// messages. It is registered after testJetStream, so it runs before that fixture's own
+	// cleanup closes the connection its consumer reads go through and before the shared server is
+	// released to the next test, which empties it: cleanups run last in, first out.
 	t.Cleanup(func() {
 		if !t.Failed() {
 			return
@@ -86,11 +86,14 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// AckWait bounds each read the handler makes - whether the pull request is recorded
 	// (recordedPullRequest) and the review author's permission (resolveReviewPermission) - and
 	// consumerSpec's 200 ms is about the length of this handler's own work on a loaded runner, so
-	// the row sets a minute as a guard far above it. That guard is what makes these counts sound:
-	// a redelivery the counts would see needs the whole minute to pass with the handler still
-	// running. The progress keeper makes a redelivery unlikely while a handler runs and promises
-	// none: a report, or the acknowledgement, that reaches the server after the window has lapsed
-	// still has the message delivered again (keepInProgress, ackprogress.go).
+	// the row sets a minute as a guard far above it. The margin is what makes these counts sound:
+	// a redelivery the counts would see needs the whole minute to pass before the handling's
+	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
+	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
+	// and that trip together are a factor of about 300 below this window, 200 ms against a
+	// minute. The progress keeper reports nothing here: it ticks at a third of the window
+	// (spec.AckWait/3 in consume.go), so at 20 s, and each handling of this row acknowledges in
+	// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
 	spec.AckWait = time.Minute
 	var mu sync.Mutex
 	var asked []string

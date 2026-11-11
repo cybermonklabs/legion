@@ -21,10 +21,11 @@ import (
 // What the two rows here prove together is Acceptance A1 of dispatch://INFRA-1530: a fact held
 // well past its acknowledgement window is delivered once and prepared once at the two-second
 // window these rows keep, because consumeMessage reports it in progress while its handler runs
-// (keepInProgress). The keeper makes that second delivery unlikely rather than impossible: a
-// progress report, or the acknowledgement, that reaches the server after the window has lapsed
-// still has the message delivered again. That is why the first row's window is sized above the
-// delays measured for those signals, and why its count is sound at two seconds and was not at
+// (keepInProgress). The keeper defers that second delivery rather than preventing it: a progress
+// report, or the acknowledgement, that reaches the server after the window has lapsed makes the
+// message due again there, and this consumer takes it at the pull that follows the handler's
+// return, which the paragraph below describes. That is why the first row's window is sized above
+// the delays measured for those signals, and why its count is sound at two seconds and was not at
 // consumerSpec's 200 ms (the window comment inside that row).
 //
 // The first row is that claim, on the daemon's own consumers, and it makes three assertions of one
@@ -180,9 +181,10 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// must count deliveries, and such a count needs a window above the measured distribution of
 	// the progress keeper's first report (docs/testing.md, "A test asserts no count of work a
 	// broker may repeat"). Until the keeper has reported once, the window alone stands between
-	// the held fact and a redelivery. consumeMessage takes the keeper's period as a third of the
-	// window (spec.AckWait/3 in consume.go), so at two seconds the period is 667 ms and 1333 ms
-	// of the window are left after the first report is due.
+	// the held fact and the server making it due again, which this consumer takes at the pull
+	// that follows the handler's return (the comment above this row). consumeMessage takes the
+	// keeper's period as a third of the window (spec.AckWait/3 in consume.go), so at two seconds
+	// the period is 667 ms and 1333 ms of the window are left after the first report is due.
 	//
 	// What that has to cover is measured. The campaign of dispatch://INFRA-1113 measured, at a
 	// 200 ms window: the largest trip of an acknowledgement to the server 516.8 ms, the largest
@@ -194,7 +196,12 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// lateness to a report's trip, and take the larger of that sum and the acknowledgement's
 	// trip. Those delays are wall-clock and not a fraction of the period, because the mechanism
 	// is a goroutine and a socket that are not scheduled: a starved goroutine is late by the
-	// time it waits, whatever interval it was waiting for. The 1333 ms left is 2.58 times
+	// time it waits, whatever interval it was waiting for. The keeper's clock starts on a window
+	// that is nearly whole: the work a delivery pays before keepInProgress starts — the library's
+	// dispatch into the consume callback, lagWatch.observe and decodeMessage — was at most
+	// 1.544 ms, measured in this pod under 16 busy loops on 2 CPUs over 3 runs of 200 deliveries,
+	// whose worst values were 372 µs, 1.544 ms and 264 µs, and the server-to-client hop before
+	// that callback is not in that figure and is unmeasured. The 1333 ms left is 2.58 times
 	// 517 ms and 2.69 times 495.6 ms, where a second and a half would leave 1000 ms, which is
 	// 1.9 times, so two seconds is the smallest half-second that leaves more than twice the
 	// largest delay measured. At consumerSpec's 200 ms this row is not sound: measured in this
@@ -288,8 +295,8 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // window and the same hold of three windows. The window is sized above: a third of it, 667 ms, is
 // when that row's keeper owes its first report, and the largest delay any signal must survive is
 // 517 ms, which the campaign of dispatch://INFRA-1113 measured. This consumer reports nothing in
-// progress, by design, so here the window only says when the server may deliver the held message
-// again.
+// progress, by design, so here the window alone says when the server makes the held message due
+// again, and this consumer's own open request takes it the moment the server does.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
 	js, stream := testJetStream(t)
 	const ackWait = 2 * time.Second
@@ -702,9 +709,10 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 //
 // Its count is of log lines rather than of deliveries, and what makes it sound at consumerSpec's
 // 200 ms window, which this row keeps, is consumerFetchBatch of 1 (jetstream.PullMaxMessages(1),
-// consume.go), so no second delivery is handled while the first is held, together with
-// heldOnce.hold returning at once for every delivery after the first, so a redelivered copy is
-// handled in milliseconds and outlives no window of its own.
+// consume.go): with a batch of one no pull is outstanding while the handler runs, so nothing is
+// delivered to this consumer until that handler returns, bar a reconnect that pulls again. It
+// rests as well on heldOnce.hold returning at once for every delivery after the first, so a
+// redelivered copy is handled in milliseconds and outlives no window of its own.
 func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
@@ -754,7 +762,7 @@ func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *tes
 	}
 	// One delivery, by value: this count is the delivery that wrote the line, and the line is
 	// written by the handling that outlived the window, which is the held message's first
-	// delivery. A redelivery would be a message of its own, which heldOnce releases at once, so
+	// delivery. A redelivery would be a delivery of its own, which heldOnce releases at once, so
 	// its handling outlives no window and writes no line of its own to be read here. That is
 	// what makes the count of lines above sound at this row's 200 ms window, and this value
 	// rests on the same reading. A delivered=0 is the metadata read of consume.go failing, and

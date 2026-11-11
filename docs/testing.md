@@ -512,37 +512,46 @@ It says nothing about the run that was lost: the series goes to the log, and tha
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS
-JetStream is this repository's broker, and it delivers a message again when neither a progress
-report nor the acknowledgement reaches the server inside the acknowledgement window. Every counter
-a handling moves then moves a second time: a statement counter, a request counter, a call counter
-in a fake. That second move is the broker's business and no part of what the code promises, so a
+JetStream is this repository's broker. It makes a message due again when neither a progress report
+nor the acknowledgement reaches the server inside the acknowledgement window, and the consumer
+takes the message again at its next pull. Every counter a handling moves then moves a second time:
+a statement counter, a request counter, a call counter in a fake. That second move is the broker's
+business and no part of what the code promises, so a
 test asserts no exact count of such work. Assert the effect the handler leaves behind instead: the
 record written, the fact applied once, the row a repeated handling does not add. A repeat is then
 invisible to the test, because the handler's effect is the same either way.
 
 Two kinds of row keep an exact count.
 
-- A count is sound behind a window far above the handler's own work. The window is a hang guard
-  then, and not a bet on timing: a redelivery the count would see needs the whole window to pass
-  with the handler still running.
-  `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction`
+- A count is sound behind a window far above the handler's own work and above the trip its
+  acknowledgement makes. The window is a hang guard then, and not a bet on timing: a redelivery
+  the count would see needs the whole window to pass before that acknowledgement reaches the
+  server. `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction`
   (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
-  over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner.
-  This carve-out rests on the keeper reporting a running handler in progress and on its first
-  report arriving one period in. Where the keeper reports at once, or its period stops being a
-  third of the window, size the window again rather than from this sentence: a reader deriving
-  it here would derive it from a mechanism that has moved.
+  over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin
+  is what this carve-out rests on: that work, and the acknowledgement's trip to the server, which
+  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, both stay far below
+  the window, a factor of about 300 at a minute against 200 ms. The progress keeper is no part of
+  it. At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler
+  acknowledges in about 200 ms, so the keeper never reports for that message at all. The
+  carve-out ends where the margin closes, and a reader finds that out by measuring the handler's
+  work and the acknowledgement's trip again, not by reading this sentence.
 - A row whose subject is the broker's own delivery behaviour must count deliveries, because the
   count is what it proves. Such a row needs a window above the measured distribution of the first
   report of the progress keeper, the goroutine that reports a running handler in progress so that
-  the broker holds its message. A window above the handler's own work is not enough. Until the
-  keeper has reported once, the window alone stands between the handler and a redelivery.
+  the server does not make its message due again. A window above the handler's own work is not
+  enough. Until the keeper has reported once, the window alone stands between the held message and
+  the server making it due again; a consumer that asks for one message at a time takes that
+  redelivery at its next pull, once the handler has returned, and the count sees it there.
   `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce` and its control
   `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal`
   (`packages/daemon/internal/intake/ackprogress_test.go`) are of this kind.
-  This carve-out rests on a redelivery being observable in no other way. Where the daemon records
-  a delivery count of its own, such a row asserts that record as any other row asserts an effect,
-  and this carve-out ends.
+  This carve-out rests on the row's subject being the broker's delivery behaviour: the count is
+  the claim, so it needs the sized window whatever it is read from. A delivery count the daemon
+  records is no way out of that, since such a count moves with the same late signals, and this
+  change logs one (`delivered`, on the held-fact line and on the duplicate line beside it). The
+  carve-out would end only where that behaviour can be seen through an effect that does not itself
+  move with delivery timing. There is no such effect today, this change's own line included.
 
 The comment beside such a count names the window and the measurement that sized it. A later reader
 changes the window, the handler or the keeper's period, and that comment is what tells the reader
@@ -564,9 +573,10 @@ goroutine was not scheduled for, and by its own documentation it sends only afte
 keeper reports nothing during the first period of a window (Go 1.27.3). Measured at a 200 ms window,
 whose period is 66.7 ms: the largest interval from the keeper's start to its first report was
 403.7 ms, which is 6.06 times the period, and the 99th percentile of that interval was 276.8 ms. A
-progress report or an acknowledgement that reaches the server after the window has lapsed lets
-JetStream deliver the message again. At the 200 ms window the row failed 2 of 1000 runs in one
-campaign and 7 of about 2274 in another, which is 0.2 and 0.31 per cent. At the committed one-minute
+progress report or an acknowledgement that reaches the server after the window has lapsed makes the
+message due again at the server, and the consumer takes it at its next pull, once the handler has
+returned. At the 200 ms window the row failed 2 of 1000 runs in one campaign and 7 of about 2274
+in another, which is 0.2 and 0.31 per cent. At the committed one-minute
 window it passed 800 of 800.
 
 Four issues record the same fault. dispatch://INFRA-456 was the daemon preparing one Dispatch issue
