@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Agent, IssueClaim, IssueSummary } from "../../api/types";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
 
 function agent(sessionID: string): Agent {
   return {
@@ -192,15 +192,4 @@ test("unclaimed holds an unresponsive holder's issue back until its claim is tak
     takeable.unmount();
     agents.mockRestore();
   }
-});
-
-test("the query key is the plain list without labels and the labelled list with them", () => {
-  expect(projectIssuesQueryKey("CORE", [])).toEqual(["issues", "project", "CORE"]);
-  expect(projectIssuesQueryKey("CORE", ["a"])).toEqual([
-    "issues",
-    "project",
-    "CORE",
-    "labels",
-    ["a"],
-  ]);
 });

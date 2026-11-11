@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 
+import { projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
-import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import { inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssuePriorityWrite {
   /** True after a save failed until the next attempt starts. */

@@ -7,6 +7,8 @@ import {
   myRepliesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
+  projectIssuesQueryKey,
+  projectListsKey,
   projectsQuery,
   userAgentStateQuery,
   userStateQuery,
@@ -32,8 +34,9 @@ import type {
 /**
  * Which cached reads one event of the feed can change, and nothing else: `eventRefreshTargets` is
  * the whole of it, and `api/query-refresh.ts` decides when each read is fetched. Query keys are the
- * literal arrays their readers use (the reference reads' builders live in
- * `features/refs/reference-target.ts`; `__tests__/event-feed.test.ts` holds the two in step).
+ * literal arrays their readers use, bar the builders a reader shares (a project's issue list,
+ * `projectIssuesQueryKey` in `api/queries.ts`; the reference reads', in
+ * `features/refs/reference-target.ts`), and `__tests__/event-feed.test.ts` holds the two in step.
  *
  * The server says what a write moved where a rule needs it: `changed` and `ancestors` on
  * `issue.created|updated|closed`, `thread_logins` on the writes that can move someone's Replies
@@ -739,7 +742,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return [
       { queryKey: projectsKey },
       { queryKey: ["project", event.project] },
-      { queryKey: ["issues", "project", event.project] },
+      { queryKey: projectIssuesQueryKey(event.project, []) },
       { queryKey: ["repo-projects"] },
       // A mapping write can change the repository every issue of its project resolves to (a new
       // default, one removed or moved away), which the issue header reads from the issue's
@@ -841,7 +844,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     { exact: true, queryKey: ["issue", key] },
     { queryKey: ["events", key] },
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
-    { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
+    { queryKey: project === undefined ? projectListsKey : projectIssuesQueryKey(project, []) },
   ];
   if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: myRepliesKey });

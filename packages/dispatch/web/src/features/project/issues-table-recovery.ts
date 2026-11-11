@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
+import { projectIssuesQueryKey } from "../../api/queries";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { defineWriteKind, useWrites } from "../writes/write-store";
@@ -26,7 +27,7 @@ export const tableEpicWrite = defineWriteKind<string>({
     // What a created epic changes is this project's listings and the ancestry read that hangs
     // off them, not every query the tab holds.
     if (!awaited || answer === null) {
-      void client.invalidateQueries({ queryKey: ["issues", "project", write.detail] });
+      void client.invalidateQueries({ queryKey: projectIssuesQueryKey(write.detail, []) });
       void client.invalidateQueries({ queryKey: ["issue-ancestors", write.detail] });
     }
   },

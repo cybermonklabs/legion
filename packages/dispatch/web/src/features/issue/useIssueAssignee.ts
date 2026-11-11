@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 
+import { projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
-import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import { inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {
   /** The server's reason after a refused save (an unlisted login), until the next attempt. */

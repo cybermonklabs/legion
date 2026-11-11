@@ -9,7 +9,6 @@ import {
 } from "@tanstack/react-query";
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
-import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
@@ -272,6 +271,23 @@ export const projectDefaultAssigneesQuery = () =>
     queryKey: ["project-default-assignees"],
     queryFn: () => api.listProjectDefaultAssignees(),
   });
+
+/** The prefix every project issue list shares, whatever its labels: what a write applies its
+ *  optimistic change to, and what an event refresh tests every project's list under. */
+export const projectListsKey = ["issues", "project"] as const;
+
+/** The one query key for a project's issue list: the plain list, or the server-filtered list
+ *  when labels are active. List and Board build their keys here, so one set of labels is one
+ *  key in both; `projectIssuesQuery` then forks on `open`, so the open-only read of a view that
+ *  hides closed issues is a key of its own under the same prefix. */
+export function projectIssuesQueryKey(
+  project: string,
+  labels: readonly string[]
+): readonly unknown[] {
+  return labels.length === 0
+    ? [...projectListsKey, project]
+    : [...projectListsKey, project, "labels", labels];
+}
 
 /** The mutation key every board move on `project` carries; `projectIssuesQuery` waits on it. */
 export const boardMoveMutationKey = (project: string): readonly unknown[] => [

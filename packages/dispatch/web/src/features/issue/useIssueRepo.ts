@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 
+import { projectListsKey } from "../../api/queries";
 import type { IssueDetails, IssueSummary } from "../../api/types";
-import { type IssueFieldWrite, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**
  * The one way the SPA writes an issue's own repository (owner/name, or null to inherit its

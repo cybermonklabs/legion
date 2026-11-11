@@ -8,10 +8,10 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { projectIssuesQueryKey } from "../../api/queries";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
-import { projectIssuesQueryKey } from "../project/issue-filters";
 import { IssuePage } from "./IssuePage";
 
 const issue: IssueDetails = {

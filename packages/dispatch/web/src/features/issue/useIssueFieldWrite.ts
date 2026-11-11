@@ -3,7 +3,7 @@ import { useRef } from "react";
 
 import { issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { inboxQuery } from "../../api/queries";
+import { inboxQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -27,7 +27,6 @@ interface Snapshot {
   lists: [QueryKey, IssueSummary[] | undefined][];
 }
 
-export const projectListsKey = ["issues", "project"] as const;
 export const inboxKey = inboxQuery().queryKey;
 
 /**
