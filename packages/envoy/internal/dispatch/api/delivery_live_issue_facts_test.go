@@ -36,16 +36,20 @@ func viewShowingIssues(spec deliveryLiveSpec, issues []string) *deliveryView {
 }
 
 // TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue: a write of one issue's stored
-// Legion facts moves the views that show that issue and no other, by the rule dirtyIssueLocked
-// marks an issue's write by. A Legion board reads no delivery row, so touchedBy's test for that
-// refuses it before any kind is read; this kind's branch stands above that test, and a board that
-// shows the issue is therefore woken rather than refused unread.
+// Legion facts moves the Legion boards that show that issue and no other view at all. A board
+// names its own issues by the rule dirtyIssueLocked marks an issue's write by, so a board that
+// shows the issue is woken and a board that does not is left.
+//
+// No delivery view is woken, whichever issue it names: the stored facts have one reader
+// (legionfacts.Read, which the board calls), so no timeline, measures or pipeline answer can
+// move when a facts row does. That matters on a pace: the facts sweep rewrites the row of every
+// open issue every legionfacts.SweepEvery, and each rewrite logs a change, so one worked open
+// issue would otherwise force a whole Delivery recompute on every subscribed page that often.
 func TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	change := issueFactsChange("INFRA", "INFRA-7", now.Add(-26*time.Hour), now.Add(-2*time.Hour))
 
-	woken, left := 0, 0
-	for _, test := range []struct {
+	tests := []struct {
 		what string
 		view *deliveryView
 		want bool
@@ -53,11 +57,15 @@ func TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue(t *testing.T) 
 		{"a Legion board that shows the issue", boardViewShowing("INFRA", "INFRA-7", "INFRA-8"), true},
 		{"a Legion board that shows other issues", boardViewShowing("INFRA", "INFRA-8"), false},
 		{"a Legion board that shows none", boardViewShowing("INFRA"), false},
-		{"a timeline that shows the issue", deliveryViewShowing(deliveryLiveTimeline, "INFRA-7"), true},
+		{"a timeline that shows the issue", deliveryViewShowing(deliveryLiveTimeline, "INFRA-7"), false},
 		{"a timeline that shows other issues", deliveryViewShowing(deliveryLiveTimeline, "INFRA-8"), false},
+		{"a measures view that shows the issue", deliveryViewShowing(deliveryLiveMeasures, "INFRA-7"), false},
 		{"a measures view that shows other issues", deliveryViewShowing(deliveryLiveMeasures, "INFRA-8"), false},
+		{"a pipeline view that shows the issue", deliveryViewShowing(deliveryLivePipeline, "INFRA-7"), false},
 		{"a pipeline view that shows other issues", deliveryViewShowing(deliveryLivePipeline, "INFRA-8"), false},
-	} {
+	}
+	woken, left := 0, 0
+	for _, test := range tests {
 		got := test.view.touchedBy(change, now)
 		if got != test.want {
 			t.Errorf("%s: touchedBy = %t, want %t", test.what, got, test.want)
@@ -75,8 +83,8 @@ func TestAnIssueFactsChangeTouchesTheLegionBoardsThatShowTheIssue(t *testing.T) 
 	if deliveryLiveKinds[legionBoardView].delivery {
 		t.Error("the Legion board reads no delivery row, so it must judge no freshness")
 	}
-	t.Logf("a change of %s in %s: %d of 7 views woken, %d left, Legion board delivery flag %t",
-		change.Ref, change.Repo, woken, left, deliveryLiveKinds[legionBoardView].delivery)
+	t.Logf("a change of %s in %s: %d of %d views woken, %d left, Legion board delivery flag %t",
+		change.Ref, change.Repo, woken, len(tests), left, deliveryLiveKinds[legionBoardView].delivery)
 }
 
 // writeIssueFacts writes one issue's stored Legion facts, whose work falls between first and

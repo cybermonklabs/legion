@@ -202,6 +202,7 @@ func Compute(population *Population, scope Scope, now time.Time) Report {
 		views:      map[string]*issueView{},
 		roots:      map[string]string{},
 		workTimes:  map[string]workTimeRow{},
+		barSpans:   map[string][]Span{},
 	}
 	finished := computed.finished()
 	return Report{
@@ -224,11 +225,14 @@ type computation struct {
 	scope      Scope
 	phases     map[string]phaseTimeline
 	views      map[string]*issueView
-	// roots is each key's tree root and workTimes each issue's work-time row, each computed
-	// once: TreeRoot walks a parent chain allocating a set as it goes, workTimeOf runs the whole
-	// span algebra, and the four metrics ask for each of them three or four times per issue.
+	// roots is each key's tree root, workTimes each issue's work-time row and barSpans the
+	// spans its bars are shared out over, each computed once: TreeRoot walks a parent chain
+	// allocating a set as it goes, workTimeOf runs the whole span algebra, barSpansOf runs a
+	// subtraction over it, and the four metrics and the per-issue facts ask for each of them
+	// two to four times per issue.
 	roots     map[string]string
 	workTimes map[string]workTimeRow
+	barSpans  map[string][]Span
 }
 
 // phaseTimeline is one issue's phase timeline with where it came from: the daemon's own
@@ -414,12 +418,21 @@ func (c *computation) workedSpansOf(issue *Issue) []Span {
 	return c.workedOf(issue).worked
 }
 
-// barSpansOf is the hours of an issue its seven bars share out: the work time metric 1 reports,
-// less the time it sat in the queue, which is on no bar. Metric 2's bars and metric 3's hours
-// after the first review are both the measure of these spans, so no table of a card counts an
-// hour the card's own bars leave out.
+// barSpansOf is the hours of an issue its seven bars share out, computed once: the work time
+// metric 1 reports, less the time it sat in the queue, which is on no bar. Metric 2's bars and
+// metric 3's hours after the first review are both the measure of these spans, so no table of a
+// card counts an hour the card's own bars leave out.
+//
+// The answer is shared with every caller, and every caller reads it and nothing more: normalize,
+// subtract and intersect each build a new slice and write to no argument, so no caller can move
+// a span under another.
 func (c *computation) barSpansOf(issue *Issue) []Span {
-	return subtract(c.workedSpansOf(issue), phaseSpansOf(c.phasesOf(issue), phaseQueued))
+	if held, computed := c.barSpans[issue.Key]; computed {
+		return held
+	}
+	held := subtract(c.workedSpansOf(issue), phaseSpansOf(c.phasesOf(issue), phaseQueued))
+	c.barSpans[issue.Key] = held
+	return held
 }
 
 // workedOf is the memoised answer of computeWorkTime.

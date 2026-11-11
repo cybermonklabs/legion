@@ -713,7 +713,7 @@ func main() {
 	// changes that carry a pull request's merge time (legionfacts.Run).
 	factsEventsWake := listenerHub.Wake(api.EventsChannel)
 	factsStateWake := listenerHub.Wake(legion.StateChannel)
-	factsChangesWake := listenerHub.Wake(legionfacts.ChangesChannel)
+	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}

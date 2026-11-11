@@ -132,9 +132,12 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 }
 
 // waitingLine is what the daemon's admission block says of each issue: its place in the waiting
-// line from 1, and the issues a blocker link holds it on. A project whose daemon has never
-// answered has no admission row, and every issue of it is then queued by nothing.
+// line from 1, and the issues a blocker link holds it on. read is whether a block was recorded
+// at all, which the column rule answers differently from a block that names the issue nowhere
+// (legion.Queued): a project whose daemon has never answered has no admission row, and the board
+// queues its unstarted issues by Dispatch's rank.
 type waitingLine struct {
+	read     bool
 	places   map[string]int
 	blockers map[string][]string
 }
@@ -147,6 +150,7 @@ func newWaitingLine(population *metrics.Population, admission *legion.Admission)
 	if admission == nil {
 		return line
 	}
+	line.read = true
 	for _, key := range admission.Waiting {
 		if population.Issues[key] == nil {
 			continue
@@ -162,12 +166,26 @@ func newWaitingLine(population *metrics.Population, admission *legion.Admission)
 	return line
 }
 
+// queuedBy is what this line knows of one issue, in the shape the column rule reads
+// (legion.Queued): nothing at all where no read recorded an admission block, and otherwise
+// whether the line names the issue or a blocker link holds it.
+func (l *waitingLine) queuedBy(key string, blockedBy []string) legion.Queued {
+	switch {
+	case !l.read:
+		return legion.QueuedUnread
+	case l.places[key] > 0 || len(blockedBy) > 0:
+		return legion.QueuedYes
+	default:
+		return legion.QueuedNo
+	}
+}
+
 // reasonOf is why the issue waits, by the one card rule (legion.CardWaiting), and "" where the
 // rule answers that it waits for nothing. The rule reads the issue's phase, the column it stands
 // in (legion.Column, the column the board draws it in), its place in the daemon's waiting line,
 // the issues a blocker link holds it on, when it entered its phase, and the wait the daemon
 // recorded. The first five come from the newest observations of the issue, which the population
-// already holds.
+// already holds, and from what the line knows of the issue (queuedBy).
 func (l *waitingLine) reasonOf(issue *metrics.Issue) string {
 	if issue == nil {
 		return ""
@@ -180,7 +198,7 @@ func (l *waitingLine) reasonOf(issue *metrics.Issue) string {
 	}
 	waiting := legion.CardWaiting(legion.WaitingInput{
 		Phase:        phase,
-		Column:       legion.Column(phase, newestSlot(issue), place != nil || len(blockedBy) > 0),
+		Column:       legion.Column(phase, newestSlot(issue), l.queuedBy(issue.Key, blockedBy)),
 		WaitingPlace: place,
 		BlockedBy:    blockedBy,
 		PhaseSince:   phaseSince,
@@ -206,36 +224,26 @@ func newestPhase(issue *metrics.Issue) (string, *time.Time) {
 }
 
 // newestSlot is the slot the issue holds of its own, from its newest `slot` observation, and nil
-// where it holds none or where the daemon sent a value of another shape.
+// where it holds none or where the daemon sent a value of another shape (legion.ParseSlot).
 func newestSlot(issue *metrics.Issue) *int {
 	marks := issue.Observed[legion.FieldSlot]
 	if len(marks) == 0 {
 		return nil
 	}
-	var slot *int
-	if err := json.Unmarshal([]byte(marks[len(marks)-1].Value), &slot); err != nil {
-		return nil
-	}
+	slot, _ := legion.ParseSlot([]byte(marks[len(marks)-1].Value))
 	return slot
 }
 
 // newestWait is the wait the daemon recorded of the issue, from its newest `waiting_on`
-// observation. A value of another shape, and a wait with no kind, read as no wait at all, which
-// is how the board reads the same field.
+// observation (legion.ParseWait). A value of another shape, and a wait with no kind, read as no
+// wait at all, which is the one decode the board reads the same field by.
 func newestWait(issue *metrics.Issue) *legion.Wait {
 	marks := issue.Observed[legion.FieldWaitingOn]
 	if len(marks) == 0 {
 		return nil
 	}
-	var wait struct {
-		Kind       string     `json:"kind"`
-		Since      *time.Time `json:"since"`
-		AnsweredAt *time.Time `json:"answeredAt"`
-	}
-	if err := json.Unmarshal([]byte(marks[len(marks)-1].Value), &wait); err != nil || wait.Kind == "" {
-		return nil
-	}
-	return &legion.Wait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
+	wait, _ := legion.ParseWait([]byte(marks[len(marks)-1].Value))
+	return wait
 }
 
 // readAdmission is the daemon's newest admission block, which the sampler writes as one row of

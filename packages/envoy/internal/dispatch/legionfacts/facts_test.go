@@ -343,7 +343,8 @@ func depthOf(key string, parents map[string]string) int {
 // cardReasons is why each issue of the project waits, worked out from the newest observation of
 // each of its fields, as the board reads them (api/legion_board.go's readObservations), and the
 // admission block the test wrote. It is the rule's own answer from the rule's own sources, which
-// is what a stored waiting_reason must equal.
+// is what a stored waiting_reason must equal. A project whose daemon recorded no admission block
+// is the third state of legion.Queued, which the board queues by Dispatch's rank.
 func cardReasons(t *testing.T, seeded history) map[string]string {
 	t.Helper()
 	rows, err := seeded.database.Pool.Query(t.Context(), `
@@ -361,6 +362,7 @@ func cardReasons(t *testing.T, seeded history) map[string]string {
 	slots := map[string]*int{}
 	waits := map[string]*legion.Wait{}
 	var admission legion.Admission
+	admitted := false
 	for rows.Next() {
 		var key, field string
 		var value []byte
@@ -373,6 +375,7 @@ func cardReasons(t *testing.T, seeded history) map[string]string {
 			if err := json.Unmarshal(value, &admission); err != nil {
 				t.Fatalf("decode the admission block: %v", err)
 			}
+			admitted = true
 		case field == legion.FieldPhase:
 			phases[key], since[key] = legion.JSONString(value), at
 		case field == legion.FieldSlot:
@@ -416,7 +419,7 @@ func cardReasons(t *testing.T, seeded history) map[string]string {
 		}
 		waiting := legion.CardWaiting(legion.WaitingInput{
 			Phase:        phases[key],
-			Column:       legion.Column(phases[key], slots[key], place != nil || len(blockers[key]) > 0),
+			Column:       legion.Column(phases[key], slots[key], queuedBy(admitted, place != nil || len(blockers[key]) > 0)),
 			WaitingPlace: place,
 			BlockedBy:    blockers[key],
 			PhaseSince:   phaseSince,
@@ -427,4 +430,18 @@ func cardReasons(t *testing.T, seeded history) map[string]string {
 		}
 	}
 	return reasons
+}
+
+// queuedBy is what the test's own sources know of one issue's place in the daemon's line, in the
+// shape the column rule reads (legion.Queued): nothing at all where no observation recorded an
+// admission block, and otherwise whether that block names the issue.
+func queuedBy(admitted, named bool) legion.Queued {
+	switch {
+	case !admitted:
+		return legion.QueuedUnread
+	case named:
+		return legion.QueuedYes
+	default:
+		return legion.QueuedNo
+	}
 }

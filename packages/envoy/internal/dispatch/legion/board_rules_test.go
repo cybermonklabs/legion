@@ -108,3 +108,32 @@ func TestCardWaitingAnswersOneReasonPerWait(t *testing.T) {
 		t.Errorf("the blocked issue waits on %+v, want the two issues holding it", held)
 	}
 }
+
+// TestColumnAnswersTheQueueForEachStateOfTheWaitingLine: the column rule over the three things a
+// reader can know of the daemon's waiting line. A read that recorded no admission block knows
+// no line at all (QueuedUnread), and the Queue is then the issues that are still `admitted` and
+// hold no slot, which is the fallback both the board and the stored facts read here.
+func TestColumnAnswersTheQueueForEachStateOfTheWaitingLine(t *testing.T) {
+	slot := 2
+	for _, want := range []struct {
+		name   string
+		phase  string
+		slot   *int
+		queued Queued
+		column string
+	}{
+		{"the line names an unstarted issue", PhaseAdmitted, nil, QueuedYes, ColumnQueue},
+		{"the line names a slot holder", PhaseAdmitted, &slot, QueuedYes, ColumnDesign},
+		{"the line names an issue at work", PhaseImplementing, nil, QueuedYes, ColumnImplementing},
+		{"the line names nobody of this issue", PhaseAdmitted, nil, QueuedNo, ColumnDesign},
+		{"no block was read of an unstarted issue", PhaseAdmitted, nil, QueuedUnread, ColumnQueue},
+		{"no block was read of a slot holder", PhaseAdmitted, &slot, QueuedUnread, ColumnDesign},
+		{"no block was read of an issue at work", PhaseImplementing, nil, QueuedUnread, ColumnImplementing},
+		{"no block was read of an issue waiting on a person", PhaseAwaitingPerson, nil, QueuedUnread, ColumnAwaiting},
+		{"the phase is on no column", PhaseDone, nil, QueuedUnread, ""},
+	} {
+		if column := Column(want.phase, want.slot, want.queued); column != want.column {
+			t.Errorf("%s: Column(%s) = %q, want %q", want.name, want.phase, column, want.column)
+		}
+	}
+}

@@ -176,15 +176,13 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 	}
 }
 
-// The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
-// a delivery_changes row commits (migration 0100); delivery_freshness carries the settings row's
-// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
-// the sampler after each read of that project's Legion daemon, which is the only thing that moves
-// a Legion board besides Dispatch's own events.
-const (
-	deliveryChangesChannel   = "delivery_changes"
-	deliveryFreshnessChannel = "delivery_freshness"
-)
+// The channels the delivery hub listens on. delivery.ChangesChannel carries no payload and is
+// notified as a delivery_changes row commits (migration 0100), and the delivery package declares
+// it beside the row; delivery_freshness carries the settings row's freshness columns as JSON
+// (0100); legion.StateChannel carries a project key and is notified by the sampler after each
+// read of that project's Legion daemon, which is the only thing that moves a Legion board
+// besides Dispatch's own events.
+const deliveryFreshnessChannel = "delivery_freshness"
 
 // deliveryHubFeedBuffer is the hub's slots on the relay's feed: more than one relay page
 // (maxEventReplay), which the relay publishes at once, so a page never overflows an intake that
@@ -444,7 +442,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, legion.StateChannel},
+		Channels:    []string{delivery.ChangesChannel, deliveryFreshnessChannel, legion.StateChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -494,7 +492,7 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 // Legion daemon marks that project's board.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
-	case deliveryChangesChannel:
+	case delivery.ChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)

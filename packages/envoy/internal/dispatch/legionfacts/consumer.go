@@ -59,11 +59,6 @@ const (
 // cursorNames is the three in one list, which is how a pass reads and writes them.
 var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
 
-// ChangesChannel is the Postgres notification channel a delivery fact change announces itself on:
-// the trigger that writes each delivery_changes row sends it at commit (migration 0100,
-// delivery_change_log). The Delivery page's live hub listens on the same name.
-const ChangesChannel = "delivery_changes"
-
 // pullRequestChange is the delivery_changes kind this loop keeps: a pull request's row, whose
 // merge time is the one delivery fact an issue's facts read.
 const pullRequestChange = "pull_request"
@@ -83,7 +78,8 @@ type Deps struct {
 	// Observations is signalled when the sampler has read a daemon: the hub's wake on
 	// legion.StateChannel.
 	Observations <-chan struct{}
-	// Deliveries is signalled when a delivery fact changed: the hub's wake on ChangesChannel.
+	// Deliveries is signalled when a delivery fact changed: the hub's wake on
+	// delivery.ChangesChannel.
 	Deliveries <-chan struct{}
 }
 

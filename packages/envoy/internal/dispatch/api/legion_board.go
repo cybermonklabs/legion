@@ -59,12 +59,12 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legion.ColumnHeld, "Held"},
 }
 
-// legionBoardQueued is whether an issue the daemon's waiting line or a blocker link names stands
-// in the Queue column. The rule is the legion package's, which takes plain values because the
-// stored per-issue facts answer the same column with no card to hand (legion.Column); this is its
-// one call from the board.
-func legionBoardQueued(issue *legionBoardIssue) bool {
-	return legion.Column(issue.phase, issue.slot, true) == legion.ColumnQueue
+// legionBoardQueued is whether the issue stands in the Queue column, for what the read knows of
+// the daemon's waiting line (legion.Queued). The rule is the legion package's, which takes plain
+// values because the stored per-issue facts answer the same column with no card to hand
+// (legion.Column); the board calls it here alone.
+func legionBoardQueued(issue *legionBoardIssue, queued legion.Queued) bool {
+	return legion.Column(issue.phase, issue.slot, queued) == legion.ColumnQueue
 }
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
@@ -201,6 +201,10 @@ type legionBoardCard struct {
 	Waiting  *legionBoardWaiting `json:"waiting"`
 	Tree     string              `json:"tree"`
 	Children int                 `json:"children"`
+	// wait is the daemon's own record WaitingOn was made from (legion.Wait), which the waiting
+	// rule reads once every card is made and numbered (cardWaiting). It carries no JSON: the
+	// wire shape is WaitingOn, and this is the value that one was made from.
+	wait *legion.Wait
 }
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the
@@ -437,7 +441,8 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 
 // observe takes one newest observation into the issue. A value that is not the shape the field is
 // read as leaves the field as it stands: the daemon owns the wire shape, and a reader of one names
-// what it expects rather than trusting it.
+// what it expects rather than trusting it. The slot and the wait are decoded by the rules'
+// package (legion.ParseSlot, legion.ParseWait), which the stored per-issue facts decode by too.
 func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time) {
 	switch {
 	case field == legion.FieldPhase:
@@ -445,18 +450,12 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 	case field == legion.FieldTree:
 		issue.tree = legion.JSONString(value)
 	case field == legion.FieldSlot:
-		var slot *int
-		if err := json.Unmarshal(value, &slot); err == nil {
+		if slot, read := legion.ParseSlot(value); read {
 			issue.slot, issue.slotSince = slot, at
 		}
 	case field == legion.FieldWaitingOn:
-		var wait struct {
-			Kind       string     `json:"kind"`
-			Since      *time.Time `json:"since"`
-			AnsweredAt *time.Time `json:"answeredAt"`
-		}
-		if err := json.Unmarshal(value, &wait); err == nil && wait.Kind != "" {
-			issue.waitingOn = &legion.Wait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
+		if wait, read := legion.ParseWait(value); read {
+			issue.waitingOn = wait
 		}
 	case field == legion.FieldPullRequestChecksVerdict:
 		issue.checksVerdict = legion.JSONString(value)
@@ -618,8 +617,9 @@ func (c *legionBoardCards) nearestCard(key string) string {
 // carries a card — its tree climbs through issues the daemon reports nothing of, or through
 // issues whose phase is on no column — it is a card of its own, since a count on an issue the
 // board shows nothing of is a count no reader can see. Where no read has recorded an admission
-// block the waiting line is Dispatch's rank order over the issues in that position, which is the
-// order the daemon's own line follows once a root's wait is answered.
+// block the waiting line is the same rule read for a reader that knows no line
+// (legion.QueuedUnread), over Dispatch's rank order, which is the order the daemon's own line
+// follows once a root's wait is answered.
 func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResponse {
 	cards := map[string][]legionBoardCard{}
 	placed := map[string]bool{}
@@ -645,13 +645,13 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		}
 		seen[key] = true
 		places[key] = len(places) + 1
-		if legionBoardQueued(p.issues[key]) {
+		if legionBoardQueued(p.issues[key], legion.QueuedYes) {
 			queued = append(queued, key)
 		}
 	}
 	blocked := make([]string, 0, len(blockers))
 	for key := range blockers {
-		if p.issues[key] != nil && !seen[key] && legionBoardQueued(p.issues[key]) {
+		if p.issues[key] != nil && !seen[key] && legionBoardQueued(p.issues[key], legion.QueuedYes) {
 			blocked = append(blocked, key)
 		}
 	}
@@ -662,11 +662,11 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	// tree walk and no count lands on an issue the board shows nothing of.
 	board := &legionBoardCards{population: p, queued: seen, carded: map[string]bool{}}
 	if p.admission == nil {
-		// No read has recorded a waiting line: the issues waiting for a slot that no card above
-		// them holds, in Dispatch's rank order.
+		// No read has recorded a waiting line: the issues the one column rule queues for a
+		// reader that knows none, of those no card above them holds, in Dispatch's rank order.
 		for _, key := range p.ranked {
 			issue := p.issues[key]
-			if issue != nil && issue.phase == legion.PhaseAdmitted && issue.slot == nil && board.has(key) {
+			if issue != nil && legionBoardQueued(issue, legion.QueuedUnread) && board.has(key) {
 				queued = append(queued, key)
 			}
 		}
@@ -735,7 +735,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 			if use := legion.SlotUse(card.Phase, card.Roles, card.Slot, childWorks[card.Key]); use != "" {
 				card.SlotUse = &use
 			}
-			card.Waiting = p.cardWaiting(card, column)
+			card.Waiting = cardWaiting(card, column)
 		}
 	}
 
@@ -828,10 +828,11 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 	card := legionBoardCard{
 		Key: issue.key, Title: issue.title, Priority: issue.priority, Phase: issue.phase,
 		Slot: issue.slot, Roles: issue.roles, BlockedBy: blockedBy,
-		Tree: p.treeRoot(issue.key), Children: children,
+		Tree: p.treeRoot(issue.key), Children: children, wait: issue.waitingOn,
 	}
-	// The wait the sampler recorded is parsed once, into the rule's own shape (legion.Wait); the
-	// body carries it in the shape the view reads, which is this one mapping.
+	// The wait the sampler recorded is decoded once, into the rule's own shape (legion.Wait);
+	// the body carries it in the shape the view reads, which is this one mapping. The card keeps
+	// the decoded value as well, which is what the waiting rule reads (cardWaiting).
 	if wait := issue.waitingOn; wait != nil {
 		card.WaitingOn = &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
 	}
@@ -864,15 +865,12 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 
 // cardWaiting is why one card's issue waits, in the shape the body carries. The rule is the
 // legion package's, which reads plain values because the per-issue facts answer it with no card
-// to hand (legion.CardWaiting); this is its one wire mapping.
-func (p *legionBoardPopulation) cardWaiting(card *legionBoardCard, column string) *legionBoardWaiting {
-	var wait *legion.Wait
-	if issue := p.issues[card.Key]; issue != nil {
-		wait = issue.waitingOn
-	}
+// to hand (legion.CardWaiting); this is its one wire mapping. The wait it reads is the one the
+// card was made from, never a second read of the issue.
+func cardWaiting(card *legionBoardCard, column string) *legionBoardWaiting {
 	waiting := legion.CardWaiting(legion.WaitingInput{
 		Phase: card.Phase, Column: column, WaitingPlace: card.WaitingPlace,
-		BlockedBy: card.BlockedBy, PhaseSince: card.PhaseSince, WaitingOn: wait,
+		BlockedBy: card.BlockedBy, PhaseSince: card.PhaseSince, WaitingOn: card.wait,
 	})
 	if waiting == nil {
 		return nil

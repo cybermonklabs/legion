@@ -8,10 +8,15 @@ package legion
 // time, and one rule stated twice is a card and a fact that disagree about the same issue.
 //
 // Every rule here takes plain values — a phase, a column, the roles in a turn, a slot — so a
-// reader that builds no card can call it. The labels the view draws are not here: they belong to
-// the view, and the route holds them beside the order it draws the columns in.
+// reader that builds no card can call it. The two observations a card rule reads are decoded
+// here as well (ParseWait, ParseSlot), for the same reason: a second decode of one field is how
+// two readers come to read one daemon's word two ways. The labels the view draws are not here:
+// they belong to the view, and the route holds them beside the order it draws the columns in.
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
 // link holds, of the issues that have not started work: no slot and no working phase
@@ -68,21 +73,51 @@ var WorkingColumns = map[string]bool{
 	ColumnMerging:      true,
 }
 
+// Queued is what a reader of one issue knows of the daemon's waiting line. A read that recorded
+// no admission block knows no line at all, which is a different answer than a recorded line that
+// does not name the issue, and both are different from a line that names it.
+type Queued int
+
+const (
+	// QueuedUnread is for a project no read has recorded an admission block of: every read a
+	// daemon before this release answered, and every project whose daemon has not answered yet.
+	QueuedUnread Queued = iota
+	// QueuedNo is for an issue that a recorded block's waiting line does not name and no
+	// blocker link of it holds.
+	QueuedNo
+	// QueuedYes is for an issue that a recorded block's waiting line names, or that a blocker
+	// link holds.
+	QueuedYes
+)
+
 // Column is the board column an issue stands in: the Queue for a queued issue that has not
 // started work, and the column of its phase for every other issue. It is "" for an issue whose
 // phase no column holds (`done`, and any phase a later daemon adds), which puts it on no card at
 // all. The board draws the columns from this rule and the stored facts read the same rule, so a
 // card and a fact can never place one issue in two columns.
 //
-// phase is the daemon's phase of the issue, slot the slot it holds of its own, and queued whether
-// the daemon's waiting line names the issue or a blocker link holds it. An issue that has started
-// its work keeps the column of its phase while it waits: it holds a slot of its own, or its phase
-// is a working one (WorkingColumns). A slot holder in `admitted` is a root whose architect runs
-// at the design gate.
-func Column(phase string, slot *int, queued bool) string {
+// phase is the daemon's phase of the issue, slot the slot it holds of its own, and queued what
+// the reader knows of the daemon's waiting line. An issue that has started its work keeps the
+// column of its phase while it waits: it holds a slot of its own, or its phase is a working one
+// (WorkingColumns). A slot holder in `admitted` is a root whose architect runs at the design
+// gate.
+//
+// With no admission block read (QueuedUnread) the Queue holds the issues that are still
+// `admitted` and hold no slot, which are the issues waiting for one. The board draws them in
+// Dispatch's rank order, which is the order the daemon's own line follows once a root's wait is
+// answered. The fallback is here rather than in either reader, so the card and the stored row
+// of one issue cannot disagree about why that issue waits.
+func Column(phase string, slot *int, queued Queued) string {
 	column, named := PhaseColumns[phase]
-	if queued && (!named || (slot == nil && !WorkingColumns[column])) {
-		return ColumnQueue
+	switch queued {
+	case QueuedYes:
+		if !named || (slot == nil && !WorkingColumns[column]) {
+			return ColumnQueue
+		}
+	case QueuedUnread:
+		if phase == PhaseAdmitted && slot == nil {
+			return ColumnQueue
+		}
 	}
 	return column
 }
@@ -161,6 +196,35 @@ type Wait struct {
 	Kind       string
 	Since      *time.Time
 	AnsweredAt *time.Time
+}
+
+// ParseWait is the wait one `waiting_on` observation records (FieldWaitingOn). The second answer
+// is whether the value was read: it is false for a value of another shape than this one, and for
+// a wait that names no kind, because the daemon owns the wire shape and a reader of one names
+// what it expects rather than trusting it. A reader then does what it does with a value it
+// cannot read — the board keeps the issue's previous wait, and the stored facts read no wait at
+// all.
+func ParseWait(value []byte) (*Wait, bool) {
+	var wait struct {
+		Kind       string     `json:"kind"`
+		Since      *time.Time `json:"since"`
+		AnsweredAt *time.Time `json:"answeredAt"`
+	}
+	if err := json.Unmarshal(value, &wait); err != nil || wait.Kind == "" {
+		return nil, false
+	}
+	return &Wait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}, true
+}
+
+// ParseSlot is the slot one `slot` observation records (FieldSlot), nil where the issue holds
+// none. The second answer is whether the value was read, which is false for a value of another
+// shape, as ParseWait's is.
+func ParseSlot(value []byte) (*int, bool) {
+	var slot *int
+	if err := json.Unmarshal(value, &slot); err != nil {
+		return nil, false
+	}
+	return slot, true
 }
 
 // Waiting is why an issue waits, since when, and the issues a blocker link holds it on. Since is

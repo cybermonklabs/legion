@@ -19,29 +19,41 @@ import (
 // facts count, so it is left out of the root's parts. Every other hour is its phase's. It reads
 // the observed timeline or the status-history fallback alike, so it needs no observation.
 
+// The three parts issueParts names outside the table below. breakdownPerson is the board's
+// awaiting-a-person column, which holds the hours an ask held as well as the hours of that
+// phase. breakdownChildren and breakdownOther are no column of the board: the hours a root
+// waited while a child worked, and the hours no other part took.
 const (
-	breakdownPerson   = "awaiting_person"
+	breakdownPerson   = legion.ColumnAwaiting
 	breakdownChildren = "waiting_on_children"
 	breakdownOther    = "other"
 )
 
-// breakdownParts are the parts in the order a page draws them. Their ids are the board's columns
-// (api/legion_board.go), with waiting on children and other beside them.
+// breakdownParts are the parts in the order a page draws them, each with the phases whose hours
+// it holds. Their ids are the board's columns, which the legion package declares
+// (legion.ColumnDesign and the rest), with waiting on children and other beside them.
 var breakdownParts = []struct {
-	id, label string
-	phases    []string
+	id     string
+	phases []string
 }{
-	{"design", "Design", []string{phaseDesign}},
-	{"planning", "Planning", []string{legion.PhasePlanning}},
-	{"implementing", "Implementing", []string{legion.PhaseImplementing}},
-	{"testing", "Testing", []string{legion.PhaseTesting}},
-	{"reviewing", "Reviewing", []string{legion.PhaseReviewing}},
-	{"accepting", "Accepting", []string{legion.PhaseAccepting}},
-	{"merging", "Merging", legion.MergerPhases},
-	{breakdownPerson, "Waiting on a person", []string{legion.PhaseAwaitingPerson}},
-	{"held", "Held", []string{legion.PhaseHeld}},
-	{breakdownOther, "Other", nil},
+	{legion.ColumnDesign, []string{phaseDesign}},
+	{legion.ColumnPlanning, []string{legion.PhasePlanning}},
+	{legion.ColumnImplementing, []string{legion.PhaseImplementing}},
+	{legion.ColumnTesting, []string{legion.PhaseTesting}},
+	{legion.ColumnReviewing, []string{legion.PhaseReviewing}},
+	{legion.ColumnAccepting, []string{legion.PhaseAccepting}},
+	{legion.ColumnMerging, legion.MergerPhases},
+	{breakdownPerson, []string{legion.PhaseAwaitingPerson}},
+	{legion.ColumnHeld, []string{legion.PhaseHeld}},
 }
+
+// personClaim and childrenClaim are the two places in the precedence issueParts takes its hours
+// from, which claims is keyed by. The precedence is a package value, so each is one lookup at
+// start rather than a scan of it per issue.
+var (
+	personClaim   = precedenceIndex(SegmentWaitingOnPerson)
+	childrenClaim = precedenceIndex(SegmentWaitingOnChildren)
+)
 
 // precedenceIndex is the segment's place in the precedence, which claims is keyed by.
 func precedenceIndex(segment Segment) int {
@@ -60,14 +72,12 @@ func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.D
 		spent[id] += totalOf(taken)
 		rest = subtract(rest, taken)
 	}
-	take(breakdownPerson, view.claims(precedenceIndex(SegmentWaitingOnPerson)))
-	take(breakdownChildren, view.claims(precedenceIndex(SegmentWaitingOnChildren)))
+	take(breakdownPerson, view.claims(personClaim))
+	take(breakdownChildren, view.claims(childrenClaim))
 	children := spent[breakdownChildren]
 	delete(spent, breakdownChildren)
 	for _, part := range breakdownParts {
-		if len(part.phases) > 0 {
-			take(part.id, phaseSpansOf(view.timeline, part.phases...))
-		}
+		take(part.id, phaseSpansOf(view.timeline, part.phases...))
 	}
 	spent[breakdownOther] += totalOf(rest)
 	return spent, children
@@ -121,6 +131,7 @@ func ProjectFacts(population *Population) map[string]IssueFacts {
 		views:      map[string]*issueView{},
 		roots:      map[string]string{},
 		workTimes:  map[string]workTimeRow{},
+		barSpans:   map[string][]Span{},
 	}
 	out := map[string]IssueFacts{}
 	for _, key := range population.Keys {

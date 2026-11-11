@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -249,6 +250,91 @@ func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
 	}
 	t.Logf("before any pass: INFRA %d rows and no age, LINUX no row and no age — nothing has been computed. After one pass 90 s ago: INFRA %d rows and an age of %d s, LINUX no row and an age of %d s — LINUX has no Legion work, and its facts are as fresh as INFRA's",
 		len(worked.Issues), len(worked.Issues), *worked.Header.FactsCursorAgeSeconds, *idle.Header.FactsCursorAgeSeconds)
+}
+
+// TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock: one issue's card and
+// one issue's stored row answer the same reason, because both read the one column rule
+// (legion.Column) and the one card rule (legion.CardWaiting).
+//
+// The case that broke is a project whose daemon recorded no admission block: the board queues
+// every carded `admitted` issue holding no slot in Dispatch's rank order, so its card reads
+// `ready`, while the stored row read no waiting line at all. The fallback is in the column rule
+// now (legion.QueuedUnread), so both readers answer it. The second project has a block, which is
+// what holds the first case to a rule rather than to a coincidence of two empty answers.
+func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t *testing.T) {
+	for _, test := range []struct {
+		what      string
+		admission string
+		want      map[string]string
+	}{
+		{
+			what: "no read recorded an admission block",
+			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingReady, "INFRA-3": ""},
+		},
+		{
+			what: "a read recorded one",
+			admission: `{"cap": 2, "active": [], "waiting": ["INFRA-1"],
+				"blocked": [{"issue": "INFRA-2", "blockedBy": ["INFRA-9"]}]}`,
+			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingBlocked, "INFRA-3": ""},
+		},
+	} {
+		t.Run(test.what, func(t *testing.T) {
+			handler, database := newTestHandlerWithStore(t)
+			seedLegionProjects(t, handler, "INFRA")
+			nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+			now := time.Now().UTC()
+			hourAgo := now.Add(-time.Hour)
+			// Three roots the daemon reports, each with a handoff, which is what gives an issue
+			// a stored row (legion/metrics/population.go's hasPhaseWork). Two wait for a slot
+			// and the third works.
+			for _, issue := range []struct {
+				number      int
+				rank, phase string
+			}{
+				{1, "a", legion.PhaseAdmitted},
+				{2, "b", legion.PhaseAdmitted},
+				{3, "c", legion.PhaseImplementing},
+			} {
+				key := seedLegionIssue(t, database, "INFRA", issue.number, "A root in "+issue.phase, issue.rank, nil, "")
+				seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+issue.phase+`"`, hourAgo)
+				seedLegionHandoff(t, database, key, "plan", hourAgo)
+			}
+			if test.admission != "" {
+				seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, test.admission, hourAgo)
+			}
+			seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+			// The stored rows as the facts consumer writes them, which is the one computation of
+			// a waiting_reason (legionfacts.ComputeProject).
+			rows, err := legionfacts.ComputeProject(t.Context(), database.Pool, "INFRA", now)
+			if err != nil {
+				t.Fatalf("compute the project's facts: %v", err)
+			}
+			if _, err := legionfacts.Write(t.Context(), database.Pool, rows); err != nil {
+				t.Fatalf("write the facts: %v", err)
+			}
+
+			board := legionBoardOf(t, handler, "INFRA")
+			for _, key := range slices.Sorted(maps.Keys(test.want)) {
+				card := legionCard(t, board, key)
+				reason := ""
+				if card.Waiting != nil {
+					reason = card.Waiting.Reason
+				}
+				stored, held := board.Issues[key]
+				if !held {
+					t.Fatalf("%s has no stored row on the board, and Legion worked it", key)
+				}
+				if reason != stored.WaitingReason {
+					t.Errorf("%s waits for %q on its card and %q in its stored row", key, reason, stored.WaitingReason)
+				}
+				if reason != test.want[key] {
+					t.Errorf("%s waits for %q on its card, want %q", key, reason, test.want[key])
+				}
+			}
+			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2 and INFRA-3 answer the same reason", test.what)
+		})
+	}
 }
 
 // TestTheLegionBoardsOldAddressIsGone: the board answers under the project path and nowhere else,

@@ -264,8 +264,9 @@ type deliveryLiveClasses struct {
 	unownedP0 bool
 	// delivery is whether the view's answer is read from the deployment's delivery rows: a
 	// change of one can move it (touchedBy), its read holds the delivery settings, and its
-	// freshness is the hub's one verdict. The Legion board reads a daemon's recorded state
-	// instead, so no delivery change touches it and it judges no freshness.
+	// freshness is the hub's one verdict. The Legion board reads a daemon's recorded state and
+	// the stored per-issue facts instead, so it judges no freshness, and the one delivery change
+	// that touches it is the write of a facts row of an issue it shows.
 	delivery bool
 	// unconfigured is what this kind's read answers for a deployment that configured nothing it
 	// reads, with the code and message its subscribers are refused with.

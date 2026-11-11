@@ -30,8 +30,15 @@
 --   updated_at      when the consumer last wrote the row, which is how fresh the served facts
 --                   are. The row holds the facts as of that moment, never as of the read.
 --
--- issue_facts_closed serves the read of the issues that closed in a window, newest first. The
--- primary key serves the read of one project's rows.
+-- issue_facts_open serves the sweep's read of the open rows, which runs every
+-- legionfacts.SweepEvery over a table that grows with every issue Legion ever worked: `select
+-- project_key, issue_key from issue_facts where closed_at is null`. It holds the two columns
+-- that read answers, over the open rows alone, so the read takes it index-only and never grows
+-- with the closed rows. The primary key serves the read of one project's rows.
+--
+-- No index serves a read of the issues that closed in a window. dispatch://INFRA-2916 holds
+-- that read, and the index it wants is (project_key, closed_at desc): it is not created here,
+-- because an index no statement reads is a write cost on every row the consumer upserts.
 --
 -- issue_facts_cursor holds one row per named cursor: where the consumer of several feeds stopped
 -- in each, so a restart takes up where the last pass left off rather than reading a feed again
@@ -57,7 +64,7 @@ create table issue_facts (
     updated_at timestamptz not null default now(),
     primary key (project_key, issue_key)
 );
-create index issue_facts_closed on issue_facts (project_key, closed_at desc);
+create index issue_facts_open on issue_facts (project_key, issue_key) where closed_at is null;
 
 create table issue_facts_cursor (
     name text primary key,

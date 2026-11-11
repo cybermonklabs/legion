@@ -33,6 +33,13 @@ type Change struct {
 // ChangeRetention is how long delivery_changes keeps a row: a page away longer reads its window once.
 const ChangeRetention = 24 * time.Hour
 
+// ChangesChannel is the Postgres notification channel a delivery change announces itself on: the
+// trigger that writes each delivery_changes row sends it at commit (migration 0100,
+// delivery_change_log). The Delivery page's live hub and the Legion facts consumer both listen
+// on it, and this package owns the row, so the name is declared here alone, as SettingsChannel
+// is beside the settings row.
+const ChangesChannel = "delivery_changes"
+
 // ChangesSince reads up to limit changes after seq, oldest first. seq is allocated in commit order
 // (each trigger takes one advisory lock before it inserts), so a reader that has read through seq
 // never meets a later commit below it.
