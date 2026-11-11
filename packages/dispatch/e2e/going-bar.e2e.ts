@@ -1,8 +1,6 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor, holdFirstRequest, placeCaret } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
@@ -68,10 +66,6 @@ async function openDocumentWithCaret(page: Page, slug: string): Promise<void> {
   await placeCaret(page, "after", "sextant");
   await expect(documentEditor(page)).toBeFocused();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): four pages, one of them a document whose editor must connect before the caret
 // goes in.
@@ -207,6 +201,49 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await openBar(page, ["Control+k"]);
     await expect.soft(scope(page), "elsewhere, nothing").toHaveCount(0);
     await closeBar(page);
+  } finally {
+    await context.close();
+  }
+});
+
+test("the bar acts on the issues the table has selected, and leaving the table clears them @phone", async ({
+  browser,
+}) => {
+  const fixture = await seed();
+  const third = await createIssue({ project: "CORE", title: "Sextants" });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openIssueList(page);
+
+    // Two rows by their own checkboxes, the third by the key that takes the row in hand: both
+    // ways in reach the one selection the bar reads.
+    await page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` }).check();
+    await page.getByRole("checkbox", { name: `Select ${fixture.secondKey}` }).check();
+    await page.keyboard.press("j");
+    await page.keyboard.press("x");
+    await expect(page.getByRole("checkbox", { name: `Select ${third.key}` })).toBeChecked();
+
+    await openBar(page, ["Control+k"]);
+    await expect(scope(page)).toHaveText(
+      new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}[\\s\\S]*${third.key}`)
+    );
+    await closeBar(page);
+
+    // The Board takes the table off the page, and the selection goes with it.
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+    await page.locator("body").focus();
+    await openBar(page, ["Control+k"]);
+    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await closeBar(page);
+
+    // Back on the table, the rows come back unselected rather than carrying a hidden mark.
+    await page.getByRole("button", { name: "List", exact: true }).click();
+    await expect(
+      page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` })
+    ).not.toBeChecked();
   } finally {
     await context.close();
   }

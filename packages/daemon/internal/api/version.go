@@ -846,12 +846,55 @@ package api
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 62: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
+// 62: INFRA-2551 (cybermonklabs/legion) -- the daemon counts every move back of an issue by its
+// `<from>-<to>` pair (internal/phase's BackwardPairs), and each worker of `GET /legion/v1/state`
+// carries those counts as `backwardMoves`, the pair to its count (`api.PhaseView`). The key is
+// absent, and never `{}`, for an issue that has had no move back, so a reader tells an issue
+// carrying no counts at all from one whose counts the daemon holds. `rounds` beside it keeps its
+// meaning exactly, rising on every move back, a conflict round included, which no pair counts
+// since nobody sent the work back; and the counts start empty at the migration that added them
+// (`20261110225246_backward_moves_and_cap_told`) and are never filled in from the past, so an
+// issue already in flight reads counts that add up to less than its `rounds`.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 62 is served the workers without the field (api's stateFor,
+// withoutBackwardMoves), as a caller below 58 is served the issues with no place in the
+// admission line, one below 57 the claim views with no `step`, one below 56 the stranded report
+// without its retired entries, one below 55 the issues without the gated steps, one below 53 a
+// body with no wakes waiting, one below 51 the issues without the admission's trees and each
+// issue's tree, one below 49 without the memory draw and one below 46 without the claim views'
+// update rounds; the nine compose, and every reader from 62 on takes the field as optional. A
+// plugin at 61 does not refuse the field, as a plugin before one of the earlier contracts above
+// refuses its own: every answer-side schema of `packages/contracts` has stripped a key it does
+// not name since sjawhar/legion#2788, which that package's own test holds it to. The strip is
+// still what serves such a caller: one that did not ask for the field is not given it, and a
+// plugin built before #2788 is strict and would refuse the body.
+// The same change gives `legion.yaml` a `hooks:` key — each hook naming the event it stands on,
+// the moves back it selects, how many of them fire it, the roles its words go in front of and
+// those words, written inline or read from a `prompt_file` — and the settings block of that
+// state carries every running hook as `hooks`: each one's `name`, `on`, `moves`, `every`,
+// `roles` and `prompt_file`, and never its words, as this route serves the path of
+// `instructions` and never its text. That key is no part of this number: the plugin parses the
+// settings block loosely (35 above), so a later legion.yaml key changes no strictly parsed
+// shape and bumps nothing. The one shape this number is for is the workers' field above.
+// The rest of the change moves no shape a caller reads: the architect is told the
+// `review_round_cap` message once for each value of the cap rather than on every round past it
+// (`record.PhaseRow.CapTold`, the same migration), and a hook that fires publishes its prompt
+// through the outbox to the roles it names (the `hook_prompt` payload), which is the daemon's
+// own lane and no route.
+// (The base carries 59, and no release declares this change's shapes. Two open pull requests
+// declare the numbers between: cybermonklabs/legion#2731 declares 60 and #2230 declares 61,
+// read from `const DaemonAPIVersion` at each head on 2026-11-11, so this change takes 62, the
+// number above them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. Read main's own number, and every open branch's, again at the next forward merge rather
+// than from this line.)
+//
+// 63: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
 // live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
 // seen anywhere in the tree, and `quietHours`, how long the tree has been still at this read,
 // as a number of hours. The pair is the tree's and not the issue's, so every issue of one tree
 // carries the same two values — the root, a child past its own review, which holds no admission
-// slot since 62's first slice, and a done child recorded under the tree alike — and a reader
+// slot since 63's first slice, and a done child recorded under the tree alike — and a reader
 // that wants to know whether a tree has stopped asks any one of its issues. The measure behind
 // the keys is `record.QuietTrees`, the one statement of the question the admission pass reads
 // too, so the state and the pass can never say different things about one tree: the movement is
@@ -864,26 +907,29 @@ package api
 // would print hundreds of them on a live deployment, so the two values are in `--json` and in
 // the one issue a pane prints, which is where the memory keys and the waiting line each landed.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 62 is served the issues without the two keys (api's stateFor,
-// withoutQuietTime), as a caller below 58 is served the issues with no `waitingLine`, one below
-// 57 the claim views with no `step`, one below 56 the stranded report without its retired
-// entries, one below 55 the issues without the gated steps, one below 53 a body with no wakes
-// waiting, one below 51 the issues without the admission's trees and each issue's tree, one
-// below 49 without the memory draw and one below 46 without the claim views' update rounds; the
-// nine compose, and every reader from 62 on takes both keys as optional
-// (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 61 does not refuse them, as a
-// plugin before one of the earlier contracts above refuses its own: every answer-side schema of
-// `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
-// is still what serves such a caller: a reader that did not ask for the keys is not given them,
-// and a plugin built before #2788 is strict and would refuse the whole body for one of them.
+// contract below 63 is served the issues without the two keys (api's stateFor,
+// withoutQuietTime), as a caller below 62 is served the workers with no `backwardMoves`, one
+// below 58 the issues with no `waitingLine`, one below 57 the claim views with no `step`, one
+// below 56 the stranded report without its retired entries, one below 55 the issues without the
+// gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without the
+// admission's trees and each issue's tree, one below 49 without the memory draw and one below
+// 46 without the claim views' update rounds; the ten compose, and every reader from 63 on takes
+// both keys as optional (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 62 does
+// not refuse them, as a plugin before one of the earlier contracts above refuses its own: every
+// answer-side schema of `packages/contracts` has stripped a key it does not name since
+// sjawhar/legion#2788. The strip is still what serves such a caller: a reader that did not ask
+// for the keys is not given them, and a plugin built before #2788 is strict and would refuse
+// the whole body for one of them.
 // This change adds no route, no setting and no store migration: the record column the movement
 // is read from (`issues.moved_at`) and the measure over it are the slices before this one.
-// (The base this branch stands on, 5a585b02, carries 59, and two open pull requests declare the
-// numbers above it: cybermonklabs/legion#2731 declares 60 and #2230 declares 61, neither of
-// which carries these shapes. `.github/scripts/check-daemon-api-contract.sh` names the free
-// number as the lowest above the base's that no open pull request declares, which is 62, so
-// that is what this change takes rather than 60, which would force this change or #2731 to
-// renumber after its review had run. The open pull requests were read at this bump, as
+// (This branch took 62 against the base 5a585b02, which carried 59, cybermonklabs/legion#2731
+// declaring 60 and #2230 declaring 61 and neither carrying these shapes; INFRA-2551's counts of
+// the moves back then landed on main as 62 (cybermonklabs/legion#3522), so this change takes
+// the number above it. main carries 62 at this forward merge, 6c288b54, and the three open pull
+// requests that touch version.go declare 60, 61 and 37, so 63 is the lowest number above the
+// base's that no open pull request declares, which is the free number
+// `.github/scripts/check-daemon-api-contract.sh` asks for, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says; read them again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 62
+// says. Read main's own number, and every open branch's, again at the next forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 63

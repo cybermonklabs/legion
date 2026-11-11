@@ -1,8 +1,5 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, type Locator, type Page, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
 // reference graph, named `dispatch://KEY/ask/<ask id>#b-<part id>`. These rows drive the surfaces
@@ -18,9 +15,9 @@ const agent = {
   as: "agent" as const,
 };
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
+// The project every row of this file seeds into. The reset and alice's sign-in are the `test`
+// this file imports (e2e/test.ts), so what is left here is the seeding alone.
+test.beforeEach(async () => {
   await createProject({ key: "CORE", name: "Core" });
 });
 

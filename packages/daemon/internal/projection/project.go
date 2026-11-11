@@ -154,10 +154,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				view.Architect = &claimView
 				continue
 			}
+			// The worker's view exists only while its claim is live, so its counts of the moves
+			// back ride with the claim exactly as `rounds` does: a role whose process has gone
+			// shows neither, and the record keeps both for the role's next claim.
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
 				Rounds:        item.Rounds,
+				BackwardMoves: item.BackwardMoves,
 			}
 			if item.HandoffRecord != "" {
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
@@ -294,7 +298,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
-	// Every issue of a live tree carries that tree's quiet time (contract 62): `treeMovedAt`,
+	// Every issue of a live tree carries that tree's quiet time (contract 63): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
 	// tree's, so every issue of one tree carries the same two values — a child past its own

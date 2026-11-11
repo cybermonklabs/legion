@@ -137,10 +137,11 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
 // pacing holds, the gated steps, the claim views' step record, the places in the admission
-// line and each issue's tree quiet time among the keys it is served without, since such a pod
-// is below treeContract, wakesWaitingContract, gatedStepsContract, stallRecordContract,
-// waitingLineContract and quietTimeContract too. The fixture carries no quiet time, so that
-// last gate takes nothing out of these bodies and quiet_time_test.go holds it. A
+// line, the workers' counts of the moves back and each issue's tree quiet time among the keys
+// it is served without, since such a pod is below treeContract, wakesWaitingContract,
+// gatedStepsContract, stallRecordContract, waitingLineContract, backwardMovesContract and
+// quietTimeContract too. The fixture carries no quiet time, so that last gate takes nothing out
+// of these bodies and quiet_time_test.go holds it. A
 // pod at this contract, and a caller in no pod — the operator's `legion state`, whose
 // open-rounds line reads both fields, whose queue line reads those wakes and whose tool-call
 // line reads the step records — are served everything. The claims are the state snapshot's own,
@@ -205,10 +206,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// empty as surely as filled (withoutWakesWaiting), with the gated steps gone, the
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
-			// `step` gone, the record contract 57 added (withoutStallRecord), and with the
-			// places in the admission line gone, the field contract 58 added. The two keys
-			// contract 62 added are in no body here, served or stripped: the fixture's issues
-			// stand in no tree this state measures.
+			// `step` gone, the record contract 57 added (withoutStallRecord), with the
+			// places in the admission line gone, the field contract 58 added, and with the
+			// workers' counts of the moves back gone, the field contract 62 added
+			// (withoutBackwardMoves). The two keys contract 63 added are in no body here, served
+			// or stripped: the fixture's issues stand in no tree this state measures.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -224,7 +226,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				issue := issue.(map[string]any)
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
-					views = append(views, worker.(map[string]any)["claim"])
+					worker := worker.(map[string]any)
+					if !tc.rounds {
+						delete(worker, backwardMovesField)
+					}
+					views = append(views, worker["claim"])
 				}
 				for _, view := range views {
 					view, ok := view.(map[string]any)

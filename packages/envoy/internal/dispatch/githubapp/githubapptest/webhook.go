@@ -363,13 +363,48 @@ func (w *Webhook) attempt(rw http.ResponseWriter, r *http.Request) {
 	_, _ = rw.Write([]byte("{}"))
 }
 
+// describableSchemes are the authentication schemes DescribeAuthorization names. The list is the
+// whole of what a failure's text may quote, and each entry is written out here, so the text is
+// this package's own words and never the caller's bytes.
+var describableSchemes = []string{"Bearer", "Basic", "Digest", "DPoP", "Negotiate", "token"}
+
+// DescribeAuthorization says what an Authorization header carried, for a test fake whose check of
+// it failed: the scheme alone, never the credential behind it. Such a check is about the scheme,
+// and a failure's text is kept by CI and pasted into issues.
+//
+// The first word of a header is the scheme only when the sender wrote one. A sender that wrote
+// none sends the credential as that first word, with a trailing space or a second word after it
+// as readily as alone, so a word this package does not know by name is counted rather than
+// printed, in bytes, which is what a reader of a failure can compare against what it sent.
+//
+// A scheme the package knows is answered with the spelling in the list above, and a header that
+// spells it in another case is said to do so: HTTP reads a scheme without regard to case, but
+// the checks that call this read `Bearer ` exactly, so `bearer x` fails a check whose text would
+// otherwise name the very scheme the sender appears to have used.
+func DescribeAuthorization(header string) string {
+	if header == "" {
+		return "no Authorization header"
+	}
+	first, _, _ := strings.Cut(header, " ")
+	for _, scheme := range describableSchemes {
+		if first == scheme {
+			return fmt.Sprintf("the %q scheme", scheme)
+		}
+		if strings.EqualFold(first, scheme) {
+			return fmt.Sprintf("the %q scheme spelled in another case", scheme)
+		}
+	}
+	return fmt.Sprintf("a header of %d bytes whose first word is no scheme this fake knows", len(header))
+}
+
 // verifyAppJWT checks the bearer is an RS256 JWT that verifies against the fake's public key and
 // carries the claims GitHub requires of an App JWT.
 func (w *Webhook) verifyAppJWT(r *http.Request) {
 	w.t.Helper()
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		w.t.Errorf("%s %s called with Authorization %q, want an App JWT", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		w.t.Errorf("%s %s called with %s, want an App JWT", r.Method, r.URL.Path,
+			DescribeAuthorization(r.Header.Get("Authorization")))
 		return
 	}
 	parts := strings.Split(raw, ".")

@@ -71,6 +71,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -79,6 +80,7 @@ import {
   type IdempotencyLandedCode,
   retriesUnderKey,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -270,6 +272,11 @@ export interface IssuePageRequest {
   readonly offset: number;
 }
 
+/** What the `dispatch search` command narrows by. It carries none of the five members the search
+ *  bar sends (`number_project`, `status`, `author`, `updated_since`, `keywords_only`): those
+ *  belong to the bar's own feature, and the command cannot narrow by them today. `search` reads
+ *  the request's keys rather than this shape, so the day one is added here it is routed to
+ *  `GET /api/v1/search/results` with nobody remembering to. */
 export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
@@ -789,7 +796,7 @@ export class DispatchClient {
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
   }
@@ -906,8 +913,15 @@ export class DispatchClient {
     ]);
   }
 
+  /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
+   *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
+   *  build refuses rather than answering unnarrowed. */
   async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-    return this.#json("GET", ["api", "v1", "search"], undefined, { q: query, ...options });
+    const request = { q: query, ...options };
+    const path = everyBuildReadsSearch(request)
+      ? ["api", "v1", "search"]
+      : ["api", "v1", "search", "results"];
+    return this.#json("GET", path, undefined, request);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
@@ -1065,7 +1079,8 @@ export class DispatchClient {
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
-   *  which no reader re-sorts. `me` is the caller, and keeps the rows on issues assigned to them,
+   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
+   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
    *  which is what the Inbox page shows by default. The route reads the caller's own `person`
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
   async inbox(assignee: string): Promise<InboxRow[]> {
@@ -1998,7 +2013,13 @@ export class DispatchClient {
     );
     if (query) {
       for (const [name, value] of Object.entries(query)) {
-        if (typeof value === "string" || typeof value === "number") {
+        // A boolean is sent as `true` or `false`, the two words every route that reads one
+        // takes (`parseQueryBool` in the server). It must be sent rather than dropped: a
+        // search's path is picked from the members the request carries
+        // (`everyBuildReadsSearch`), so a dropped `keywords_only: true` would ask for
+        // `/api/v1/search/results` and then arrive with the flag gone, and the server would
+        // answer by meaning the search asked it to skip.
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
           url.searchParams.set(name, String(value));
         } else if (Array.isArray(value)) {
           for (const item of value) url.searchParams.append(name, String(item));

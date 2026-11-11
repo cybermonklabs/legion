@@ -177,7 +177,9 @@ async function runSession(options: {
   return { requests, sessions };
 }
 
-/** Every `advisor-gate` entry the session recorded, in order. */
+/** Every `advisor-gate` entry the session recorded, in order. Every line is parsed, the last one
+ * included: `runSession` awaited `rpc.end()`, so nothing is still appending and a trailing
+ * fragment is a defect that must throw rather than be withheld (dispatch://INFRA-2188). */
 async function gateEntries(sessions: string): Promise<unknown[]> {
   const files = (await readdir(sessions, { recursive: true })).filter((file) =>
     file.endsWith(".jsonl")

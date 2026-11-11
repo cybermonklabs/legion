@@ -448,7 +448,7 @@ type Issue struct {
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
-	// is how long that tree has been still at this read, in hours (contract 62). The two are one
+	// is how long that tree has been still at this read, in hours (contract 63). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
 	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
 	// a done child recorded under a live tree each answer their tree's quiet time, because what
@@ -603,12 +603,23 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its
-// completion reported, the Dispatch handoff record it named — and the rounds the phase has run.
+// completion reported, the Dispatch handoff record it named — and the rounds the phase has run,
+// with the counts of the moves back that made those rounds.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
 	HandoffRecord *HandoffRecordView `json:"handoffRecord,omitempty"`
 	Rounds        int                `json:"rounds"`
+	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
+	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. It is absent, and
+	// never `{}`, for an issue that has had no move back, so a reader tells an issue that carries
+	// no counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
+	// exactly: it rises on every move back, a conflict round included, where no pair counts a
+	// conflict round, since nobody sent the work back. The counts start empty at the migration
+	// that added them and are never filled in from the past, so an issue already in flight reads
+	// counts that add up to less than its `rounds`.
+	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 }
 
 // HandoffRecordView is the Dispatch handoff record a worker's completion of its current

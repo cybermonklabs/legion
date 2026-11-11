@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -914,7 +913,13 @@ func repositoriesGitHub(t *testing.T) string {
 	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly.
+// stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
+// never returns, not a measurement of how long the stop took: no row of its callers reads the
+// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
+// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
+// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
+// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
+// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -928,7 +933,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stopHangGuard(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }
@@ -1617,11 +1622,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, natsURL)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -1724,11 +1725,7 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

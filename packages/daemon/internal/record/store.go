@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -528,7 +529,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -556,16 +557,27 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the review decision: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff,
+	// backward_moves is not null and defaults to the empty object, so a row with no move counted
+	// yet holds '{}' rather than null: a nil or empty map is written as that same empty object,
+	// which is what scanPhase reads back as nil.
+	backwardMoves := []byte("{}")
+	if len(phase.BackwardMoves) > 0 {
+		var err error
+		if backwardMoves, err = json.Marshal(phase.BackwardMoves); err != nil {
+			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
+		}
+	}
+	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
 		decision, completed_at, merge_note, assignment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
-		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, verdict = excluded.verdict,
+		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
+		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at, merge_note = excluded.merge_note, assignment = excluded.assignment`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
-		phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
+		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -576,9 +588,9 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
-	var decision []byte
+	var decision, backwardMoves []byte
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
-		&phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
+		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
 		return PhaseRow{}, err
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
@@ -586,6 +598,22 @@ func scanPhase(row scanner) (PhaseRow, error) {
 		phase.Decision = &ReviewDecision{}
 		if err := json.Unmarshal(decision, phase.Decision); err != nil {
 			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
+		}
+	}
+	// A row that counted no backward move reads as a nil map and never as an empty one: the
+	// column holds the empty object for it, and a scanned row of a phase nothing went back from
+	// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
+	// row holds, and this scan runs on every phase row of every state read, so those bytes answer
+	// the nil map without a decode of their own, as the decision column above answers nil without
+	// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
+	// its error.
+	if !bytes.Equal(backwardMoves, []byte("{}")) {
+		moves := map[string]int{}
+		if err := json.Unmarshal(backwardMoves, &moves); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
+		}
+		if len(moves) > 0 {
+			phase.BackwardMoves = moves
 		}
 	}
 	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
@@ -1234,8 +1262,11 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		"delete from design_gates where " + where,
 		// The assignment goes with the run too: the start that re-enters the phase mints the next
 		// one, and until it does the cleared row names none, which the completion route reads as
-		// nothing to compare rather than as a mismatch to refuse.
-		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
+		// nothing to compare rather than as a mismatch to refuse. The counts go with the rounds:
+		// the new generation counts its moves back from nothing, and the cap mark goes with them,
+		// so the architect is told again at the new generation's own first crossing of the cap.
+		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
 			"assignment = '' where " + where,
 		// A READY the gate refused waits on the merger's packet, which the statement above clears.
 		// The step goes with the version: the stored shape holds both or neither.

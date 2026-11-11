@@ -37,6 +37,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     updated_at: "2026-09-12T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-12T00:00:00Z",
     last_seq: 1,
     open_asks: 0,
     progress: { tasks: null, children: null },
