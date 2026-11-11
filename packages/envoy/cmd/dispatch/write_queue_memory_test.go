@@ -741,10 +741,22 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 
 	// The slow browser drains at its own rate until it holds everything the room does.
 	want := canonicalState(t, typing.state(t))
+	drainFrom := server.output.len()
 	deadline := time.Now().Add(2 * time.Minute)
 	for !bytes.Equal(canonicalState(t, slow.state()), want) {
+		read, frames, _, ended := slow.taken()
+		// A socket the host dropped is no verdict of this drive's. ygo gives each message ten
+		// seconds to reach the wire, and on a loaded machine a frame to a reader taking one
+		// every 250 ms can pass it, which ends the connection with no close frame and leaves
+		// this reader at 1006 with the room's document half read. The server's own line is the
+		// evidence, so it is quoted and the drive stops there rather than failing a bound that
+		// refused nothing (dispatch://INFRA-179, measured 2026-11-11: 95 frames and 1,570,084
+		// bytes read, the window carrying one `write to peer failed; closing … i/o timeout`).
+		if ended != nil && hostDroppedTheSocket(server, drainFrom) {
+			t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes, within ygo's %s message deadline and no refusal of this change's: %v",
+				frames, read, 10*time.Second, ended)
+		}
 		if time.Now().After(deadline) {
-			read, frames, _, ended := slow.taken()
 			t.Fatalf("the browser on a slow link did not hold the room's whole document after 2m: it had read %d frames and %d bytes, and its reading ended with %v:\n%s",
 				frames, read, ended, server.output.tail())
 		}
@@ -756,7 +768,11 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 	for quiet := 0; quiet < 4; {
 		_, before, _, _ := slow.taken()
 		time.Sleep(throttledReadInterval)
-		_, after, _, ended := slow.taken()
+		readSoFar, after, _, ended := slow.taken()
+		if ended != nil && hostDroppedTheSocket(server, drainFrom) {
+			t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes as its stream drained, within ygo's %s message deadline: %v",
+				after, readSoFar, 10*time.Second, ended)
+		}
 		if ended != nil {
 			t.Fatalf("the browser on a slow link stopped reading while its stream drained: %v", ended)
 		}
@@ -835,4 +851,16 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 	if drained-atBurstEnd > peerWriteQueueBytesForTest {
 		t.Errorf("the slow reader was %d bytes behind at the burst's end, past its %d-byte budget: the budget would have closed an honest browser", drained-atBurstEnd, peerWriteQueueBytesForTest)
 	}
+}
+
+// hostDroppedTheSocket reports whether the server's own log, over the window this drive has run
+// in, says the host could not put bytes on a socket within the ten seconds ygo's writer allows a
+// message (writeTimeout, provider/websocket/server.go), which drops the connection with no close
+// frame and leaves the reader with a 1006. That is the host and no bound of this change's: every
+// refusal this change makes carries its own code and reason, and the write-queue budget closes
+// only a socket whose own queue is over it, which the server names when it does
+// (writeQueueCloses). The drive reads the line rather than counting the close, as the burst
+// drive's own keystroke arm does (browser_memory_test.go, "write to peer failed; closing").
+func hostDroppedTheSocket(server *memoryServer, from int) bool {
+	return strings.Contains(server.output.from(from), "write to peer failed; closing")
 }
