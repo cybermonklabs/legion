@@ -11,7 +11,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { userStateQuery } from "../../api/queries";
 import { InfoHint } from "../../components/InfoHint";
@@ -23,7 +23,6 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
-import { buildIssuePath } from "../refs/routes";
 import { COLUMN_LABELS, useIssueTableColumns } from "./issues-table-columns";
 import { ColumnsMenu, IssueTablePager } from "./issues-table-controls";
 import { useProjectIssueItems } from "./issues-table-data";
@@ -239,39 +238,20 @@ export function IssueGrid<Row extends { key: string }>({
       if (typeof entry === "string") {
         const found = byId.get(entry);
         if (found === undefined) return [];
-        if (entry !== "key" || (keyHref === undefined && !narrow)) return [narrowed(found, entry)];
+        if (entry !== "key" || keyHref === undefined) return [narrowed(found, entry)];
         // The Key column goes where the caller sends it: the Legion tab's rows open an issue's
-        // timeline rather than its page, and the keyboard's open follows the same link. Below
-        // 640 px it carries the title as a second line, because a row needs both and a phone
-        // has room for one column.
+        // timeline rather than its page, and the keyboard's open follows the same link.
         return [
           {
             ...found,
             cell: ({ row }) => {
               const entryRow = rowFor.get(row.original.issue.key);
-              const href =
-                entryRow === undefined || keyHref === undefined
-                  ? buildIssuePath({ key: row.original.issue.key, kind: "issue" })
-                  : keyHref(entryRow.row);
+              const href = entryRow === undefined ? "#" : keyHref(entryRow.row);
               return (
-                <span className="flex min-w-0 flex-col gap-1">
-                  <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
-                    <Link className={`${linkText} ${linkHoverText}`} data-issue-link to={href}>
-                      {row.original.issue.key}
-                    </Link>
-                  </span>
-                  {narrow ? (
-                    // Not a link: below 1280 px every anchor is a 44 px box that lays itself
-                    // out as a flex row (styles.css), which a two-line clamp cannot survive.
-                    // The key above it is the link, and the whole row opens from the keyboard.
-                    <span
-                      className={`line-clamp-2 min-w-0 break-words ${textSecondaryOnCanvas}`}
-                      data-grid-key-title
-                      title={row.original.issue.title}
-                    >
-                      {row.original.issue.title}
-                    </span>
-                  ) : null}
+                <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
+                  <Link className={`${linkText} ${linkHoverText}`} data-issue-link to={href}>
+                    {row.original.issue.key}
+                  </Link>
                 </span>
               );
             },
@@ -411,23 +391,25 @@ export function IssueGrid<Row extends { key: string }>({
   });
 
   const pageRows = table.getRowModel().rows;
-  // A grid that grows to its rows draws every one of them: a page is at most 100 rows, and a
-  // virtualizer needs a scroll box of its own to measure against, which this mode has not.
+  /** Whether every row of the page is drawn rather than a window of them. A grid that grows to
+   *  its rows has no scroll box for a virtualizer to measure against, and on a phone an issue
+   *  is two rows rather than one, which a virtualizer measuring the first would get wrong.
+   *  Either way a page is at most 100 rows. */
+  const listed = fit === "rows" || narrow;
   const virtualizer = useVirtualizer({
-    count: fit === "rows" ? 0 : pageRows.length,
+    count: listed ? 0 : pageRows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 64,
     getItemKey: (index) => pageRows[index]?.id ?? index,
     initialRect: { width: 1000, height: 600 },
     overscan: 12,
   });
-  const drawn =
-    fit === "rows"
-      ? pageRows.map((row, index) => ({ index, key: row.id }))
-      : virtualizer.getVirtualItems().map((virtual) => ({
-          index: virtual.index,
-          key: String(virtual.key),
-        }));
+  const drawn = listed
+    ? pageRows.map((row, index) => ({ index, key: row.id }))
+    : virtualizer.getVirtualItems().map((virtual) => ({
+        index: virtual.index,
+        key: String(virtual.key),
+      }));
 
   const openColumn = columns.find(
     (entry) => typeof entry !== "string" && entry.id === openFilter
@@ -478,22 +460,52 @@ export function IssueGrid<Row extends { key: string }>({
             ))}
           </thead>
           <tbody>
-            {fit === "rows" || drawn[0] === undefined ? null : (
+            {listed || drawn[0] === undefined ? null : (
               <tr aria-hidden style={{ height: virtualizer.getVirtualItems()[0]?.start ?? 0 }} />
             )}
             {drawn.map(({ index, key }) => {
               const row = pageRows[index];
               if (row === undefined) return null;
-              return (
+              const first = (
                 <IssueRow
+                  continues={narrow}
                   index={index}
                   key={key}
-                  measure={fit === "rows" ? NO_MEASURE : virtualizer.measureElement}
+                  measure={listed ? NO_MEASURE : virtualizer.measureElement}
                   row={row}
                 />
               );
+              if (!narrow) return first;
+              // On a phone an issue reads as two lines: the key and the columns it kept, then
+              // the title across the whole width. A row of its own rather than a second line
+              // inside the Key cell, because a title in 40% of a 390 px screen cuts after
+              // three words. The first row keeps the issue's key, its focus and its label, so
+              // sorting, the keyboard and the row's own identity are unchanged.
+              return (
+                <Fragment key={key}>
+                  {first}
+                  <tr data-grid-title-row={row.original.issue.key}>
+                    <td
+                      className={`border-b px-2 pb-2 ${borderDefault}`}
+                      colSpan={row.getVisibleCells().length}
+                      style={{ width: table.getTotalSize() }}
+                    >
+                      {/* Not a link: below 1280 px every anchor is laid out as a 44 px flex
+                          box (styles.css), which no line clamp survives. The key above it is
+                          the link the row opens from. */}
+                      <span
+                        className={`line-clamp-3 break-words ${textSecondaryOnCanvas}`}
+                        data-grid-key-title
+                        title={row.original.issue.title}
+                      >
+                        {row.original.issue.title}
+                      </span>
+                    </td>
+                  </tr>
+                </Fragment>
+              );
             })}
-            {fit === "rows" || drawn.length === 0 ? null : (
+            {listed || drawn.length === 0 ? null : (
               <tr
                 aria-hidden
                 style={{

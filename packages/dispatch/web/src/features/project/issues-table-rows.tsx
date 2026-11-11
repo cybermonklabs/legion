@@ -153,6 +153,7 @@ export function TableHeaderCell({
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
 export function IssueRow({
   busy = false,
+  continues = false,
   index,
   measure,
   moved,
@@ -160,6 +161,9 @@ export function IssueRow({
   row,
 }: {
   busy?: boolean;
+  /** Whether a row of this issue's own follows — its title on a line of its own, on a phone —
+   *  so this one draws no rule under it and the two read as one row. */
+  continues?: boolean;
   index: number;
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
@@ -186,7 +190,7 @@ export function IssueRow({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
+            className={`overflow-hidden px-2 py-2 ${continues ? "" : "border-b"} ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),

@@ -120,9 +120,11 @@ test("phase-or-status bar and slot cap move live with a stored Legion event @pho
     const bar = page.getByRole("group", { name: "Issues by phase or status" });
     await expect(bar.getByRole("button", { name: "Implementing 1", exact: true })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Todo 1", exact: true })).toBeVisible();
-    await expect(page.locator("[data-legion-slots]")).toHaveText("2/4 slots");
+    // The bar is titled by what it counts; the slots in use are the Legion tab's.
+    await expect(page.locator("[data-issues-counted]")).toHaveText("6 issues");
+    await expect(page.locator("[data-legion-slots]")).toHaveCount(0);
     await page
-      .locator("[data-legion-read-at]")
+      .locator("[data-issues-bar-title]")
       .getByRole("button", { name: "About these counts" })
       .click();
     await expect(page.getByText(/Dispatch read the daemon at/)).toBeVisible();
@@ -214,7 +216,10 @@ test("a project without Legion keeps the Dispatch queue and ignores Legion URL c
     for (const name of ["Phase", "Slot", "Roles", "CI"]) {
       await expect(page.getByRole("checkbox", { name, exact: true })).toHaveCount(0);
     }
-    await expect(page.locator("[data-legion-slots]")).toHaveCount(0);
+    // No daemon serves this project, so the bar is of statuses alone and nothing is told apart
+    // from a phase; it still says what it counts.
+    await expect(page.getByRole("group", { name: "Issues by phase or status" })).toHaveCount(0);
+    await expect(page.locator("[data-issues-counted]")).toHaveText("5 issues");
   } finally {
     await context.close();
   }
@@ -285,7 +290,7 @@ test("a pushed daemon batch updates phase, queue, slot, roles, CI and cap withou
     await expect(row(page, "ACME-1").locator('[data-legion-fact="checks"]')).toHaveText("green");
     await expect(row(page, "ACME-3").getByText("#1", { exact: true })).toBeVisible();
     await expect(row(page, "ACME-4").getByText("#2", { exact: true })).toBeVisible();
-    await expect(page.locator("[data-legion-slots]")).toHaveText("2/6 slots");
+    // The slots in use moved to the Legion tab; the rows above are what this push changed here.
     expect(navigations).toEqual([]);
   } finally {
     await context.close();
