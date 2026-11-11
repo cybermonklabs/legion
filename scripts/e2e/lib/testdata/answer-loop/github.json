@@ -40,6 +40,14 @@
       "body": "answer-loop-leak-4242\n\n<!-- legion: {\"session\":\"session-implementer\",\"phase\":\"implementing\"} -->"
     }
   ],
+  "repos/sjawhar/legion-smoke/issues/45/comments?per_page=100": [
+    {
+      "id": 9007,
+      "user": { "login": "smoke" },
+      "body": "a comment of the run's own that holds neither marker"
+    }
+  ],
+  "repos/sjawhar/legion-smoke/issues/46/comments?per_page=100": [],
   "repos/sjawhar/legion-smoke/pulls/41/reviews": [
     {
       "id": 2147483648123,

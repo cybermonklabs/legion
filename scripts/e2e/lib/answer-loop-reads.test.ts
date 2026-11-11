@@ -705,14 +705,21 @@ describe("GitHub", () => {
     });
   });
 
-  test("no_comment_holds reads that the refused write was never made", () => {
-    expect(run(`no_comment_holds "$(pr_comment_listing 41)" answer-loop-leak-4242`).code).toBe(0);
-    // The write was made after all: the comment carrying the marker is on the pull request.
-    expect(run(`no_comment_holds "$(pr_comment_listing 44)" answer-loop-leak-4242`).code).toBe(1);
+  test("refused_write_absent reads the refused write's absence off a listing it read", () => {
+    const kept = "answer-loop-a17-4242-files";
+    const refused = "answer-loop-leak-4242";
+    expect(run(`refused_write_absent "$(pr_comment_listing 41)" ${kept} ${refused}`).code).toBe(0);
+    // The write was made after all: the comment carrying the refusal marker is on the pull request.
+    expect(run(`refused_write_absent "$(pr_comment_listing 44)" ${kept} ${refused}`).code).toBe(1);
+    // A listing that examined nothing, and one of some other pull request: neither holds the
+    // comment the leg posted minutes before, so neither shows the refused write's absence. jq's
+    // `all` over an empty array is true, which is what this half of the read is here to catch.
+    expect(run(`refused_write_absent "$(pr_comment_listing 46)" ${kept} ${refused}`).code).toBe(1);
+    expect(run(`refused_write_absent "$(pr_comment_listing 45)" ${kept} ${refused}`).code).toBe(1);
     // A listing nobody could read is no absence: an error body, a failed call, no listing at all.
-    expect(run(`no_comment_holds "$(pr_comment_listing 42)" answer-loop-leak-4242`).code).toBe(1);
-    expect(run(`no_comment_holds null answer-loop-leak-4242`).code).toBe(1);
-    expect(run(`no_comment_holds '' answer-loop-leak-4242`).code).toBe(1);
+    expect(run(`refused_write_absent "$(pr_comment_listing 42)" ${kept} ${refused}`).code).toBe(1);
+    expect(run(`refused_write_absent null ${kept} ${refused}`).code).toBe(1);
+    expect(run(`refused_write_absent '' ${kept} ${refused}`).code).toBe(1);
   });
 
   test("leak_reason_quoted reads the check's own reason in the agent's reply", () => {

@@ -1483,12 +1483,14 @@ the registration carries no port, and the answer published on the asker's own su
   the rig reads the comment back with a read-only implement-App token of its own (**GitHub** below), the one GitHub read its own `gh` cannot make.
   That leg is the control of the one after it: a stand-in check refusing every call, and a path that wrote nothing at all, each fail it.
   Then the same implementer is asked for a comment whose body is the run's refusal marker, which the stand-in shared check refuses:
-  GitHub's listing holds no comment carrying that marker, the agent's reply quotes the check's own reason, and the daemon's `answers: gh call refused by the leak guard` line names the issue, the role, the repository and that reason.
-  Both halves are read, since a case reading the reply alone passes with the guard wired to nothing.
+  GitHub's listing holds the control's own comment and no comment carrying that marker, the agent's reply quotes the check's own reason, and the daemon's `answers: gh call refused by the leak guard` line names the issue, the role, the repository and that reason.
+  Both halves are read, since a case reading the reply alone passes with the guard wired to nothing;
+  and the listing is read for the control's comment, since jq's `all` over an empty array is true, so a listing of nothing, or of another pull request, would otherwise pass the half that is meant to show the write was never made.
   The pre-change reviewer asked to write to the second owner's repository gets GitHub's refusal and says so.
 
   The stand-in is the run's own `$work/bin/public-leak-check.sh`, written before the first boot (`install_leak_check`), since the real shared check is a private script no clone of this repository holds and the guard refuses every call it can run no check for:
   without it the loop's every `gh` call is refused before `gh` starts, so A15, A17, A18 and A19 all depend on that file.
+  The stand-in refuses the run's own marker and clears every other call, so the leg proves the wiring — a refused call is not made, the model is told the check's reason, and the daemon logs it — and never the real check's detection of anything.
 
 - A18: the proxy holds the loop's model call after the comment's `gh` call;
   the daemon is killed and restarted (one comment, one answer), and in a second run the claim is resumed there (the question is forwarded with the call, one comment, no reply from the loop).

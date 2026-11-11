@@ -2243,7 +2243,8 @@ check_a17() {
   # refusal marker, which the stand-in shared check refuses (install_leak_check). Both halves are
   # read and never the agent's answer alone — a leg that read the reply alone would pass with the
   # guard wired to nothing at all:
-  #   (a) GitHub holds no comment carrying the marker, so the write was never made;
+  #   (a) the listing GitHub answered holds the control's own comment and no comment carrying the
+  #       refusal marker, so the write was never made and the listing that shows it was read;
   #   (b) the agent's reply to the asker carries the check's own reason, so what refused the call
   #       is the check and not some other refusal of the tool's.
   # The daemon's own line for it is read beside them: one refusal line naming the issue, the role,
@@ -2259,10 +2260,10 @@ check_a17() {
     for id in $(jq -r '.[].id' <<<"$refused_comments"); do github_writes+=("comment:$id"); done
     reply=$(inbox_reply "$event")
     refusal_line=$(leak_refusal_line implementer)
-    note "comments on #${agent[$store:implementer.pr]}: $(jq -r 'if type == "array" then length | tostring else "no listing at all" end' <<<"$listing"); holding $leak_marker: $refused_comments"
+    note "comments on #${agent[$store:implementer.pr]}: $(jq -r 'if type == "array" then length | tostring else "no listing at all" end' <<<"$listing"); holding $marker: $(jq -c --arg m "$marker" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' <<<"$listing"); holding $leak_marker: $refused_comments"
     note "the guard's refusal line: $refusal_line"
     note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
-    no_comment_holds "$listing" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
+    refused_write_absent "$listing" "$marker" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
       leak_refusal_is "$refusal_line" "${agent[$store:implementer.issue]}" implementer "$repo" "$leak_reason" && ok_leak=1
   fi
   sent=$(envoy_ask_text session "${agent[$store:pre_change.session]}" \
@@ -2278,9 +2279,9 @@ check_a17() {
     gh_line_is "$gh_line" review "${second_repo%%/*}" nonzero && [ "$refusal" = yes ] && ok_review=1
   fi
   if [ "$ok_impl$ok_leak$ok_review" = 111 ]; then
-    record_result A17 PASS "the clean-marker comment is the implement App's one comment with its session's footer, logged with App and owner (the control: a check refusing everything, and a path writing nothing, fail this leg); the comment naming $leak_marker is nowhere on the pull request and the implementer's reply carries the check's own reason, with the daemon's refusal line naming the issue, the role, the repository and that reason; the reviewer's write to the second owner was refused and it said so"
+    record_result A17 PASS "the clean-marker comment is the implement App's one comment with its session's footer, logged with App and owner (the control: a check refusing everything, and a path writing nothing, fail this leg); the pull request's listing holds that comment and no comment naming $leak_marker, and the implementer's reply carries the check's own reason, with the daemon's refusal line naming the issue, the role, the repository and that reason; the reviewer's write to the second owner was refused and it said so"
   else
-    record_result A17 FAIL "the control's comment $ok_impl, the leak guard's refusal $ok_leak (both halves: no comment holding $leak_marker on the pull request, and the check's own reason in the reply and in the daemon's refusal line), reviewer refusal $ok_review (1 = shown)"
+    record_result A17 FAIL "the control's comment $ok_impl, the leak guard's refusal $ok_leak (both halves: a listing holding the control's comment and none holding $leak_marker, and the check's own reason in the reply and in the daemon's refusal line), reviewer refusal $ok_review (1 = shown)"
   fi
 }
 

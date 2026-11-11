@@ -472,12 +472,25 @@ one_comment_by() {
     'type == "array" and length == 1 and .[0].user == $login and (.[0].body | contains("\"session\":\"" + $s + "\""))' \
     <<<"${1:-null}" >/dev/null 2>&1
 }
-# no_comment_holds LISTING MARKER: GitHub answered a listing of the pull request's comments
-# (pr_comment_listing) and none of them holds MARKER — the write the leak guard refused was never
-# made. A listing that is no listing (`null`: the read failed, or GitHub answered an error body)
-# is no absence and fails here: a read nobody could make has shown nothing.
-no_comment_holds() {
-  jq -e --arg m "$2" 'type == "array" and all(.[]; ((.body // "") | contains($m)) | not)' <<<"${1:-null}" >/dev/null 2>&1
+# refused_write_absent LISTING KEPT REFUSED: GitHub answered a listing of the pull request's
+# comments (pr_comment_listing), that listing holds the comment whose body carries KEPT, and none
+# of its comments holds REFUSED — the write the leak guard refused was never made, read on the
+# listing that proves it was read at all.
+#
+# The KEPT half is what makes the REFUSED half mean anything. jq's `all` over an empty array is
+# true, so a listing of nothing passes "no comment holds the marker" having examined no comment:
+# a listing of the wrong pull request, one GitHub answered empty, and a comment page that moved
+# would each have read the absence of a write nobody looked for. KEPT is the comment the leg
+# posted minutes before, on that pull request, which is known to be there, so a listing without
+# it is the wrong listing rather than an empty pull request.
+#
+# A listing that is no listing (`null`: the read failed, or GitHub answered an error body) fails
+# here too: a read nobody could make has shown nothing.
+refused_write_absent() {
+  jq -e --arg kept "$2" --arg refused "$3" \
+    'type == "array"
+      and any(.[]; (.body // "") | contains($kept))
+      and all(.[]; ((.body // "") | contains($refused)) | not)' <<<"${1:-null}" >/dev/null 2>&1
 }
 # refusal_mentioned REPLY: the agent's reply says GitHub refused its write.
 refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission' <<<"${1:-}"; }
@@ -485,7 +498,7 @@ refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission'
 # check's own report of why it refused the call, which the refusal handed the tool word for word.
 # It is one half of the leak-guard leg and never the whole: a reply saying a call was refused is
 # what an agent writes for any refusal, so the write that was not made is read beside it
-# (no_comment_holds). No reply at all carries nothing.
+# (refused_write_absent). No reply at all carries nothing.
 leak_reason_quoted() { grep -qiF -- "$2" <<<"${1:-}"; }
 # reviewer_approvals NUMBER SESSION prints the approving reviews of the pull request whose Legion
 # footer names SESSION, as {id, user, commit_id, footer}. GitHub's error body is an object, not the
