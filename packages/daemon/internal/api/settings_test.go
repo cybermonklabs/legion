@@ -326,10 +326,11 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.github_apps.implement", keysOf(t, apps["implement"]), []string{"app_id", "installations"})
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
-	// The fixture's projects declare no experiment, so neither carries the `experiments` key;
-	// what a project that declares one carries is TestSettingsOfNamesAProjectsExperiments'.
+	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
+	// (contract 60); what a project that declares one carries is
+	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"merge_queue_role", "merge", "slack_channels", "memory", "production_check", "deploys",
+		"merge_queue_role", "merge", "slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -550,7 +551,7 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 // order, under the name it is declared with, with its mode, its unit, the arm `on` would give and
 // its arms in the file's order, each with its weight and its overlays. The paths are the
 // operator's own file names, as the `memory` block's are (settingsEmitted). A project that
-// declares none carries no key at all, which the census above reads off the fixture.
+// declares none carries `[]`, never no key at all, which the census above reads off the fixture.
 func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	const declared = `    experiments:
       plan-length:
@@ -595,8 +596,8 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
 		"merge_queue_role", "merge", "slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
-	if _, present := keysOf(t, projects["LEGION"])["experiments"]; present {
-		t.Errorf("a project that declares no experiment carries the key: %s", encoded)
+	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
+		t.Errorf("a project that declares no experiment carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 60)", got)
 	}
 	var document any
 	if err := json.Unmarshal(encoded, &document); err != nil {

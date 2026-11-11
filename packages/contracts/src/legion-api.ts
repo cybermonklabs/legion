@@ -425,6 +425,18 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 60): the name the
+ * project declares the experiment under, the arm the draw gave the unit, the mode in force at
+ * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
+ * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
+ * daemon adds must be read rather than refuse the whole state. */
+const legionAssignment = z.object({
+  experiment: nonEmptyString,
+  variant: z.string(),
+  mode: z.string(),
+  drawnAt: timestamp.optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -469,14 +481,30 @@ const legionIssue = z.object({
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
-   * memory overlays and instructions, `none` for one that runs without them, with the project's
-   * `memory.mode` in force when the group was drawn and the instant of that draw. The three are
-   * absent together while nothing has drawn for the tree — a tree first opened before the setting
-   * existed — and every issue of a tree carries its root's, since the draw is made once, on the
-   * root, when the tree's lifecycle row is first created (contract 49). */
+   * memory overlays and instructions, `none` for one that runs without them, with the mode in
+   * force when the group was drawn and the instant of that draw. The three are the answer of the
+   * experiment named `memory` in `assignments` below, read only where that row records a draw
+   * and spelled out as this key has read it since contract 49: the arm `memory` is the group
+   * `memory` and every other arm — the control `none` and the empty arm an experiment at mode
+   * off draws — is `none`. They are absent together while no `memory` answer applies to the
+   * issue — a tree first opened before the setting existed — and while its only `memory` answer
+   * records no draw, which is a hand-over settling the tree at no arm and which answered none
+   * of the three before contract 60 as well. Every issue of a tree carries its tree's, since
+   * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
+  /** Every experiment answer that applies to the issue (contract 60): its tree's, for an
+   * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
+   * order the project's file declares the experiments — the order
+   * `settings.projects.<KEY>.experiments` names them in. `variant` and `mode` ride whatever they
+   * hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
+   * that row — no arm, no mode, no instant — is a hand-over settling a unit at no arm for an
+   * experiment the tree it left held no row for, which is how a reader tells a unit settled at
+   * no arm from a unit never drawn, which carries no row at all. The key is absent from an issue
+   * no experiment holds an answer for, and from every issue of the body the route serves a
+   * caller before 60, so a reader takes it as optional. */
+  assignments: z.array(legionAssignment).optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */

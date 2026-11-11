@@ -625,6 +625,77 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
 });
 
+// Contract 60: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
+// the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
+// the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
+// an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
+// carries no key at all, as does every issue of the body served a caller before 60, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries the experiments each issue was drawn for", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const issueOf = (key: string) => {
+    const issue = state.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const drawn = issueOf("LEGION-208");
+  expect(drawn.assignments).toEqual([
+    {
+      experiment: "memory",
+      variant: "memory",
+      mode: "random",
+      drawnAt: "2026-09-20T11:04:05Z",
+    },
+    {
+      experiment: "plan-length",
+      variant: "short",
+      mode: "random",
+      drawnAt: "2026-09-21T18:42:11Z",
+    },
+  ]);
+  // The issue experiment's arm is the issue's own: the child of that tree stands in the other.
+  expect((issueOf("LEGION-209").assignments as Record<string, unknown>[])[1]?.variant).toBe("long");
+  // The hand-over's answer: an arm and a mode, both empty, and no instant at all.
+  expect(issueOf("LEGION-210").assignments).toEqual([
+    { experiment: "plan-length", variant: "", mode: "" },
+  ]);
+  // An issue no experiment has reached carries no key.
+  expect(issueOf("LEGION-211").assignments).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 60, and one served to a pod below it.
+  const held = drawn.assignments;
+  delete drawn.assignments;
+  expect(parses()).toBeTrue();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+
+  // A row naming no experiment, a variant that is no string, and a draw time that is no time.
+  drawn.assignments = [{ experiment: "", variant: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: 1, mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [
+    { experiment: "memory", variant: "memory", mode: "random", drawnAt: "the morning" },
+  ];
+  expect(parses()).toBeFalse();
+  // A row that leaves out `variant` or `mode`: both ride the wire whatever they hold, the empty
+  // string included, so a row without one is no row this daemon writes.
+  drawn.assignments = [{ experiment: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: "memory" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+});
+
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
 // repository, pull request and merge commit the check looks for, the role that works it, its
 // looks, the wake that started the latest and when the next look is due. Its role is the

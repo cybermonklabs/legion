@@ -244,6 +244,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "assignments")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)

@@ -601,7 +601,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
-	fmt.Fprintln(stdout, memorySummary(state.Issues))
+	for _, line := range experimentLines(state.Settings, state.Daemon.Project, state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
@@ -650,42 +652,71 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
 }
 
-// memorySummary is the one line an operator reads for the memory groups the project's work was
-// drawn into: how many issues carry a draw at all, and how many of those under each group and
-// mode, in group and then mode order, so two runs over one state print one line.
+// experimentLines are the lines an operator reads for the experiments the deployment declares
+// (`settings.projects.<KEY>.experiments`, the daemon's own project): one per experiment, in the
+// settings' order, which is the project's file's order, counting how many issues hold each arm
+// of it. An experiment no issue holds is `none` after its name, as a deployment that has drawn
+// nothing has always read.
 //
-// It counts issues, and not the trees the draw is made for, because the state carries no tree: a
-// draw would have to stand for its tree, and it cannot. Every issue of a tree carries its root's
-// draw, and a tree handed over as one of its own carries its old tree's draw verbatim — the
-// group, the mode and the instant alike — so two trees share one draw and no draw is a tree's
-// name. It names no issue either: the per-issue values are in `legion state --json`, where a line
-// per issue would print hundreds on a live deployment.
-func memorySummary(issues map[string]api.Issue) string {
-	type groupMode struct{ group, mode string }
-	counts := map[groupMode]int{}
-	drawn := 0
+// It counts issues, and not the trees a tree experiment is drawn for, because the state carries
+// no tree: a draw would have to stand for its tree, and it cannot. Every issue of a tree carries
+// its root's draw, and a tree handed over as one of its own carries its old tree's draw verbatim
+// — the arm, the mode and the instant alike — so two trees share one draw and no draw is a
+// tree's name. It names no issue either: the per-issue answers are in `legion state --json`,
+// where a line per issue would print hundreds on a live deployment.
+//
+// A deployment whose settings name no experiment has none to name and prints the one line
+// `experiments: none`, which is what a deployment that declares nothing has always read in the
+// line this printer took the place of (`memory: none`).
+func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
+	declared := settings.Projects[project].Experiments
+	if len(declared) == 0 {
+		return []string{"experiments: none"}
+	}
+	counts := make(map[string]map[string]int, len(declared))
 	for _, issue := range issues {
-		if issue.MemoryGroup == "" {
-			continue
+		for _, assignment := range issue.Assignments {
+			held, counted := counts[assignment.Experiment]
+			if !counted {
+				held = map[string]int{}
+				counts[assignment.Experiment] = held
+			}
+			held[assignment.Variant]++
 		}
-		drawn++
-		counts[groupMode{group: issue.MemoryGroup, mode: issue.MemoryDrawMode}]++
 	}
-	if drawn == 0 {
-		return "memory: none"
+	lines := make([]string, len(declared))
+	for i, experiment := range declared {
+		lines[i] = experimentLine(experiment.Name, counts[experiment.Name])
 	}
-	kinds := slices.SortedFunc(maps.Keys(counts), func(a, b groupMode) int {
-		return cmp.Or(cmp.Compare(a.group, b.group), cmp.Compare(a.mode, b.mode))
-	})
-	named := make([]string, len(kinds))
-	for i, kind := range kinds {
-		named[i] = fmt.Sprintf("%d %s (%s)", counts[kind], kind.group, kind.mode)
+	return lines
+}
+
+// experimentLine is one experiment's line: how many issues hold an arm of it at all, and how
+// many of those under each arm, in arm order, so two runs over one state print one line. An arm
+// an issue was settled at no variant under — a hand-over out of a tree that held no row for the
+// experiment — is `no variant`, which is an answer and no arm, told apart from an issue the
+// experiment never reached, which holds no row and is counted in nothing.
+func experimentLine(name string, counts map[string]int) string {
+	held := 0
+	for _, count := range counts {
+		held += count
+	}
+	if held == 0 {
+		return name + ": none"
+	}
+	named := make([]string, 0, len(counts))
+	for _, variant := range slices.Sorted(maps.Keys(counts)) {
+		arm := variant
+		if arm == "" {
+			arm = "no variant"
+		}
+		named = append(named, fmt.Sprintf("%d %s", counts[variant], arm))
 	}
 	noun := "issues"
-	if drawn == 1 {
+	if held == 1 {
 		noun = "issue"
 	}
-	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
+	return fmt.Sprintf("%s: %d %s — %s", name, held, noun, strings.Join(named, ", "))
 }
 
 // awaitingSummary is the one line an operator reads for the roots that wait on a person

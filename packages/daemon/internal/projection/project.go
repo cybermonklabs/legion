@@ -2,6 +2,7 @@
 package projection
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -37,18 +39,22 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
-	// memoryByTree is every tree's memory draw, by the tree's key: only a root's record carries
-	// one, and a root's key is its own tree (record.Issue.MemoryGroup). Every issue of the tree is
-	// shown its root's, so an issue's view answers what its own roles run with.
-	memoryByTree := make(map[string]memoryDraw)
+	keys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
+		keys = append(keys, issue.Key)
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
-		if issue.MemoryGroup != "" {
-			memoryByTree[issue.Key] = memoryDraw{group: issue.MemoryGroup, mode: issue.MemoryDrawMode, at: issue.MemoryDrawnAt}
-		}
+	}
+	// Every experiment answer the state's issues hold, by issue key, read in one statement over
+	// the issues already in hand (record.Store.AssignmentsFor). A row is keyed by the unit it
+	// covers and says which unit that is: a `tree` row is its tree root's and every issue of the
+	// tree is shown it, an `issue` row is the issue's own. So an issue's answers are its root's
+	// tree rows and its own issue rows, which assignmentViews joins.
+	assignments, err := s.AssignmentsFor(ctx, tx, keys)
+	if err != nil {
+		return api.State{}, err
 	}
 	slots, err := s.Slots(ctx, tx)
 	if err != nil {
@@ -119,11 +125,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			DefaultBranch: issue.DefaultBranch,
 			Workers:       map[claim.Role]api.PhaseView{},
 		}
-		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
-		// is what the issue's roles ran with, and nothing redraws it.
-		if draw, drawn := memoryByTree[issue.Tree]; drawn {
-			view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt = draw.group, draw.mode, draw.at
-		}
+		// Every experiment answer the issue runs under, a done issue's included: it is what its
+		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
+		// experiment named `memory` spelled out for the readers that knew it before any
+		// experiment was declared (contract 49).
+		view.Assignments = assignmentViews(assignments, issue.Key, issue.Tree)
+		view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt = memoryOf(view.Assignments)
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
 		// re-admitted, which leaves the issue held.
@@ -320,13 +327,86 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	return projected, nil
 }
 
-// memoryDraw is one tree's memory draw as its root's record holds it (record.Issue.MemoryGroup,
-// MemoryDrawMode, MemoryDrawnAt): the group the draw gave the tree, the project's mode it was
-// drawn under, and when.
-type memoryDraw struct {
-	group string
-	mode  string
-	at    *time.Time
+// memoryExperiment is the name config.Project.ExperimentsDeclared gives the project's `memory`
+// block, and the name the `experiments` key's own spelling of that one experiment must use: the
+// row the three memory fields of an issue's view are read off (memoryOf).
+const memoryExperiment = "memory"
+
+// memoryGroupVariant is the arm of that experiment whose roles run with the project's memory
+// overlays and instructions. Every other arm, the empty one a hand-over settles a tree at
+// included, is the group `none` on the wire, whose enum has those two words alone
+// (packages/contracts/src/legion-api.ts, legionIssue).
+const memoryGroupVariant = "memory"
+
+// assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
+// tree, in experiment order: its tree's tree-unit rows, which every issue of the tree runs
+// under, and its own issue-unit rows. A root's own key holds both kinds and every row of it
+// applies to the root itself, so a root takes its list as the store answers it. An issue no
+// answer applies to gets nil, which leaves the key off the wire.
+//
+// The order is the store's, the experiments' names (record.Store.AssignmentsFor); the state
+// route puts them in the order the project's file declares the experiments before serving them
+// (api's stateRoute, assignmentsInDeclaredOrder). The record cannot: a row is keyed by the
+// experiment's name, and the file's order is the project's rather than the store's.
+func assignmentViews(assignments map[string][]record.Assignment, key, tree string) []api.AssignmentView {
+	rows := assignments[key]
+	if key != tree {
+		rows = make([]record.Assignment, 0, len(assignments[tree])+len(rows))
+		for _, row := range assignments[tree] {
+			if row.Unit == string(config.ExperimentTree) {
+				rows = append(rows, row)
+			}
+		}
+		for _, row := range assignments[key] {
+			if row.Unit == string(config.ExperimentIssue) {
+				rows = append(rows, row)
+			}
+		}
+		slices.SortFunc(rows, func(a, b record.Assignment) int { return cmp.Compare(a.Experiment, b.Experiment) })
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	views := make([]api.AssignmentView, len(rows))
+	for i, row := range rows {
+		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
+	}
+	return views
+}
+
+// memoryOf is the three memory fields of an issue's view, read off the answer of the experiment
+// named `memory` among the issue's own (contract 49). They answer exactly what the four
+// issues.memory_* columns answered before this release, so the measurement job that reads them
+// needs no change, and the two classes the old columns told apart are told apart here by the
+// instant:
+//
+//   - a row that records a draw (DrawnAt is set) fills all three, whatever arm it drew: the arm
+//     `memory` is the group `memory`, and every other arm — the control `none` and the empty arm
+//     an experiment at mode off draws, which the memory draw before this release wrote as the
+//     word `none` — is the group `none`, with the row's own mode and instant beside it. A
+//     deployment at mode off has answered `none` for every tree it opened, and goes on doing so;
+//   - a row with no instant fills none of the three. That row is a hand-over settling a unit at
+//     no arm for an experiment the tree it left held no row for, which is the one shape the old
+//     column left empty (an empty memory_group with memory_drawn_at null, which the projection
+//     before this release skipped): a tree that answered nothing must go on answering nothing,
+//     or every reader counting exposed trees counts it anew.
+//
+// An issue no `memory` answer applies to carries none of the three either, which is what a tree
+// first opened before the experiment existed carries. The assignment itself is untouched by
+// this: `assignments` carries the settled row with its empty arm, which is how a reader tells a
+// unit settled at no arm from a unit never drawn.
+func memoryOf(views []api.AssignmentView) (string, string, *time.Time) {
+	for _, view := range views {
+		if view.Experiment != memoryExperiment || view.DrawnAt == nil {
+			continue
+		}
+		group := "none"
+		if view.Variant == memoryGroupVariant {
+			group = memoryGroupVariant
+		}
+		return group, view.Mode, view.DrawnAt
+	}
+	return "", "", nil
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check

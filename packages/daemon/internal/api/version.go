@@ -845,4 +845,43 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 60: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// issue record of the state gains `assignments`, the experiment answers that apply to it: one
+// `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
+// the experiments, which is the order `settings.projects.<KEY>.experiments` names them in. An
+// issue carries its tree's answer for an experiment whose unit is the tree and its own for one
+// whose unit is the issue (api.Issue.Assignments, filled by internal/projection from
+// record.Assignment, ordered by api's assignmentsInDeclaredOrder). `variant` and `mode` ride
+// whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no
+// instant: that row — no arm, no mode, no instant — is a hand-over settling a child at no arm
+// for an experiment the tree it left held no row for, which is how a reader tells a unit settled
+// at no arm from a unit never drawn, which is no row at all. The key itself is absent from an
+// issue no experiment holds an answer for, so the wire carries no empty list. The three memory
+// fields of contract 49 answer exactly as they did and no reader of them changes: they are now
+// read off the answer of the experiment named `memory`, whichever spelling declared it (the
+// `memory` block or `experiments.memory`), and only where that row records a draw, where the
+// arm `memory` is the group `memory` and every other arm — the control `none` and the empty
+// arm an experiment at mode off draws, which the memory draw wrote as the word `none` — is
+// `none`. A `memory` row with no instant, which is a hand-over settling a unit at no arm, fills
+// none of the three, as the empty `issues.memory_group` of such a tree filled none of them
+// before: a tree that answered nothing answers nothing still, and the measurement job's count
+// of the trees each group reached is the count it was. `assignments` carries that settled row
+// all the same, with its empty variant. `settings.projects.<KEY>.experiments`
+// loses its `omitempty`, so a project that declares no experiment carries `[]` rather than no
+// key, as `slack_channels` and `memory` do; every plugin reads the settings loosely, so no
+// strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
+// `assignments` on `legionIssue`, which is a `z.strictObject`, so a reader before 60 refuses a
+// whole state carrying it — and every worker's `read_record` parses the state through it.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 60 is served the state without the field (api's stateFor,
+// withoutAssignments), as a caller below 49 is served it without the memory fields; a caller at
+// 49 through 59 is served the three memory fields and no assignments, and a caller below 49
+// neither. The number is held in four files that move together: this one,
+// `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`. This change adds no store migration of its own: the
+// answers are the rows of `experiment_assignments`
+// (20261111045636_experiment_assignments), which this release's earlier step created and
+// back-filled from the four `issues.memory_*` columns; those columns stay in the schema, are
+// written and read by nothing, and a later release drops them.
+const DaemonAPIVersion = 60

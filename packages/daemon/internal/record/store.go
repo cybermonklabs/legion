@@ -51,8 +51,9 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 }
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
-// it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
+// it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
+// assignment row of its own (AssignmentsOf, AssignmentsFor), and the columns are read by nothing.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -234,10 +235,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
 	// ClearDeclared's alone, so a copy of the issue read before any of them never writes them
-	// back. memory_group, memory_draw_mode, memory_drawn_at and memory_carried are named here no
-	// more than they are on Issue: nothing writes those four any more, since what a unit was
-	// drawn is an assignment row of its own now (PutAssignments), and this statement never wrote
-	// them.
+	// back. The four memory_* columns are named here no more than they are on Issue, which no
+	// longer carries them: nothing writes those columns any more, since what a unit was drawn is
+	// an assignment row of its own now (PutAssignments), and nothing reads them either, so a row
+	// this statement writes leaves them at whatever the draw before this release left.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
@@ -428,12 +429,11 @@ func scanIssue(row scanner) (*Issue, error) {
 	var sinceSeq *int64
 	var readyPendingStep *string
 	var readyPendingVersion *int
-	var since, declaredAt, memoryDrawnAt *time.Time
+	var since, declaredAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
-		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
+		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom); err != nil {
 		return nil, err
 	}
 	if readyPendingStep != nil && readyPendingVersion != nil {
@@ -441,10 +441,6 @@ func scanIssue(row scanner) (*Issue, error) {
 	}
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
-	}
-	if memoryDrawnAt != nil {
-		utc := memoryDrawnAt.UTC()
-		issue.MemoryDrawnAt = &utc
 	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)

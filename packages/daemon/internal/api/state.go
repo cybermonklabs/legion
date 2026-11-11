@@ -436,17 +436,50 @@ type Issue struct {
 	// Check is the issue's open production check, the work after its close (record.ProductionCheck):
 	// present only while the check is open, and absent once it closed or while none was opened.
 	Check *CheckView `json:"check,omitempty"`
-	// MemoryGroup is the memory group of the issue's tree (record.Issue.MemoryGroup): `memory` for
-	// a tree whose roles run with the project's memory overlays and instructions, `none` for one
-	// that runs without them, and absent while nothing has drawn for the tree — a tree first
-	// opened before the setting existed, or one the draw never reached. MemoryDrawMode is the
-	// project's memory mode in force when that group was drawn (config.MemoryMode's words) and
-	// MemoryDrawnAt when it was drawn, both absent with the group. The draw is made once, on the
-	// tree's root record, when the tree's lifecycle row is first created, and every issue of the
-	// tree shows its root's: an issue's memory group is its tree's (contract 49).
+	// MemoryGroup is the memory group of the issue's tree, read off the assignment of the
+	// experiment named `memory`, whichever spelling declared it (config.Project.ExperimentsDeclared),
+	// and only where that row records a draw: `memory` for a tree whose roles run with the
+	// project's memory overlays and instructions, and `none` for one that runs without them —
+	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
+	// memory draw before contract 60 wrote as the word `none`. MemoryDrawMode is the mode in
+	// force at that draw (config.ExperimentMode's words, which are config.MemoryMode's) and
+	// MemoryDrawnAt the instant of it. All three are absent together for an issue no `memory`
+	// answer applies to — a tree first opened before the setting existed, or one the draw never
+	// reached — and for one whose only `memory` answer records no draw, which is a hand-over
+	// settling a unit at no arm: that tree answered none of the three before contract 60 and
+	// answers none of them now, so a reader counting the trees a group reached counts the same
+	// trees it did. The draw is made once, for the unit, and every issue of a tree shows its
+	// tree's: an issue's memory group is its tree's (contract 49). They are the one experiment's
+	// answer spelled out for the readers that knew it before any experiment was declared;
+	// Assignments below carries that row, and the settled row these three leave out.
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// Assignments is every experiment answer that applies to the issue (record.Assignment): the
+	// arm its tree was drawn into for an experiment whose unit is the tree, and the arm the issue
+	// itself was drawn into for one whose unit is the issue, in the order the project declares
+	// the experiments — the order `settings.projects.<KEY>.experiments` names them in, which is
+	// the project's file's order (contract 60). Absent for an issue no experiment holds an answer
+	// for, so the wire never carries an empty list, and absent from every issue of the body the
+	// route serves a caller below 60 (stateFor, withoutAssignments).
+	Assignments []AssignmentView `json:"assignments,omitempty"`
+}
+
+// AssignmentView is one experiment's answer for an issue as the state shows it
+// (record.Assignment): the name the project declares the experiment under, the arm the draw gave
+// the unit, the mode in force at that draw and the instant of it.
+//
+// Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
+// absent where the row holds none: a hand-over settles a child at no arm for an experiment the
+// tree it left held no row for, and that row — an empty variant, an empty mode and no instant —
+// is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
+// Carried, the record's mark of such a row, is no part of the view: what a reader of the state
+// measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+type AssignmentView struct {
+	Experiment string     `json:"experiment"`
+	Variant    string     `json:"variant"`
+	Mode       string     `json:"mode"`
+	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind

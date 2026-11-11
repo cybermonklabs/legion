@@ -238,11 +238,12 @@ type ProjectSettings struct {
 	SlackChannels  []string       `json:"slack_channels"`
 	Memory         MemorySettings `json:"memory"`
 	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
-	// absent for a project that declares none, as `merge_queue_role` is for one that names none.
-	// The `memory` block is no part of it: it stands under `memory` above, as the file writes it,
-	// and the two are mapped to one list of experiments only below the loader
-	// (config.Project.ExperimentsDeclared).
-	Experiments []ExperimentSettings `json:"experiments,omitempty"`
+	// `[]` for a project that declares none, as `slack_channels` is for one that names none: the
+	// key always rides the wire, so a reader tells a project that declares no experiment from a
+	// daemon too old to know the key. The `memory` block is no part of it: it stands under
+	// `memory` above, as the file writes it, and the two are mapped to one list of experiments
+	// only below the loader (config.Project.ExperimentsDeclared).
+	Experiments []ExperimentSettings `json:"experiments"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string

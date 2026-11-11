@@ -223,7 +223,21 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "short",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -235,7 +249,21 @@
       "workers": {},
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "long",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -261,6 +289,13 @@
           "step": "spec",
           "approvedVersion": null,
           "status": "unregistered"
+        }
+      ],
+      "assignments": [
+        {
+          "experiment": "plan-length",
+          "variant": "",
+          "mode": ""
         }
       ]
     },
@@ -681,6 +716,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "tester",
         "deploys": []
       },
@@ -696,6 +732,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "off",
         "deploys": []
       }

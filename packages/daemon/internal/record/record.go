@@ -145,17 +145,6 @@ type Issue struct {
 	// write them: PutIssue keeps the stored values.
 	DeclaredSeq int64
 	DeclaredAt  time.Time
-	// MemoryGroup is the memory group of the issue's tree, `memory` or `none`, and "" exactly
-	// while nothing has drawn for it; MemoryDrawMode the project's memory mode in force when that
-	// group was drawn (config.MemoryMode's words); and MemoryDrawnAt when it was drawn, nil for a
-	// record with no draw. Nothing writes the three any more — what a unit was drawn is an
-	// Assignment row of its own now (Store.PutAssignments) — and they stand for the readers a
-	// later task moves onto those rows, the state body's memoryGroup among them. PutIssue has
-	// never written them, so what they hold is whatever was drawn before the experiments took
-	// the draw over.
-	MemoryGroup    string
-	MemoryDrawMode string
-	MemoryDrawnAt  *time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -166,10 +155,11 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 
 // Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
 // when it was drawn and the instant, recorded once for that unit and never changed
-// (Store.PutAssignments). It is the declared experiments' record, which the four issues.memory_*
-// columns on Issue are the single hard-coded experiment's: a project declares as many experiments
-// as it likes (config.Project.ExperimentsDeclared), so each answer is a row named by its
-// experiment rather than a column named after it.
+// (Store.PutAssignments). It is the declared experiments' record, and the only one: the four
+// issues.memory_* columns the single hard-coded experiment was kept in are written and read by
+// nothing since this release, and Issue carries none of them. A project declares as many
+// experiments as it likes (config.Project.ExperimentsDeclared), so each answer is a row named by
+// its experiment rather than a column named after it.
 //
 // The unit the row belongs to is the issue it is keyed by, read as that issue's tree where Unit is
 // `tree` — the key is then the tree's root — and as that issue alone where Unit is `issue`.
