@@ -170,7 +170,7 @@ happy_page() {
   page "10|dispatch-browser / binaries|success" \
     "11|dispatch-browser / shard (1)|success" \
     "12|dispatch-browser / shard (2)|failure" \
-    "13|dispatch-browser / alone (webkit-alone)|success" \
+    "13|dispatch-browser / alone|success" \
     "14|dispatch-browser / multiprocess|skipped" \
     "15|dispatch-browser / merge|null" \
     "16|lint|success" \
@@ -231,10 +231,10 @@ check "a shard job's id, name and conclusion travel unchanged" \
   "$(is "$(field 12 '"\(.id) \(.name) \(.conclusion)"')" '12 dispatch-browser / shard (2) failure')"
 check "the alone job's too" \
   "$(is "$(field 13 '"\(.id) \(.name) \(.conclusion)"')" \
-    '13 dispatch-browser / alone (webkit-alone) success')"
+    '13 dispatch-browser / alone success')"
 check "the first shard leg reads shard-1" "$(is "$(field 11 .leg)" shard-1)"
 check "the second reads shard-2" "$(is "$(field 12 .leg)" shard-2)"
-check "the alone leg reads alone-webkit-alone" "$(is "$(field 13 .leg)" alone-webkit-alone)"
+check "the alone job reads the leg alone" "$(is "$(field 13 .leg)" alone)"
 check "the multiprocess job carries a null leg" "$(is "$(field 14 .leg)" null)"
 check "and keeps its conclusion" "$(is "$(field 14 .conclusion)" skipped)"
 check "the merge job carries a null leg" "$(is "$(field 15 .leg)" null)"
@@ -258,16 +258,22 @@ check "and holds no filter=all" "$(is "$(contains "$(args)" 'filter=all')" false
 check "slurps the pages, since gh refuses --slurp beside --jq" \
   "$(contains "$(args)" '--paginate --slurp')"
 
-echo "case: a project name holding a digit, a capital and a space is one leg"
-# The capture takes any project that holds no `)`. It read `[a-z-]*` once, which silently
-# dropped a project named with a digit or a capital, and a leg absent from reading one's list
-# is a leg whose missing blob nothing reports.
+echo "case: the alone leg is the bare job name, and a shard leg's number is read whole"
+# The alone job ran a matrix of three projects, one leg each, and its leg was read out of the
+# brackets after the job name; it runs the three on one machine now and writes one blob report,
+# so the leg is the word itself (dispatch://INFRA-1109). The filter admits the name with either
+# caller's prefix and with none at all, and both shapes must read the same leg: a leg absent
+# from reading one's list is a leg whose missing blob nothing reports. The shard capture still
+# takes a run of digits rather than one, so a tenth leg would be read whole.
 fixture 0
-page "21|dispatch-browser / alone (Edge 2 alone)|success"
+page "21|dispatch-browser / alone|success" "22|alone|success" \
+  "23|dispatch-browser / shard (10)|success"
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "reads one leg, not three" "$(is "$(entries)" 1)"
-check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')"
+check "reads the three jobs" "$(is "$(entries)" 3)"
+check "the prefixed alone job is the alone leg" "$(is "$(field 21 .leg)" alone)"
+check "and so is one with no prefix" "$(is "$(field 22 .leg)" alone)"
+check "a two-digit shard leg is read whole" "$(is "$(field 23 .leg)" shard-10)"
 
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
@@ -528,7 +534,7 @@ drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
-check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
+check "with its legs" "$(is "$(field 13 .leg)" alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
 

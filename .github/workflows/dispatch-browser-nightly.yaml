@@ -4,10 +4,14 @@ name: Dispatch browser nightly
 # recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
 # carries no `full-ci` label, the rows a pull request is held to, and the full lane - all eight
 # parallel projects, the three `-alone` ones, the two stub ones and the two-process job - on
-# every other run, so the merge group runs it on the tree a change lands as. This run covers a
-# day with no such event, and is what runs the full lane on main's tip
-# (.github/workflows/dispatch-browser.yaml, which holds every step). The re-record job's own
-# head, below, says what it guards and why it is here rather than in a file of its own.
+# every other run, so the merge group runs it on the tree a change lands as. The full lane is
+# seven jobs on eight machines: one builds every artefact the run executes, two shard machines
+# run the parallel projects, one runs the three `-alone` projects in turn, the two-process job,
+# the fake-embedder job and the containerised visual review take one each, and one merge job
+# joins the legs' reports. This run covers a day with no such event, and is what runs the full
+# lane on main's tip (.github/workflows/dispatch-browser.yaml, which holds every step). The
+# re-record job's own head, below, says what it guards and why it is here rather than in a file
+# of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
@@ -26,7 +30,8 @@ name: Dispatch browser nightly
 on:
   schedule:
     # Nightly, hours from e2e.yaml's 04:41, the repository's other schedule: a full lane takes
-    # four shard machines, three alone machines and a two-process machine at once, and two
+    # two shard machines, an alone machine, a two-process machine, an embedder machine and the
+    # visual review's at once, behind the machine that builds what they all run, and two
     # nightlies starting together would queue behind each other for the account's runners.
     - cron: "17 2 * * *"
     # The re-record job below, at an hour of its own and away from the full lane's: the two
@@ -34,7 +39,8 @@ on:
     # full lane that can take half an hour, and the recordings would be read against a server
     # the night had already moved on from. 13:41 is the far side of the day from both schedules
     # of this repository (02:17 here and e2e.yaml's 04:41), and it needs one runner rather than
-    # eight, so it never competes with a nightly for the account's capacity.
+    # the full lane's six at once, so it never competes with a nightly for the account's
+    # capacity.
     - cron: "41 13 * * *"
   workflow_dispatch:
 
@@ -80,9 +86,9 @@ jobs:
   #
   # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
   # run also runs the full lane. That is a second full lane a day on a repository whose nightly
-  # is one, which is the price of keeping this job dispatchable before its own merge; it is the
-  # same eight runners for the same ten minutes, and `concurrency` keeps it from overlapping the
-  # 02:17 run.
+  # is one, which is the price of keeping this job dispatchable before its own merge; it is
+  # the same six runners for the same ten minutes, and `concurrency` keeps it from overlapping
+  # the 02:17 run.
   #
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,

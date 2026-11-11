@@ -262,12 +262,12 @@ case "$mode" in
     # Each job's leg name is derived here, once, beside the fields it travels with, so the two
     # readings take it rather than each parsing the job name again.
     #
-    # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-    # after either caller's prefix. `binaries`, `merge`, `multiprocess`, `embedder` and
-    # `visual` are this workflow's other five jobs: they pass the name filter and get a null
-    # leg, so reading one passes them over and reading three names them as holding no row.
-    # `binaries` is in that filter because a build that failed leaves the shard and alone jobs
-    # skipped and no blob report anywhere, so a run read without it is reported as legs that
+    # `shard (2)` becomes `shard-2`, after either caller's prefix, and the `alone` job, which
+    # has no matrix and so no brackets, becomes `alone`. `binaries`, `merge`, `multiprocess`,
+    # `embedder` and `visual` are this workflow's other five jobs: they pass the name filter and
+    # get a null leg, so reading one passes them over and reading three names them as holding no
+    # row. `binaries` is in that filter because a build that failed leaves the shard and alone
+    # jobs skipped and no blob report anywhere, so a run read without it is reported as legs that
     # uploaded nothing rather than as the build that handed them nothing. `visual` is in it
     # because a run whose only red job is that one must not read "every leg of this workflow
     # concluded success": the verdict step fails ci-ok either way, so the gate held, but the
@@ -278,14 +278,17 @@ case "$mode" in
     # only because the character before `multiprocess` is a hyphen and the filter wants a
     # space or a line start.
     #
-    # The project part takes any name that holds no `)`, and the readings take one leg per
-    # line, so a project named with a space, a digit or a capital is one leg here rather than
-    # two or none.
+    # The alone job ran a matrix of three projects until dispatch://INFRA-1109 put them on one
+    # machine, and its leg was read out of the brackets after the job name
+    # (`alone (webkit-alone)` -> `alone-webkit-alone`). There is one such job now and it writes
+    # one blob report, `report-alone.zip`, and one `rows/alone.txt`, so the leg is the bare word
+    # and nothing is parsed out of brackets for it. A leg name is still read one per line by
+    # both readings, so a name holding a space would be one leg rather than two.
     jq '[.[].jobs[] | select(.name |
         test("(^| )(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
       | map({id, name, conclusion,
           leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-            // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
+            // (if (.name | test("(^| )alone$")) then "alone" else null end)
             // null)})' "$pages" > "$out_file"
     ;;
   blobs-refused)
