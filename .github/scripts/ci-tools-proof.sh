@@ -310,6 +310,26 @@ DEAD_ADDRESS="127.0.0.1:1"
 LADDER_FLOOR=45
 LADDER_CEILING=150
 
+# How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
+# over the log the stand-in wrote.
+# That variable is set at exactly one step's `env:` in .github/workflows/ci.yaml, the head's
+# install-crane step, so one install keeps the pinned ladder. That one install makes three
+# fetches through the stand-in: the release asset behind the fault, then the pull token and
+# then the blob of the copy the `crane` row names as its second source, which
+# ci_tools__fetch_ghcr asks for one after the other (.github/scripts/ci-tools.sh:763, 770,
+# 775). Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head
+# 9300f28b1c), read those three as records 19 to 21 of its listing, at 63 s, 0 s and 1 s.
+# A retry adds no record, because ci_tools_curl is one curl process with `--retry 7` and the
+# stand-in writes one line for each time it is called; a redirect is followed inside that same
+# process, so it adds none either. Of the five second-source words only `ghcr-mirror` costs two
+# requests, so another second source for that row can only lower this count, and a primary that
+# answers after all lowers it to one.
+# What moves this number is a change in this tree: a ghcr path that reads a manifest before it
+# asks for the blob, or a second attempt inside ci_tools_fetch. The ladder-report step prints
+# the count it read beside this bound on every run, so the reading that moves it is in the log
+# of the job that holds it.
+LADDER_RECORDS=3
+
 # RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
 # Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
 # request for it, and a request made around the proxy reads as nothing at all.
@@ -1644,7 +1664,8 @@ ladder_report() {
   # also the reading that says the appended bound applied on the runner at all.
   [ -s "$curl_log" ] ||
     die "ladder-report: there is no fetch at all in $curl_log, so the stand-in curl the shorten-ladder step above writes never ran: read that step for the directory it adds to this job's PATH, because a job that runs the runner's own curl rides the pinned ladder for every one of its refusals"
-  local problems=0 names="" longest=0 unrecognised="" rode_out="" served="" kept measured who
+  local problems=0 names="" longest=0 bypass_records=0 unrecognised="" rode_out="" served=""
+  local kept measured who
   local seconds decision host status bypass line
   note "every fetch the stand-in curl of the shorten-ladder step measured"
   while IFS= read -r line || [ -n "$line" ]; do
@@ -1659,8 +1680,9 @@ ladder_report() {
     [[ $line =~ ^seconds=([0-9]{1,6})\ decision=(full|shortened)\ host=([^ ]+)\ exit=([0-9]{1,3})\ full-ladder=([^ ]+)$ ]] ||
       die "ladder-report: this line of $curl_log is not the five-field line write_stand_in's printf writes (seconds= decision= host= exit= full-ladder=, each value without a space): $line"
     seconds=${BASH_REMATCH[1]} decision=${BASH_REMATCH[2]} host=${BASH_REMATCH[3]} status=${BASH_REMATCH[4]} bypass=${BASH_REMATCH[5]}
-    printf '  %s: %s, curl exit %s, %ss\n' "$host" "$decision" "$status" "$seconds"
+    printf '  %s: %s, curl exit %s, %ss, full-ladder %s\n' "$host" "$decision" "$status" "$seconds" "$bypass"
     if [ "$bypass" != none ]; then
+      bypass_records=$((bypass_records + 1))
       case " $names " in
         *" $bypass "*) ;;
         *) names="$names $bypass" ;;
@@ -1695,6 +1717,7 @@ ladder_report() {
   measured="$longest s"
   [ -n "$kept" ] || measured="no fetch at all"
   echo "  the case that keeps the pinned ladder must measure inside $LADDER_FLOOR..$LADDER_CEILING s, and it measured $measured"
+  echo "  $bypass_records of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to $LADDER_RECORDS"
 
   if [ -z "$kept" ]; then
     echo "::error::ci-tools-proof: no fetch of this job carried CI_TOOLS_PROOF_FULL_LADDER, so no case kept the pinned ladder and this job measured that ladder nowhere: one case must carry that variable, and the window above is read of that one case." >&2
@@ -1707,6 +1730,13 @@ ladder_report() {
     problems=$((problems + 1))
   elif [ "$longest" -gt "$LADDER_CEILING" ]; then
     echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is more than a minute of new attempts and one last attempt of a row's max_time of 60 s: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 63 s and one that hangs about 124 s, so a reading over this ceiling is a ladder those flags no longer bound." >&2
+    problems=$((problems + 1))
+  fi
+  # This reading stands on its own and is no further arm of the chain above: a job whose kept
+  # measurement is also out of window would otherwise take one of those arms and say nothing
+  # of the records at all.
+  if [ "$bypass_records" -gt "$LADDER_RECORDS" ]; then
+    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER under the name $kept, over the $LADDER_RECORDS this rig holds that count to. The variable belongs at one step's env: in .github/workflows/ci.yaml and nowhere else, so a second env: that carries it is what to read that file for. At job scope or at workflow scope the stand-in shortens nothing, and this job then rides a full ladder for every refusal it arranges, which is the sleep this rig exists to take out. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script, which is the one place that number is written." >&2
     problems=$((problems + 1))
   fi
   if [ -n "$unrecognised" ]; then
