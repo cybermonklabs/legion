@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -106,7 +107,8 @@ func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, ca
 }
 
 // socketRoom is the document a socket request names: its route's room, else its path's last
-// segment.
+// segment. Both are what ServeHTTP writes on the request it hands ygo, so every reader of either
+// below that point - ygo's own, and authorize through this - reads one canonical uuid.
 func socketRoom(r *http.Request) string {
 	if room := r.PathValue("room"); room != "" {
 		return room
@@ -133,6 +135,25 @@ func socketRoom(r *http.Request) string {
 // ends it; a socket that ends unregistered - its admission or its authorization refused, its room's
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
+//
+// The room below is the uuid this admission parsed, written canonically (id.String()), and not
+// the text the URL spelled. uuid.Parse takes the canonical spelling, upper case, braces, a run of
+// hex with no dashes and urn:uuid:<id>, so without this one document would hold one room per
+// spelling its browsers used. Two such rooms are two editor states appending to one durable
+// stream: driven on two spellings of one document, neither browser saw what the other typed and
+// the stored markdown ended as text that matched neither of them, with nothing failing and nobody
+// told. They do not serialise because a durable write takes its lock on the room's own text
+// (lockDocumentRoom) while the stream is keyed by the document's uuid (doc_updates.artifact_id),
+// so one document has one lock only while everybody spells it the same way. One canonical name
+// here makes one document one room, and therefore one lock. It holds for this endpoint alone:
+// another transport, or another handler that reaches a room name by a path of its own, opens a
+// room under whatever name it passes, and no code here can stop that.
+//
+// urn:uuid:<id> is admitted where it was not. Postgres cannot read that spelling, so the issue
+// read below errored on it and the socket was answered 404; canonicalising before that read
+// admits it into the one room, which is wanted - the spelling names the same document, and the
+// issue read, the authorization and everything below run on the canonical id they run on for
+// every other spelling.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.hostname != "" {
 		w.Header().Set(ProcessHeader, s.hostname)
@@ -148,10 +169,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if _, err := uuid.Parse(room); err != nil {
+	id, err := uuid.Parse(room)
+	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	}
+	// Everything below takes the room by this one name, the parsed uuid rather than the text
+	// the URL spelled.
+	room = id.String()
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
 	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
@@ -195,9 +220,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer withdraw()
 	ctx := context.WithValue(r.Context(), connectionContextKey{}, connection)
+	// ygo reads the room from the request rather than from this variable: its route's {room}
+	// value, else the last element of the URL's path (provider/websocket's ServeHTTP), and
+	// authorize reads it the same way (socketRoom). The clone carries the canonical name both
+	// ways, and RawPath, the caller's escaping of a path that no longer stands, goes with the
+	// path it escaped. The caller's own request keeps the spelling it arrived with, for the
+	// access log that reads its URL after this handler returns.
+	routed := r.Clone(ctx)
+	routed.SetPathValue("room", room)
+	if cut := strings.LastIndexByte(routed.URL.Path, '/'); cut >= 0 {
+		routed.URL.Path = routed.URL.Path[:cut+1] + room
+		routed.URL.RawPath = ""
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, routed)
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above

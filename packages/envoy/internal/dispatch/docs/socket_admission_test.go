@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,50 @@ func (s *Service) addConnection(room string, id uint64, actor model.Actor) {
 		panic(fmt.Sprintf("register connection %d on room %s: the connection cap (%d) is reached", id, room, s.connectionCap))
 	}
 	s.registerConnectionLocked(state, id, actor)
+}
+
+// A document is one room however its id is spelled. uuid.Parse takes the canonical spelling,
+// upper case, braces, a dash-free run of hex and urn:uuid:<id>, and the admission once kept
+// whichever of them the browser's URL carried as the room's name, so one document could hold one
+// room per spelling. Such rooms are two editor states over one durable stream, and they do not
+// serialise: the lock that orders a document's writers is taken on the room's own name
+// (lockDocumentRoom) while the stream is keyed by the document's uuid. Each room took its own
+// browser's typing, neither browser saw the other's, and the stored markdown ended as text that
+// matched neither of them. The admission now names the room by the uuid it parsed (ServeHTTP),
+// which is what this pins: the three spellings below meet in one room, named canonically, and
+// what one browser types reaches the others. The urn:uuid: socket is admitted where it was
+// refused - Postgres cannot read that spelling, so the admission's issue read errored and
+// answered it 404 - and it joins that same room.
+func TestEverySpellingOfADocumentsIdJoinsItsOneRoom(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "Shared.")
+	service, server := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "Shared.")
+	waitForLandedAppends(t, service, artifactID)
+	stored := storedMarkdown(t, database, artifactID)
+	upper := strings.ToUpper(artifactID)
+	alice := connectWithScope(t, server.URL, artifactID, "alice", "read-write", stored)
+	bob := connectWithScope(t, server.URL, upper, "bob", "read-write", stored)
+
+	if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
+		t.Fatalf("the process holds the rooms %v, want the one room %s: a second room of the document is a second editor state writing its one durable stream", rooms, artifactID)
+	}
+	typeOver(t, alice, "Shared.", "Alice typed this.")
+	if err := bob.WaitForText(peerMarkdown, "Alice typed this.\n", roomWait(t)); err != nil {
+		t.Fatalf("bob's browser, connected on %s, never saw what alice typed on %s: %v", upper, artifactID, err)
+	}
+
+	carol := connectWithScope(t, server.URL, "urn:uuid:"+artifactID, "carol", "read-write", "Alice typed this.\n")
+	if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
+		t.Fatalf("the process holds the rooms %v after the urn:uuid: socket, want the one room %s", rooms, artifactID)
+	}
+	typeOver(t, carol, "Alice typed this.", "Carol typed this.")
+	if err := alice.WaitForText(peerMarkdown, "Carol typed this.\n", roomWait(t)); err != nil {
+		t.Fatalf("alice's browser, on %s, never saw what carol typed on the urn:uuid: spelling: %v", artifactID, err)
+	}
+	if err := bob.WaitForText(peerMarkdown, "Carol typed this.\n", roomWait(t)); err != nil {
+		t.Fatalf("bob's browser, on %s, never saw what carol typed on the urn:uuid: spelling: %v", upper, err)
+	}
 }
 
 // A socket's admission refuses a room outside the Proof schema, which it decides by rendering the
