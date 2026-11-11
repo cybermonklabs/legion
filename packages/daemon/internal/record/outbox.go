@@ -518,16 +518,25 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
+//
+// A merge-jump-refused notice names a jump mark (MergeJump) the daemon spent on a merge GitHub
+// would not enqueue at the head of its queue: the issue, its pull request, the head the jump was
+// sent for and GitHub's own answer. It is the controller's and no architect's because the jump
+// was the controller's instruction and the mark is gone — the daemon falls back to the plain
+// submission in the same attempt, so the merge itself is on its way and nothing of the issue's
+// own work changed. The controller reads it to decide whether to mark the issue again
+// (MergeJumpRecord, whose Refused and Refusal carry the same answer).
 const (
-	TriageNotice         NoticeKind = "triage"
-	SlotFreeNotice       NoticeKind = "slot-free"
-	TodoNotice           NoticeKind = "todo"
-	TickNotice           NoticeKind = "tick"
-	UnslottedNotice      NoticeKind = "unslotted"
-	AwaitingPersonNotice NoticeKind = "awaiting-person"
-	ParkedDecisionNotice NoticeKind = "parked-decision"
-	UpdateStalledNotice  NoticeKind = "update-stalled"
-	ProviderErrorsNotice NoticeKind = "provider-errors"
+	TriageNotice           NoticeKind = "triage"
+	SlotFreeNotice         NoticeKind = "slot-free"
+	TodoNotice             NoticeKind = "todo"
+	TickNotice             NoticeKind = "tick"
+	UnslottedNotice        NoticeKind = "unslotted"
+	AwaitingPersonNotice   NoticeKind = "awaiting-person"
+	ParkedDecisionNotice   NoticeKind = "parked-decision"
+	UpdateStalledNotice    NoticeKind = "update-stalled"
+	ProviderErrorsNotice   NoticeKind = "provider-errors"
+	MergeJumpRefusedNotice NoticeKind = "merge-jump-refused"
 )
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
@@ -1253,7 +1262,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
-	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
+	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "merge-held",
 	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
@@ -1269,6 +1278,13 @@ var validNoticeKinds = []NoticeKind{
 // stalled process as well, where the end let it go: that it was stopped, or that the runtime
 // did not confirm the stop and it may be running still (internal/daemon's stallBackstopEnds,
 // stallStopClause).
+// `merge-held` is the merge of an accepted READY the daemon did not submit because one of the
+// project's merge holds (MergeHold) matches a file its pull request changes: the controller set
+// that hold, and the issue's architect is told once that its merge waits on it and until when
+// (the daemon's readyMerge). It is the architect's notice rather than the controller's because
+// the architect is the one whose issue stands still; the controller already knows, having set
+// the hold. The row goes on running and submits the merge once the hold ends, so the notice is
+// written once per submission however many times the row runs (ReadyMerge.HeldTold).
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }
@@ -1277,7 +1293,8 @@ func validNoticeKind(kind NoticeKind) bool {
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice,
+		MergeJumpRefusedNotice:
 		return true
 	default:
 		return false

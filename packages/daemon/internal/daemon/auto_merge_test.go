@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghautomerge"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -1630,6 +1632,36 @@ type armableGitHub struct {
 	jobLogs               map[int64]string
 	logReads              int
 	logArrived            chan struct{}
+	// changedFiles is what GET /pulls/42/files answers, the paths a merge hold is matched
+	// against. filesCut has GitHub answer a list cut at githubrest.PullRequestFilesLimit instead,
+	// the list a pull request of three thousand files or more gets: its names are the fake's own
+	// and match no hold any test sets, so a row held on such a list is held by the cut alone.
+	changedFiles []string
+	filesCut     bool
+	// queue is the merge queue GitHub answers for the base branch, oldest entry first, and
+	// queueTotal GitHub's own totalCount for the whole queue, which is above the entries listed
+	// where the queue is longer than one page. queueRefused has GitHub refuse the read.
+	queue        []queueEntry
+	queueTotal   int
+	queueRefused bool
+	// enqueueRefusal is GitHub's answer to the jump's enqueue where GitHub refuses it, empty
+	// where GitHub takes it, and enqueues how many enqueues were sent.
+	enqueueRefusal string
+	enqueues       int
+	// requests is every request the fake answered, in order, each named by what it was: "read",
+	// "files", "queue", "enqueue", "enable", "merge", "timeline" and "log". A test that must know
+	// one read happened before one mutation reads it here, since the order is the whole of what
+	// it asserts.
+	requests []string
+}
+
+// queueEntry is one entry of the merge queue the fake answers: the pull request it is for, its
+// place in the queue, whether it jumped and the state GitHub has it in.
+type queueEntry struct {
+	number   int
+	position int
+	jump     bool
+	state    string
 }
 
 // queueBaseBranch is the branch acme/widgets#42 merges into and queueBaseTip the commit that
@@ -1686,13 +1718,23 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			}
 			return
 		}
+		// The files a pull request changes are the other REST read a merge row makes: GET
+		// /pulls/{number}/files under the same repository base, which the merge holds are
+		// matched against (githubrest.PullRequestPaths).
+		if r.URL.Path == "/repos/acme/widgets/pulls/42/files" {
+			g.requests = append(g.requests, "files")
+			_, _ = io.WriteString(w, changedFilesJSON(g))
+			return
+		}
 		switch {
 		case strings.Contains(string(body), "disablePullRequestAutoMerge"):
+			g.requests = append(g.requests, "disable")
 			g.disables++
 			g.armed = false
 			g.timeline = append(g.timeline, manuallyDisabledEvent(implementApp))
 			_, _ = io.WriteString(w, `{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`)
 		case strings.Contains(string(body), "enablePullRequestAutoMerge"):
+			g.requests = append(g.requests, "enable")
 			if !strings.Contains(string(body), `"head":"ready-head"`) {
 				t.Errorf("arm request %s, want READY's expected head", body)
 			}
@@ -1705,12 +1747,38 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 				g.timeline = append(g.timeline, timelineEvent("AutoMergeEnabledEvent"))
 			}
 			_, _ = io.WriteString(w, `{"data":{}}`)
+		case strings.Contains(string(body), "enqueuePullRequest"):
+			g.requests = append(g.requests, "enqueue")
+			g.enqueues++
+			if !strings.Contains(string(body), `"jump":true`) && !strings.Contains(string(body), "jump: true") {
+				t.Errorf("enqueue request %s, want GitHub's enqueue with jump", body)
+			}
+			if !strings.Contains(string(body), `"head":"ready-head"`) {
+				t.Errorf("enqueue request %s, want READY's expected head", body)
+			}
+			if g.enqueueRefusal != "" {
+				_, _ = fmt.Fprintf(w, `{"data":null,"errors":[{"type":"FORBIDDEN","message":%q}]}`, g.enqueueRefusal)
+				return
+			}
+			g.queued = true
+			g.timeline = append(g.timeline, timelineEvent("AddedToMergeQueueEvent"))
+			_, _ = io.WriteString(w, `{"data":{}}`)
+		case strings.Contains(string(body), "MergeQueueEntries"):
+			g.requests = append(g.requests, "queue")
+			if g.queueRefused {
+				_, _ = io.WriteString(w, `{"data":null,"errors":[{"type":"SERVICE_UNAVAILABLE","message":"the merge queue could not be read"}]}`)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":%d,"nodes":[%s]}}}}}`,
+				max(g.queueTotal, len(g.queue)), queueNodesJSON(g.queue))
 		case strings.Contains(string(body), "mergePullRequest"), strings.Contains(string(body), "dequeuePullRequest"):
 			t.Errorf("request %s, want only an enable: GitHub merges an armed or queued pull request itself", body)
 		case strings.Contains(string(body), "timelineItems"):
+			g.requests = append(g.requests, "timeline")
 			_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"login":%q},"repository":{"pullRequest":{"timelineItems":{"nodes":[%s]}}}}}`,
 				implementApp+"[bot]", strings.Join(g.timeline, ","))
 		default:
+			g.requests = append(g.requests, "read")
 			autoMerge, entry := "null", "null"
 			if g.armed {
 				autoMerge = `{"enabledAt":"2026-10-11T00:00:00Z"}`
@@ -1763,6 +1831,53 @@ func (g *armableGitHub) counts() (disables, arms int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.disables, g.arms
+}
+
+// enqueued is how many jumping enqueues the fake was sent.
+func (g *armableGitHub) enqueued() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.enqueues
+}
+
+// requestLog is every request the fake answered, in the order it answered them: the one way a
+// test can say a read happened before a mutation.
+func (g *armableGitHub) requestLog() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.requests...)
+}
+
+// changedFilesJSON is GitHub's answer to GET /pulls/42/files: the fake's own file names, or a
+// list of githubrest.PullRequestFilesLimit names where the fake answers a cut list, which is
+// what a pull request GitHub stops listing at answers.
+func changedFilesJSON(g *armableGitHub) string {
+	names := g.changedFiles
+	if g.filesCut {
+		names = make([]string, 0, githubrest.PullRequestFilesLimit)
+		for index := range githubrest.PullRequestFilesLimit {
+			names = append(names, fmt.Sprintf("cut/file-%d.txt", index))
+		}
+	}
+	files := make([]string, 0, len(names))
+	for _, name := range names {
+		files = append(files, fmt.Sprintf(`{"filename":%q}`, name))
+	}
+	return "[" + strings.Join(files, ",") + "]"
+}
+
+// queueNodesJSON is a merge queue's entries as GitHub's own entries(first: 50) answer lists them.
+func queueNodesJSON(entries []queueEntry) string {
+	nodes := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		state := entry.state
+		if state == "" {
+			state = "QUEUED"
+		}
+		nodes = append(nodes, fmt.Sprintf(`{"position":%d,"jump":%t,"state":%q,"enqueuedAt":"2026-10-16T04:00:00Z","pullRequest":{"number":%d}}`,
+			entry.position, entry.jump, state, entry.number))
+	}
+	return strings.Join(nodes, ",")
 }
 
 // timelineEvent is a timeline item of kind (AddedToMergeQueueEvent or AutoMergeEnabledEvent) as
@@ -2452,4 +2567,785 @@ func outboxRowState(t *testing.T, pool *pgxpool.Pool, issue string) (time.Time, 
 		t.Fatalf("read %s's outbox row: %v", issue, err)
 	}
 	return nextAt, lastError
+}
+
+// The controller's jump mark sends READY's merge to the head of GitHub's merge queue: the one
+// mutation of such a run is GitHub's enqueue with jump, carrying the head the row names, and the
+// mark is spent at that mutation and nowhere else. Every other submission is what it was before
+// marks existed: a merge-queue base GitHub does not report mergeable yet sends nothing at all, a
+// base with no merge queue sends the arm it always sent and leaves the mark where it is for the
+// submission that can spend it, and an unmarked issue sends today's enable with today's
+// variables. A mark is spent whether or not GitHub takes the jump (a refusal falls back to the
+// enable in the same attempt), and a run whose lease moved to another worker sends no mutation at
+// all and spends nothing: the worker that holds the row makes that submission, mark and all.
+func TestAJumpMarkSendsREADYsMergeToTheHeadOfTheMergeQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// mergeState is what GitHub answers for the pull request, queue whether its base requires
+		// a merge queue, and marked whether the controller marked the issue.
+		mergeState string
+		queue      bool
+		marked     bool
+		// refuseEnqueue has GitHub refuse the jumping enqueue, and steal has another worker take
+		// the row's lease before the spend transaction runs.
+		refuseEnqueue bool
+		steal         bool
+		// runs is how many times the row is drained, enqueues how many jumping enqueues GitHub
+		// was sent, arms how many enables, and standing whether the mark is still in the record.
+		runs           int
+		enqueues, arms int
+		standing       bool
+	}{
+		{name: "a marked merge GitHub reports mergeable now", mergeState: "CLEAN", queue: true, marked: true, runs: 1, enqueues: 1},
+		{name: "a marked merge GitHub does not report mergeable yet", mergeState: "BLOCKED", queue: true, marked: true, runs: 1, standing: true},
+		{name: "a mark spent at a mutation GitHub refused", mergeState: "CLEAN", queue: true, marked: true, refuseEnqueue: true, runs: 2, enqueues: 1, arms: 1},
+		{name: "an unmarked merge", mergeState: "CLEAN", queue: true, runs: 1, arms: 1},
+		{name: "a marked merge on a base with no merge queue", mergeState: "BLOCKED", marked: true, runs: 1, arms: 1, standing: true},
+		{name: "a marked merge whose spend finds the lease gone", mergeState: "CLEAN", queue: true, marked: true, steal: true, runs: 1, standing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := serveArmable(t, &armableGitHub{state: "OPEN", mergeState: tc.mergeState, queueRequired: tc.queue})
+			if tc.refuseEnqueue {
+				github.set(func(g *armableGitHub) { g.enqueueRefusal = "Only administrators can jump the merge queue." })
+			}
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			if tc.marked {
+				setMergeJump(t, pool, records, "LEGION-208", "the release waits on this merge", now)
+			}
+			clock := now
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+			if tc.steal {
+				// Every claim this runner makes hands the row to another worker in the same
+				// transaction, so the lease the run holds is stale by the time it spends the mark.
+				runner.records = leaseStealer{records}
+			}
+			for run := range tc.runs {
+				if err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("RunOnce %d: %v", run+1, err)
+				}
+				clock = clock.Add(time.Minute)
+			}
+			_, arms := github.counts()
+			if github.enqueued() != tc.enqueues || arms != tc.arms {
+				t.Fatalf("enqueues %d and enables %d, want %d and %d: %v", github.enqueued(), arms, tc.enqueues, tc.arms, github.requestLog())
+			}
+			if standing := mergeJumpStands(t, pool, "LEGION-208"); standing != tc.standing {
+				t.Fatalf("the jump mark of LEGION-208 stands %t, want %t: the mark is spent at the mutation and nowhere else", standing, tc.standing)
+			}
+		})
+	}
+}
+
+// A conflict resubmission never jumps. The mark is the controller's instruction about READY's
+// merge, and the further submission the merge queue's conflict removal calls for is made with no
+// marks at all (readyMerge's resubmit): it sends today's enable, and a mark set while the row ran
+// is left where it is for a submission that can spend it.
+func TestAConflictResubmissionNeverJumpsTheMergeQueue(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC().Truncate(time.Second)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+	clock := now
+	runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+	run := func(step string) {
+		t.Helper()
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce %s: %v", step, err)
+		}
+		clock = clock.Add(time.Minute)
+	}
+	run("READY's own submission")
+	// The controller marks the issue while the merge sits in the queue, and the queue then takes
+	// the entry out for a conflict with an entry ahead of it.
+	setMergeJump(t, pool, records, "LEGION-208", "the release waits on this merge", clock)
+	github.remove(dequeuedEvent("merge_conflict", "github-merge-queue", "null"))
+	run("the read that finds the removal")
+	_, arms := github.counts()
+	if github.enqueued() != 0 || arms != 2 {
+		t.Fatalf("enqueues %d and enables %d, want none and two: a resubmission sends today's mutation", github.enqueued(), arms)
+	}
+	if !mergeJumpStands(t, pool, "LEGION-208") {
+		t.Fatalf("the jump mark of LEGION-208 is gone: a resubmission spends no mark")
+	}
+}
+
+// The record of a jump is the account of what the merge went ahead of, and it can be taken at one
+// moment only: before the enqueue lands, since the queue the jump displaced is gone once it has.
+// So the queue is read before the mutation, and what that read answered — or that it answered
+// nothing at all — is written with the issue, the repository, the pull request, the head, the
+// time and the controller's reason. One record stands per repository: the newest jump replaces
+// the one before it.
+func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
+	const reason = "the release waits on this merge"
+	t.Run("the queue is read before the enqueue and recorded with the jump", func(t *testing.T) {
+		github := newQueueGitHub(t, "CLEAN")
+		github.set(func(g *armableGitHub) {
+			g.queue = []queueEntry{{number: 11, position: 1, state: "MERGEABLE"}, {number: 12, position: 2, state: "QUEUED"}}
+		})
+		pool, records, runner, clock := jumpRunner(t, github, reason)
+		var logs bytes.Buffer
+		runner.log = slog.New(slog.NewJSONHandler(&logs, nil))
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		if order := requestOrder(github.requestLog(), "queue", "enqueue"); !order {
+			t.Fatalf("requests %v, want the queue read before the enqueue: once the enqueue lands the queue it displaced is gone", github.requestLog())
+		}
+		jumped := onlyJumpRecord(t, pool, records)
+		switch {
+		case jumped.Issue != "LEGION-208" || jumped.Repository != "acme/widgets" || jumped.Number != 42 || jumped.Head != "ready-head":
+			t.Fatalf("the jump record names %s, %s, #%d at %s, want LEGION-208, acme/widgets, #42 at ready-head", jumped.Issue, jumped.Repository, jumped.Number, jumped.Head)
+		case !jumped.At.Equal(clock):
+			t.Fatalf("the jump record was made at %s, want the daemon's clock %s", jumped.At, clock)
+		case jumped.Reason != reason:
+			t.Fatalf("the jump record's reason %q, want the controller's %q", jumped.Reason, reason)
+		case jumped.Refused || jumped.Refusal != "" || jumped.EntriesUnknown:
+			t.Fatalf("the jump record is refused %t with %q and unknown entries %t, want a jump GitHub took with the queue it read", jumped.Refused, jumped.Refusal, jumped.EntriesUnknown)
+		case len(jumped.Entries) != 2 || jumped.Entries[0].Number != 11 || jumped.Entries[1].Number != 12 || jumped.EntriesTotal != 2:
+			t.Fatalf("the jump record holds %v of %d entries, want #11 and #12", jumped.Entries, jumped.EntriesTotal)
+		case jumped.Entries[0].State != "MERGEABLE" || jumped.Entries[0].Position != 1:
+			t.Fatalf("the first recorded entry is %+v, want GitHub's own position and state", jumped.Entries[0])
+		}
+		posts := messagePosts(t, pool)
+		if len(posts) != 1 {
+			t.Fatalf("Dispatch messages %q, want the one that posts the jump", posts)
+		}
+		for _, name := range []string{"#42", "ready-head", reason, "#11", "#12"} {
+			if !strings.Contains(posts[0], name) {
+				t.Fatalf("the message posted on the issue %q, want it to name %q", posts[0], name)
+			}
+		}
+		if lines := strings.Count(logs.String(), "the controller's jump mark, which this run spends"); lines != 1 {
+			t.Fatalf("the daemon wrote %d lines for the jump, want one: %s", lines, logs.String())
+		}
+	})
+
+	t.Run("a second jump of the same repository replaces its record", func(t *testing.T) {
+		github := newQueueGitHub(t, "CLEAN")
+		pool, records, runner, _ := jumpRunner(t, github, reason)
+		seedReadyMerge(t, pool, records, "LEGION-209", awaitingREADY)
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce for LEGION-208: %v", err)
+		}
+		// GitHub merges the first entry, so the second issue's own submission is made against a
+		// pull request with nothing armed, as the daemon always meets one.
+		github.set(func(g *armableGitHub) { g.queued = false })
+		now := time.Now().UTC().Truncate(time.Second)
+		enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-209", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+		setMergeJump(t, pool, records, "LEGION-209", "the other release waits on this one", now)
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce for LEGION-209: %v", err)
+		}
+		jumped := onlyJumpRecord(t, pool, records)
+		if jumped.Issue != "LEGION-209" {
+			t.Fatalf("the repository's jump record names %s, want the newest jump, LEGION-209", jumped.Issue)
+		}
+	})
+
+	t.Run("a queue longer than one page is recorded as far as it was read", func(t *testing.T) {
+		github := newQueueGitHub(t, "CLEAN")
+		github.set(func(g *armableGitHub) {
+			for number := range 50 {
+				g.queue = append(g.queue, queueEntry{number: number + 1, position: number + 1})
+			}
+			g.queueTotal = 73
+		})
+		pool, records, runner, _ := jumpRunner(t, github, reason)
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		jumped := onlyJumpRecord(t, pool, records)
+		if len(jumped.Entries) != 50 || jumped.EntriesTotal != 73 {
+			t.Fatalf("the jump record holds %d entries of %d, want the 50 one page carries of a queue of 73", len(jumped.Entries), jumped.EntriesTotal)
+		}
+	})
+
+	t.Run("a queue GitHub would not read leaves the entries unknown", func(t *testing.T) {
+		github := newQueueGitHub(t, "CLEAN")
+		github.set(func(g *armableGitHub) { g.queueRefused = true })
+		pool, records, runner, clock := jumpRunner(t, github, reason)
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		if github.enqueued() != 1 {
+			t.Fatalf("enqueues %d, want one: a queue nobody could read is no failure of the jump", github.enqueued())
+		}
+		jumped := onlyJumpRecord(t, pool, records)
+		switch {
+		case !jumped.EntriesUnknown || len(jumped.Entries) != 0 || jumped.EntriesTotal != 0:
+			t.Fatalf("the jump record holds %v of %d with unknown %t, want no entries and unknown", jumped.Entries, jumped.EntriesTotal, jumped.EntriesUnknown)
+		case jumped.Issue != "LEGION-208" || jumped.Number != 42 || jumped.Head != "ready-head" || jumped.Reason != reason || !jumped.At.Equal(clock):
+			t.Fatalf("the jump record is %+v, want every other field standing", jumped)
+		}
+	})
+}
+
+// GitHub refusing the jump spends the mark all the same, and the submission chosen follows in the
+// same attempt: the merge is on its way, behind what was already in the queue. The issue is told
+// what GitHub answered, the record of the jump carries the refusal with the entries the jump would
+// have displaced, and the controller gets a notice of its own — the jump was its instruction. The
+// row is not ended: a refused jump is no refusal of the merge.
+func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
+	const refusal = "Only administrators can jump the merge queue."
+	github := newQueueGitHub(t, "CLEAN")
+	github.set(func(g *armableGitHub) {
+		g.enqueueRefusal = refusal
+		g.queue = []queueEntry{{number: 11, position: 1, state: "MERGEABLE"}}
+	})
+	pool, records, runner, _ := jumpRunner(t, github, "the release waits on this merge")
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	_, arms := github.counts()
+	if github.enqueued() != 1 || arms != 1 {
+		t.Fatalf("enqueues %d and enables %d, want one of each: the submission chosen follows the refused jump in the same attempt", github.enqueued(), arms)
+	}
+	jumped := onlyJumpRecord(t, pool, records)
+	switch {
+	case !jumped.Refused || !strings.Contains(jumped.Refusal, refusal):
+		t.Fatalf("the jump record is refused %t with %q, want GitHub's own answer", jumped.Refused, jumped.Refusal)
+	case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
+		t.Fatalf("the refused jump record holds %v, want the entries it would have displaced", jumped.Entries)
+	}
+	posts := messagePosts(t, pool)
+	if len(posts) != 2 {
+		t.Fatalf("Dispatch messages %q, want the jump's and the refusal's", posts)
+	}
+	if !strings.Contains(posts[1], refusal) || !strings.Contains(posts[1], "refused") {
+		t.Fatalf("the refusal posted on the issue %q, want it to say the jump was refused and name GitHub's answer", posts[1])
+	}
+	notices := controllerNotices(t, pool)
+	if len(notices) != 1 || notices[0].kind != string(record.MergeJumpRefusedNotice) {
+		t.Fatalf("controller notices %v, want one merge-jump-refused", notices)
+	}
+	for _, name := range []string{"LEGION-208", "#42", "ready-head", refusal} {
+		if !strings.Contains(notices[0].reason, name) {
+			t.Fatalf("the controller notice %q, want it to name %q", notices[0].reason, name)
+		}
+	}
+	rows := assertMergeRows(t, pool, 1, "merge-refused", 0)
+	if len(rows) != 0 {
+		t.Fatalf("merge-refused notices %q, want none: a refused jump never ends the row", rows)
+	}
+}
+
+// jumpRunner is the common setup of the jump tests: LEGION-208 awaiting its merge at ready-head,
+// its ready_merge row queued, the controller's mark on it for reason, and the outbox that runs it
+// against github on a clock held still. It answers the pool, the store, the runner and that clock.
+func jumpRunner(t *testing.T, github *armableGitHub, reason string) (*pgxpool.Pool, record.Store, *outbox, time.Time) {
+	t.Helper()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC().Truncate(time.Second)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+	setMergeJump(t, pool, records, "LEGION-208", reason, now)
+	return pool, records, mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return now }), now
+}
+
+// setMergeJump marks issue for the jump, as the controller's route does.
+func setMergeJump(t *testing.T, pool *pgxpool.Pool, records record.Store, issue, reason string, at time.Time) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		return records.SetMergeJump(context.Background(), tx, record.MergeJump{Issue: issue, Reason: reason, Session: "ses_controller", SetAt: at})
+	}); err != nil {
+		t.Fatalf("set the jump mark of %s: %v", issue, err)
+	}
+}
+
+// mergeJumpStands says whether issue still carries its jump mark.
+func mergeJumpStands(t *testing.T, pool *pgxpool.Pool, issue string) bool {
+	t.Helper()
+	var marks int
+	if err := pool.QueryRow(context.Background(), `select count(*) from merge_jumps where issue = $1`, issue).Scan(&marks); err != nil {
+		t.Fatalf("read the jump mark of %s: %v", issue, err)
+	}
+	return marks == 1
+}
+
+// onlyJumpRecord is the project's one jump record, and fails where it holds any other number.
+func onlyJumpRecord(t *testing.T, pool *pgxpool.Pool, records record.Store) record.MergeJumpRecord {
+	t.Helper()
+	var jumps []record.MergeJumpRecord
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		jumps, err = records.MergeJumpRecords(context.Background(), tx, "LEGION")
+		return err
+	}); err != nil {
+		t.Fatalf("read the jump records of LEGION: %v", err)
+	}
+	if len(jumps) != 1 {
+		t.Fatalf("jump records %+v, want one: the record keeps the newest jump of each repository", jumps)
+	}
+	return jumps[0]
+}
+
+// controllerNotice is one controller notice the outbox holds: its kind and its reason.
+type controllerNotice struct{ kind, reason string }
+
+// controllerNotices is every controller notice the outbox holds, oldest first.
+func controllerNotices(t *testing.T, pool *pgxpool.Pool) []controllerNotice {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload->>'kind', payload->>'reason' from outbox where kind = 'controller_notice' order by id`)
+	if err != nil {
+		t.Fatalf("read the controller notices: %v", err)
+	}
+	defer rows.Close()
+	var notices []controllerNotice
+	for rows.Next() {
+		var notice controllerNotice
+		if err := rows.Scan(&notice.kind, &notice.reason); err != nil {
+			t.Fatalf("scan a controller notice: %v", err)
+		}
+		notices = append(notices, notice)
+	}
+	return notices
+}
+
+// requestOrder says whether the fake answered first before second, both of them once at least.
+func requestOrder(requests []string, first, second string) bool {
+	return slices.Index(requests, first) >= 0 && slices.Index(requests, first) < slices.Index(requests, second)
+}
+
+// heldFile is the one file acme/widgets#42 changes in the merge hold tests, and heldPattern a
+// hold's pattern that matches it: an unanchored regular expression, as a project's by_hand merge
+// rules are. missPattern matches nothing the pull request changes.
+const (
+	heldFile    = "packages/daemon/internal/daemon/auto_merge.go"
+	heldPattern = "packages/daemon/"
+	missPattern = "^migrations/"
+)
+
+// A merge hold keeps the submission back while it is live and matches a file the pull request
+// changes: nothing at all is sent to GitHub, the issue stays in awaiting_merge, the row stands
+// and runs again when the hold ends, and whatever else the controller marked the issue with is
+// left where it is. A hold that has ended, one the controller took off, one whose paths match
+// nothing the pull request changes and one naming another repository hold nothing. A file list
+// GitHub cut holds the merge, since the daemon cannot tell whether what it never saw is the
+// hold's. A project with no hold at all reads no file list: the holds are read first, and a
+// project holding nothing costs its merges no GitHub call.
+func TestAMergeHoldKeepsTheMergeBackUntilItEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// holds is the project's hold list, built around the moment the row first runs, cleared
+		// whether the controller takes the list off before the second run, and filesCut whether
+		// GitHub cuts the file list at its own limit.
+		holds    func(now time.Time) []record.MergeHold
+		cleared  bool
+		filesCut bool
+		// marked is a jump mark set on the issue, which a held run must leave where it is.
+		marked bool
+		// runs is how many times the row is drained, arms how many submissions GitHub was sent,
+		// heldUntil the moment the row is next due, zero where the row was not held, and
+		// readsFiles whether the pull request's changed files were read at all: only a hold whose
+		// repository covers this one, and which is still live, costs that read.
+		runs       int
+		arms       int
+		heldUntil  func(now time.Time) time.Time
+		readsFiles bool
+	}{
+		{
+			name: "a live hold whose paths match a changed file",
+			holds: func(now time.Time) []record.MergeHold {
+				return []record.MergeHold{windowHold(now.Add(30*time.Minute), heldPattern)}
+			},
+			marked:     true,
+			runs:       1,
+			heldUntil:  func(now time.Time) time.Time { return now.Add(30 * time.Minute) },
+			readsFiles: true,
+		},
+		{
+			name: "a hold whose end time has passed",
+			holds: func(now time.Time) []record.MergeHold {
+				return []record.MergeHold{windowHold(now.Add(-time.Minute), heldPattern)}
+			},
+			runs: 1,
+			arms: 1,
+		},
+		{
+			name: "a hold the controller took off before the next run",
+			holds: func(now time.Time) []record.MergeHold {
+				return []record.MergeHold{windowHold(now.Add(30*time.Minute), heldPattern)}
+			},
+			cleared:    true,
+			runs:       2,
+			arms:       1,
+			readsFiles: true,
+		},
+		{
+			name: "a hold whose paths match no changed file",
+			holds: func(now time.Time) []record.MergeHold {
+				return []record.MergeHold{windowHold(now.Add(30*time.Minute), missPattern)}
+			},
+			runs:       1,
+			arms:       1,
+			readsFiles: true,
+		},
+		{
+			name: "a hold naming another repository the project serves",
+			holds: func(now time.Time) []record.MergeHold {
+				hold := windowHold(now.Add(30*time.Minute), heldPattern)
+				hold.Repository = "acme/gadgets"
+				return []record.MergeHold{hold}
+			},
+			runs: 1,
+			arms: 1,
+		},
+		{
+			name: "a file list GitHub cut at its own limit",
+			holds: func(now time.Time) []record.MergeHold {
+				return []record.MergeHold{windowHold(now.Add(30*time.Minute), missPattern)}
+			},
+			filesCut:   true,
+			runs:       1,
+			heldUntil:  func(now time.Time) time.Time { return now.Add(30 * time.Minute) },
+			readsFiles: true,
+		},
+		{
+			name:  "no hold at all",
+			holds: func(time.Time) []record.MergeHold { return nil },
+			runs:  1,
+			arms:  1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := newQueueGitHub(t, "CLEAN")
+			github.set(func(g *armableGitHub) {
+				g.changedFiles, g.filesCut = []string{heldFile}, tc.filesCut
+			})
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			setMergeHolds(t, pool, records, tc.holds(now)...)
+			if tc.marked {
+				setMergeJump(t, pool, records, "LEGION-208", "the release waits on this merge", now)
+			}
+			clock := now
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+			for run := range tc.runs {
+				if run == 1 && tc.cleared {
+					setMergeHolds(t, pool, records)
+				}
+				// A held row is due again when its hold ends, so a test that drains it twice
+				// brings it forward, as the daemon's own clock does by reaching that moment.
+				readyMergeDue(t, pool, clock.Add(-time.Second))
+				if err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("RunOnce %d: %v", run+1, err)
+				}
+				clock = clock.Add(time.Minute)
+			}
+			disables, arms := github.counts()
+			if arms != tc.arms || github.enqueued() != 0 || disables != 0 {
+				t.Fatalf("submissions %d, enqueues %d and disarms %d, want %d, none and none: %v",
+					arms, github.enqueued(), disables, tc.arms, github.requestLog())
+			}
+			if read := slices.Contains(github.requestLog(), "files"); read != tc.readsFiles {
+				t.Fatalf("the pull request's files were read %t, want %t: %v", read, tc.readsFiles, github.requestLog())
+			}
+			var at string
+			if err := pool.QueryRow(context.Background(), `select phase from issues where key = 'LEGION-208'`).Scan(&at); err != nil {
+				t.Fatalf("read LEGION-208's phase: %v", err)
+			}
+			if at != string(phase.AwaitingMerge) {
+				t.Fatalf("LEGION-208 is in %q, want it awaiting its merge: a hold moves no issue", at)
+			}
+			nextAt, _, _, _ := readyMergeState(t, pool)
+			if tc.heldUntil == nil {
+				if tc.marked && !mergeJumpStands(t, pool, "LEGION-208") {
+					t.Fatalf("the jump mark of LEGION-208 is gone")
+				}
+				return
+			}
+			if want := tc.heldUntil(now); !nextAt.Equal(want) {
+				t.Fatalf("the held row runs again at %s, want the hold's end %s", nextAt, want)
+			}
+			if tc.marked && !mergeJumpStands(t, pool, "LEGION-208") {
+				t.Fatalf("the jump mark of LEGION-208 is gone: a held run spends nothing at all")
+			}
+		})
+	}
+}
+
+// A held row tells the issue once and its architect once, however many times it runs under the
+// hold, and the time it spent held is not time GitHub was slow: the merge-waiting notice is
+// measured from the submission's queueing less every held stretch, so a row held for two hours
+// and waiting on GitHub for one does not warn, and the same row warns once its unheld wait passes
+// the hour.
+func TestAMergeHoldTellsTheIssueOnceAndIsNoWaitOnGitHub(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	github.set(func(g *armableGitHub) { g.changedFiles = []string{heldFile} })
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC().Truncate(time.Second)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+	ends := now.Add(2 * time.Hour)
+	setMergeHolds(t, pool, records, windowHold(ends, heldPattern))
+	clock := now
+	runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+	run := func(step string) {
+		t.Helper()
+		readyMergeDue(t, pool, clock.Add(-time.Second))
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce %s: %v", step, err)
+		}
+	}
+	for held := range 10 {
+		run(fmt.Sprintf("held run %d", held+1))
+		clock = clock.Add(time.Minute)
+	}
+	if _, arms := github.counts(); arms != 0 {
+		t.Fatalf("submissions %d, want none: the hold holds every run", arms)
+	}
+	posts := messagePosts(t, pool)
+	reasons := assertMergeRows(t, pool, 1, "merge-held", 1)
+	if len(posts) != 1 {
+		t.Fatalf("Dispatch messages %q, want the one the first held run posts", posts)
+	}
+	for _, name := range []string{"#42", "ready-head", heldPattern, "the release window is open", "ses_controller", ends.Format(time.RFC3339)} {
+		if !strings.Contains(posts[0], name) {
+			t.Fatalf("the message posted on the issue %q, want it to name %q", posts[0], name)
+		}
+		if !strings.Contains(reasons[0], name) && name != "ses_controller" {
+			t.Fatalf("the merge-held notice %q, want it to name %q", reasons[0], name)
+		}
+	}
+	// The hold ends, and the submission is made on the run after it: the held stretch is closed
+	// on that same run, so the wait the architect could be told of starts from there.
+	clock = ends.Add(time.Minute)
+	run("the submission once the hold ends")
+	if _, arms := github.counts(); arms != 1 {
+		t.Fatalf("submissions %d, want the one made once the hold ended", arms)
+	}
+	held, since, told := heldMarks(t, pool)
+	if want := clock.Sub(now); held != want || !since.IsZero() || !told {
+		t.Fatalf("the row holds %s held since %s told %t, want %s closed and told", held, since, told, want)
+	}
+	// GitHub has had the entry for less than an hour, while the row has stood for three: nothing
+	// is told, since none of the held time is GitHub's.
+	clock = clock.Add(55 * time.Minute)
+	run("the wait inside the hour")
+	if _, _, warned, _ := readyMergeState(t, pool); warned {
+		t.Fatalf("the row is recorded as warned, want the held time taken off the wait before the hour is judged")
+	}
+	assertMergeRows(t, pool, 1, "merge-waiting", 0)
+	// An hour of unheld waiting passes, and the architect is told once.
+	clock = clock.Add(10 * time.Minute)
+	run("the wait past the hour")
+	if _, _, warned, _ := readyMergeState(t, pool); !warned {
+		t.Fatalf("the row is not recorded as warned after an hour of unheld waiting")
+	}
+	assertMergeRows(t, pool, 1, "merge-waiting", 1)
+	if held, _, _ := heldMarks(t, pool); held != ends.Add(time.Minute).Sub(now) {
+		t.Fatalf("the row holds %s of held time, want the one stretch the hold kept open", held)
+	}
+}
+
+// A re-READY of a held row starts the hold's account over: the workflow's upsert replaces the
+// whole payload, so the held time, the open stretch and the telling go together, and the next
+// submission tells its own architect again. The row's next_at is deliberately kept by that upsert
+// (record's readyMergeConflict), so a row held until tomorrow is still due tomorrow.
+func TestAReREADYOfAMergeHoldHeldRowStartsItsHoldOver(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	github.set(func(g *armableGitHub) { g.changedFiles = []string{heldFile} })
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC().Truncate(time.Second)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+	ends := now.Add(2 * time.Hour)
+	setMergeHolds(t, pool, records, windowHold(ends, heldPattern))
+	clock := now
+	runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if held, since, told := heldMarks(t, pool); held != 0 || since.IsZero() || !told {
+		t.Fatalf("the held row holds %s since %s told %t, want an open stretch told once", held, since, told)
+	}
+	clock = clock.Add(time.Minute)
+	// The workflow queues the same issue and head again, as a reopen does.
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: clock}, clock))
+	held, since, told := heldMarks(t, pool)
+	if held != 0 || !since.IsZero() || told {
+		t.Fatalf("the re-queued row holds %s since %s told %t, want all three reset", held, since, told)
+	}
+	if nextAt, _, _, _ := readyMergeState(t, pool); !nextAt.Equal(ends) {
+		t.Fatalf("the re-queued row runs again at %s, want the hold's end %s: the upsert keeps next_at on purpose", nextAt, ends)
+	}
+}
+
+// The merge queue's removal for a conflict is answered inside the submission before it chooses
+// anything, so the hold is asked once more where that removal would have the row submit again: a
+// matching hold spends nothing, posts nothing of the resubmission and leaves the row due when the
+// hold ends, and the run after it makes that further submission.
+func TestAMergeHoldHoldsTheConflictResubmission(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	github.set(func(g *armableGitHub) { g.changedFiles = []string{heldFile} })
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC().Truncate(time.Second)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+	clock := now
+	runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+	runner.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())}
+	run := func(step string) {
+		t.Helper()
+		readyMergeDue(t, pool, clock.Add(-time.Second))
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce %s: %v", step, err)
+		}
+		clock = clock.Add(time.Minute)
+	}
+	run("READY's own submission")
+	ends := clock.Add(30 * time.Minute)
+	setMergeHolds(t, pool, records, windowHold(ends, heldPattern))
+	github.remove(dequeuedEvent("merge_conflict", "github-merge-queue", "null"))
+	run("the read that finds the removal while the hold stands")
+	if _, arms := github.counts(); arms != 1 {
+		t.Fatalf("submissions %d, want only READY's own: a hold holds the further submission too", arms)
+	}
+	spent, _, standing := conflictMarks(t, pool)
+	nextAt, _, _, _ := readyMergeState(t, pool)
+	switch {
+	case !standing || spent:
+		t.Fatalf("the ready_merge row stands %t with its further submission spent %t, want a standing row that spent nothing", standing, spent)
+	case !nextAt.Equal(ends):
+		t.Fatalf("the held row runs again at %s, want the hold's end %s", nextAt, ends)
+	}
+	for _, post := range messagePosts(t, pool) {
+		if strings.Contains(post, "once more") {
+			t.Fatalf("the issue was told of a further submission the hold held back: %q", post)
+		}
+	}
+	// The hold ends, and the removal is decided again: this time the merge is submitted once more.
+	clock = ends.Add(time.Minute)
+	run("the run after the hold ends")
+	spent, _, _ = conflictMarks(t, pool)
+	if _, arms := github.counts(); arms != 2 || !spent {
+		t.Fatalf("submissions %d with the further submission spent %t, want two and spent", arms, spent)
+	}
+}
+
+// A live hold changes nothing about what the submission answers for a row GitHub shows armed or
+// queued: the hold is asked only where a mutation would be sent, so an entry GitHub still holds
+// is the wait it always was, a removal still ends the row with its architect told, and a pull
+// request GitHub shows at another head is still the disagreement the row waits on. No mutation is
+// sent on any of the three.
+func TestAMergeHoldLeavesAnArmedRowsOwnPathsAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// github is the state GitHub is put into after READY's own submission queued the pull
+		// request, removed whether a merge-removed notice is written, and standing whether the
+		// ready_merge row is left to run again.
+		github   func(g *armableGitHub)
+		removed  int
+		standing bool
+	}{
+		{name: "an entry the merge queue still holds", github: func(*armableGitHub) {}, standing: true},
+		{
+			name: "an entry a person took out",
+			github: func(g *armableGitHub) {
+				g.armed, g.queued = false, false
+				g.timeline = append(g.timeline, manuallyDisabledEvent("alice"))
+			},
+			removed: 1,
+		},
+		{
+			name:     "a pull request GitHub shows at another head",
+			github:   func(g *armableGitHub) { g.state = "CLOSED" },
+			standing: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := newQueueGitHub(t, "CLEAN")
+			github.set(func(g *armableGitHub) { g.changedFiles = []string{heldFile} })
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			clock := now
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce for READY's own submission: %v", err)
+			}
+			clock = clock.Add(time.Minute)
+			setMergeHolds(t, pool, records, windowHold(clock.Add(30*time.Minute), heldPattern))
+			github.set(tc.github)
+			readyMergeDue(t, pool, clock.Add(-time.Second))
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce under the hold: %v", err)
+			}
+			if _, arms := github.counts(); arms != 1 {
+				t.Fatalf("submissions %d, want only READY's own: nothing is sent under a live hold", arms)
+			}
+			left := 0
+			if tc.standing {
+				left = 1
+			}
+			assertMergeRows(t, pool, left, "merge-removed", tc.removed)
+		})
+	}
+}
+
+// windowHold is one live merge hold of the controller's: the paths it covers, its reason, its
+// session and when it ends.
+func windowHold(ends time.Time, paths ...string) record.MergeHold {
+	return record.MergeHold{Paths: paths, Reason: "the release window is open", EndsAt: ends,
+		Session: "ses_controller", SetAt: ends.Add(-time.Hour)}
+}
+
+// setMergeHolds replaces the project's whole merge hold list, as the controller's route does.
+func setMergeHolds(t *testing.T, pool *pgxpool.Pool, records record.Store, holds ...record.MergeHold) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		return records.ReplaceMergeHolds(context.Background(), tx, "LEGION", holds)
+	}); err != nil {
+		t.Fatalf("replace the merge holds of LEGION: %v", err)
+	}
+}
+
+// heldMarks is what the one ready_merge row records of the merge holds that held it: the time
+// already counted (record.ReadyMerge.Held), the moment an open stretch began (HeldSince), and
+// whether the row has told of a hold (HeldTold).
+func heldMarks(t *testing.T, pool *pgxpool.Pool) (held time.Duration, since time.Time, told bool) {
+	t.Helper()
+	var nanoseconds *int64
+	var at *string
+	if err := pool.QueryRow(context.Background(),
+		`select (payload->>'held')::bigint, payload->>'heldSince', coalesce((payload->>'heldTold')::boolean, false) from outbox where kind = 'ready_merge'`).
+		Scan(&nanoseconds, &at, &told); err != nil {
+		t.Fatalf("read the ready_merge row's held marks: %v", err)
+	}
+	if nanoseconds != nil {
+		held = time.Duration(*nanoseconds)
+	}
+	if at != nil {
+		began, err := time.Parse(time.RFC3339Nano, *at)
+		if err != nil {
+			t.Fatalf("parse the row's open held stretch %q: %v", *at, err)
+		}
+		since = began.UTC()
+	}
+	return held, since, told
+}
+
+// readyMergeDue brings the one ready_merge row forward to at, as the daemon's own clock does by
+// reaching the moment a held row named: a held row is due when its hold ends, and a test that
+// drains it again before then would otherwise list no row at all.
+func readyMergeDue(t *testing.T, pool *pgxpool.Pool, at time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `update outbox set next_at = $1 where kind = 'ready_merge'`, at); err != nil {
+		t.Fatalf("bring the ready_merge row forward: %v", err)
+	}
 }

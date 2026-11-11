@@ -138,43 +138,29 @@ type readyAnswer struct {
 	recordedHeadAt, headAt time.Time
 }
 
-// pullRequestFilesLimit is the most changed files GitHub lists for a pull request: a pull request
-// that reaches it may change a path the list never shows.
-const pullRequestFilesLimit = 3000
-
 // byHandNotePrefix opens READY's by-hand note (mergeReadyPolicy) on the wire: the merger, the issue
 // and the merge queue role read a note that begins with it as one a person merges.
 const byHandNotePrefix = "MANUAL_MERGE_REQUIRED:"
 
 // mergeReadyPolicy is the project's merge policy for pull request number: the by-hand note
 // (byHandNotePrefix) when its change touches a by_hand path, which keeps the daemon from submitting
-// its merge, and nothing otherwise. A list GitHub cut at pullRequestFilesLimit leaves a by_hand path
-// unread, so READY is refused rather than submitted on it.
+// its merge, and nothing otherwise. A list GitHub cut at githubrest.PullRequestFilesLimit leaves a
+// by_hand path unread, so READY is refused rather than submitted on it.
 func mergeReadyPolicy(ctx context.Context, github githubrest.Client, rules config.MergeRules, number int) (string, *refusal) {
 	if len(rules.ByHand) == 0 {
 		return "", nil
 	}
-	paths, files, err := pullRequestPaths(ctx, github, number)
+	paths, cut, err := githubrest.PullRequestPaths(ctx, github, number)
 	if err != nil {
 		return "", githubReadFailed(err)
 	}
 	if rules.MatchByHand(paths) {
 		return fmt.Sprintf("%s pull request #%d matches a by_hand merge rule; do not auto-arm it", byHandNotePrefix, number), nil
 	}
-	if files >= pullRequestFilesLimit {
-		return "", &refusal{http.StatusConflict, "READY_FILES_TRUNCATED", fmt.Sprintf("pull request #%d changes at least %d files, the most GitHub lists, so whether it touches a by_hand path is unknown: a person merges it, or the change is split; tell the architect", number, pullRequestFilesLimit)}
+	if cut {
+		return "", &refusal{http.StatusConflict, "READY_FILES_TRUNCATED", fmt.Sprintf("pull request #%d changes at least %d files, the most GitHub lists, so whether it touches a by_hand path is unknown: a person merges it, or the change is split; tell the architect", number, githubrest.PullRequestFilesLimit)}
 	}
 	return "", nil
-}
-
-// pullRequestPaths is every path pull request number's change touches, both names of a renamed
-// file among them (githubrest.ChangedPaths), and how many files GitHub listed.
-func pullRequestPaths(ctx context.Context, github githubrest.Client, number int) ([]string, int, error) {
-	files, err := githubrest.GetPages[githubrest.ChangedFile](ctx, github, fmt.Sprintf("/pulls/%d/files", number))
-	if err != nil {
-		return nil, 0, err
-	}
-	return githubrest.ChangedPaths(files), len(files), nil
 }
 
 // shortSHA is sha as a refusal names it, its first twelve characters.

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // autoMergeTimeout bounds one auto_merge_disable or ready_merge row's GitHub calls, its token's
@@ -38,7 +42,11 @@ const removalLogReads = 3 * time.Minute
 
 // mergeWaitWarn is how long a ready_merge row waits before its issue's architect is told once that
 // GitHub has not completed the merge Legion submitted (readyMergeWaiting). It runs from
-// record.ReadyMerge.Queued, the moment the workflow queued that submission: nothing in the daemon
+// record.ReadyMerge.Queued, the moment the workflow queued that submission, less the time one of
+// the project's merge holds held that submission back (record.ReadyMerge.Held and the open
+// stretch HeldSince names, rememberWait): a hold is Legion's own decision not to submit, so a row
+// held for a day has waited on GitHub for none of it, and counting it would tell the architect
+// GitHub is slow about a merge GitHub was never asked for. Nothing in the daemon
 // records when GitHub was first asked, and the queue time lives on the payload beside the flag that
 // records the telling (record.ReadyMerge.Warned), so a reopen's upsert of the same issue and head,
 // which replaces the payload on purpose (readyMergeConflict), resets the two together and they can
@@ -53,6 +61,33 @@ const removalLogReads = 3 * time.Minute
 // measured on 2026-10-23, main required lint, typecheck, test and pr-title, test took 12-16
 // minutes, and the 90th percentile of every pull_request run was 17.
 const mergeWaitWarn = time.Hour
+
+// jumpQueueRead is how long the read of the merge queue a jump is about to go ahead of may take
+// before the jump is made without it (readyMergeMarks.Jump). The read is one GraphQL call for at
+// most ghautomerge's queuePage entries, and it is the one read that is nobody's business but the
+// record of the jump: GitHub's own answer to the enqueue is what merges the pull request, and a
+// queue nobody could read costs the record its entries and nothing else (R3,
+// record.MergeJumpRecord.EntriesUnknown).
+//
+// Five seconds is a bound off the row's own autoMergeTimeout, thirty seconds, which still has to
+// pay for the submission's read of the pull request, the enqueue mutation, the plain submission
+// GitHub's refusal of a jump falls back to, and the one transaction that spends the mark. A read
+// this bound cuts short leaves the jump as it would have been with no queue at all, so the mark
+// is never held back by a slow read.
+const jumpQueueRead = 5 * time.Second
+
+// markLineUnits is how long any one string the controller's marks put into a Dispatch block
+// stays: GitHub's answer to a jump it refused, a hold's reason, and each of a hold's path
+// patterns. It is ghautomerge's own rule for a string out of GitHub (its cutLine,
+// failureLineUnits), read for the same reason: Dispatch refuses a block over
+// DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units (packages/contracts), and the daemon then tells the
+// architect its message was refused instead of telling the issue what holds its merge. A hold's
+// own words come from the controller rather than from GitHub, and are cut the same way, since
+// nothing between the controller's route and this block bounds them either. Two hundred runes is
+// what ghautomerge gives one such string; a rune outside the BMP is two UTF-16 units, so one cut
+// string costs at most 401 units and the whole of one of these messages stays far inside one
+// block.
+const markLineUnits = 200
 
 // queueConflictBound is how long GitHub's merge queue must keep reporting a ready_merge row's
 // entry UNMERGEABLE, built all that time on the same commit, before the row takes the entry's own
@@ -158,7 +193,31 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// run opened with can be long spent by the time they answer, and a write on it would fail
 	// after a submission that succeeded.
 	logs := githubrest.Client{Token: github.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
-	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep, ghautomerge.NoMarks{})
+	// The controller's marks are read for this one submission and spent against it
+	// (readyMergeMarks): the project's merge holds, which keep the submission back, and the
+	// issue's jump mark, which sends GitHub's enqueue at the head of the merge queue. The further
+	// submission a conflict removal calls for keeps ghautomerge.NoMarks{} (resubmit above), so a
+	// resubmission never jumps: the mark is the controller's instruction about READY's merge, and
+	// the row has already spent it or left it where it was on the submission that was chosen.
+	marks := &readyMergeMarks{runner: r, row: row, payload: &payload, repo: repo, github: github, rest: logs}
+	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep, marks)
+	// The held stretch the payload may have open is closed by the first run that did not end
+	// held, whatever else that run then does: every arm below reads the payload this closes, and
+	// the wait rememberWait measures is the one the close leaves (requirement R7). It is here,
+	// above the conflict arm, because a run can end held in several ways and reach the arms by
+	// none of them. Marks.Hold is asked only once GitHub reports the pull request mergeable, so a
+	// held head that stops being mergeable is never asked again: without this close its stretch
+	// would stay open for ever and the merge-waiting notice would be measured from a hold that
+	// stopped holding days ago. A replacement that did not take is no failure, since the worker
+	// that holds the row reads the same submission itself.
+	var heldRun *ghautomerge.Held
+	if !payload.HeldSince.IsZero() && !errors.As(err, &heldRun) {
+		payload.Held += r.now().UTC().Sub(payload.HeldSince)
+		payload.HeldSince = time.Time{}
+		if _, failure := r.replacePayload(ctx, row, payload); failure != nil {
+			return fmt.Errorf("record the time a merge hold held outbox row %d back: %w", row.ID, failure)
+		}
+	}
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other. The reading, the
@@ -175,6 +234,17 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		case decided == conflictWaits:
 			err = conflicted
 		default:
+			// GitHub's queue removal for a conflict is answered inside Submit before it chooses
+			// a submission, so the hold seam above never sees one: the same decision is asked
+			// here, before the failing jobs' logs are read and before the further submission is
+			// spent and posted. A hold that matches answers this run, with nothing spent, no log
+			// read and no message written, and the row decides the removal again when the hold
+			// ends. The decision is the one the run already made where it made one
+			// (readyMergeMarks.Hold caches it), so this costs no second read of the changed
+			// files.
+			if held := marks.Hold(ctx); held != nil {
+				return held
+			}
 			// The message names what failed on the commit the queue built, so those logs are read
 			// once the decision to submit again is made and before the message is written. What
 			// the further submission then answers is handled by the arms below, which write the
@@ -427,6 +497,389 @@ func (r *outbox) resubmitAfterConflict(ctx context.Context, row record.OutboxRow
 	return resubmit(ctx)
 }
 
+// readyMergeMarks is what the controller decided about one issue's merge, as one run of its
+// ready_merge row reads it the moment before the submission goes out (ghautomerge.Marks). Two
+// marks reach this seam, and both are the controller's alone: the project's merge holds
+// (record.MergeHold), which keep a submission back while a hold matches a file the pull request
+// changes, and the issue's jump mark (record.MergeJump), which sends GitHub's enqueue at the head
+// of the merge queue in place of the auto-merge arm. ghautomerge knows neither, so every rule
+// about which GitHub call is sent stays in that package and every rule about the controller's
+// marks stays here.
+//
+// It is one value per run of one row because every answer it gives is about that run: the hold
+// decision is cached for the run (holding), the payload it writes is the run's own copy, and the
+// jump record it builds is what a refusal of that jump updates (jumped). runner, row and payload
+// are the row as readyMerge holds it — payload is readyMerge's own variable, so a field this
+// writes is read by every arm of the run that follows. github is the GraphQL client the
+// submission is made with, which the queue read before a jump reuses, and rest is the
+// repository's REST base, the client readyMerge built for a failing job's logs, which the read of
+// the pull request's changed files reuses: both reads are this row's own and neither is worth a
+// second client.
+type readyMergeMarks struct {
+	runner  *outbox
+	row     record.OutboxRow
+	payload *record.ReadyMerge
+	repo    ghrepo.Repository
+	github  githubrest.Client
+	rest    githubrest.Client
+	// decided and held are the run's one hold decision: held is the hold that holds this
+	// submission, nil where none does, and decided says the decision was made. Submit asks for it
+	// once, and readyMerge asks again on the conflict arm Submit answers before it chooses a
+	// submission, so a run can ask twice and must read the pull request's changed files at most
+	// once.
+	decided bool
+	held    *ghautomerge.Held
+	// jumped is the record written when the mark was spent (record.MergeJumpRecord), kept so that
+	// GitHub's refusal of that jump updates the record it wrote rather than building a second one
+	// from values read again: the entries the jump would have displaced are what the refusal has
+	// to keep, and they were read before the mutation and nowhere else.
+	jumped record.MergeJumpRecord
+}
+
+// Hold is the project's merge holds asked of this one submission: the error the hold answers
+// with (*ghautomerge.Held) where one holds it, which Submit returns as the whole answer of the
+// run with nothing sent, and nil where none does.
+//
+// The decision is made once per run and kept. Submit asks it for the submission it chose, and
+// readyMerge asks it again for the merge-queue removal Submit decides before that choice, so
+// without the cache a run could read the pull request's changed files twice. A read that failed
+// is not cached: it is the row's failure, the row retries, and the next run reads again.
+func (m *readyMergeMarks) Hold(ctx context.Context) error {
+	if !m.decided {
+		held, err := m.holding(ctx)
+		if err != nil {
+			return err
+		}
+		m.decided, m.held = true, held
+	}
+	if m.held == nil {
+		return nil
+	}
+	return m.held
+}
+
+// holding is the hold that holds this submission, nil where none does, decided in the order that
+// costs a project with no hold nothing at all (requirement R9):
+//
+//  1. the project's live holds, read in one transaction that also deletes the holds whose end
+//     time has passed (record.Store.MergeHolds). No live hold answers nil here, and nothing of
+//     GitHub is read at all: a project that holds nothing pays one Postgres read per merge run.
+//  2. the holds whose repository covers this issue's repository. An empty Repository covers every
+//     repository the project serves, and a named one is compared with the repository the daemon
+//     serves this issue under, without regard to case, as GitHub compares an owner and a
+//     repository's name alike (ghrepo.Serves). None left answers nil, again with nothing read of
+//     GitHub.
+//  3. the pull request's changed files, read once (githubrest.PullRequestPaths), matched against
+//     each hold's patterns (heldPaths).
+//
+// A list GitHub cut at githubrest.PullRequestFilesLimit matches every covering hold, whatever
+// the paths it did show: the daemon cannot tell whether the files it never saw are a hold's, and
+// a hold that is missed lets through the one merge it exists to keep back (requirement R6). The
+// hold that answers is the one with the earliest end time among those that matched, so the row's
+// next run is the first moment any of them could have stopped holding, and the holds that outlast
+// it are read again then.
+//
+// The decision writes before it answers (tellHeld): the moment the hold first caught this
+// submission, and, once, the message on the Dispatch issue and the architect's notice.
+func (m *readyMergeMarks) holding(ctx context.Context) (*ghautomerge.Held, error) {
+	r := m.runner
+	now := r.now().UTC()
+	var holds []record.MergeHold
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		holds, err = r.records.MergeHolds(ctx, tx, r.dispatchProject, now)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the merge holds of %s before outbox row %d submits its merge: %w", r.dispatchProject, m.row.ID, err)
+	}
+	// The list this read answered is this run's own, so the holds that cover another repository
+	// are dropped out of it rather than copied into a second slice.
+	covering := slices.DeleteFunc(holds, func(hold record.MergeHold) bool {
+		return hold.Repository != "" && !strings.EqualFold(hold.Repository, m.repo.String())
+	})
+	if len(covering) == 0 {
+		return nil, nil
+	}
+	paths, cut, err := githubrest.PullRequestPaths(ctx, m.rest, m.payload.Number)
+	if err != nil {
+		return nil, fmt.Errorf("read the files pull request #%d of %s changes, which the merge holds of %s are matched against: %w",
+			m.payload.Number, m.repo, r.dispatchProject, err)
+	}
+	var holding *record.MergeHold
+	for index, hold := range covering {
+		if !cut && !heldPaths(hold, paths) {
+			continue
+		}
+		if holding == nil || hold.EndsAt.Before(holding.EndsAt) {
+			holding = &covering[index]
+		}
+	}
+	if holding == nil {
+		return nil, nil
+	}
+	if err := m.tellHeld(ctx, *holding, now); err != nil {
+		return nil, err
+	}
+	return &ghautomerge.Held{Number: m.payload.Number, Repo: m.repo, Head: m.payload.Head, Reason: holding.Reason, Ends: holding.EndsAt}, nil
+}
+
+// heldPaths says whether hold catches a change that touches paths: each of the hold's patterns is
+// an unanchored regular expression matched against every path, which is how the project's by_hand
+// merge rules are matched (config.MergeRules.MatchByHand), so a controller writing a hold and a
+// project writing a merge rule write the same kind of pattern.
+//
+// A pattern the daemon cannot compile catches everything. The daemon cannot tell what such a
+// pattern would have matched, and the hold exists to keep merges back: reading it as matching
+// nothing would turn a typo into a hold that silently holds nothing, where this way the hold
+// holds, says so on the issue, and ends at its own end time like any other.
+func heldPaths(hold record.MergeHold, paths []string) bool {
+	for _, pattern := range hold.Paths {
+		matcher, err := regexp.Compile(pattern)
+		if err != nil {
+			return true
+		}
+		for _, path := range paths {
+			if matcher.MatchString(path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tellHeld records that hold holds this submission, in one transaction fenced on the row's lease
+// (replacePayload): the moment the open held stretch began (record.ReadyMerge.HeldSince) where
+// the row carries none, and, the first time the row is held at all (HeldTold), that flag with the
+// two rows that tell of it — one message on the Dispatch issue naming the hold, its paths, its
+// reason, the session that set it and when it ends, and one merge-held notice for the issue's
+// architect.
+//
+// The three are one write because the promise is exactly one message and exactly one notice
+// however many times the row runs under the hold (requirement R8): a flag written apart from its
+// rows could stand without them, and rows written apart from the flag could be written again by
+// the next run. A replacement that did not take — the row's lease gone to another worker — writes
+// nothing at all, and nothing of it is kept on the run's own payload either; that worker reads
+// the same holds and tells of them itself. The hold still answers either way, since what holds a
+// merge back is the hold and not the telling of it.
+func (m *readyMergeMarks) tellHeld(ctx context.Context, hold record.MergeHold, now time.Time) error {
+	if !m.payload.HeldSince.IsZero() && m.payload.HeldTold {
+		return nil
+	}
+	payload := *m.payload
+	if payload.HeldSince.IsZero() {
+		payload.HeldSince = now
+	}
+	var told []record.OutboxRow
+	if !payload.HeldTold {
+		payload.HeldTold = true
+		post, err := record.NewOutboxRow(m.row.Issue, readyMergeHeldPost(payload, hold), now)
+		if err != nil {
+			return err
+		}
+		notice, err := record.NewOutboxRow(m.row.Issue, record.Notice{Kind: "merge-held", Role: claim.RoleArchitect,
+			Reason: readyMergeHeldReason(payload, hold)}, now)
+		if err != nil {
+			return err
+		}
+		told = append(told, post, notice)
+	}
+	replaced, err := m.runner.replacePayload(ctx, m.row, payload, told...)
+	if err != nil {
+		return fmt.Errorf("record the merge hold that holds outbox row %d back: %w", m.row.ID, err)
+	}
+	if !replaced {
+		return nil
+	}
+	*m.payload = payload
+	if len(told) > 0 {
+		m.runner.log.Info("outbox READY merge is held by one of the project's merge holds; the issue is told and its architect once",
+			"row", m.row.ID, "issue", m.row.Issue, "number", payload.Number, "head", payload.Head,
+			"paths", hold.Paths, "reason", hold.Reason, "session", hold.Session, "ends", hold.EndsAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// Jump is the issue's jump mark asked of the enqueue this submission is about to send: true where
+// the mark was there and this run spent it, so Submit sends GitHub's enqueue with jump instead of
+// the auto-merge enable, and false where the issue carries no mark or another worker's run spent
+// it first.
+//
+// Nothing of GitHub is read for an issue with no mark. With one, the queue the jump is about to go
+// ahead of is read before anything is sent (ghautomerge.QueueEntries, bounded by jumpQueueRead),
+// because once the enqueue lands the queue it displaced is gone; a read GitHub refused is no
+// failure of the jump (queueBefore).
+//
+// The mark is spent at the mutation and not before (requirement R2): one transaction fenced on
+// the row's lease clears the mark, writes the record of the jump and enqueues the message that
+// posts it, and only then does Submit send the enqueue. A run that sends no enqueue — the lease
+// gone, the mark already spent, the submission chosen not an enqueue at all — spends nothing. The
+// one honest exception is a daemon that dies between that commit and GitHub's answer: the mark is
+// gone, the merge was never submitted as a jump, and the controller marks the issue again, which
+// the state shows it needing by showing the issue unmarked.
+func (m *readyMergeMarks) Jump(ctx context.Context, branch string) (bool, error) {
+	r := m.runner
+	var mark *record.MergeJump
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		mark, err = r.records.MergeJumpOf(ctx, tx, m.row.Issue)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read the jump mark of %s before outbox row %d submits its merge: %w", m.row.Issue, m.row.ID, err)
+	}
+	if mark == nil {
+		return false, nil
+	}
+	entries, total, unknown := m.queueBefore(ctx, branch)
+	jumped := record.MergeJumpRecord{Repository: m.repo.String(), Issue: m.row.Issue, Number: m.payload.Number, Head: m.payload.Head,
+		At: r.now().UTC(), Reason: mark.Reason, Entries: entries, EntriesTotal: total, EntriesUnknown: unknown}
+	told, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpedPost(jumped, *mark), jumped.At)
+	if err != nil {
+		return false, err
+	}
+	// The spend is fenced on the row's lease as every other write this row makes is: the worker
+	// whose replacement takes is the worker that sends the enqueue. The two ways it can write
+	// nothing are different answers. A lease gone to another worker ends this run with a wait and
+	// sends no mutation at all, as resubmitAfterConflict does with the same fence: that worker
+	// makes this submission, and a second enqueue of the same head from this run would ask GitHub
+	// for a merge nobody is waiting on an answer to. ClearMergeJump answering no row is the mark
+	// spent or taken off between the read above and this transaction, which leaves an unmarked
+	// issue: the submission goes out as it does for every issue that carries no mark.
+	held, spent, err := m.markWrite(ctx, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		cleared, err := r.records.ClearMergeJump(ctx, tx, m.row.Issue)
+		if err != nil || !cleared {
+			return false, err
+		}
+		if err := r.records.PutMergeJumpRecord(ctx, tx, r.dispatchProject, jumped); err != nil {
+			return false, err
+		}
+		if err := r.records.Enqueue(ctx, tx, told); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("spend the jump mark of %s as outbox row %d submits its merge: %w", m.row.Issue, m.row.ID, err)
+	case !held:
+		return false, wait.Errorf("outbox row %d no longer holds its lease, so it submits nothing: the worker that holds it makes this merge", m.row.ID)
+	case !spent:
+		return false, nil
+	}
+	m.jumped = jumped
+	r.log.Info("outbox sends READY's merge to the head of the merge queue on the controller's jump mark, which this run spends",
+		"row", m.row.ID, "issue", m.row.Issue, "repo", m.repo.String(), "number", jumped.Number, "head", jumped.Head,
+		"branch", branch, "reason", jumped.Reason, "session", mark.Session, "queue", jumped.EntriesTotal, "queueUnknown", jumped.EntriesUnknown)
+	return true, nil
+}
+
+// JumpRefused is GitHub's answer to a jump it would not take, told to this row before Submit
+// sends the plain submission in the same attempt. The mark is already spent, so the account of
+// the jump has to carry the refusal or a jump GitHub never made would read as one that went ahead
+// of the queue: the record is updated in place, keeping the entries the jump would have displaced
+// (requirement R4), the issue is told, and the controller's own notice carries the issue, the
+// pull request, the head and GitHub's answer.
+//
+// Every string of GitHub's here is cut once (cutMarkLine), as ghautomerge cuts the strings it
+// renders: a refusal GitHub writes at any length would otherwise reach a Dispatch block whole and
+// could have the block refused, which would tell the architect of a refused message instead of
+// telling anyone of the refused jump. A write the row's lease no longer carries writes nothing
+// and fails nothing: Submit sends the plain submission either way, and the worker that holds the
+// row reads the same submission itself.
+func (m *readyMergeMarks) JumpRefused(ctx context.Context, answer string) error {
+	r := m.runner
+	now := r.now().UTC()
+	refused := m.jumped
+	refused.Refused, refused.Refusal = true, cutMarkLine(answer)
+	post, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpRefusedPost(refused), now)
+	if err != nil {
+		return err
+	}
+	notice, err := record.NewOutboxRow(m.row.Issue, record.ControllerNotice{Kind: record.MergeJumpRefusedNotice,
+		Reason: readyMergeJumpRefusedReason(refused)}, now)
+	if err != nil {
+		return err
+	}
+	_, wrote, err := m.markWrite(ctx, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		if err := r.records.PutMergeJumpRecord(ctx, tx, r.dispatchProject, refused); err != nil {
+			return false, err
+		}
+		for _, enqueue := range []record.OutboxRow{post, notice} {
+			if err := r.records.Enqueue(ctx, tx, enqueue); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("record GitHub's refusal of the jump outbox row %d made: %w", m.row.ID, err)
+	}
+	if wrote {
+		m.jumped = refused
+		r.log.Warn("outbox asked GitHub to send READY's merge to the head of the merge queue and GitHub refused; the plain submission follows in this attempt",
+			"row", m.row.ID, "issue", m.row.Issue, "number", refused.Number, "head", refused.Head, "refusal", refused.Refusal)
+	}
+	return nil
+}
+
+// queueBefore is the merge queue of branch as it stood before this jump, as the record keeps it
+// (record.MergeQueueEntryRecord), GitHub's own count of the whole queue, and whether the read
+// failed. A read GitHub refused is no failure of the jump (requirement R3): the record says its
+// entries are unknown, every other field of it stands, and the enqueue is sent. The queue is
+// read for the account of what the jump displaced and for nothing else, so a jump the controller
+// asked for is never lost to a read that answered nothing.
+//
+// The read runs on a budget of its own (jumpQueueRead) off the row's, so a queue GitHub is slow
+// to answer cannot spend what the mutation and the spend transaction after it need.
+func (m *readyMergeMarks) queueBefore(ctx context.Context, branch string) ([]record.MergeQueueEntryRecord, int, bool) {
+	read, cancel := context.WithTimeout(ctx, jumpQueueRead)
+	defer cancel()
+	entries, total, err := ghautomerge.QueueEntries(read, m.github, m.repo, branch)
+	if err != nil {
+		m.runner.log.Warn("outbox could not read the merge queue its READY merge is about to jump; the jump is made and its record says the queue is unknown",
+			"row", m.row.ID, "issue", m.row.Issue, "number", m.payload.Number, "branch", branch, "error", err)
+		return nil, 0, true
+	}
+	recorded := make([]record.MergeQueueEntryRecord, 0, len(entries))
+	for _, entry := range entries {
+		recorded = append(recorded, record.MergeQueueEntryRecord{Number: entry.Number, Position: entry.Position,
+			Jump: entry.Jump, State: entry.State, EnqueuedAt: entry.EnqueuedAt.UTC()})
+	}
+	return recorded, total, false
+}
+
+// markWrite runs write in one transaction fenced on the row's lease and answers two things: that
+// the lease was still this run's, and that write wrote. The row's payload is replaced first under
+// its lease token, exactly as resubmitAfterConflict fences its own write (replacePayload), and a
+// replacement that did not take leaves the transaction with nothing else written at all. The
+// payload written is the run's own copy, so a mark write never loses what another decision of
+// this run put on it.
+//
+// The two answers are apart because the callers read them differently. A lease gone to another
+// worker means this run must do nothing more at all, since that worker is making the submission;
+// write answering false means the mark it went to spend was not there, which leaves an ordinary
+// unmarked submission.
+//
+// The transaction carries the commit hooks (intake.WithCommitHooks), so the lane of every row
+// this enqueues is woken as the write commits, which is what makes a message posted beside a
+// spent mark reach Dispatch without waiting for the next sweep.
+func (m *readyMergeMarks) markWrite(ctx context.Context, write func(context.Context, pgx.Tx) (bool, error)) (bool, bool, error) {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	var held, wrote bool
+	if err := pgx.BeginFunc(scoped, m.runner.pool, func(tx pgx.Tx) error {
+		replaced, err := m.runner.records.ReplaceOutboxPayload(scoped, tx, m.row.ID, m.row.LeaseToken, *m.payload)
+		if err != nil || !replaced {
+			return err
+		}
+		held = true
+		wrote, err = write(scoped, tx)
+		return err
+	}); err != nil {
+		return false, false, err
+	}
+	committed()
+	return held, wrote, nil
+}
+
 // readFailures fills in what the log of each of a removal's failing jobs says failed
 // (ghautomerge.ReadFailingTests), and hands back, with the one failure of that reading the row
 // acts on — the lane cancelled under it — the budget everything the row does after those reads
@@ -571,7 +1024,17 @@ func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload
 	if queued.IsZero() {
 		queued = row.CreatedAt
 	}
-	waited := now.Sub(queued)
+	// The wait is the time since that queueing less every stretch a merge hold held the
+	// submission back: the stretches already closed (record.ReadyMerge.Held) and the one still
+	// open, where the row is held now (HeldSince). A hold is Legion's own decision not to submit
+	// the merge, so none of it is GitHub taking long over one, and the notice says exactly that
+	// (readyMergeWaiting). The open stretch is counted here rather than closed, because the row
+	// is still inside it: readyMerge closes it on the first run that is not held, and a run that
+	// asks this while held measures the same wait either way.
+	waited := now.Sub(queued) - payload.Held
+	if !payload.HeldSince.IsZero() {
+		waited -= now.Sub(payload.HeldSince)
+	}
 	warn := !payload.Warned && waited > mergeWaitWarn && waitingOnGitHub(cause)
 	if !arm && !warn {
 		return nil
@@ -667,6 +1130,124 @@ func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.Conf
 	}
 	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, so nothing else would ever submit this merge again. %s This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
 		payload.Number, payload.Head, conflict.Removal.At.UTC().Format(time.RFC3339), conflict.Removal.Reason, conflict.MergeState, checks)}
+}
+
+// readyMergeHeldPost is the message posted on the issue the first time one of the project's merge
+// holds keeps its merge back (readyMergeMarks.tellHeld): the pull request and READY's head, the
+// hold's path patterns, the reason the controller set it for, the session that set it, and when
+// it ends. It is written on the issue because the issue is where the question "why has this not
+// merged" is asked, and it names the owner and the end time so that the answer needs no second
+// reader: the hold is nobody's to undo on the issue, and the merge goes out when it ends.
+//
+// The hold's own words are the controller's and reach a Dispatch block from an outbox payload, so
+// each of them is cut once here (cutMarkLine, markLineUnits), as GitHub's are everywhere else in
+// the daemon's merge messages.
+func readyMergeHeldPost(payload record.ReadyMerge, hold record.MergeHold) record.MessagePost {
+	return record.MessagePost{Body: fmt.Sprintf("Legion has not submitted the merge of pull request #%d at READY's head %s: one of the project's merge holds matches a file this pull request changes. The hold covers %s, %s set it for %q, and it ends at %s. Nothing is anyone's to do: the issue stays in awaiting_merge, and the daemon submits the merge once the hold ends.",
+		payload.Number, payload.Head, heldPathsNamed(hold), markSession(hold.Session), cutMarkLine(hold.Reason), hold.EndsAt.UTC().Format(time.RFC3339))}
+}
+
+// readyMergeHeldReason is the merge-held notice's reason, the architect's one telling that a merge
+// hold holds this issue's merge (readyMergeMarks.tellHeld): the same facts the issue's own message
+// carries, in one sentence, since a notice is read in a list of notices. The architect is told
+// because the issue stands still and its architect is the one who would otherwise look for a
+// reason on GitHub; the controller set the hold and needs no telling.
+func readyMergeHeldReason(payload record.ReadyMerge, hold record.MergeHold) string {
+	return fmt.Sprintf("Legion has not submitted the merge of pull request #%d at READY's head %s: a merge hold of this project covers %s until %s (%s set it for %q). The issue stays in awaiting_merge and the merge is submitted when the hold ends.",
+		payload.Number, payload.Head, heldPathsNamed(hold), hold.EndsAt.UTC().Format(time.RFC3339), markSession(hold.Session), cutMarkLine(hold.Reason))
+}
+
+// heldPathsNamed is a hold's path patterns as a message names them, each cut once and separated by
+// ", ", and a sentence of its own for a hold with no pattern at all, which matches every change
+// the project merges.
+func heldPathsNamed(hold record.MergeHold) string {
+	if len(hold.Paths) == 0 {
+		return "every path"
+	}
+	named := make([]string, 0, len(hold.Paths))
+	for _, path := range hold.Paths {
+		named = append(named, cutMarkLine(path))
+	}
+	return strings.Join(named, ", ")
+}
+
+// markSession is the controller session that set a mark as a message names it, and "the
+// controller" for a mark that records none: a hold list or a jump mark written by a deployment
+// before the session was recorded, or by a route that names none. Both marks carry the session
+// the same way, so both are named by this one rule.
+func markSession(session string) string {
+	if session == "" {
+		return "the controller"
+	}
+	return cutMarkLine(session)
+}
+
+// readyMergeJumpedPost is the message posted on the issue when the daemon spends its jump mark
+// (readyMergeMarks.Jump): the pull request and READY's head sent to the head of the merge queue,
+// the controller's reason, the session that marked the issue, and what the queue held at that
+// moment, which is whose merge the jump went ahead of. It is written on the issue because the
+// jump is a decision about this issue's merge that the tree reads here, and it names the queue as
+// it stood because that is the one moment the account can be taken: once the enqueue lands, the
+// queue it displaced is gone.
+func readyMergeJumpedPost(jumped record.MergeJumpRecord, mark record.MergeJump) record.MessagePost {
+	return record.MessagePost{Body: fmt.Sprintf("Legion sent the merge of pull request #%d at READY's head %s to the head of %s's merge queue on the controller's jump mark: %s marked the issue for %q. %s The mark is spent: the next merge of this issue is submitted as any other.",
+		jumped.Number, jumped.Head, jumped.Repository, markSession(mark.Session), cutMarkLine(jumped.Reason), jumpedQueueNamed(jumped))}
+}
+
+// readyMergeJumpRefusedPost is the message posted on the issue when GitHub refused the jump
+// (readyMergeMarks.JumpRefused): GitHub's own answer, and what follows it. The mark is spent
+// either way, and the plain submission goes out in the same attempt, so the message says both: a
+// reader of the issue must not take a refused jump for a merge that went ahead of the queue, nor
+// for a merge that was never submitted.
+func readyMergeJumpRefusedPost(refused record.MergeJumpRecord) record.MessagePost {
+	return record.MessagePost{Body: fmt.Sprintf("GitHub refused to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue: %s. Legion submitted the merge as it does without a mark, in the same attempt, so this merge waits in the queue behind what was already in it. The jump mark is spent: the controller marks the issue again if the merge is still to jump.",
+		refused.Number, refused.Head, refused.Repository, refused.Refusal)}
+}
+
+// readyMergeJumpRefusedReason is the merge-jump-refused controller notice's reason: the issue, its
+// pull request, READY's head and GitHub's own answer (requirement R4). It is the controller's
+// notice and no architect's, since the jump was the controller's instruction and the merge itself
+// is on its way; the controller is the one who decides whether to mark the issue again.
+func readyMergeJumpRefusedReason(refused record.MergeJumpRecord) string {
+	return fmt.Sprintf("GitHub refused the jump mark Legion spent on %s: the merge of pull request #%d of %s at READY's head %s was not sent to the head of the merge queue. GitHub answered: %s. Legion submitted the merge without the jump in the same attempt, and the mark is spent.",
+		refused.Issue, refused.Number, refused.Repository, refused.Head, refused.Refusal)
+}
+
+// jumpedQueueNamed is the queue a jump went ahead of as a message names it: the pull requests that
+// stood in it, oldest entry first, up to what the read carried, with GitHub's own count where the
+// queue was longer than that. A queue nobody could read says so rather than reading as an empty
+// one (record.MergeJumpRecord.EntriesUnknown), and an empty queue says the jump displaced nothing,
+// which is the usual case and worth stating.
+func jumpedQueueNamed(jumped record.MergeJumpRecord) string {
+	switch {
+	case jumped.EntriesUnknown:
+		return "GitHub did not answer what the queue held, so this merge's place in it is unrecorded."
+	case len(jumped.Entries) == 0:
+		return "The queue held nothing, so the jump displaced no merge."
+	}
+	numbers := make([]string, 0, len(jumped.Entries))
+	for _, entry := range jumped.Entries {
+		numbers = append(numbers, fmt.Sprintf("#%d", entry.Number))
+	}
+	named := fmt.Sprintf("The queue held %s", strings.Join(numbers, ", "))
+	if jumped.EntriesTotal > len(jumped.Entries) {
+		named = fmt.Sprintf("%s and %d more", named, jumped.EntriesTotal-len(jumped.Entries))
+	}
+	return named + ", which this merge now goes ahead of."
+}
+
+// cutMarkLine is one string of a mark's own held to markLineUnits runes, with "…" where it was
+// cut: GitHub's answer to a refused jump, a hold's reason, each of a hold's path patterns and the
+// session that set it. It is ghautomerge's cutLine, by the same rule and for the same reason —
+// every string this daemon did not write itself is cut once, at the one place it is rendered — and
+// it is written here rather than borrowed because that one is unexported, which is what keeps
+// ghautomerge free of every caller's own marks.
+func cutMarkLine(line string) string {
+	runes := []rune(line)
+	if len(runes) <= markLineUnits {
+		return line
+	}
+	return string(runes[:markLineUnits]) + "…"
 }
 
 // graphQL is the GitHub client a merge row calls with, carrying the implement App's token, the
