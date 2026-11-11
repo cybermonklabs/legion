@@ -59,6 +59,25 @@ const (
 	// start of the sweep cannot know. One second bounds how long such a tool is unprotected
 	// against one pass over /proc, which costs a read of six entries per process of the pod.
 	volumeUsedPathsMaxAge = time.Second
+	// goCacheMtimeSlack is how much further back than the minimum age an entry of the Go build
+	// cache is judged, and that rule's entries alone. Go moves a cache entry's modification
+	// time on use at most once an hour — `mtimeInterval = 1 * time.Hour`, with markUsed's `if
+	// now := c.now(); now.Sub(info.ModTime()) >= mtimeInterval { os.Chtimes(file, now, now) }`
+	// (cmd/go/internal/cache/cache.go:348 and :352-372, read in this pod's own go1.27.3) — so
+	// an entry used a minute ago can read 59 minutes old. The used-path guard cannot close that
+	// gap: on a cache hit the build writes the entry's path into its importcfg and opens it
+	// only when the compile or the link that needs it runs, so for the length of a build those
+	// entries are in use with no handle a /proc read can see, and the sweep runs at the high
+	// mark, which is when the roles are building. Go's own trim makes the same allowance
+	// against the same imprecision: "We subtract an additional mtimeInterval to account for the
+	// imprecision of our “last used” mtimes", `cutoff := now.Add(-trimLimit - mtimeInterval)`
+	// (cache.go:427-429).
+	//
+	// No other rule has it, because only Go writes its mtimes this way. A `go-build*` tree of
+	// $TMPDIR is not of this class either: it is Go's working directory for one build, written
+	// as that build runs, and nothing ever marks it used — its time is the time it was last
+	// written.
+	goCacheMtimeSlack = time.Hour
 	// volumeQuietIntervals is how many intervals pass after a sweep that freed less than
 	// volumeSweepMinFreedPoints before another sweep may start. A sweep that freed nothing has
 	// no eligible entry left or is losing to the roles writing, and repeating it every interval
@@ -1071,7 +1090,15 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 			}
 			return true
 		}
-		if at.After(cutoff) {
+		// The Go build cache's entries are judged an hour further back than the rest, because
+		// Go moves their mtimes on use at most once an hour (goCacheMtimeSlack); every other
+		// rule is judged by the minimum age exactly, since nothing else on the volume writes
+		// its times that way.
+		eligible := cutoff
+		if root.Entry == GoCacheEntries {
+			eligible = cutoff.Add(-goCacheMtimeSlack)
+		}
+		if at.After(eligible) {
 			return true // inside the minimum age: something wrote in it too recently
 		}
 		entries = append(entries, sweepEntry{path: path, rule: root.Entry, root: root.Path, at: at, dir: dir})
@@ -1154,6 +1181,15 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 // cache. A directory is asked with newerThan, which stops at the first file newer than the
 // recorded time instead of walking the tree again, and a single file with the lstat it needs
 // anyway.
+//
+// It compares against entry.at, the time the listing read, and not against any cutoff, which is
+// why Go's hour belongs in the listing and not here: a modification time only moves forward, so
+// any movement at all since the listing already makes this skip, and subtracting the hour from
+// the same reference a second time would call every entry moved and delete nothing of the Go
+// cache ever. The listing's own allowance is what makes this comparison sound for that cache:
+// with the shifted cutoff (goCacheMtimeSlack) every Go cache entry listed already reads more
+// than an hour old, so Go's markUsed bumps its mtime on the next use rather than leaving it
+// where it was, and a use between the listing and this moment is therefore visible here.
 func (t *trimmer) moved(entry sweepEntry) (bool, error) {
 	if entry.dir {
 		return newerThan(entry.path, entry.at)

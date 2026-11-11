@@ -1223,6 +1223,91 @@ func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
 	f.assertProtected()
 }
 
+// An entry of the Go build cache is listed only once it is older than the minimum age and Go's
+// mtime hour together (goCacheMtimeSlack): Go moves a cache entry's modification time on use at
+// most once an hour, so one that reads thirty minutes old may have been used a minute ago, and
+// a build that holds it through its importcfg has no handle a /proc read can see. A thirty
+// minute old entry therefore survives a sweep whose minimum age is fifteen.
+//
+// Its control is an entry of the same cache, built the same way under the same shard, that is
+// older than the minimum age and that hour together: the same sweep deletes it. Without the
+// control the case would pass on a sweep that deleted nothing at all, and both counts are
+// asserted non-zero before either behaviour is read.
+func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testing.T) {
+	const minAge = 15 * time.Minute
+	f := newTrimFixture(t, 4)
+	cache := f.roots[1]
+	if cache.Entry != GoCacheEntries {
+		t.Fatalf("the second reclaimable root is %+v, want the Go build cache", cache)
+	}
+	// Both are the directory form of a cache entry inside a shard directory, as the fixture's
+	// own `-d` entries are (buildRoots): one rule reaches them both, and only their times
+	// differ. addTree ages a tree by the fixture's permutation, so each is retimed by hand to
+	// the side of the guard the case puts it on, every path of it together — the entry's age is
+	// the newest time anywhere in it.
+	shard := filepath.Join(cache.Path, "7f")
+	mkdirFixture(t, shard)
+	retime := func(entry *fixtureEntry, at time.Time) {
+		t.Helper()
+		for _, path := range []string{filepath.Join(entry.path, "b1", "out"), filepath.Join(entry.path, "b1"), entry.path} {
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entry.at = at
+	}
+	retime(f.addTree(filepath.Join(shard, strings.Repeat("c", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-30*time.Minute))
+	retime(f.addTree(filepath.Join(shard, strings.Repeat("d", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-minAge-goCacheMtimeSlack-time.Minute))
+
+	// What each half of the case rests on, counted before the sweep runs: the Go cache entries
+	// inside Go's hour, which must survive, and those past it, which must go.
+	var inside, past []*fixtureEntry
+	for _, entry := range f.entries {
+		if entry.rule != GoCacheEntries {
+			continue
+		}
+		switch age := f.clock.at.Sub(entry.at); {
+		case age > minAge && age < minAge+goCacheMtimeSlack:
+			inside = append(inside, entry)
+		case age > minAge+goCacheMtimeSlack:
+			past = append(past, entry)
+		}
+	}
+	if len(inside) == 0 || len(past) == 0 {
+		t.Fatalf("the fixture holds %d Go cache entries inside Go's hour and %d past it, want both: the case would read a behaviour nothing staged", len(inside), len(past))
+	}
+	for _, entry := range slices.Concat(inside, past) {
+		if !f.exists(entry.path) {
+			t.Fatalf("%s is not on the volume before the sweep, so the case shows nothing about it", entry.path)
+		}
+	}
+
+	set := trimSettings()
+	set.MinAgeMinutes = int(minAge / time.Minute)
+	f.useVolume(steady(90))
+	f.setSettings(set)
+	tr := f.trimmer()
+
+	out := tr.sweep(context.Background(), *set, steady(90)(0))
+
+	if out.deletions == 0 {
+		t.Fatalf("the sweep deleted nothing at all, so neither half of the case was reached: %s", out.reason)
+	}
+	for _, entry := range inside {
+		if !f.exists(entry.path) {
+			t.Errorf("the sweep deleted the Go cache entry %s, which read %s old under a %s minimum age: Go moves a cache entry's mtime on use at most once an hour, so a build may have been reading it a minute ago",
+				entry.path, f.clock.at.Sub(entry.at).Round(time.Minute), minAge)
+		}
+	}
+	for _, entry := range past {
+		if f.exists(entry.path) {
+			t.Errorf("the control %s is still there, and it read %s old, past the minimum age and Go's hour together: the slack is one hour and not a reprieve",
+				entry.path, f.clock.at.Sub(entry.at).Round(time.Minute))
+		}
+	}
+	f.assertProtected()
+}
+
 // A root that is absent and a root that is not a directory are skipped and reported, and the
 // other roots are swept: a pod whose roles have not started yet has no bun cache, and a regular
 // file where a cache directory belongs is what an interrupted `flock` leaves (installBlock,

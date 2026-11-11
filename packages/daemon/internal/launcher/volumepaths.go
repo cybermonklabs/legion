@@ -66,10 +66,12 @@ var ReclaimableRoots = []ReclaimableRoot{
 	// for every `go build` and every `go test` because the pod sets no GOTMPDIR.
 	{Path: VolumeRoot + "/scratch/tmp", Entry: GoBuildTrees},
 	// GOCACHE, swept the way Go's own trim sweeps it: "Remove only cache entries (xxxx-a and
-	// xxxx-d)" inside a shard directory, each judged by its own modification time, with a
-	// RemoveAll for the directory form (trimSubdir, cmd/go/internal/cache/cache.go). The two
-	// kinds are named from an action id and an output id, each sharding on its own first byte,
-	// so there is no pair to delete together: measured in this pod on 2026-11-10, `find
+	// xxxx-d)" inside a shard directory, each judged by its own modification time taken an hour
+	// further back than the minimum age, as Go's own trim subtracts an mtimeInterval from its
+	// cutoff for the imprecision of those times, and with a RemoveAll for the directory form
+	// (trimSubdir and trim, cmd/go/internal/cache/cache.go; goCacheMtimeSlack, volumetrim.go).
+	// The two kinds are named from an action id and an output id, each sharding on its own first
+	// byte, so there is no pair to delete together: measured in this pod on 2026-11-10, `find
 	// /legion/go/build -mindepth 2 -maxdepth 2 -type d` found no directory-form entry at all,
 	// against 11,331 names ending `-a` and 3,634 ending `-d`, with no name in both sets. The
 	// cache's own `trim.txt` and `README` sit in the cache root rather than in a shard, so a
