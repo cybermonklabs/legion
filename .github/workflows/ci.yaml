@@ -4513,14 +4513,16 @@ jobs:
     runs-on: ubuntu-24.04
     # Every go test call of this job and of the race lane is sized from one pair of
     # workflow_dispatch runs at this head: attempt 1, run 42930887149, and attempt 2, run
-    # 42938867893, both green on every job. No single attempt was the slower one for every job,
-    # so each job's limits are sized from the attempt in which that job itself was slower:
-    # envoy-go from attempt 1 (694 s, job 130229106742, against 479 s on attempt 2),
-    # envoy-go-race from attempt 1 (525 s, job 130229106433, against 512 s), envoy-go-race-api
-    # from attempt 2 (920 s, job 130255672183, against 916 s) and envoy-go-race-docs from
-    # attempt 2 (1703 s, job 130255672370, against 1173 s). Every figure below is this job's,
-    # read from attempt 1's own `go test -json` artifact (dispatch://INFRA-1075, check
-    # 6224bb0e).
+    # 42938867893, both green on every job. R6 sizes a limit from "the call's slowest package,
+    # on the slower attempt", and the subject of that clause is the call, so each limit takes
+    # the LARGER of the pair's two readings for its own call, which can only raise a limit and
+    # never lower one; each figure below names the attempt it came from, which is why two
+    # limits may cite different runs. The jobs themselves measured: envoy-go 694 s on attempt 1
+    # (job 130229106742) against 479 s on attempt 2; envoy-go-race 525 s on attempt 1 (job
+    # 130229106433) against 512 s; envoy-go-race-api 920 s on attempt 2 (job 130255672183)
+    # against 916 s; envoy-go-race-docs 1703 s on attempt 2 (job 130255672370) against 1173 s,
+    # and each job's timeout-minutes is that larger time plus its largest -timeout plus 6
+    # (dispatch://INFRA-1075, check 6224bb0e).
     #
     # Each go test call's -timeout meets two conditions. The first is R6's: the limit is the
     # smallest whole minute at which the call's slowest package takes at most half of it, so a

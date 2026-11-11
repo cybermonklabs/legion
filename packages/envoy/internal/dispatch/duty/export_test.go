@@ -1,6 +1,9 @@
 package duty
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // duty's tests live in package duty_test, because internal/dispatch/store imports duty - it gives
 // the migration lock's key back through FreeSessionLock - and those tests open a database through
@@ -27,6 +30,13 @@ var PeriodBoundary = periodBoundary
 
 // JitterN points at the draw every jittered wait makes, so a test can fix it and put it back.
 var JitterN = &jitterN
+
+// RunLeasedUnderGate is RunLeased with exclusive in place of Exclusive and no lease pool, for a
+// test of the schedule alone: its ticks and the period each falls in, with no statement of a real
+// lease between them (ExclusiveFunc).
+func RunLeasedUnderGate(ctx context.Context, name string, interval time.Duration, first FirstTick, exclusive ExclusiveFunc, pass func(context.Context)) {
+	runLeased(ctx, nil, name, interval, first, exclusive, pass)
+}
 
 // Run is WokenLoop.run, the loop with an Exclusive of the test's own in place of the real one.
 func (l WokenLoop) Run(ctx context.Context, exclusive ExclusiveFunc) { l.run(ctx, exclusive) }

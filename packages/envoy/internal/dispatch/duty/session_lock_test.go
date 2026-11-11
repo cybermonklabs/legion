@@ -51,14 +51,14 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("lock %d is still held by another session 5s after FreeSessionLock returned", key)
+			t.Fatalf("lock %d is still held by another session %v after FreeSessionLock returned", key, eventWait)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-// requireConnections waits up to 5s for the pool to hold total connections, idle of them idle: a
-// connection released closed is destroyed by the pool on a goroutine of its own.
+// requireConnections waits up to eventWait for the pool to hold total connections, idle of them
+// idle: a connection released closed is destroyed by the pool on a goroutine of its own.
 func requireConnections(t *testing.T, leases *pgxpool.Pool, total, idle int32, why string) {
 	t.Helper()
 	deadline := time.Now().Add(eventWait)
@@ -105,6 +105,12 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 
 // An unlock that does not answer within leaseCallTimeout fails at the bound, and the connection is
 // closed: a half-open connection would otherwise hold the caller until TCP gave it up.
+//
+// What says it failed at its own bound is the error: the statement below answers after a minute,
+// and an unlock that waited for that answer returns no error at all. What the elapsed time adds
+// is that the bound was not cut short - it is read from below, against duty.LeaseCallTimeout
+// itself, so a loaded runner that returns the call late cannot fail the row. It carried a ceiling
+// of that bound plus ten seconds until this round, which measured the runner (dispatch://INFRA-1075).
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
@@ -116,8 +122,8 @@ func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("FreeSessionLock of an unlock that never answers answered %v, want its deadline", err)
 	}
-	if elapsed < duty.LeaseCallTimeout || elapsed > duty.LeaseCallTimeout+10*time.Second {
-		t.Fatalf("FreeSessionLock returned after %v, want about its %v bound", elapsed, duty.LeaseCallTimeout)
+	if elapsed < duty.LeaseCallTimeout {
+		t.Fatalf("FreeSessionLock returned after %v, before its %v bound", elapsed, duty.LeaseCallTimeout)
 	}
 	requireConnections(t, leases, 0, 0, "a connection whose unlock reached its bound is closed")
 	requireLockFree(t, database.Pool, 7003)

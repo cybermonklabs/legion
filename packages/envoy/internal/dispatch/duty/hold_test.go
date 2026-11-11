@@ -54,10 +54,14 @@ func waitLost(t *testing.T, hold *duty.Hold, within time.Duration) {
 
 // Two processes, each with a pool of its own: the second cannot take a hold the first holds live,
 // and the first takes its own hold again.
+//
+// The TTL is a minute because this row needs the first hold live while the second tries, and
+// nothing here waits for it to run out: a runner that descheduled the test for longer than a
+// short TTL, with the renewals behind it, would read a lapse as a take-over.
 func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: time.Minute, Renew: 500 * time.Millisecond, Margin: time.Second}
 	first := uuid.New()
 	mustTakeHold(t, database.Pool, first, opts)
 
@@ -75,11 +79,40 @@ func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	mustTakeHold(t, second.Pool, first, opts)
 }
 
+// waitForLapse waits for holdName's hold to have lapsed on the database's clock - the clock the
+// lapse is on, and the one a take-over is judged by (takeHold) - and fails the test when it has
+// not within eventWait. A standby sleeps the remainder Expiry answered and tries then; this
+// reads that the remainder has truly run out, so a host clock running a shade behind the
+// database's cannot make the try that follows an early one.
+func waitForLapse(t *testing.T, db duty.Holds) {
+	t.Helper()
+	for deadline := time.Now().Add(eventWait); ; time.Sleep(20 * time.Millisecond) {
+		remaining, held, err := duty.Expiry(context.Background(), db, holdName)
+		if err != nil || !held {
+			t.Fatalf("read the hold's remainder: held %v, error %v", held, err)
+		}
+		if remaining <= 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the hold still has %s to run %v after the remainder it reported ran out", remaining, eventWait)
+		}
+	}
+}
+
 // A holder that stops renewing, as a killed process does, lets the hold lapse on the database's
-// clock, and a standby that arms one timer to the lapse through Expiry takes it within a second of
-// it, measured on that clock: the take-over writes now() + TTL, so its own expiry minus the TTL is
-// the moment it ran.
-func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
+// clock, and a standby that arms one timer to the lapse through Expiry takes it on its first try
+// after it: the take-over writes now() + TTL, so its own expiry minus the TTL is the moment it
+// ran, and that moment is at or after the lapse.
+//
+// The take-over is read from below, against the lapse the dying holder's row named. The row
+// allowed a second after the lapse as well until this round, which measured the poll loop it
+// used to make the take with: a runner that descheduled the test between two tries moved the
+// take without the hold moving at all (dispatch://INFRA-1075). What the standby owes is a take
+// on the first try once the row has lapsed, and that is what the one try below reads - the try
+// before the lapse is refused, and the try after it must take the name however late the runner
+// lets it run.
+func TestHoldTakesOverOnTheFirstTryAfterTheLapse(t *testing.T) {
 	database := storetest.Open(t)
 	dying := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: 2 * time.Second, Renew: 300 * time.Millisecond, Margin: time.Second}
@@ -102,14 +135,14 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 		t.Fatalf("Expiry before the lapse = %s, held %v, error %v; want a positive remainder of a held name", remaining, held, err)
 	}
 	time.Sleep(remaining)
-	var taken *duty.Hold
-	for give := time.Now().Add(3 * time.Second); taken == nil; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(give) {
-			t.Fatal("the standby did not take the hold within 3 s of its expiry")
-		}
-		if taken, err = duty.TryHold(ctx, database.Pool, holdName, standby, opts); err != nil {
-			t.Fatalf("the standby's try: %v", err)
-		}
+	waitForLapse(t, database.Pool)
+
+	taken, err := duty.TryHold(ctx, database.Pool, holdName, standby, opts)
+	if err != nil {
+		t.Fatalf("the standby's try after the lapse: %v", err)
+	}
+	if taken == nil {
+		t.Fatal("the standby's first try after the lapse was refused a hold nobody renews")
 	}
 	t.Cleanup(func() { _ = taken.Release(context.Background()) })
 
@@ -117,9 +150,8 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 	if holder != standby {
 		t.Fatalf("the row names %s, want the standby %s", holder, standby)
 	}
-	after := expiresAt.Add(-opts.TTL).Sub(lapse)
-	if after < 0 || after > time.Second {
-		t.Fatalf("the standby took the hold %s after the lapse on the database's clock, want within [0, 1s]", after)
+	if after := expiresAt.Add(-opts.TTL).Sub(lapse); after < 0 {
+		t.Fatalf("the standby took the hold %s before the lapse on the database's clock", -after)
 	}
 	select {
 	case <-first.Lost():
@@ -131,6 +163,14 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 // A holder whose renewals cannot land - its row locked by another transaction for longer than a
 // renewal waits - reports the loss before the row lapses on the database's clock: the loss
 // deadline is Margin ahead of the expiry the last confirmed renewal wrote.
+//
+// The moment of the loss is the hold's own (Deadline, which stands at the loss once Lost has
+// closed), never the moment this goroutine was scheduled to see Lost closed: a runner that
+// descheduled the test between the two would otherwise read its own delay as the hold's. What
+// the comparison allows is the time between that moment and the read below, measured on this
+// process's clock, as TestHoldExpiryMatchesTheDatabaseClock allows the time its two statements
+// took: load can only lengthen it, so a loaded runner cannot fail the row, while a loss reported
+// after the row's expiry still falls outside it.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -147,24 +187,26 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if _, err := locker.Exec(ctx, `select 1 from duty_holds where name = $1 for update`, holdName); err != nil {
 		t.Fatalf("lock the hold's row: %v", err)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, locker, 1, 5*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, locker, 1, eventWait); waiting < 1 {
 		t.Fatal("no renewal queued behind the locked row")
 	}
 
-	waitLost(t, hold, 2*opts.TTL)
+	waitLost(t, hold, eventWait)
+	lost := hold.Deadline()
 	var (
-		lapsed bool
-		named  uuid.UUID
-		ahead  int64
+		named uuid.UUID
+		ahead int64
 	)
 	if err := locker.QueryRow(ctx, `
-		select clock_timestamp() >= expires_at, holder, (extract(epoch from expires_at - clock_timestamp()) * 1000000)::bigint
-		from duty_holds where name = $1`, holdName).Scan(&lapsed, &named, &ahead); err != nil {
+		select holder, (extract(epoch from expires_at - clock_timestamp()) * 1000000)::bigint
+		from duty_holds where name = $1`, holdName).Scan(&named, &ahead); err != nil {
 		t.Fatalf("read the row once Lost closed: %v", err)
 	}
+	since := time.Since(lost)
 	margin := time.Duration(ahead) * time.Microsecond
-	if lapsed {
-		t.Fatalf("Lost closed %s after the row lapsed on the database's clock", -margin)
+	if margin+since <= 0 {
+		t.Fatalf("the row had lapsed %s before the hold reported its loss on the database's clock, read %s after that loss",
+			-(margin + since), since)
 	}
 	if named != holder {
 		t.Fatalf("the row names %s, want the holder %s: the loss must come from the deadline, not a take-over", named, holder)
@@ -172,7 +214,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if !time.Now().After(hold.Deadline()) {
 		t.Errorf("Lost is closed but the deadline %s is still ahead", time.Until(hold.Deadline()))
 	}
-	t.Logf("Lost closed %s before the row's expiry on the database's clock", margin)
+	t.Logf("the hold reported its loss %s before the row's expiry on the database's clock, read %s after it", margin+since, since)
 }
 
 // Release frees the name at once, so a standby takes it on its next try, and wakes every session
@@ -233,9 +275,13 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 		holdName, other); err != nil {
 		t.Fatalf("take the row over for another holder: %v", err)
 	}
+	// The hold pulls its deadline back to the moment it loses the name (lose), so where the loss
+	// came from is read from that record rather than from the clock this goroutine reads once it
+	// is scheduled to see Lost closed: a runner that descheduled the test past the deadline would
+	// otherwise fail a row whose loss landed seconds before it.
 	deadline := hold.Deadline()
-	waitLost(t, hold, 3*time.Second)
-	if !time.Now().Before(deadline) {
+	waitLost(t, hold, eventWait)
+	if !hold.Deadline().Before(deadline) {
 		t.Fatal("Lost closed at the deadline rather than on the zero-row renewal")
 	}
 

@@ -211,13 +211,21 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	const name = "webhook-redelivery"
 	const period = time.Hour
 
+	// Both ticks are due inside one period by construction, the first at its boundary and the
+	// second halfway through it, rather than at two readings of the clock: two time.Now() ticks
+	// straddle a boundary whenever the row's own statements run across one, and the second would
+	// then be due in a period of its own and run for a reason this row is not about. The
+	// boundaries are this process's (periodBoundary), the ones the gate buckets a due time by.
+	due := duty.PeriodBoundary(time.Now(), period)
+	later := due.Add(period / 2)
+
 	ran := false
-	if !duty.Exclusive(ctx, leases, name, time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, leases, name, due, period, func(context.Context) { ran = true }) || !ran {
 		t.Fatal("the first process's pass did not run")
 	}
 
 	otherRan := false
-	if duty.Exclusive(ctx, otherLeases, name, time.Now(), period, func(context.Context) { otherRan = true }) {
+	if duty.Exclusive(ctx, otherLeases, name, later, period, func(context.Context) { otherRan = true }) {
 		t.Error("the second process took the pass inside a period the first one had served")
 	}
 	if otherRan {
@@ -227,7 +235,7 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	// The recorded pass moved back is the period having run out, which no test waits an hour
 	// for: the repository's other claim rows age their row the same way rather than sleeping.
 	movePassBack(t, database, name, 2*period)
-	if !duty.Exclusive(ctx, otherLeases, name, time.Now(), period, func(context.Context) { otherRan = true }) || !otherRan {
+	if !duty.Exclusive(ctx, otherLeases, name, later, period, func(context.Context) { otherRan = true }) || !otherRan {
 		t.Error("no pass ran once the recorded one was older than the period")
 	}
 }
@@ -243,9 +251,16 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 	const name = "architecture-import"
 	const period = time.Hour
 
+	// The cut-short tick and the one after it are due inside one period by construction, as in
+	// TestExclusiveSkipsASecondProcessInsideThePeriod: read from the clock twice instead, the two
+	// could fall either side of a boundary, and the second tick would run because it was due in a
+	// period of its own rather than because the first served none.
+	due := duty.PeriodBoundary(time.Now(), period)
+	later := due.Add(period / 2)
+
 	stopping, stop := context.WithCancel(context.Background())
 	cut := false
-	if duty.Exclusive(stopping, leases, name, time.Now(), period, func(context.Context) {
+	if duty.Exclusive(stopping, leases, name, due, period, func(context.Context) {
 		cut = true
 		// The shutdown lands while the pass is still working, as a SIGTERM does.
 		stop()
@@ -257,7 +272,7 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 	}
 
 	ran := false
-	if !duty.Exclusive(context.Background(), leases, name, time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(context.Background(), leases, name, later, period, func(context.Context) { ran = true }) || !ran {
 		t.Error("the next tick skipped a period the cut-short pass never served")
 	}
 }
@@ -295,7 +310,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	go func() {
 		answered <- duty.Exclusive(stopping, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 4*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, eventWait); waiting < 1 {
 		t.Fatal("the gate's period read never queued behind duty_passes")
 	}
 	stop()
@@ -306,7 +321,9 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logs.String())
 	case <-time.After(500 * time.Millisecond):
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Second); waiting < 1 {
+	// The read was already queued before the cancel, so this answers at once while it still is;
+	// the wait is this test's give-up, not a span it measures.
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, eventWait); waiting < 1 {
 		t.Fatal("the gate's period read stopped waiting on duty_passes at the cancel")
 	}
 	if err := holder.Rollback(ctx); err != nil {
