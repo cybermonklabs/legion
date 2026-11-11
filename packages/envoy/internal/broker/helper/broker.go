@@ -1521,3 +1521,5 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	}
 	return nil
 }
+
+// INFRA-1413 selection probe, never merged.
