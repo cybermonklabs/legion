@@ -10,6 +10,7 @@ import {
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
+import { closedWindow } from "../features/project/issues-table-model";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
@@ -297,6 +298,23 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
         project,
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
+      });
+    },
+  });
+
+/** Done issues in one closed window, under the project listing's shared refresh prefix. */
+export const projectDoneIssuesQuery = (project: string, window: string) =>
+  queryOptions({
+    queryKey: [...projectIssuesQueryKey(project, []), "done", window],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      const closed = closedWindow(window, Date.now());
+      if (closed === null) return [];
+      return api.listIssues({
+        project,
+        status: "done",
+        ...(closed.since === undefined ? {} : { closed_since: closed.since }),
+        ...(closed.before === undefined ? {} : { closed_before: closed.before }),
       });
     },
   });

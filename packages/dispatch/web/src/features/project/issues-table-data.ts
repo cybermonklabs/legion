@@ -1,11 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
+import type { ColumnFiltersState } from "@tanstack/react-table";
+import { useCallback, useMemo } from "react";
 import {
   issueQuery,
   legionBoardQuery,
   legionSettingsQuery,
+  projectDoneIssuesQuery,
   projectIssuesQuery,
 } from "../../api/queries";
+import type { IssueSummary } from "../../api/types";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
@@ -15,35 +18,68 @@ import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
  *  while has many closed parents, and one table load must not be a burst of detail reads. */
 const PARENT_READS_IN_FLIGHT = 8;
 
+/** The project's Legion capability, resolved before a view expands its Legion-only parameters. */
+export function useHasLegion(project: string) {
+  const settings = useQuery(legionSettingsQuery());
+  return {
+    hasLegion: (settings.data ?? []).some((setting) => setting.project === project),
+    pending: settings.isPending,
+  };
+}
+
+/** The closed window a table view must read, or null when its Status filter excludes done. */
+export function doneWindowOf(filters: ColumnFiltersState): string | null {
+  const statuses = filters.find((filter) => filter.id === "status")?.value;
+  if (Array.isArray(statuses) && statuses.length > 0 && !statuses.includes("done")) return null;
+  const closed = filters.find((filter) => filter.id === "closed")?.value;
+  return typeof closed === "string" && closed !== "" ? closed : "28d";
+}
+
+function joinedIssues(
+  open: readonly IssueSummary[],
+  done: readonly IssueSummary[]
+): readonly IssueSummary[] {
+  if (done.length === 0) return open;
+  const keys = new Set(open.map((issue) => issue.key));
+  return [...open, ...done.filter((issue) => !keys.has(issue.key))];
+}
+
 /**
- * One project's issues as the table shows them: the open listing, the full one once the reader
- * lets closed issues through, and the parents neither listing carries, so every row knows which
- * epic it belongs to.
- *
- * Two reads, never three. The open-only listing stops once the full one has answered, so a live
- * event refetches one listing. The ancestry walk has a key of its own, outside the project
- * listing's, and reads each parent with no staleness of its own. Nothing observes
- * `["issue", key]`, so an event on a parent only marks it stale: this query runs again when the
- * set of missing parents changes — a parent that joins the listing, a row whose parent changes —
- * and on the whole-cache refresh after a reconnect. Until one of those happens, or the page is
- * reloaded, a closed parent renamed somewhere else keeps the title it was read with.
+ * One project's issue rows: its open listing and, only where the view can list one, its windowed
+ * done listing. The ancestry walk has a key outside both listings and reads closed parents on
+ * demand, so a parent still supplies every row's epic after a narrow read.
  */
 export function useProjectIssueItems(
   project: string,
-  { wantsDone, registry }: { wantsDone: boolean; registry: AgentRegistry }
+  {
+    done,
+    doneDefaulted = false,
+    doneOnly = false,
+    registry,
+    viewer,
+  }: {
+    done: string | null;
+    doneDefaulted?: boolean;
+    doneOnly?: boolean;
+    registry: AgentRegistry;
+    viewer: string | undefined;
+  }
 ) {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const everyIssue = useQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
-  const doneLoaded = wantsDone && everyIssue.data !== undefined;
-  const openIssues = useQuery({
-    ...projectIssuesQuery(project, [], true),
-    enabled: !doneLoaded,
+  const issues = useQuery(projectIssuesQuery(project, [], true));
+  const doneQuery = useQuery({
+    ...projectDoneIssuesQuery(project, done ?? "28d"),
+    enabled: done !== null,
   });
-  const issues = doneLoaded ? everyIssue : openIssues;
-  const listingError =
-    wantsDone && everyIssue.isError ? everyIssue : issues.isError ? issues : undefined;
-  const all = useMemo(() => issues.data ?? [], [issues.data]);
+  const doneRead = done === null ? undefined : doneQuery;
+  const doneLoaded = doneRead?.data !== undefined;
+  const open = issues.data ?? [];
+  const closed = doneRead?.data ?? [];
+  const all = useMemo(
+    () => (done === null ? open : doneOnly ? closed : joinedIssues(open, closed)),
+    [closed, done, doneOnly, open]
+  );
   const missingParents = useMemo(() => {
     const keys = new Set(all.map((issue) => issue.key));
     return [
@@ -91,33 +127,35 @@ export function useProjectIssueItems(
     },
   });
   const epics = useMemo(() => all.filter(isEpic), [all]);
-  // A project a Legion daemon serves reads its board over the same live socket; one that none
-  // serves reads nothing and keeps the table's own queue.
-  const legionSettings = useQuery(legionSettingsQuery());
-  const hasLegion = (legionSettings.data ?? []).some((setting) => setting.project === project);
+  const { hasLegion } = useHasLegion(project);
   const legion = useQuery({ ...legionBoardQuery({ kind: "legion", project }), enabled: hasLegion });
-  const allItems = useMemo(
-    () =>
-      buildItems(
-        all,
-        text.label,
-        ancestry.data?.ancestors,
-        (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry),
-        hasLegion ? (legion.data ?? null) : undefined
-      ),
-    [all, text, ancestry.data, registry, hasLegion, legion.data]
+  const board = hasLegion ? (legion.data ?? null) : undefined;
+  const isFree = useCallback(
+    (issue: IssueSummary) => issue.claim === null || claimIsTakeable(issue.claim, registry),
+    [registry]
   );
+  const allItems = useMemo(
+    () => buildItems(all, text.label, ancestry.data?.ancestors, isFree, board, viewer),
+    [all, ancestry.data?.ancestors, board, isFree, text.label, viewer]
+  );
+  const openItems = useMemo(
+    () => buildItems(open, text.label, ancestry.data?.ancestors, isFree, board, viewer),
+    [ancestry.data?.ancestors, board, isFree, open, text.label, viewer]
+  );
+  const listingError = doneRead?.isError ? doneRead : issues.isError ? issues : undefined;
   return {
     all,
     allItems,
     ancestry,
+    doneDefaulted,
     doneLoaded,
+    doneRead,
     epics,
-    everyIssue,
     hasLegion,
     issues,
     legion,
     listingError,
     missingParents,
+    openItems,
   };
 }
