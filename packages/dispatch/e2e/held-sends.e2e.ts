@@ -1,9 +1,6 @@
-import { expect, test } from "@playwright/test";
-
 import { agentRow, openAgents, plannerSession, seedAgents } from "./agents";
 import { createComment, createIssue, createProject } from "./api";
 import { openFromSidebar } from "./editor";
-import { resetDatabase } from "./seed";
 import {
   answeredPost,
   MESSAGE_REFUSED,
@@ -12,6 +9,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A composer holds its draft and its refusal while its send is out, whatever unmounts it. These
@@ -19,10 +17,6 @@ import { asUser } from "./users";
 // thread - let the server refuse it there, and expect the draft and the refusal back when the
 // reader returns to the composer.
 const refusedText = WRITE_REFUSED_TEXT;
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A write the server refused: the refusal and its draft belong to the target, and are there when the reader comes back to it.
 test("a docked Conversation send refused while the reader is on the Inbox is there on the return @pr", async ({

@@ -25,30 +25,13 @@ import { fileURLToPath } from "node:url";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
-/** The ports a run that is not stub-only must find set, with `DISPATCH_E2E_REUSE_SERVERS`, or
- *  the config refuses it before it declares anything. They name no server: nothing here starts
- *  a run, it only imports the config and reads one field. */
-const harnessPorts = {
-  DEV_OIDC_ISSUER_PORT: "5",
-  DISPATCH_E2E_PORT: "4",
-  DISPATCH_E2E_REUSE_SERVERS: "1",
-  FAKE_BROKER_PORT: "1",
-  FAKE_ENVOY_PORT: "3",
-  FAKE_GITHUB_PORT: "2",
-  PLAIN_HTTP_PORT: "7",
-  REAL_BROKER_PORT: "6",
-};
-
 /** Two spawns of about a second and a half each. */
 const probeTimeout = 60_000;
 
 /** The `command` of the web server this config declares for a run whose argv is `argv`, or null
  *  where it declares none. The config reads the selection from `process.argv`, so the reading
  *  is made in a child that carries that argv rather than this test runner's. */
-async function webServerCommand(
-  argv: readonly string[],
-  environment: Record<string, string> = {}
-): Promise<string | null> {
+async function webServerCommand(argv: readonly string[]): Promise<string | null> {
   const script =
     'const config = (await import("./e2e/playwright.config.ts")).default;' +
     "const server = config.webServer ?? null;" +
@@ -56,7 +39,7 @@ async function webServerCommand(
     "console.log(JSON.stringify(declared === null ? null : declared.command));";
   const child = Bun.spawn(["bun", "--eval", script, "--", ...argv], {
     cwd: dispatchPackage,
-    env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", ...environment },
+    env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -75,7 +58,7 @@ test(
   "a run that selects no stub project is given no web server to start",
   async () => {
     expect(
-      await webServerCommand(["--project=visual", "--project=visual-phone"], harnessPorts),
+      await webServerCommand(["--project=visual", "--project=visual-phone"]),
       "The containerised `visual` job runs this config with no bun on its PATH, so a `webServer` " +
         "declared for a run that holds no stubbed row kills the full lane with exit 127 before " +
         "its first row. Declare the stubbed layer's static file server for the runs that select " +

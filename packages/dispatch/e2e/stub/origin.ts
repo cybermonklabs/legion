@@ -7,8 +7,8 @@
  *  takes what the kernel hands it (e2e/harness-start.ts).
  *
  *  One server serves every worker. It holds no state - it answers files out of `web/dist` and
- *  nothing else - so four lanes reading it at once is contention on the kernel's accept queue and
- *  nothing more.
+ *  nothing else - so four workers reading it at once is contention on the kernel's accept queue
+ *  and nothing more.
  *
  *  A committed recording carries no origin of its own (e2e/stub/recording.ts rewrites each URL to
  *  `recordedOrigin` as it is written), so changing this port breaks no recording: the fixture
