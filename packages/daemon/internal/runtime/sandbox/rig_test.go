@@ -521,9 +521,10 @@ func withFailedRestore(reason string) rigOption {
 }
 
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
-// carry: the tests that build one drive the launcher protocol itself.
+// carry and no volume seam behind it: the tests that build one drive the launcher protocol
+// itself.
 func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation

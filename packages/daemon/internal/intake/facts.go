@@ -874,13 +874,41 @@ func (f CloseRoot) Message() string {
 
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
 // the supervisor has one, so workflow notices can say what failed after a daemon restart.
+//
+// PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
+// read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
+// runtime.Observation.PodEnd): `Evicted: The node was low on resource: ephemeral-storage. ...`
+// and nothing of the role's own log. It is carried beside Reason and never folded into it,
+// because the two say different things — Reason is what the supervisor decided, PodEnd what the
+// cluster did — and because it is persisted on the claim, so a daemon that restarts between the
+// pod's death and the moment the relaunch budget runs out reports the same end.
 type ClaimFailed struct {
 	Issue  string
 	Role   claim.Role
 	Reason string
+	PodEnd string
 }
 
 func (ClaimFailed) isFact() {}
+
+// VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
+// trimmer in that pod's launcher process swept the cache roots and the volume was still above
+// its low mark when it stopped, or the trimmer has switched itself off after three faults. It is
+// never decoded from an event — the launcher's frame reaches the runtime, and the daemon's
+// Kubernetes wiring applies one fact per report under an id of its own (INFRA-2009).
+//
+// Issue is the issue whose pod reported, PodUID the pod the launcher is authenticated for, and
+// Report everything the sweep said, as the record keeps it. The workflow's handler decides from
+// the daemon's bounds whether the issue's architect is told (workflow's volumeNearFull): two
+// reports of one sweep are two facts, so the id the caller applies it under must be unique per
+// report.
+type VolumeNearFull struct {
+	Issue  string
+	PodUID string
+	Report record.VolumeNearFull
+}
+
+func (VolumeNearFull) isFact() {}
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be

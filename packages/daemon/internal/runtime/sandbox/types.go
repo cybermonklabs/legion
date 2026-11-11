@@ -285,6 +285,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
+	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
+	// architect its volume is filling. A runtime given none reads the frame and drops it, which
+	// is what every runtime did before the trimmer existed; what it must never do is close the
+	// connection on it, since the launcher would redial once a second for every role of the pod
+	// (ServeLauncher's switch).
+	VolumeReported runtime.VolumeReported
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.

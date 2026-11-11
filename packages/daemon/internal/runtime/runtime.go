@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Runtime is what the supervisor has instead of a process table. Every method is about one
@@ -251,6 +252,27 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
+// VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
+// trimmer in that pod's launcher process reported it: the launcher sends one such frame per
+// sweep that ended with the volume still above its low mark, and one when the trimmer has
+// switched itself off after three faults (shimwire.LauncherVolumeReport). The session gives it
+// the issue key, the uid of the pod the launcher runs in and the report; the trimmer's own
+// identifier, which is what makes a restarted roles container a new counting line for the
+// daemon's notice bounds, is inside the report.
+//
+// It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
+// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
+// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
+// are already the price of a durable notice.
+//
+// A store that does not answer is logged and the report is dropped there. The launcher cannot
+// hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
+// the next sweep's report carries the same volume, the same episode and the same trimmer, so the
+// state a dropped report would have told reaches the architect from the one after it
+// (internal/runtime/sandbox's volumeReported, as restoreReported's own comment says of its
+// delete).
+type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
+
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
 // with zero after, so the one computation is the deadline's.
@@ -416,6 +438,47 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
+	// `<reason>: <message>` and empty where the pod carries neither: `Evicted: The node was low
+	// on resource: ephemeral-storage. ...` is the one that costs an issue its work. It is the
+	// one part of a terminal observation a notice can carry whole, and it is a field rather than
+	// a shape of Detail for the reason Displaced is: Detail is prose for an operator and nothing
+	// else, and it ends with a tail of the role's own log, which is unbounded. Keeping Detail
+	// whole on the claim and in a notice would put that log tail in a store column and in an
+	// Envoy role topic; this field is what the worker-died notice names the cause from
+	// (workflow's claimFailed).
+	//
+	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
+	// message above is 120 runes, and the longest the kubelet writes names each resource it
+	// reclaimed. A longer one is cut at that bound with an ellipsis, so neither the claims table
+	// nor a notice can carry a message of a size nothing chose.
+	PodEnd string
+}
+
+// PodEndRunes bounds Observation.PodEnd: a few hundred runes, which is a kubelet's reason and
+// message whole and nothing of a log. The bound exists because the field is stored on the claim
+// and published to a role topic, so its size must be one this package chose rather than one a
+// node's message happened to have.
+const PodEndRunes = 400
+
+// PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
+// reason alone when there is no message, "" when there is no reason, and a value cut at the
+// bound with an ellipsis when the two together pass it. Both the runtime that observes a pod and
+// any test that asserts on the field build the value here, so one rule decides what a claim and
+// a notice carry.
+func PodEnd(reason, message string) string {
+	if reason == "" {
+		return ""
+	}
+	end := reason
+	if message != "" {
+		end += ": " + message
+	}
+	runes := []rune(end)
+	if len(runes) <= PodEndRunes {
+		return end
+	}
+	return string(runes[:PodEndRunes-1]) + "…"
 }
 
 // GitIdentity is the author a worker's commits carry.

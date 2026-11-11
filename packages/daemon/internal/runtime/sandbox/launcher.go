@@ -38,7 +38,10 @@ type launchers struct {
 	// A launchers built without the pair restores nothing.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
-	log      *slog.Logger
+	// volume takes a cache trimmer's sweep report into the daemon's fact path
+	// (Options.VolumeReported). A launchers built without it reads the frame and drops it.
+	volume runtime.VolumeReported
+	log    *slog.Logger
 }
 
 type launcherSession struct {
@@ -69,8 +72,8 @@ type launcherSession struct {
 	closed  bool
 }
 
-func newLaunchers(saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, saved: saved, restored: restored, log: log}
+func newLaunchers(saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored, volume runtime.VolumeReported, log *slog.Logger) *launchers {
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, saved: saved, restored: restored, volume: volume, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated. The newest
@@ -132,6 +135,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherRestored:
 			s.owner.restoreReported(s, value)
+		case shimwire.LauncherVolumeReport:
+			s.owner.volumeReported(s, value)
 		default:
 			return
 		}
@@ -452,6 +457,42 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 	}
 	d.log.Info("launcher bundle: the pod's launcher restored the released workspace's saved work, which is dropped from the database",
 		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "release", report.Release)
+}
+
+// volumeReported hands the daemon one sweep of the pod's volume as that pod's cache trimmer
+// reported it (shimwire.LauncherVolumeReport). The launcher sends one unasked per sweep that
+// ended with the volume still above its low mark, and one when the trimmer has switched itself
+// off; a sweep that reached the low mark sends none, so every frame that arrives here is one the
+// issue's architect may need to hear about, and the daemon's own bounds decide which of them it
+// is told (workflow's volumeNearFull).
+//
+// The pod a report is of is the one this connection authenticated for, so the uid is the
+// session's and never the report's: a launcher cannot name another pod's volume. The trimmer's
+// own identifier is inside the report, which is what counts a restarted roles container apart
+// from the first episode.
+//
+// A store that does not answer is logged and the report is dropped here. The launcher cannot
+// hold it again once the daemon has read it — nothing acknowledges this frame — and it is not
+// asked to: the trimmer goes on sweeping, and the next sweep's report carries the same volume,
+// the same episode and the same trimmer, so what a dropped report would have said reaches the
+// architect from the one after it. That is the same bargain restoreReported makes with its
+// delete, for the same reason.
+//
+// It runs on the launcher's own frame loop rather than in a goroutine of its own, as
+// restoreReported does and under the same bounded context: two reports of one launcher then
+// reach the fact path in the order the trimmer made them, which is what the notice bounds count
+// episodes by, and the cost is the one the precedent already accepts — the launcher's other
+// frames wait behind one row's write.
+func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherVolumeReport) {
+	if d.volume == nil || s.issue == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	if err := d.volume(ctx, s.issue, s.podUID, report); err != nil {
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep the daemon could not record, which is dropped; the trimmer's next report carries the same volume",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
+	}
 }
 
 // bundleFrames are the slices that carry issue's saved bundle. The sequence's id is the issue, the

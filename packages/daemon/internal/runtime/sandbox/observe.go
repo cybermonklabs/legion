@@ -236,10 +236,14 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	pod := v.pod
 	initName, initExit := failedInit(pod)
 	if terminal(pod) || initExit != nil {
-		detail, ranOutOfMemory := r.ended(ctx, v, container, role, initName, initExit)
+		detail, ranOutOfMemory, podEnd := r.ended(ctx, v, container, role, initName, initExit)
 		ended := observe(runtime.Gone, "%s", detail)
 		ended.initFailed = initExit != nil && pod.DeletionTimestamp == nil
 		ended.OutOfMemory = ranOutOfMemory
+		// The pod's own reason for the end, apart from the detail, which ends with a tail of the
+		// role's log: this is what the claim keeps and what the worker-died notice names
+		// (runtime.Observation.PodEnd).
+		ended.PodEnd = podEnd
 		return ended
 	}
 	if scheduled := podCondition(pod, corev1.PodScheduled); pod.Status.Phase == corev1.PodPending && scheduled != nil &&
@@ -375,7 +379,15 @@ func podAbsent(v view) string {
 // beside the detail, whether the end it resolved is one the out-of-memory note is for
 // (outOfMemory), which it decides from the container it resolved: an init container's end and an
 // old-layout container's are neither.
-func (r *Runtime) ended(ctx context.Context, v view, container string, role claim.Role, initName string, initExit *corev1.ContainerStateTerminated) (string, bool) {
+//
+// The third answer is the pod's own reason and the kubelet's message with it
+// (runtime.Observation.PodEnd), which is what names the cause of a death nothing inside the pod
+// chose: an eviction for ephemeral storage is written on the pod and nowhere else. It is read on
+// both branches below, not only where the resolved container has no terminated state: the
+// kubelet writes `Evicted` on the pod and then ends the container, so a pod whose container also
+// terminated carried its eviction in neither the detail nor the notice before this. The detail
+// says both for the same reason, in the order the pod holds them.
+func (r *Runtime) ended(ctx context.Context, v view, container string, role claim.Role, initName string, initExit *corev1.ContainerStateTerminated) (string, bool, string) {
 	pod := v.pod
 	kind, state := "container", initExit
 	if initExit != nil {
@@ -391,10 +403,14 @@ func (r *Runtime) ended(ctx context.Context, v view, container string, role clai
 	var detail strings.Builder
 
 	fmt.Fprintf(&detail, "pod %s (uid %s) %s", pod.Name, pod.UID, pod.Status.Phase)
+	if pod.Status.Reason != "" {
+		fmt.Fprintf(&detail, ": %s", pod.Status.Reason)
+		if pod.Status.Message != "" {
+			fmt.Fprintf(&detail, ": %s", pod.Status.Message)
+		}
+	}
 	if state != nil {
 		fmt.Fprintf(&detail, ": %s %s terminated (%s, exit code %d)", kind, container, state.Reason, state.ExitCode)
-	} else if pod.Status.Reason != "" {
-		fmt.Fprintf(&detail, ": %s: %s", pod.Status.Reason, pod.Status.Message)
 	}
 	if finished := v.sandbox.condition(conditionFinished); finished != nil {
 		fmt.Fprintf(&detail, "; sandbox Finished=%s %s", finished.Status, finished.Reason)
@@ -407,7 +423,7 @@ func (r *Runtime) ended(ctx context.Context, v view, container string, role clai
 	} else {
 		fmt.Fprintf(&detail, "; last lines of %s:\n%s", role, r.roleLog(ctx, pod.Name, container, role))
 	}
-	return detail.String(), outOfMemory(container, state)
+	return detail.String(), outOfMemory(container, state), runtime.PodEnd(pod.Status.Reason, pod.Status.Message)
 }
 
 // outOfMemory reports whether container's instance was ended by the kubelet for running out of

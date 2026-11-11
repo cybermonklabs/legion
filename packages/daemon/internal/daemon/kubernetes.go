@@ -9,7 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -22,9 +25,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -185,7 +190,12 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames)
+	// The holder the pods' cache trimmers report through, made here and filled once the workflow
+	// is open: the factory is built before the workflow exists, and the fact path does not
+	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
+	// carries the one holder the factory closed over, as plan.repositories does.
+	p.volumeReports = &volumeTrimReports{}
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -513,8 +523,13 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains.
+//
+// reports is the holder the launchers' volume reports reach the workflow's fact path through
+// (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
+// it has (plan.volumeReports). One that is never filled drops every report it is given, which
+// is a daemon with no workflow.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -527,6 +542,12 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The cache trimmer's own half: every sweep of an issue pod's volume that left it above
+		// its low mark reaches the daemon through this, and the daemon turns it into the one
+		// fact that can tell the issue's architect (volumeTrimReports.report). The workflow is
+		// what applies that fact, and it opens after this factory is built, so the pair the
+		// apply needs is held in reports and filled when it does (plan.volumeReports).
+		opts.VolumeReported = reports.report
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -546,6 +567,79 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
 	}
+}
+
+// volumeTrimReports turns one issue pod's volume sweep, as its launcher's cache trimmer reported
+// it, into the fact the workflow applies (intake.VolumeNearFull). It is the seam between the
+// Kubernetes runtime, which is built before the workflow opens, and the fact path, which exists
+// only after it: prepareSandbox makes one and hands it to the factory, and the boot fills it the
+// moment the workflow is open (plan.volumeReports, daemon.Run). A holder nobody filled —
+// a daemon with no workflow — drops every report it is given, which is what the Sandbox runtime
+// did with the frame before this change.
+//
+// It is filled once, in the boot's own goroutine, before the runtime is built and so before any
+// launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
+type volumeTrimReports struct {
+	pool     *pgxpool.Pool
+	handlers []intake.Handler
+	log      *slog.Logger
+	// applied counts the reports this process has turned into facts, and is what makes each
+	// report's event id its own beside the receipt clock (report).
+	applied atomic.Uint64
+}
+
+// bind gives the holder the daemon's pool and the handlers a fact applies through, which is what
+// the workflow has and the factory does not.
+func (v *volumeTrimReports) bind(pool *pgxpool.Pool, handlers []intake.Handler, log *slog.Logger) {
+	v.pool, v.handlers, v.log = pool, handlers, log
+}
+
+// report applies one sweep of issue's pod as one intake fact (runtime.VolumeReported). It runs on
+// the launcher's own frame loop under that loop's bounded context, so an apply that cannot be
+// made is returned to the launcher session, which logs it and drops the report; the trimmer's
+// next sweep reports the same volume.
+//
+// The event id is unique per report and never per sweep: the launcher sends one report per
+// sweep, but nothing in the frame numbers them, and ApplyFact applies one id exactly once — an
+// id built from the report's own contents would silently drop the second report of an episode
+// whose numbers had not moved, which is precisely the pod that is full and not changing. So the
+// id carries the daemon's own receipt: the issue, the pod, the trimmer, the episode, the moment
+// this process read the frame and the count of reports it has read, which no two reports of one
+// process share.
+func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error {
+	if v.pool == nil || len(v.handlers) == 0 {
+		// A daemon with no workflow, which no Kubernetes deployment runs: there is no fact path
+		// to apply the report through, and the trimmer goes on holding the volume down.
+		return nil
+	}
+	fact := intake.VolumeNearFull{Issue: issue, PodUID: podUID, Report: record.VolumeNearFull{
+		PodUID: podUID, Trimmer: report.Trimmer, Episode: report.Episode, RaisedBy: report.RaisedBy,
+		UsedBytes: report.UsedBytes, FreeBytes: report.FreeBytes, FreedBytes: report.FreedBytes,
+		StopReason: report.StopReason, RefusedReads: report.RefusedReads,
+		Sizes: volumeSizes(report.Sizes), SizesAt: report.SizesAt, SizesPartial: report.SizesPartial,
+		SizesMissing: report.SizesMissing, Faults: report.Faults, SwitchedOff: report.SwitchedOff,
+	}}
+	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%d:%d", issue, podUID, report.Trimmer, report.Episode,
+		time.Now().UTC().UnixNano(), v.applied.Add(1))
+	if _, err := intake.ApplyFact(ctx, v.pool, "launcher", eventID, fact, v.handlers...); err != nil {
+		return fmt.Errorf("apply the volume report of %s's pod %s: %w", issue, podUID, err)
+	}
+	return nil
+}
+
+// volumeSizes is the wire's size walk as the record keeps it. The two shapes are the same
+// members by design — the record's is durable and the wire's is not — and this is the one place
+// they are copied across.
+func volumeSizes(sizes []shimwire.LauncherVolumeSize) []record.VolumeSize {
+	if len(sizes) == 0 {
+		return nil
+	}
+	kept := make([]record.VolumeSize, 0, len(sizes))
+	for _, size := range sizes {
+		kept = append(kept, record.VolumeSize{Path: size.Path, Bytes: size.Bytes,
+			BytesOverHour: size.BytesOverHour, BytesOverDay: size.BytesOverDay})
+	}
+	return kept
 }
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every

@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
@@ -212,6 +214,8 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
 		return e.podBackstopDue(ctx, tx, fact)
+	case intake.VolumeNearFull:
+		return e.volumeNearFull(ctx, tx, fact)
 	case intake.ControllerTick:
 		return e.statusRepairTick(ctx, tx)
 	default:
@@ -665,7 +669,8 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
+			Reason: deathReason(fact)})
 	}
 	if fact.Role == claim.RoleArchitect {
 		return intake.Result{}, nil
@@ -716,7 +721,184 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from}); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
+		Reason: deathReason(fact)})
+}
+
+// deathReason is what a worker-died notice says of a failed claim on the two paths that built no
+// reason of their own — the tree architect's and the held phase's — where the notice carried a
+// kind, a role and a phase and nothing at all of the cause. It names both of the things the
+// supervisor knows: the sentence it wrote when it gave up on the claim
+// (supervise.Claim.Failure, intake.ClaimFailed.Reason) and the pod end the claim's process was
+// last observed to have died of (supervise.Claim.PodEnd), which is the cause no role chose — an
+// eviction for ephemeral storage above all. Both are persisted on the claim, so a daemon that
+// restarted between the death and the moment the budget ran out says the same thing.
+//
+// The two paths that already build a reason keep theirs: a role that does not work the issue's
+// phase, and a checking role of a closed issue, each say what the failure meant for that issue,
+// which is more than either of these facts is.
+func deathReason(fact intake.ClaimFailed) string {
+	switch {
+	case fact.Reason != "" && fact.PodEnd != "":
+		return fact.Reason + "; the pod ended: " + fact.PodEnd
+	case fact.PodEnd != "":
+		return "the pod ended: " + fact.PodEnd
+	default:
+		return fact.Reason
+	}
+}
+
+// The bounds on what an issue's architect is told about its pod's volume filling, and the two
+// log lines that say which way a report went.
+//
+// A filling pod reports every sweep, which is once a reading interval, and the notice is a wake
+// of the architect's session. VolumeNoticeCap is the most an architect hears for one trimmer and
+// one episode: three is enough to show a trend — it is filling, the trimmer is not keeping up,
+// here is what is in it — and a fourth says nothing the third did not. VolumeNoticePodInterval
+// is the most often it hears about one pod at all, whatever trimmer or episode reported, so an
+// episode that ends and another that opens a minute later is still one notice an hour.
+//
+// Both lines begin with VolumeNoticeLinePrefix and each names the issue, the pod, the trimmer,
+// the episode and the count, because the issue's production check reads them from the daemon's
+// log to prove the bounds hold. They are constants so the check and this package name one
+// string.
+const (
+	VolumeNoticeCap         = 3
+	VolumeNoticePodInterval = time.Hour
+
+	VolumeNoticeLinePrefix = "volume near full: "
+	VolumeNoticeWritten    = VolumeNoticeLinePrefix + "the issue's architect was told its pod's volume is filling"
+	VolumeNoticeSuppressed = VolumeNoticeLinePrefix + "a bound held the notice of a sweep that left the pod's volume above its low mark"
+)
+
+// volumeNearFull applies one sweep of an issue pod's volume as that pod's launcher reported it
+// (intake.VolumeNearFull). The launcher reports only a sweep that ended with the volume still
+// above its low mark, and the one report no sweep makes — the trimmer having switched itself off
+// after three faults — so every fact that arrives here is one the architect may need; what this
+// decides is which of them it is told, and it records the telling in the same transaction as the
+// notice.
+//
+// An issue the daemon does not record, and one whose tree lingers after leaving the workflow,
+// write nothing: there is nobody in such a tree to act, as there is nobody for a worker-died of
+// a lingering member. An engine built without the pod tables records nothing either, exactly as
+// it wakes nothing (Config.Pods).
+//
+// The bounds are read and written through the store, never kept here, because a daemon that
+// restarts in the middle of a filling pod's episode would otherwise start the count over and
+// tell that architect three more times — on exactly the pod that is reporting every minute.
+func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.VolumeNearFull) (intake.Result, error) {
+	if e.cfg.Pods == nil {
+		return intake.Result{}, nil
+	}
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+		return intake.Result{}, err
+	}
+	report := fact.Report
+	// The pod is the session's, never the report's: a launcher is authenticated for one pod and
+	// cannot name another's volume (sandbox's volumeReported).
+	report.PodUID = fact.PodUID
+	counts, err := e.cfg.Pods.VolumeNoticeCounts(ctx, tx, issue.Key, fact.PodUID, report.Trimmer, report.Episode)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	now := e.now()
+	if held := volumeNoticeHeldBy(report, counts, now); held != "" {
+		e.logOnCommit(ctx, VolumeNoticeSuppressed, "issue", issue.Key, "pod", fact.PodUID, "trimmer", report.Trimmer,
+			"episode", report.Episode, "notices", counts.Notices, "bound", held,
+			"raisedBy", report.RaisedBy, "usedBytes", report.UsedBytes, "freeBytes", report.FreeBytes)
+		return intake.Result{}, nil
+	}
+	// The count and the notice are one write: a notice the listener cannot hand to an architect
+	// that is not there is still a notice spent, and a transaction that rolls back has spent
+	// none.
+	notices, err := e.cfg.Pods.RecordVolumeNotice(ctx, tx, issue.Key, fact.PodUID, report.Trimmer, report.Episode, now)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.VolumeNearFullNotice, Role: claim.RoleArchitect,
+		Reason: volumeNoticeReason(issue.Key, report), Volume: &report}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, VolumeNoticeWritten, "issue", issue.Key, "pod", fact.PodUID, "trimmer", report.Trimmer,
+		"episode", report.Episode, "notices", notices,
+		"raisedBy", report.RaisedBy, "usedBytes", report.UsedBytes, "freeBytes", report.FreeBytes,
+		"switchedOff", report.SwitchedOff)
+	return intake.Result{}, nil
+}
+
+// volumeNoticeHeldBy is the bound that holds report back, and "" for a report that is sent. The
+// order is the order the rules override each other in:
+//
+//   - A trimmer that has switched itself off is sent whatever the counts stand at. The
+//     protection this notice exists for has stopped, on exactly the pod that has been reporting,
+//     and the bounds would otherwise swallow the one report that says so.
+//   - Three notices for one trimmer and episode is all an architect hears of that episode,
+//     however long it runs and whatever raises a reading inside it. A new trimmer identifier is
+//     a new line and starts the count over, which the key gives: a restarted roles container
+//     mints one.
+//   - A reading five points above the highest this episode started a sweep at
+//     (shimwire.VolumeEpisodeRise) is sent at once, however recent the last notice was: a volume
+//     that has gone that much worse under a trimmer already sweeping it is news, where one that
+//     recovered and filled again can wait for the hour.
+//   - Everything else waits an hour from the pod's newest notice, whatever trimmer or episode
+//     wrote it — a recovery-raised episode included, which is a volume doing what it did before.
+func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeCounts, now time.Time) string {
+	if report.SwitchedOff {
+		return ""
+	}
+	if counts.Notices >= VolumeNoticeCap {
+		return fmt.Sprintf("%d notices already written for this trimmer and episode", counts.Notices)
+	}
+	if report.RaisedBy == shimwire.VolumeEpisodeRise {
+		return ""
+	}
+	if !counts.LastAt.IsZero() && now.Sub(counts.LastAt) < VolumeNoticePodInterval {
+		return fmt.Sprintf("the pod's last notice was %s ago, inside the %s this bound gives one pod",
+			now.Sub(counts.LastAt).Round(time.Second), VolumeNoticePodInterval)
+	}
+	return ""
+}
+
+// volumeNoticeReason is the sentence the architect reads: which pod of which issue, how full the
+// volume is, what the sweep freed, why it stopped, each /proc read the kernel refused, and what
+// is on the volume with the two age splits that tell a working set from cold bytes. The notice's
+// own Volume member carries the same facts in a shape a reader can compute with; this is what a
+// person or an agent reads in the message.
+func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
+	var out strings.Builder
+	if report.SwitchedOff {
+		fmt.Fprintf(&out, "the cache trimmer on %s's pod %s has switched itself off after %d faults and frees nothing more until the pod's roles container restarts",
+			issue, report.PodUID, len(report.Faults))
+	} else {
+		fmt.Fprintf(&out, "the volume %s's roles share on pod %s is still above its low mark after a sweep",
+			issue, report.PodUID)
+	}
+	fmt.Fprintf(&out, " (trimmer %s, episode %d raised by %s): %d bytes used, %d free, %d freed by this sweep",
+		report.Trimmer, report.Episode, report.RaisedBy, report.UsedBytes, report.FreeBytes, report.FreedBytes)
+	if report.StopReason != "" {
+		fmt.Fprintf(&out, "; it stopped because %s", report.StopReason)
+	}
+	if len(report.RefusedReads) > 0 {
+		fmt.Fprintf(&out, "; the kernel refused the /proc of %s", strings.Join(report.RefusedReads, ", "))
+	}
+	for _, size := range report.Sizes {
+		fmt.Fprintf(&out, "; %s holds %d bytes (%d older than an hour, %d older than a day)",
+			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay)
+	}
+	if report.SizesPartial {
+		fmt.Fprintf(&out, "; that walk ended early and measured none of %s", strings.Join(report.SizesMissing, ", "))
+	}
+	if !report.SizesAt.IsZero() {
+		fmt.Fprintf(&out, "; measured at %s", report.SizesAt.UTC().Format(time.RFC3339))
+	}
+	for _, fault := range report.Faults {
+		fmt.Fprintf(&out, "; the trimmer recovered from a fault: %s", fault)
+	}
+	return out.String()
 }
 
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {
