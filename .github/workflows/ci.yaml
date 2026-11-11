@@ -5517,16 +5517,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, on the attempt of its own pair
-    # this job was slower on: attempt 1, run 42930887149, job 130229106433 (525 s, against
-    # 512 s on attempt 2; dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
-    # smallest whole minute at which its slowest package takes at most half of it: internal/bus,
-    # 420.7 s of that attempt, 420.7 / 30 = 14.02, so 15m, which it fills to 46.7 per cent (14m
-    # it would fill to 50.1). The job's own bound is its measured time, read from that run's
-    # jobs API - 00:23:05Z to 00:31:50Z, 525 s, 8.75 minutes - plus that largest -timeout plus
-    # 6, rounded up: 8.75 + 15 + 6 = 29.75, so 30. The limit must fire before the runner cancels
-    # the job, so a hung test prints the dump that names it.
-    timeout-minutes: 30
+    # Both numbers are this change's measurement of the job, taking the larger of the final
+    # pair's two readings for each one (attempt 1, run 42984005006; attempt 2, run 42988153687;
+    # dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole minute
+    # at which its slowest package takes at most half of it: internal/bus, 425.3 s on attempt 2,
+    # 425.3 / 30 = 14.18, so 15m, which it fills to 47.3 per cent (14m it would fill to 50.6).
+    # The job's own bound is its larger measured time - 565 s on attempt 1, job 130400827506,
+    # against 559 s on attempt 2 - 9.42 minutes, plus that largest -timeout plus 6, rounded up:
+    # 9.42 + 15 + 6 = 30.42, so 31. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it.
+    timeout-minutes: 31
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5608,17 +5608,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, on the attempt of its own pair
-    # this job was slower on: attempt 2, run 42938867893, job 130255672183 (920 s, against
-    # 916 s on attempt 1; dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
-    # smallest whole minute at which its slowest package takes at most half of it:
-    # internal/dispatch/api, this job's one package, 748.0 s of that attempt, 748.0 / 30 =
-    # 24.93, so 25m, which it fills to 49.9 per cent (24m it would fill to 51.9). The job's own
-    # bound is its measured time, read from that run's jobs API - 01:25:53Z to 01:41:13Z, 920 s,
-    # 15.33 minutes - plus that largest -timeout plus 6, rounded up: 15.33 + 25 + 6 = 46.33, so
-    # 47. The limit must fire before the runner cancels the job, so a hung test prints the dump
-    # that names it.
-    timeout-minutes: 47
+    # Both numbers are this change's measurement of the job, taking the larger of the final
+    # pair's two readings for each one (attempt 1, run 42984005006; attempt 2, run 42988153687;
+    # dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole minute
+    # at which its slowest package takes at most half of it: internal/dispatch/api, this job's
+    # one package, 767.9 s on attempt 2, 767.9 / 30 = 25.60, so 26m, which it fills to 49.2 per
+    # cent (25m it would fill to 51.2). The job's own bound is its larger measured time - 935 s
+    # on attempt 2, job 130414327527, against 750 s on attempt 1 - 15.58 minutes, plus that
+    # largest -timeout plus 6, rounded up: 15.58 + 26 + 6 = 47.58, so 48. The limit must fire
+    # before the runner cancels the job, so a hung test prints the dump that names it.
+    timeout-minutes: 48
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5674,7 +5673,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 25m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
+          go test -json -race -count=1 -timeout 26m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-api.json"
           else

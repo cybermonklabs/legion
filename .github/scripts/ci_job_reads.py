@@ -588,22 +588,23 @@ class RaceJob(NamedTuple):
 
 
 # The lane's three jobs and envoy-go are sized from one pair of workflow_dispatch runs at this
-# head - attempt 1, run 42930887149, and attempt 2, run 42938867893 - but no single attempt was
-# the slower one for every job, so each job's limits are read from the attempt in which that job
-# itself was slower (ci.yaml's envoy-go limits comment names which attempt that is for each of
-# the four). Each -timeout is the smallest whole minute at which that job's slowest package, on
-# that job's own slower attempt, takes at most half of it: internal/bus 420.7 s -> 15m
-# (envoy-go-race, attempt 1, job 130229106433), internal/dispatch/api 748.0 s -> 25m
-# (envoy-go-race-api, attempt 2, job 130255672183), and internal/dispatch/docs 1612.8 s -> 54m
-# (envoy-go-race-docs, attempt 2, job 130255672370). Each figure is read from that job's own
-# `go test -json` artifact of the run it was slower on (dispatch://INFRA-1075).
+# head - attempt 1, run 42984005006, and attempt 2, run 42988153687, both green on every job.
+# R6 sizes a limit from "the call's slowest package, on the slower attempt", and the subject of
+# that clause is the call, so each limit takes the larger of the pair's two readings for its own
+# call, which can only raise a limit and never lower one; each figure below names the attempt it
+# came from. Each -timeout is the smallest whole minute at which that call's slowest package
+# takes at most half of it: internal/bus 425.3 s -> 15m (envoy-go-race, attempt 2),
+# internal/dispatch/api 767.9 s -> 26m (envoy-go-race-api, attempt 2), and
+# internal/dispatch/docs 1595.0 s -> 54m (envoy-go-race-docs, attempt 1). Each figure is read
+# from that job's own `go test -json` artifact of the attempt it was larger on
+# (dispatch://INFRA-1075, check 6224bb0e).
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch",
             "15m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "25m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "26m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "54m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
