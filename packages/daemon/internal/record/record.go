@@ -1315,9 +1315,11 @@ type Store interface {
 	// request, the planned mark of a still-open one (the next generation runs on the same
 	// branch and pull request), its design gate, each role's handoff, review rounds, verdict and
 	// summary, and a READY the gate refused. Each role keeps its claim and its last handoff, so a
-	// commit an earlier generation reported is never new again.
-	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error
+	// commit an earlier generation reported is never new again. An issue whose gate rows it
+	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
+	// Dispatch holds for that issue is the one those rows recorded.
+	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
+	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

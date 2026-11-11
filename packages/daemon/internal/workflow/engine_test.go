@@ -100,7 +100,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate outbox: %v", err)
 	}
-	if want := []string{"gate_seed", "notice", "issue_branch", "supervise", "notice"}; !sameStrings(kinds, want) {
+	// The registration binds the spec step to its document, which moves the issue's
+	// step-to-document pairs, so it queues the publication of that set as well
+	// (record.PublishChangedGates).
+	if want := []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "supervise", "notice"}; !sameStrings(kinds, want) {
 		t.Fatalf("outbox kinds = %v, want %v", kinds, want)
 	}
 }

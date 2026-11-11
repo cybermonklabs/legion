@@ -171,6 +171,12 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err := e.store.PutGate(ctx, tx, gate); err != nil {
 		return intake.Result{}, err
 	}
+	// The registration is the path that binds a step to a document, so it is the one that most
+	// often moves the issue's pairs; a re-registration of the document the step already names
+	// queues nothing (record.PublishChangedGates).
+	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
+		return intake.Result{}, err
+	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
 		"version", version, "open", classify.DesignGateOpen(gate), "changes_requested", changesRequested, "gated_steps", e.cfg.Steps)
 	gates[step] = gate
@@ -468,6 +474,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 	if err != nil {
 		return err
 	}
+	wrote := false
 	for _, gate := range gates {
 		if gate.ToldChangesVersion == nil {
 			continue
@@ -481,8 +488,15 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 		if err := e.store.PutGate(ctx, tx, gate); err != nil {
 			return err
 		}
+		wrote = true
 	}
-	return nil
+	if !wrote {
+		return nil
+	}
+	// Every gate write asks the same question of the issue's pairs, this one included: these
+	// writes clear a review mark and leave each step on the document it named, so the answer is
+	// that nothing is published.
+	return record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
 }
 
 // mirrorRegisteredRequest writes the mirror row of the approval request a registration read open
@@ -537,6 +551,11 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
 	}
 	if err := e.store.PutGate(ctx, tx, reset); err != nil {
+		return intake.Result{}, err
+	}
+	// The reset keeps the step on the document it named, so the pairs stand as they were and
+	// nothing is published; the question is asked of every gate write.
+	if err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
@@ -671,7 +690,16 @@ func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.Desi
 	if ungated, stale := e.artifactIgnored(gate, fact); ungated || stale {
 		return nil
 	}
-	return e.store.PutGate(ctx, tx, classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.Version, fact.Mark))
+	// The gate's own issue holds the row (dispatchArtifact gives the carried copies to
+	// applyArtifact), so the pairs read and compared are that issue's.
+	before, err := e.store.GatesOf(ctx, tx, gate.Issue)
+	if err != nil {
+		return err
+	}
+	if err := e.store.PutGate(ctx, tx, classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.Version, fact.Mark)); err != nil {
+		return err
+	}
+	return record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
 }
 
 // artifactIgnored says why an artifact event changes no gate state, if it does not: ungated when
@@ -854,7 +882,17 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
 		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
 	}
+	// The pairs as the event found them: it moves a version, a review mark or the opened mark and
+	// leaves every step on the document it named, so the comparison queues nothing, which is what
+	// keeps every review and version of every gated tree from costing a Dispatch write.
+	before, err := e.store.GatesOf(ctx, tx, key)
+	if err != nil {
+		return err
+	}
 	if err := e.store.PutGate(ctx, tx, updated); err != nil {
+		return err
+	}
+	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
 		return err
 	}
 	// What the tree does next is the whole issue's question, not this row's: every step the

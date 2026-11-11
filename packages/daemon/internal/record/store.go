@@ -1072,23 +1072,24 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
 // the counters of one still open, its design gate, its recorded handoffs and a READY the gate
-// refused.
-func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error {
-	return clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue))
+// refused. now is when the publication a cleared gate queues is due.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last — and a
 // child's READY the old gate refused would wait on a packet cleared with those handoffs.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error {
-	return clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree))
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
+		fmt.Sprintf("clear the generation of tree %s", tree), now)
 }
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table.
-func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string) error {
+// their issue column, and issues selects the same issues in the issues table. The design gates go
+// with them, in a statement of their own (clearGates).
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
@@ -1105,7 +1106,6 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb where " + where,
-		"delete from design_gates where " + where,
 		// The assignment goes with the run too: the start that re-enters the phase mints the next
 		// one, and until it does the cleared row names none, which the completion route reads as
 		// nothing to compare rather than as a mismatch to refuse.
@@ -1116,6 +1116,44 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		"update issues set ready_pending_version = null, ready_pending_step = null where " + issues,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return s.clearGates(ctx, tx, where, key, describe, now)
+}
+
+// clearGates deletes the design gates of every issue the clear covers and queues one publication
+// of the empty set for each issue it emptied: those gates recorded a document until this
+// statement, and Dispatch holds the set they recorded until something tells it otherwise. The
+// delete names the issues it emptied rather than the clear naming every issue it covers, so an
+// issue that held no gate row — the ordinary child of a re-entry, and every member of a
+// re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
+// for each step, so an issue gated on several steps is published once.
+//
+// The publication is queued through this store, which knows nothing of the lanes beside it, so no
+// lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
+// status writes the clearing pass queues with it.
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string, now time.Time) error {
+	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	var emptied []string
+	for rows.Next() {
+		var issue string
+		if err := rows.Scan(&issue); err != nil {
+			rows.Close()
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+		emptied = append(emptied, issue)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	slices.Sort(emptied)
+	for _, issue := range slices.Compact(emptied) {
+		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
