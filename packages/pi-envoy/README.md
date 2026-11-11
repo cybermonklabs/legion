@@ -316,8 +316,10 @@ session's subscriptions, as the Envoy listener records them, covers that owner.
 The shared specs in `@legion/contracts` supply each command's description and flags:
 `@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag per field.
 
-`dispatch artifact` takes exactly one upload source: a local `--path`, or inline `--content`. For
-example, an architect can post a specification directly, its text on stdin:
+`dispatch artifact` takes at most one upload source: a local `--path`, or inline `--content`.
+With neither, it makes an empty document under `--name`, which a person or an agent writes in
+afterwards with `dispatch doc-edit`. For example, an architect can post a specification directly,
+its text on stdin:
 
 ```sh
 dispatch artifact --issue LEGION-1 --name spec.md --content-file - <<'EOF'
@@ -325,12 +327,12 @@ dispatch artifact --issue LEGION-1 --name spec.md --content-file - <<'EOF'
 EOF
 ```
 
-Inline content is stored as a Markdown document, so `--content` and `--content-file` take only a
-`--name` that ends in `.md` or `.markdown` or has no extension. The command refuses any other name
-(`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it sends anything and names
-`--path`, which stores a file whose path does not end in `.md` or `.markdown` as its bytes,
-unchanged, under that name. A document title with a dot near its end takes `--content` once it
-ends in `.md`.
+Inline content is stored as a Markdown document, so `--content`, `--content-file` and a call with
+neither flag take only a `--name` that ends in `.md` or `.markdown` or has no extension. The
+command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it
+sends anything and names `--path`, which stores a file whose path does not end in `.md` or
+`.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
+takes `--content` once it ends in `.md`.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
 handoff on its issue as this session: the file's text, one JSON object, is stored exactly as

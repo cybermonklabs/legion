@@ -710,7 +710,8 @@ func TestDocumentRoutesRejectAmbiguousFilenameWithSlugChoices(t *testing.T) {
 // An upload whose name is an existing artifact's slug on the same owner is that artifact's next
 // version, for an issue's, a project's and an agent's conversation's uploads alike. Minting a
 // second artifact there (`plan-md-2`, named `plan-md`) would leave `plan-md` naming two documents,
-// one by its slug and one by its name, and nothing deletes a document.
+// one by its slug and one by its name, and a removal takes only a document that holds nothing
+// (removeArtifact), so once either held writing the two would stand for good.
 func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
