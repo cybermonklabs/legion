@@ -746,43 +746,43 @@ interface SentCard {
  * acknowledges only a frame on the session's own agent subject), so the ordinary end of an
  * attempt is this timeout and every run pays it once. An answer that arrived after the bound
  * would be read as delivery and the notice would be lost, so the bound stands far above one:
- * the worst answer of the nineteen at-claim runs measured at this publish point, eleven of
- * them under the load k-runs asks for, cost 24.53 ms, and this is twenty times that. It is
- * half of what it was, which is what lets the cap below be twice the worst count while the
- * hold stays under the listener's call timeout.
+ * the worst answer of the forty-one at-claim runs measured at this publish point cost 24.53 ms,
+ * and this is ten times that. It came down from 1_000 ms to buy the cap below, which must be
+ * twice the worst count those runs read while the hold stays under the listener's call
+ * timeout; the three numbers trade against each other, and this is the trade measured.
  */
-const NOTICE_PROBE_TIMEOUT_MS = 500;
+const NOTICE_PROBE_TIMEOUT_MS = 250;
 
 /**
  * How long `noticeOnceHeld` waits after an answer that the server held no subscription: the poll
  * `startController`'s `until` already uses for everything this file waits on. The cap below is
- * measured at this interval, so the two move together.
+ * a count of answers read at this interval, so the two move together.
  */
 const NOTICE_PROBE_INTERVAL_MS = 25;
 
 /**
  * How many answers of "the server delivered it to nobody" `noticeOnceHeld` reads before it gives
  * up. The arms that read any of them are the two that publish from `beforeRoleClaimAnswer`,
- * before the role claim's answer and so before the subscription can exist. Over nineteen
- * at-claim runs at that publish point the probe read 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4,
- * 4, 4, 4, 31 and 34 answers, eleven of those runs under the load k-runs asks for (two busy
- * workers against this pod's two CPUs), so this is more than twice the worst of them. At the
- * worst answer and interval those same runs measured, 49.53 ms, the cap is about 3.4 s of
- * patience for a subscription a loaded pod delays, against the 1.2 s the worst of them needed.
+ * before the role claim's answer and so before the subscription can exist. Over forty-one
+ * at-claim runs at that publish point, thirty-two of them under the load k-runs asks for (two
+ * busy workers against this pod's two CPUs), the probe read 47 answers at worst, which is 1.5 s
+ * of waiting for the session to subscribe, and 3 at the median. This is twice that worst count,
+ * so the patience it buys is about 3 s, and it is the largest the hold below allows under the
+ * listener's call timeout.
  */
-const NOTICE_PROBE_ANSWER_CAP = 69;
+const NOTICE_PROBE_ANSWER_CAP = 94;
 
 /**
  * What the hold below allows one answer beyond the interval that follows it. The worst answer of
- * those nineteen runs was 24.53 ms, so this is a little over half again as much. An unloaded pod
- * answers in 4.30 ms cold and 0.79 to 2.01 ms warm, which is the reading this constant carried
- * before: a loaded answer costs several times that, and the hold must bound the loaded run.
+ * those forty-one runs was 24.53 ms, so this rounds it up. An unloaded pod answers in 4.30 ms cold
+ * and 0.79 to 2.01 ms warm, which is the reading this constant carried before: a loaded answer
+ * costs several times that, and the hold must bound the loaded run.
  */
-const NOTICE_PROBE_ANSWER_CEILING_MS = 40;
+const NOTICE_PROBE_ANSWER_CEILING_MS = 25;
 
 /**
  * The longest `noticeOnceHeld` can hold the caller that awaits it: the attempt that ends it, plus
- * every answer the cap allows with the interval after each. 500 + 69 * (25 + 40) = 4_985 ms,
+ * every answer the cap allows with the interval after each. 250 + 94 * (25 + 25) = 4_950 ms,
  * under LISTENER_CALL_TIMEOUT_MS (@legion/contracts,
  * packages/contracts/src/envoy-session.ts:56, 5_000 ms), which is the bound that matters: the
  * probe runs inside the handler that answers the registration `subscribeNotice` sends, and a
