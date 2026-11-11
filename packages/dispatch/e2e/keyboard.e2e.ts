@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue } from "./api";
 import { openBoard, seedBoard } from "./keyboard";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -11,10 +9,6 @@ import { asUser } from "./users";
  * rank write read back. The chords, the shortcut help, the Inbox selection and the board's
  * roving are in `keyboard.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Create through answer to close: the create itself - c opens the dialog, and the issue the API returns is the one the SPA opens.
 test("c opens the create dialog; project and title create an issue the API returns and the SPA opens @pr", async ({
@@ -149,6 +143,10 @@ test("Shift+L/H move a focused card to the top of the adjacent status through th
     const golfCard = page.getByRole("article", { name: `${golf.key} Golf` });
     await golfCard.focus();
     await page.keyboard.press("Shift+H");
+    // Triage has no status before it, so Shift+H writes nothing, and a write that never happens
+    // marks nothing to wait on: this window is the check. A PATCH would leave the page in the
+    // task of the keypress and `page.on` above records it as it goes, so 300 ms of real time is
+    // many frames past where it would show.
     await page.waitForTimeout(300);
     expect(patches).toEqual([]);
     await expect(golfCard).toBeFocused();

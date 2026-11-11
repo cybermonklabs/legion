@@ -1592,22 +1592,30 @@ import each other under `web/src`, confirm `bun run lint` fails naming both, and
 
 ## End-to-end tests
 
-`bun run e2e` drives Playwright against the real Go Dispatch server and
-Postgres. It runs Playwright through `e2e/run.ts`, which builds
-`packages/contracts` and starts the harness
-(`e2e/run-server.sh` and its fakes) unless `PLAYWRIGHT_BASE_URL` selects an
-already deployed server. That build is what Playwright's own runner reads: it
-loads the specs under Node, which takes the package's `default` export
-condition, its gitignored `dist/`, where a `bun` run takes the source, so a
-workspace that never built it would fail at the first spec that imports
-`@legion/contracts`. Every harness server serves on a port the OS chooses
+`bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
+against the real Go Dispatch server and Postgres. Playwright starts the harness
+itself: `e2e/global-setup.ts`, the config's `globalSetup`, starts one stack per
+worker (`e2e/harness-pool.ts`) unless `PLAYWRIGHT_BASE_URL` selects an already
+deployed server, and `e2e/global-teardown.ts` stops them, keeping the stacks'
+logs unless the run showed that it passed. That hook does not build
+`packages/contracts`, and cannot: Playwright loads `e2e/playwright.config.ts`
+before it runs any hook, that config imports the package, and Playwright's own
+runner loads the specs under Node, which takes the package's `default` export
+condition, its gitignored `dist/`, where a `bun` run takes the source. A
+workspace that never built it dies as the config loads, before the hook. So
+whoever starts Playwright builds it: `bun run e2e` and the package's other e2e
+scripts run `build:contracts` first, every CI job that runs the suite carries a
+`Build contracts for dispatch e2e` step
+(`.github/workflows/dispatch-browser.yaml`), and a Playwright command typed by
+hand needs `bun run build:contracts` once.
+Every harness server serves on a port the OS chooses
 unless its variable sets one (below), so the temporary server never meets the
-production listener on port 8766. A run of one lane takes `DATABASE_URL`, unless
+production listener on port 8766. A run of one stack takes `DATABASE_URL`, unless
 it names a Postgres provider instead (below): the
 database must be isolated because `e2e/seed.ts` empties it before every
-scenario and never falls back to `dispatch_c`. A run of more than one lane
-starts a Postgres per lane instead and refuses a `DATABASE_URL` the caller set
-(the lanes, below). It runs the server in cookie
+scenario and never falls back to `dispatch_c`. A run of more than one stack
+starts a Postgres per stack and reads no `DATABASE_URL` at all
+(the stacks, below). It runs the server in cookie
 identity, the production mode, and signs `alice` and `bob` in through the
 server's dev sign-in route (`DISPATCH_DEV_SIGNIN=1`, fenced to a loopback
 origin, listener and database, with a per-process signing key, or one key per run
@@ -1624,33 +1632,71 @@ Address the harness as `127.0.0.1:<port>`, never
 a fixture server. `bun run dispatch:local` runs the same harness by hand,
 seeded and signed in, and leaves it running (below, after the port rules).
 
-`DISPATCH_E2E_WORKERS` is how many Playwright workers the run has — unset or
-empty is one — and `e2e/run.ts` starts one lane per worker, all at once, before
-Playwright starts. A lane is one whole harness as `e2e/harness-start.ts` starts
-it (a Dispatch server, the fake Envoy, the fake GitHub, the fake broker, the
-plain-HTTP proxy, a file-store bucket of its own and ports the OS chose for it)
-and a Postgres server of its own. A lane owns every piece of state a row
-writes, because `e2e/seed.ts` empties its lane's database before every row and
-clears that lane's fakes with it: two workers on one harness would empty each
-other's state mid-row. The run exports `DISPATCH_E2E_LANES=<n>` and every
-harness variable of every lane under `DISPATCH_E2E_LANE_<i>_<V>`, that lane's
-`DATABASE_URL` and file-store bucket included, and keeps the plain names
-pointing at lane 0, so every one-lane consumer reads what it read before lanes
-existed.
+Playwright's UI mode starts this suite's stacks itself. The UI server runs no
+`globalSetup` when it begins listening; it runs one when a client connects
+(`runGlobalSetup`, playwright 1.64.1 `lib/runner/index.js:6896-6915`), so a
+session opened on the listening URL starts its own stacks, runs rows against
+them, and stops them when the session ends. Measured on playwright 1.64.1
+(dispatch://INFRA-1410): with nothing
+up, the UI listened and started nothing; a browser opened on that URL made one
+run directory and listed the file's rows; Run all passed the row; a second Run
+all passed it again and made no second set of stacks; closing the session left
+no run directory and no process behind.
 
-A worker finds its lane by `TEST_PARALLEL_INDEX`, which Playwright sets in each
+Every project is in play in a UI session, whatever `--project` the command line
+held (the UI's own header reads `Projects: all`), so `e2e/global-setup.ts`
+requires every engine Playwright can run here, not the one engine a row needs.
+With `firefox` and `webkit` not downloaded, a UI session stops at its
+`global-setup.ts` node while the same command line without `--ui` runs green.
+`bun run e2e:install` downloads all three.
+
+To point a session at a stack that is already up instead, export that stack's
+variables first, from `packages/dispatch`:
+
+```bash
+bun e2e/harness-up.ts > exports.sh &
+# wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then
+. ./exports.sh
+bunx playwright test --config e2e/playwright.config.ts --ui
+```
+
+`kill` that harness when the session ends. `e2e/visual-run.sh` is the same
+recipe written as a script, for the container it runs Playwright in: it reads
+the same `export` lines through a fifo and applies them. A session of the
+stubbed layer alone needs no stack at all, since it addresses none
+(`--project=stub --ui`).
+
+Playwright's own `--workers <n>` is how many workers the run has — the config's
+default is 1 — and `e2e/global-setup.ts` starts one stack per worker, all at
+once, before the first row. A stack is one whole harness as
+`e2e/harness-start.ts` starts it (a Dispatch server, the fake Envoy, the fake
+GitHub, the fake broker, the plain-HTTP proxy, a file-store bucket of its own
+and ports the OS chose for it) and a Postgres server of its own. A stack owns
+every piece of state a row writes, because `e2e/seed.ts` empties its stack's
+database before every row and clears that stack's fakes with it: two workers on
+one harness would empty each other's state mid-row. The hook writes the whole
+pool into `DISPATCH_E2E_STACKS`, one JSON record per stack holding that stack's
+own variables — its ports, its `DATABASE_URL` and its file-store bucket — and
+writes nothing else. The plain names are left exactly as the caller had them,
+so a second `globalSetup` in the one process, which is how Playwright's UI mode
+re-runs, cannot read a stopped stack's `DATABASE_URL` as a caller's own.
+`e2e/global-teardown.ts` takes the manifest back out again. Playwright hands
+every worker process that environment.
+
+A worker finds its stack by `TEST_PARALLEL_INDEX`, which Playwright sets in each
 worker process and a restarted worker keeps, so a worker Playwright restarts
-comes back on the lane it had. `e2e/harness-ports.ts` resolves it, the one
-place: `laneValue` reads a variable under the lane's name and falls back to the
-plain one, which is how the harness ports resolve and how `e2e/psql.ts` finds
-the database every `sql()` statement runs against. A process that is no worker
-has no `TEST_PARALLEL_INDEX` and so reads lane 0 — the config itself,
-`e2e/preflight.ts` (which checks every lane in turn, resolving each through
-`asLane`) and each harness listener `e2e/run.ts` started, which was handed its
-own lane's values under the plain names.
+comes back on the stack it had. `e2e/harness-ports.ts` resolves it, the one
+place: `stackValue` reads the manifest's record for that index and falls back to
+the plain name, which is how the harness ports resolve and how `e2e/psql.ts`
+finds the database every `sql()` statement runs against. A process that is no
+worker has no `TEST_PARALLEL_INDEX` and so reads the manifest's first record:
+the config itself and `e2e/global-setup.ts`, which checks every stack in turn,
+reading each stack's own record. The plain names answer where no manifest does
+— each harness listener the pool started, which was handed its own stack's
+values under them, a harness a person left listening, and a deployed run.
 
-A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
-and a run of more than one lane that names neither is refused naming both.
+A stack's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
+and a run of more than one stack that names neither is refused naming both.
 `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
 a developer's path on a machine with Docker and no Postgres binaries, and the
 visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
@@ -1660,32 +1706,50 @@ the shard and alone jobs' path and an issue pod's: those two jobs of
 `.github/workflows/dispatch-browser.yaml` run in a container that carries
 PostgreSQL 18 with `vector`, where there are Postgres binaries and no Docker
 socket, and they name that installation's directory. That provider runs
-`initdb` once per run and copies the data directory it made per lane, since
-`initdb` is the cost that grows with the lanes. Both keep the lane's data under
-the run's own temporary directory,
-which `e2e/run.ts` removes when it ends, and both answer on 127.0.0.1, which
+`initdb` once per run and copies the data directory it made per stack, since
+`initdb` is the cost that grows with the stacks. Both keep the stack's data
+under the run's own temporary directory, one `worker-<i>` directory per stack
+beside that stack's `worker-<i>/log`, which `e2e/harness-pool.ts` makes and
+removes, and both answer on 127.0.0.1, which
 the server's dev sign-in requires of its database. With one worker and
-`DATABASE_URL` set, the run uses that database as lane 0 and starts no
+`DATABASE_URL` set, the run uses that database as stack 0's and starts no
 Postgres, exactly as it always has.
 
-With more than one worker the run refuses, before a directory is made or a
-server starts and naming the variable, a caller-set `DATABASE_URL`,
-`PLAYWRIGHT_BASE_URL`, `DISPATCH_E2E_PROCESSES=2`, `DISPATCH_E2E_REUSE_SERVERS`
-or any harness port variable (`refuseLaneConflicts`, `e2e/harness-ports.ts`).
-Each names one database, one set of servers or one port that every lane would
-share, and a shared one is one lane emptying another's rows. The Playwright
-config refuses a `--workers` or `-j` on the command line that differs from the
-lane count, naming `DISPATCH_E2E_WORKERS` as the way to ask for that many: the
-lanes were started before Playwright, so another worker count would leave a
-lane unused or put two workers on one. Its `workers` is the lane count and
-`fullyParallel` is on, since a row empties its own lane before it runs: rows of
-one file may run in different lanes, and a file whose rows must run in order
-says so itself, with `test.describe.configure({ mode: "serial" })` and the
-reason.
+A run of more than one worker is one stack per worker, and each stack has a
+Postgres, a file-store bucket and ports of its own, so five variables that name
+one of those are refused before anything starts. `DATABASE_URL` is refused
+because each stack runs its own Postgres, whose URL the harness hands its
+servers and its psql. `PLAYWRIGHT_BASE_URL` is refused because a deployed run
+has one server every stack would share. `DISPATCH_E2E_REUSE_SERVERS` is refused
+because the servers a person started are one set. `DISPATCH_E2E_PROCESSES=2` is
+refused because two-process mode is two servers on one stack's database. Any
+harness port variable is refused because a port is one listener's: a shared one
+of these is one stack emptying another's rows mid-row, and that failure reads
+as the product's rather than the run's.
 
-Every other mode is one lane and one worker, none of them setting
-`DISPATCH_E2E_WORKERS`: the deployed run (`bun run e2e:deployed`,
-`PLAYWRIGHT_BASE_URL`), two-process mode (`bun run e2e:multiprocess`), a run
+`e2e/global-setup.ts` makes that refusal before it starts anything and before
+its own return on `DISPATCH_E2E_REUSE_SERVERS=1`, naming the first such
+variable and what one stack owns it for (`refuseStackConflicts`,
+`e2e/harness-ports.ts`). A person meets that sentence rather than an
+`EADDRINUSE`. The refusal is the harness's own rule, not one caller's habit: a
+run of more than one worker meets it however it was started, because one stack
+owns each of the five. CI's shard leg sets `DISPATCH_E2E_PG_BIN` and none of
+the five, so the rule reaches no job of this repository and only a run by
+hand. A run of the stubbed layer alone is out of the rule, since it addresses
+no stack.
+
+Run instead a Postgres provider with those five unset: `DISPATCH_E2E_PG_BIN`, a
+directory holding `initdb` and `pg_ctl`, or `DISPATCH_E2E_PG_IMAGE`, each of
+which is a Postgres per stack. The other way is one worker, which is this
+config's own `workers` default and the one case that takes a `DATABASE_URL`. A
+run asks for more with Playwright's own `--workers <n>`. `fullyParallel` is on,
+since a row empties its own stack before it runs: rows of one file may run in
+different stacks, and a file whose rows must run in order says so itself, with
+`test.describe.configure({ mode: "serial" })` and the reason.
+
+Every other mode runs on that default one worker, and so one stack: the deployed
+run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode
+(`bun run e2e:multiprocess`), a run
 against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 `e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
 `docs/site/media/broker/seed.ts`,
@@ -1716,8 +1780,8 @@ A role does not run the whole suite in an issue pod — two CPUs do not carry it
 it is working on.
 
 One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
-samplers, run from `packages/dispatch` with a Postgres provider the lanes above name:
-`DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4`.
+samplers, run from `packages/dispatch` with a Postgres provider the stacks above name:
+`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4 --workers 4`.
 The `full` lane's leg names all eight parallel projects in place of those two.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
@@ -1942,7 +2006,7 @@ post-update text selection; Yjs document transport and local editing remain acti
 `e2e/failed-room.e2e.ts` is opt-in and skipped without `DISPATCH_FAILED_ROOM_PROBE=1`: it holds
 the room's next durable append for 20 s with a `doc_updates` trigger and cancels that backend, so
 it costs about 40 s and does not belong in the suite CI runs. Run it as
-`DISPATCH_FAILED_ROOM_PROBE=1 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts`,
+`DISPATCH_FAILED_ROOM_PROBE=1 bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts`,
 which starts a harness of its own on ports the OS chooses.
 It is the end-to-end check for a failed document room: the writer inside the docs layer when the
 room fails is answered `503 DOC_SERVICE_UNAVAILABLE` rather than waiting for a recovery that
@@ -1958,11 +2022,11 @@ paths move; the two runs' `FAILED-ROOM` lines are the comparison.
 harness server talks to: `run-server.sh` builds `ENVOY_URL` from that port alone. The harness
 starts the same listener for a deployed run; `deploy/compose/dispatch.acceptance.compose.yml`
 requires `FAKE_ENVOY_PORT` and derives the target's Envoy URL from it, so a deployed run sets it.
-Before any row runs, `e2e/preflight.ts` (the config's `globalSetup`) puts a session in this run's
-fake and
-requires the target's `GET /api/v1/agents` to list it, then clears the fake: a target that reads
-another Envoy listener refuses the run naming the fake's port, rather than answering every row
-from sessions none of them seeded. Tests seed live sessions and their capabilities with
+Before any row runs, `e2e/global-setup.ts` (the config's `globalSetup`) puts a session in each
+stack's fake and
+requires that stack's server's `GET /api/v1/agents` to list it, then clears the fake: a server
+that reads another Envoy listener refuses the run naming the fake's port, rather than answering
+every row from sessions none of them seeded. Tests seed live sessions and their capabilities with
 `setLiveSessions`, change their scripted 200/404 send response with `setSessionSendStatus`, hold
 every send to a session before it is answered with `setSessionSendDelay` (a listener slow to take
 it; Dispatch's listener client gives up on an answer at 5 s, so a hold meant to end in a delivery
@@ -2074,6 +2138,19 @@ reaches, `/agents` with both folds, the broadcast page, an issue's Conversation)
 `seedWorkspace()` expects an empty database and returns the ids it made;
 it waits for the spec's decision block to be indexed, so `inboxRows` is exact when it resolves.
 
+Every real-stack spec takes its `test` from `e2e/test.ts`: it is
+Playwright's own `test` with an automatic fixture that empties the database before each row
+(`resetDatabase`, below) and a default `context` signed in as `alice`. A file opts out of the
+sign-in with `test.use({ signedIn: false })`, or changes it with
+`test.use({ signedIn: "bob" })`, read where Playwright reads any option: at file scope, or
+inside a `test.describe`. A row that opens a context of its own (`asUser`, `withAlice` in
+`e2e/users.ts`) signs that one in itself, as it always has. The module re-exports `expect`,
+`devices` and the Playwright types the specs name, so a converted file has one import line, and
+a file whose setup does more than the reset writes a `beforeEach` for that extra work alone.
+Two sets of rows take no part in it: the stubbed layer, which declares its `test` with
+`stubbed(seed)` (`e2e/stub/stub-test.ts`), and the containerised visual review
+(`e2e/visual.e2e.ts`), which seeds outside Playwright.
+
 `e2e/seed.ts` empties the test database before each scenario. It first quiesces the server
 (`POST /api/v1/artifacts/_test/quiesce`, mounted by `DISPATCH_TEST_HOOKS=1`), which closes every
 live document and waits for the settlements in flight, so the documents the previous scenario had
@@ -2095,7 +2172,7 @@ each holder's query. For a deployed server, set `PLAYWRIGHT_DATABASE_URL` for th
 and `E2E_AGENT_TOKEN` for bearer-seeded API calls. Every SQL statement the harness runs,
 `seed.ts`'s and `failed-room.e2e.ts`'s, goes through `sql()` in `e2e/psql.ts`, which resolves that
 database (`PLAYWRIGHT_DATABASE_URL` for a deployed server, else this process's
-lane's `DATABASE_URL`, never a default)
+stack's `DATABASE_URL`, never a default)
 and runs psql without `~/.psqlrc` and without `PGHOSTADDR`: libpq reads it and connects there in
 place of the URL's host, and the server's pgx does not read it, so with it set in a shell psql
 would empty a database the server's own loopback check never saw. `PGHOST` and `PGSERVICE` stay,
@@ -2115,11 +2192,13 @@ passed fires, which `e2e/local-instance.ts` uses to create its database through 
 That reset is also the one rig failure that presents as a code failure. A transaction that holds
 one of the emptied tables for 5 s, such as a session left idle in a transaction, a long query, or
 a Dispatch server from an earlier run still listening on `DISPATCH_E2E_PORT`, makes
-`resetDatabase` throw in `beforeEach`. Because it throws in the hook, **every** spec in the file
-reports failed, each carrying the `DO $$` lock step's own error and the holders it names in its
+`resetDatabase` throw in the fixture every row of the file takes (`e2e/test.ts`). Because it
+throws in that setup, **every** row of the file reports failed, each carrying the `DO $$` lock
+step's own error and the holders it names in its
 message, which reads as a catastrophic regression in the change under test. Recognise that shape
-as the rig: stop whatever holds those tables and run again. A run through `e2e/run.ts` cannot reach
-that shape through a port at all, since its servers serve on ports the OS chose for it alone, and
+as the rig: stop whatever holds those tables and run again. A run that starts its own stacks
+cannot reach that shape through a port at all, since their servers serve on ports the OS chose
+for that run alone, and
 this paragraph is where the harness-port rule lives — `README.md` and the `docs/solutions`
 learnings point here rather than restating it.
 
@@ -2142,18 +2221,16 @@ consumer would otherwise fail in its own words — the second Bun listener dying
 Because the check lives with the resolution, those listeners refuse it too, not only the
 Playwright config. A's and B's ports take part in it only in two-process mode, the one mode that
 listens on them, and the issuer's only under `DISPATCH_E2E_SIGNIN=oidc`.
-It resolves the lane too: `workerCount` reads `DISPATCH_E2E_WORKERS`,
-`laneCount` the `DISPATCH_E2E_LANES` the run exported, `laneIndex` the
-`TEST_PARALLEL_INDEX` of this process, and `laneValue` a variable under that
-lane's name with the plain name as its fallback, which is how `harnessPorts()`
-reads a port and `e2e/psql.ts` its database. `refuseLaneConflicts` holds the
-refusals a run of more than one lane makes, so the message names the variable
-and says which thing one lane owns. `withoutHarnessPort` is the other side of
+It resolves the stack too: `stackIndex` reads the `TEST_PARALLEL_INDEX` of this
+process, and `stackValue` reads a variable out of that stack's record in
+`DISPATCH_E2E_STACKS`, falling back to the plain name, which is how
+`harnessPorts()` reads a port and `e2e/psql.ts` its database.
+`withoutHarnessPort` is the other side of
 that lookup: a spec that starts a second listener of its own and wants the OS to
 choose its port (`e2e/__tests__/fake-envoy.test.ts`,
 `e2e/__tests__/plain-http-proxy.test.ts`, `e2e/plain-http-proxy.e2e.ts`) must
 clear the port under both names, since dropping the plain one alone still leaves
-the lane's own, and the child would die on `EADDRINUSE` before it printed its
+the stack's own, and the child would die on `EADDRINUSE` before it printed its
 listening line.
 
 `e2e/harness-start.ts` is the harness's one starter. It starts the rows of
@@ -2163,36 +2240,46 @@ origin) — each as the leader of a process group of its own, reads each row's r
 port, waits for the server's `/healthz`, and returns the ports by variable with a stop function.
 A row that exits before it reports fails the start with its last lines, naming the variable when
 its set port was taken. A deployed run (`PLAYWRIGHT_BASE_URL`) starts only the rows marked
-`deployed`, the fake Envoy and the plain-HTTP proxy. `e2e/run.ts`
-(`bun e2e/run.ts -- <command>`) starts it, exports the ports and
-`DISPATCH_E2E_REUSE_SERVERS=1`, runs the command, stops the harness when the command exits (a
-Ctrl-C reaches the command, a SIGTERM to the wrapper is passed on), and exits with the command's
-status; `bun run e2e`, `bun run e2e:multiprocess`, `bun run e2e:deployed` and CI's browser steps
-run Playwright through it, so the config, every worker that re-imports it and every helper that
+`deployed`, the fake Envoy and the plain-HTTP proxy. `e2e/harness-pool.ts` starts one such
+harness per worker, each with a Postgres, a file-store bucket and a log directory of its own,
+and `e2e/global-setup.ts` runs the pool before the first row and writes every stack into the
+environment each worker inherits, so the config, every worker that re-evaluates it and every
+helper that
 reads a port at import (`e2e/api.ts`'s `baseUrl`, `e2e/plain-http-origin.ts`'s
-`plainHttpOrigin`) see the real ports. Before any of that, a command that runs Playwright's test
-runner is refused when Playwright has not downloaded a browser the run's projects launch, naming
-`bun run e2e:install` and how large that download is: Playwright's own message comes at the first
-browser launch, with every lane's harness and Postgres already up. A `--project` on the command
-line narrows which browsers the check requires; `--list` and a command that is no Playwright run
-are exempt.
+`plainHttpOrigin`) see the real ports. `e2e/global-teardown.ts` stops them, on a Ctrl-C as much
+as at the end of a run.
 
-`e2e/playwright.config.ts` starts no server. It refuses, before a single spec runs, a run whose
-targeted ports are not all set — all five for a local run (with `DISPATCH_E2E_PORT_A` and
-`DISPATCH_E2E_PORT_B` in two-process mode), `FAKE_ENVOY_PORT` and
-`PLAIN_HTTP_PORT` for a deployed run — naming the unset variables and `e2e/run.ts`, and a run
-without `DISPATCH_E2E_REUSE_SERVERS=1`, whose only accepted value is `1` (any other is refused
-naming the variable and the value). Every port set by hand plus that flag runs against a harness
-a person started and left listening; pair it with that harness's own `DATABASE_URL`, since
+A signal stops the stacks this suite starts, and a SIGTERM stops no more than those. A run that
+holds a stubbed row also starts Playwright's own `webServer` (`e2e/stub/static-server.ts`,
+`e2e/playwright.config.ts`), which Playwright stops on a SIGINT and leaves running on a SIGTERM:
+measured on playwright 1.64.1 (dispatch://INFRA-1410), a mixed run signalled mid-row exited 143
+with every stack of this suite
+gone - no Postgres, no server, no run directory - and the static server still serving on its
+fixed port, so the next run holding a stubbed row was refused by name
+(`http://127.0.0.1:4319/index.html is already used, make sure that nothing is running on the
+port/url or set reuseExistingServer:true`). It is Playwright's own, not this suite's: a run of
+the stubbed layer alone, where this suite installs no signal handler at all, leaks the same
+server. `kill` that process, or use a Ctrl-C, which stops everything.
+
+Before any of that, the hook refuses a run when Playwright has not
+downloaded a browser the run's projects launch, naming
+`bun run e2e:install` and how large that download is: Playwright's own message comes at the first
+browser launch, with every stack's harness and Postgres already up. A `--project` on the command
+line narrows which browsers the check requires; a listing (`--list`) runs no `globalSetup` at
+all, so it needs none of them. A UI session narrows nothing: every project is in play there,
+whatever the command line held, so it requires every engine (the end-to-end section above).
+
+`e2e/playwright.config.ts` starts no server: `globalSetup` does. It makes one refusal of its
+own, before a single spec runs: a `DISPATCH_E2E_REUSE_SERVERS` whose value is neither `1` nor
+empty, named with the value it holds.
+`DISPATCH_E2E_REUSE_SERVERS=1` says the harness ports name servers that are already running — a
+harness a person started and left listening, or the stack `e2e/harness-up.ts` printed — and the
+hook then returns before a directory is made or a server starts. Pair it with that harness's own
+`DATABASE_URL`, since
 `e2e/seed.ts` empties the database the server holds. `CI` takes no part in that decision. A
 deployed run passes `FAKE_ENVOY_PORT` to the acceptance Compose file, which derives the target's
 `ENVOY_URL` from that same value; the README's acceptance recipe wires the pair. A listing
-(`--list`, with no `--ui`) with every harness port unset is the one exception: it targets nothing,
-so the config lets it evaluate with no harness. The argv test is loose, and Playwright reads the
-`--list` of `--grep --list` as `--grep`'s value, a real run; with no port set that run fails at
-`e2e/preflight.ts`, and with any port set a listing meets the reuse refusal like any other run, so
-it asks for `DISPATCH_E2E_REUSE_SERVERS=1` or the ports unset.
-It also refuses a `--workers` or `-j` that differs from the lane count, as the lanes above say.
+(`--list`) targets nothing and starts nothing, so it needs no port set and no flag.
 
 A spec writes every file it makes under its own row's `testInfo.outputPath()`,
 the per-row directory beneath `e2e/test-results` the workflow uploads on a
@@ -2258,7 +2345,7 @@ two. A path containing `/_proxy/` is the proxy's own and never forwarded: `GET /
 (`[{path, method, upstream}]`), `GET /_proxy/sockets` (`[{id, path, upstream, open, openedAt}]` in
 open order, `openedAt` in epoch milliseconds) and `POST /_proxy/reset`, which empties both lists
 and starts both turns over at A. `e2e/api.ts`'s calls take `process: "a" | "b"` to pin, and
-`pinnedTo` in `e2e/harness-processes.ts` builds the header for a plain fetch. `e2e/preflight.ts`
+`pinnedTo` in `e2e/harness-processes.ts` builds the header for a plain fetch. `e2e/global-setup.ts`
 asks each process, pinned, for this run's fake Envoy session, then signs a person in on A and
 requires B to know them. The proxy shares its relay with the plain-HTTP proxy
 (`e2e/http-relay.ts`, which passes a websocket close code on wherever the other side may send it),
@@ -2268,7 +2355,7 @@ mode runs them alone (the sign-in spec only under `DISPATCH_E2E_SIGNIN=oidc`, be
 `chromium` project. `bun run e2e:multiprocess` builds the dashboard
 twice (`web/dist`, then `web/dist-b` with `DISPATCH_BUILD=e2e-b`, so its entry chunk differs from
 A's even where CI sets `GITHUB_SHA`; `web/vite.config.ts` takes `DISPATCH_BUILD` first) and runs
-Playwright through `e2e/run.ts` in two-process mode with B on `dist-b`, passing on extra arguments
+Playwright in two-process mode with B on `dist-b`, passing on extra arguments
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs it, on the full lane
 alone.
@@ -2293,7 +2380,7 @@ and `DISPATCH_E2E_SIGNING_KEY` (one per run, in place of the dev shared key) as 
 `DISPATCH_SIGNIN_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_GROUP` and `DISPATCH_SIGNING_KEY`,
 requires them all, and sets no `DISPATCH_DEV_SIGNIN`. The Playwright config runs
 `e2e/signin.multiprocess.e2e.ts` alone under `oidc` and leaves it out otherwise, and
-`e2e/preflight.ts` skips its dev sign-in check there. The spec pins `/auth/start` to A and
+`e2e/global-setup.ts` skips its dev sign-in check there. The spec pins `/auth/start` to A and
 `/auth/callback` to B with two `dispatch-e2e-process` cookies, each with that path, since a route's
 header reaches only a navigation's first request and the callback is the issuer's redirect, and
 checks that the browser lands on the page `next` named, signed in on both processes, and that
@@ -2497,10 +2584,11 @@ reasons given under `webkit` and `firefox` above. No project above them runs tho
 so each row runs once. Each of the three names every project before it in `dependencies`, so
 Playwright starts them only once the rest of the run has finished and runs them one after
 another, and each sets `workers: 1`, which caps that project's own workers while the run's own
-`workers` stays at the lane count: `dependencies` orders a project but does not stop its own
-rows running four at a time. Four lanes put four browsers, four Dispatch servers and four
+`workers` stays at the count the run was given: `dependencies` orders a project but does not
+stop its own
+rows running four at a time. Four workers put four browsers, four Dispatch servers and four
 Postgres servers on one machine, and a second of wall clock there holds what the other three
-lanes took as surely as the work the row measured, so these rows are given the machine rather
+stacks took as surely as the work the row measured, so these rows are given the machine rather
 than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that proves an absence
 over real time - that no request happens within a second - needs no such project: contention
 cannot make that claim false. A project whose dependency has a failing row does not run at all,
@@ -2540,14 +2628,15 @@ is anything the server decides. Four shapes, and a row of any of them stays wher
   `web/src/features/agents/AgentsPage.tsx`). That is why no row of `agents.e2e.ts`,
   `keyboard-agents.e2e.ts` or `keyboard-agents-pin.e2e.ts` is here.
 
-A row moves by moving its file, never by an annotation: 150 spec files reset the database in a
-`beforeEach` and most of them sign in and seed through the API, so a stubbed row left among them
-would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps every
+A row moves by moving its file, never by an annotation: a real-stack spec takes its `test` from
+`e2e/test.ts`, which resets the database before every row and signs the default context in, and
+most of those files seed through the API as well, so a stubbed row left among them
+would pay all of that for nothing. A moved row lives in a `*.stub.e2e.ts` file, keeps every
 assertion it had and its title but for the ` @pr` the lane axis adds, and the file it left keeps
 its own rows and hooks. A row that the real-stack projects ran at two widths keeps both here
 too: `stub` runs every stubbed row as `chromium` runs every row of the suite, `stub-phone` greps
-the `@phone` tag as `iphone` does, and a row that is a phone row alone says so itself with the
-`test.skip` its author wrote, read against this project's name. Such a file
+the `@phone` tag as `iphone` does, and a row that runs on the phone alone carries `@phone-only`,
+which the phone projects grep beside `@phone` and the desktop ones do not. Such a file
 declares its `test` with `stubbed(seed)` (`e2e/stub/stub-test.ts`): `seed` is the API seeding the
 rows need, which runs in record mode alone, and what it returns is written beside the recording
 as a scene file and handed back to each row as `scene`, so no row ever names an id the server
@@ -2742,12 +2831,13 @@ which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-reques
 
 Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
 person takes and a baseline CI compares must be the same rendering, and a host's browser build,
-fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it seeds on the
-host, where `psql` is, starts the container and runs those two projects in it. Run it through
-the harness from this package, and give it `--update-snapshots` to take the baselines again:
+fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it starts a
+stack on the host (`e2e/harness-up.ts`), seeds it there, where `psql` is, then starts the
+container and runs those two projects in it. Run it from this package, and give it
+`--update-snapshots` to take the baselines again:
 
 ```sh
-bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
+e2e/visual-run.sh --update-snapshots
 ```
 
 Outside that container the rows reach the runner and every one of them skips itself, since

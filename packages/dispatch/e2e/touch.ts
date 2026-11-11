@@ -36,6 +36,9 @@ export async function pressFinger(page: Page, at: Point): Promise<Finger> {
           y: from.y + ((point.y - from.y) * step) / steps,
         };
         await dispatch("touchMove", position);
+        // A finger's own pace: one frame between moves. The page reads a drag from the moves it
+        // gets, so steps sent faster than it paints would reach it as one jump of the distance a
+        // finger covers over many frames, which is no drag at all.
         await page.waitForTimeout(16);
       }
     },

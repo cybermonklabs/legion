@@ -1,8 +1,6 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -173,10 +171,6 @@ function answer(sessionID: string, messageID: string, body: string): Promise<unk
     { id: sessionID, kind: "session" }
   );
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // A2: a picker whose change switches a live session follows the rule the issue picker already
 // keeps (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`): the arrows
