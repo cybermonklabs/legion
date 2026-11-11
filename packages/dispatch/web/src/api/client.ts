@@ -537,12 +537,14 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
 }
 
 /** What an upload carries: the JSON body the document gives the three artifact routes for text
- *  written in the browser, and a multipart form - the body those same routes take as
- *  `multipart/form-data` - for a file picked, pasted or dropped. */
+ *  written in the browser and for a title typed with nothing under it, and a multipart form - the
+ *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
+ *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
+ *  the name alone. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
-  if ("content" in input) {
+  if (!("file" in input) || input.file === undefined) {
     return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
   }
   const form = new FormData();

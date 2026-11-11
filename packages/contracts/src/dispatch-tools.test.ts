@@ -747,7 +747,8 @@ describe("dispatchToolSpecs", () => {
     const turn =
       "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn.";
     const precondition = "A precondition selects exactly one of document or blocks.";
-    const source = "Exactly one of path or content is required.";
+    const source =
+      "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
@@ -761,9 +762,9 @@ describe("dispatchToolSpecs", () => {
       ["dispatch_comment", { body: "y" }, artifactOwner],
       ["dispatch_doc_edit", { issue: "DSP-1", ...edit, precondition: {} }, precondition],
       ["dispatch_doc_edit", { ...edit }, artifactOwner],
-      ["dispatch_artifact", { issue: "DSP-1", name: "n" }, source],
+      ["dispatch_artifact", { issue: "DSP-1", name: "n", path: "p", content: "c" }, source],
       ["dispatch_artifact", { name: "n", content: "c" }, artifactOwner],
-      ["dispatch_artifact", { name: "n" }, `${artifactOwner} ${source}`],
+      ["dispatch_artifact", { name: "n", path: "p", content: "c" }, `${artifactOwner} ${source}`],
       ["dispatch_read", { issue: "DSP-1", message: "m" }, readMessage],
       ["dispatch_read", {}, readOwner],
     ] as const) {
@@ -1072,16 +1073,24 @@ describe("dispatchToolSpecs", () => {
     ).toBe(false);
   });
 
-  test("requires exactly one artifact upload source", () => {
+  // A create takes at most one source: a file, inline text, or neither, which makes an empty
+  // document under the name. The name of a document is Markdown whichever of the three it is, so
+  // the Markdown-name rule holds a name-only create as it holds inline content.
+  test("takes at most one artifact upload source", () => {
     const schema = schemaFor("dispatch_artifact");
     const shared = { issue: "DSP-1", name: "spec.md" };
 
     expect(schema.safeParse({ ...shared, path: "spec.md" }).success).toBe(true);
     expect(schema.safeParse({ ...shared, content: "# Spec\n" }).success).toBe(true);
-    expect(schema.safeParse(shared).success).toBe(false);
+    expect(schema.safeParse(shared).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", name: "Launch notes" }).success).toBe(true);
     expect(schema.safeParse({ ...shared, path: "spec.md", content: "# Spec\n" }).success).toBe(
       false
     );
+    expect(schema.safeParse({ issue: "DSP-1", name: "rows.jsonl" }).success).toBe(false);
+    expect(
+      schema.safeParse({ issue: "DSP-1", name: "rows.jsonl", path: "rows.jsonl" }).success
+    ).toBe(true);
   });
 
   test("accepts exactly one issue or project owner", () => {

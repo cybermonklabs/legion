@@ -891,6 +891,21 @@ export interface ArtifactCreatedEventPayload extends ReferenceChangesPayload {
   readonly artifact: Artifact;
 }
 
+/** `artifact.renamed`: a person corrected a document's title. `artifact` is the document as it
+ *  now is, under its new name; `previous_name` is the name it carried before. The correction
+ *  writes the name alone, so the slug and the reference key the document is cited by do not
+ *  move. */
+export interface ArtifactRenamedEventPayload {
+  readonly artifact: Artifact;
+  readonly previous_name: string;
+}
+
+/** `artifact.removed`: a document of an issue that was still untouched is gone. `artifact` is the
+ *  document as it stood when it was removed; nothing of it is left to read. */
+export interface ArtifactRemovedEventPayload {
+  readonly artifact: Artifact;
+}
+
 export interface ArtifactVersionEventPayload extends ReferenceChangesPayload {
   readonly artifact_id: string;
   readonly name: string;
@@ -1240,6 +1255,14 @@ export type DispatchEvent =
       readonly payload: ArtifactCreatedEventPayload;
     })
   | (DispatchEventBase & {
+      readonly type: "artifact.renamed";
+      readonly payload: ArtifactRenamedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "artifact.removed";
+      readonly payload: ArtifactRemovedEventPayload;
+    })
+  | (DispatchEventBase & {
       readonly type: "artifact.version";
       readonly payload: ArtifactVersionEventPayload;
     })
@@ -1423,8 +1446,16 @@ interface CreateArtifactOptions {
   readonly actor?: Actor;
 }
 
+/** What a create carries: a file, inline content, or neither. A create carrying a name alone
+ *  makes an empty document, which a person or an agent writes in afterwards with
+ *  `dispatch doc-edit`; it goes as JSON with the name, as inline content does, and never as
+ *  multipart, which carries its bytes as its file part and still needs one. */
 export type CreateArtifactInput = CreateArtifactOptions &
-  ({ readonly file: Blob } | { readonly content: string });
+  (
+    | { readonly file: Blob; readonly content?: undefined }
+    | { readonly content: string; readonly file?: undefined }
+    | { readonly file?: undefined; readonly content?: undefined }
+  );
 
 /** What `DispatchClient.read` composes from `GET /api/v1/issues/{key}` and that issue's events
  *  page: no route answers it. The events are `DispatchEvent`, whose payload this package types

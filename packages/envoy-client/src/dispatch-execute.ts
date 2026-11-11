@@ -5298,27 +5298,27 @@ export async function executeDispatchTool(
       const summary = optionalString(args, "summary");
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
+      const path = optionalString(args, "path");
+      // What every create carries, whatever it stores under the name.
+      const options = { name, ...(summary === undefined ? {} : { summary }), actor };
+      // A call with a path uploads that file, one with content stores that text, and one with
+      // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
       const artifactInput =
-        content === undefined
+        path !== undefined
           ? {
-              name,
+              ...options,
               // The bytes AskGate's check read, when it read them, typed as Bun types the path.
               file:
                 input.uploadBytes === undefined
-                  ? Bun.file(resolvePath(input.cwd, stringArg(args, "path")))
+                  ? Bun.file(resolvePath(input.cwd, path))
                   : // The copy gives the bytes a plain buffer of their own, which a Blob takes.
                     new Blob([new Uint8Array(input.uploadBytes)], {
-                      type: Bun.file(resolvePath(input.cwd, stringArg(args, "path"))).type,
+                      type: Bun.file(resolvePath(input.cwd, path)).type,
                     }),
-              ...(summary === undefined ? {} : { summary }),
-              actor,
             }
-          : {
-              name,
-              content,
-              ...(summary === undefined ? {} : { summary }),
-              actor,
-            };
+          : content !== undefined
+            ? { ...options, content }
+            : options;
       const artifactOwner = documentOwner();
       const result =
         artifactOwner.kind === "project"
@@ -5335,7 +5335,9 @@ export async function executeDispatchTool(
       });
       return {
         text: [
-          `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+          path === undefined && content === undefined
+            ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
+            : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
           ...adviceLines,
         ].join("\n"),
         details:

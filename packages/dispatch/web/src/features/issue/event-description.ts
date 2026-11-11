@@ -106,6 +106,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return `Added ${event.payload.artifact.name}`;
+    case "artifact.renamed":
+      return `Renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
+    case "artifact.removed":
+      return `Removed ${event.payload.artifact.name}`;
     case "artifact.approved":
       return `Approved v${event.payload.version}`;
     case "artifact.changes_requested":
