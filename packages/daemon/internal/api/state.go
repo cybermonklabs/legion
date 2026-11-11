@@ -410,8 +410,14 @@ type Issue struct {
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
 	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
-	HoldReason string     `json:"holdReason,omitempty"`
-	Architect  *ClaimView `json:"architect,omitempty"`
+	HoldReason string `json:"holdReason,omitempty"`
+	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
+	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
+	// the reason is a decision someone must act on, which a lingering tree has none of, while the
+	// phase is a fact of the record that costs one word, so a reader of this body is held to the
+	// simple rule that every issue at `phase: held` names the phase that stopped.
+	HeldFrom  string     `json:"heldFrom,omitempty"`
+	Architect *ClaimView `json:"architect,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
@@ -489,7 +495,8 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // from a predecessor's. A socket path never appears in the view. A claim with no process (queued,
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
 // role never reports (the controller), has no capabilities. A claim whose agent has stepped —
-// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView).
+// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
+// claim the daemon holds a cause for carries why it failed (ClaimFailureView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
@@ -510,6 +517,48 @@ type ClaimView struct {
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
+	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause for
+	// (ClaimFailureView, FailureViewOf).
+	Failure *ClaimFailureView `json:"failure,omitempty"`
+}
+
+// ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
+// one word the site that failed the claim chose (supervise.FailureCause), Detail the sentence
+// that site wrote beside it (supervise.Claim.Failure), At the moment it failed and Attempts the
+// four counts it failed with (supervise.Budgets), which the limits in `settings` are read
+// against. At is absent for a claim whose record carries no moment, which is every failure the
+// migration that added the columns backfilled.
+//
+// A claim carries the record from its failure until it launches again, because nothing clears it
+// but the launch (supervise's launchNow): a claim an operator retired after it failed carries it
+// still, which is what lets an agent reading a retired claim say why it is there, and a claim
+// that never failed carries none of it.
+type ClaimFailureView struct {
+	Cause    supervise.FailureCause `json:"cause"`
+	Detail   string                 `json:"detail"`
+	At       *time.Time             `json:"at,omitempty"`
+	Attempts BudgetsView            `json:"attempts"`
+}
+
+// FailureViewOf is c's failure record as a claim view shows it, and nil for a claim the daemon
+// holds no cause for, so no such claim carries the key. It is keyed on the cause rather than on
+// the claim's state: the state says where the claim is now, and the cause says what the daemon
+// last recorded about it, which outlives a retirement.
+func FailureViewOf(c supervise.Claim) *ClaimFailureView {
+	if c.FailureCause == "" {
+		return nil
+	}
+	return &ClaimFailureView{
+		Cause:  c.FailureCause,
+		Detail: c.Failure,
+		At:     instant(c.FailedAt),
+		Attempts: BudgetsView{
+			LaunchFailures: c.Budgets.LaunchFailures,
+			Deaths:         c.Budgets.Deaths,
+			PromptFailures: c.Budgets.PromptFailures,
+			PromptRetires:  c.Budgets.PromptRetires,
+		},
+	}
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the

@@ -207,6 +207,8 @@ func populatedState(t *testing.T) State {
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
+	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -375,8 +377,25 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				HoldReason:    "escalated",
+				// The phase the hold took this root out of, which its release puts it back to. It
+				// stands beside the reason here; the two part on a tree that lingers, where the
+				// reason is withheld and this is not (internal/projection).
+				HeldFrom: string(phase.Implementing),
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
+					// Its implementer failed and nothing has launched it since, so the claim
+					// carries why: the one word the supervision chose, the sentence it wrote, the
+					// moment, and the four counts it failed with, which a reader reads against
+					// the limits in `settings`.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_210",
+						State:   "failed",
+						Failure: &ClaimFailureView{
+							Cause:    supervise.CauseDied,
+							Detail:   "launch failures ran out",
+							At:       &implementerFailedAt,
+							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
+						},
+					}, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.

@@ -250,12 +250,24 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
+      "heldFrom": "implementing",
       "workers": {
         "implementer": {
           "claim": {
             "session": "ses_implementer_210",
             "state": "failed",
-            "pluginContract": 0
+            "pluginContract": 0,
+            "failure": {
+              "cause": "died",
+              "detail": "launch failures ran out",
+              "at": "2026-09-22T08:47:03Z",
+              "attempts": {
+                "launchFailures": 4,
+                "deaths": 1,
+                "promptFailures": 0,
+                "promptRetires": 0
+              }
+            }
           },
           "rounds": 1
         }

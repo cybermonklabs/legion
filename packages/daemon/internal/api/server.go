@@ -632,18 +632,21 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // the contract that added the claim views' step record, is served it without `step`
 // (withoutStallRecord); a caller below waitingLineContract, the contract that added each
 // waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine);
-// and a caller below backwardMovesContract, the contract that added each worker's counts of the
-// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves).
-// The nine compose: each is applied when the state carries something of its own, so a caller
+// a caller below backwardMovesContract, the contract that added each worker's counts of the
+// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves);
+// and a caller below failureRecordContract, the contract that added why a claim failed and the
+// phase a held issue is held from, is served it without `failure` and without `heldFrom`
+// (withoutFailureRecord), the two keys that contract added together.
+// The ten compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
-// of the twelve keys, each of them absent rather than empty, since a strict reader before the
+// of the fourteen keys, each of them absent rather than empty, since a strict reader before the
 // contract that added a key refuses it whether or not it names anything, and with no retired
-// entry under `strandedClaims`. Every later reader takes all twelve keys as optional and all
+// entry under `strandedClaims`. Every later reader takes all fourteen keys as optional and all
 // three states — `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting`,
-// the issues' `gatedSteps` and `waitingLine`, the workers' counts of the moves back and the
-// claim views' `step` optional for exactly these bodies. Any other caller — a pod at this
-// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
-// writes it.
+// the issues' `gatedSteps`, `waitingLine` and `heldFrom`, the workers' counts of the moves back
+// and the claim views' `step` and `failure` optional for exactly these bodies. Any other caller
+// — a pod at this contract, the operator's `legion state`, a tmux pane — is served the state as
+// this contract writes it.
 //
 // The claims are the snapshot's own because the body is: a claim and the state it was projected
 // into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
@@ -701,6 +704,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	}
 	if contract < backwardMovesContract && carriesBackwardMoves(state) {
 		state = withoutBackwardMoves(state)
+	}
+	if contract < failureRecordContract && carriesFailureRecord(state) {
+		state = withoutFailureRecord(state)
 	}
 	return state
 }
@@ -761,6 +767,17 @@ const waitingLineContract = 58
 // than what keeps such a caller reading at all.
 const backwardMovesContract = 62
 
+// failureRecordContract is the daemon contract that added why a claim failed to its claim views
+// (`failure`) and the phase a held issue is held from to its issues (`heldFrom`), the two keys of
+// dispatch://INFRA-3083. A plugin before it is served the state without either: one built before
+// sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body for a key it
+// does not name, and one built after strips the key instead.
+//
+// Both keys arrive at this one number and leave together, so the route takes one triple for them
+// (carriesFailureRecord, withoutFailureRecord) rather than two that would copy the issue map
+// twice in one request.
+const failureRecordContract = 75
+
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
 	carries := func(v ClaimView) bool { return v.UpdateRound != "" || v.UpdateHead != "" }
@@ -793,9 +810,9 @@ func carriesMemory(state State) bool {
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
-// question to the nine and because a later contract that stops writing `trees` on every body
-// answers it here.
+// carriesWaitingLine, carriesBackwardMoves and carriesFailureRecord all the same, because
+// stateFor puts the same question to the ten and because a later contract that stops writing
+// `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
@@ -804,9 +821,9 @@ func carriesTrees(State) bool { return true }
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
-// question to the nine and because a later contract that stops writing `wakesWaiting` on every
-// body answers it here.
+// carriesWaitingLine, carriesBackwardMoves and carriesFailureRecord all the same, because
+// stateFor puts the same question to the ten and because a later contract that stops writing
+// `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
@@ -830,6 +847,28 @@ func carriesStallRecord(state State) bool {
 		}
 		for _, worker := range issue.Workers {
 			if worker.Claim.Step != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// carriesFailureRecord is whether state carries either key failureRecordContract added: a claim
+// view's `failure`, why that claim failed, or an issue's `heldFrom`, the phase its hold took it
+// out of. The two are asked together because they are stripped together (withoutFailureRecord),
+// and both are written only where there is one, so this is asked of the state rather than
+// answered true, as carriesStallRecord is.
+func carriesFailureRecord(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.HeldFrom != "" {
+			return true
+		}
+		if issue.Architect != nil && issue.Architect.Failure != nil {
+			return true
+		}
+		for _, worker := range issue.Workers {
+			if worker.Claim.Failure != nil {
 				return true
 			}
 		}
@@ -1049,6 +1088,35 @@ func withoutStallRecord(state State) State {
 			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
 			for role, worker := range issue.Workers {
 				worker.Claim.Step = nil
+				workers[role] = worker
+			}
+			issue.Workers = workers
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// withoutFailureRecord is state with no claim view carrying `failure` and no issue carrying
+// `heldFrom`, the two keys failureRecordContract added to this route; nothing else of that
+// contract is on it. Both keys are stripped in this one copy of the issue map, because they
+// arrive and leave together and two passes would copy that map twice in one request. The maps
+// are copied, so the state the source answered is left as it was, as withoutStallRecord leaves
+// it.
+func withoutFailureRecord(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.HeldFrom = ""
+		if issue.Architect != nil {
+			architect := *issue.Architect
+			architect.Failure = nil
+			issue.Architect = &architect
+		}
+		if issue.Workers != nil {
+			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+			for role, worker := range issue.Workers {
+				worker.Claim.Failure = nil
 				workers[role] = worker
 			}
 			issue.Workers = workers

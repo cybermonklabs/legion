@@ -90,6 +90,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			// What the daemon last saw this claim's agent do, which the stall backstop and an
 			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
 			Step: api.StepViewOf(current.Step),
+			// Why the claim failed, for as long as the daemon holds a cause for it: a claim an
+			// operator retired after it failed carries the record still, since nothing but the
+			// launch that runs it again clears it (api.FailureViewOf). It is keyed on the stored
+			// cause rather than on the claim's state for exactly that reason.
+			Failure: api.FailureViewOf(current),
 		}
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
@@ -127,8 +132,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
 		// re-admitted, which leaves the issue held.
-		if issue.Hold != nil && !lingering[issue.Tree] {
-			view.HoldReason = string(issue.Hold.Reason)
+		//
+		// The phase the hold took the issue out of is shown whatever the tree is doing, which is
+		// the deliberate difference: the reason is a decision to act on and a lingering tree has
+		// none, while the phase is a fact of the record, so every issue the body shows at
+		// `phase: held` names the phase that stopped.
+		if issue.Hold != nil {
+			view.HeldFrom = string(issue.Hold.From)
+			if !lingering[issue.Tree] {
+				view.HoldReason = string(issue.Hold.Reason)
+			}
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
