@@ -52,7 +52,34 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	t.Cleanup(counted.Close)
 
 	js, stream := testJetStream(t)
-	spec := consumerSpec(&lockedBuffer{})
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	// A failure here prints a count, and a count alone cannot tell a late progress report from a
+	// nak: each ends in a redelivery. The cleanup below prints what separates them - the
+	// consumer's own log, and for each durable its delivery count, its delivery sequence, its
+	// acknowledgement floor and its counts of pending and redelivered messages. It is registered
+	// after testJetStream's own cleanup, so it runs before the fixture deletes the stream:
+	// cleanups run last in, first out.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		t.Logf("the consumer's log:\n%s", logs.String())
+		for _, name := range []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project)} {
+			consumer, err := stream.Consumer(context.Background(), name)
+			if err != nil {
+				t.Logf("look up consumer %s: %v", name, err)
+				continue
+			}
+			info, err := consumer.Info(context.Background())
+			if err != nil {
+				t.Logf("consumer %s info: %v", name, err)
+				continue
+			}
+			t.Logf("%s delivered %d messages, through stream sequence %d, acknowledged through %d, with %d pending and %d redelivered",
+				name, info.Delivered.Consumer, info.Delivered.Stream, info.AckFloor.Stream, info.NumPending, info.NumRedelivered)
+		}
+	})
 	// A hang guard, not the subject: this row asserts exact counts of the fact lock's statements
 	// and of the permission reads, so nothing of its own may be cut short and tried again.
 	// AckWait bounds each read the handler makes - whether the pull request is recorded
