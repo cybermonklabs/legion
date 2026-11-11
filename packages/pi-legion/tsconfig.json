@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2024"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "baseUrl": ".",
@@ -24,8 +24,7 @@
   "include": [
     "extensions/legion.ts",
     "extensions/legion.test.ts",
-    "extensions/legion-phase-stall-omp.test.ts",
-    "extensions/legion-role-tools-omp.test.ts",
+    "extensions/*-omp.test.ts",
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",
     "scripts/skill-scenarios/*.ts",
