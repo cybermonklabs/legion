@@ -1138,6 +1138,15 @@ export class DispatchApiClient {
     await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
   }
 
+  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
+   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
+   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
+   *  person asking another. */
+  handAskTo(id: string, askedOf: string, bounds: WriteBounds) {
+    return this.put("/api/v1/asks/{id}/asked-of", { id }, { asked_of: askedOf }, bounds);
+  }
+
   listAgents() {
     return this.read("/api/v1/agents", {});
   }

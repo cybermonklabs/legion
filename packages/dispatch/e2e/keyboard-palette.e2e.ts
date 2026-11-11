@@ -1,11 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, test } from "@playwright/test";
-
 import { openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -16,10 +14,6 @@ import { asUser } from "./users";
  * the addresses its rows open and the way the list fits a window - is in
  * `keyboard-palette.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
   browser,
@@ -658,6 +652,9 @@ test("a row whose control has gone since the palette opened does nothing", async
     // is a round trip past it; the margin covers the request's dispatch alone.
     await reopen.click();
     await expect(dialog).toHaveCount(0);
+    // The margin the paragraph above describes: a PATCH the row might have written left in the
+    // task that closed the palette, so this window covers its dispatch alone, and the read below
+    // is the round trip that would have carried it.
     await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
     expect(patches).toBe(0);

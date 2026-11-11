@@ -45,6 +45,10 @@ export const realStackReasons: Record<string, string> = {
     "decision answers the server records, and pastes in the live document editor",
   "ask-concurrent-edit.e2e.ts": "two editors crossing in one `/ws/doc` room",
   "ask-part-references.e2e.ts": "the reference and backlink index the server builds from the write",
+  "asked-of-cli.e2e.ts":
+    "runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser",
+  "asked-of.e2e.ts":
+    "hands an ask on and re-reads the write on every surface that draws it; whose Inbox the row sits in is the server's own expression, and each move arrives over the live socket with no reload",
   "attention.e2e.ts":
     "the new card arrives over the live socket; a read-mark write moves under the reader",
   "bare-references.e2e.ts": "opens the spec's live editor and its margin for every assertion",
@@ -127,6 +131,8 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issues-table.e2e.ts":
+    "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -146,6 +152,8 @@ export const realStackReasons: Record<string, string> = {
   "keyboard.e2e.ts": "creates an issue and opens what the API returned; status and rank writes",
   "keyed-send.e2e.ts": "idempotency keys and one delivery proved against the server",
   "keyed-writes.e2e.ts": "idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races",
+  "labels-escape-focus.e2e.ts":
+    "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
@@ -181,6 +189,8 @@ export const realStackReasons: Record<string, string> = {
   "pipeline.e2e.ts": "`sql`-seeded pipeline state the server aggregates",
   "plain-http-origin.e2e.ts": "types into the live document over the plain-HTTP origin",
   "plain-http-proxy.e2e.ts": "counts the live socket upstream of a real proxy",
+  "popover-escape.e2e.ts":
+    "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "progress.e2e.ts":

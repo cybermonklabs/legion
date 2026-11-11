@@ -1,5 +1,4 @@
 import { type LegionRole, roleToken } from "@legion/contracts";
-import { expect, type Locator, test } from "@playwright/test";
 
 import {
   legionAgentEntry,
@@ -17,7 +16,7 @@ import {
   patchIssue,
 } from "./api";
 import { openRefPicker, pickerRows } from "./ref-picker";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -43,10 +42,6 @@ interface Fixture {
   readonly issueKey: string;
   readonly tokens: Readonly<Record<"implementer" | "reviewer" | "tester", string>>;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seed(): Promise<Fixture> {
   await createProject({ key: "E2E", name: "Collaborators" });

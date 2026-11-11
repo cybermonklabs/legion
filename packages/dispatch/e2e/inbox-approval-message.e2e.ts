@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   answerAsk,
   createIssue,
@@ -12,7 +10,7 @@ import {
 } from "./api";
 import { holdFirstRequest } from "./editor";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -183,10 +181,6 @@ async function seedTwoDocuments(): Promise<Seed> {
     specName: spec.name,
   };
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: An approval: the reading pane has to draw the request's whole question above the document it asks about.
 test("the reading pane draws the request's whole question as markdown above the document @pr", async ({

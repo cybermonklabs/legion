@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   agentRow,
   getSentMessages,
@@ -20,7 +18,7 @@ import {
   watchWrites,
 } from "./keyed-writes";
 import { pickReference } from "./ref-picker";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A message to one session goes under an `Idempotency-Key`, and the page tries it again under
@@ -65,10 +63,6 @@ async function plannerAttempts(
     .filter((delivery) => delivery.session_id === plannerSession.session_id)
     .map(({ attempt, comment_id, state }) => ({ attempt, comment: comment_id, state }));
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A keyed write: a send whose answer is lost is tried again under its key and delivered once.
 test("a send whose answer is lost is tried again under its key, and delivered once @pr", async ({

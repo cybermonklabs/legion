@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import { setLiveSessions } from "./agents";
 
 import {
@@ -19,8 +18,9 @@ import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText }
 import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
 import { refPicker } from "./ref-picker";
-import { insertExternalLink, resetDatabase } from "./seed";
+import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -57,10 +57,6 @@ async function assertTabTrapped(page: Page, selector: string): Promise<void> {
     expect(await activeElementInside(page, selector)).toBe(true);
   }
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two focus traps of 32 presses each, every one read back from the page, on an
 // emulated phone - the cycle is the property, and both containers hold more than eight stops.
@@ -346,10 +342,9 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
   }
 });
 
-test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @phone", async ({
+test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 390 px interaction applies on iPhone");
+}) => {
   await setLiveSessions([
     {
       capabilities: ["aside", "btw"],
@@ -397,10 +392,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
 // to its newest turn lands well after a link first has a box, and the row measures what it
 // placed rather than trusting the page's own placement, since a turn left under the fixed comment
 // composer would have a hit test read the composer and not the link.
-test("an inline link keeps its line and grows its hit box without covering its neighbours @phone", async ({
+test("an inline link keeps its line and grows its hit box without covering its neighbours @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 390 px interaction applies on iPhone");
+}) => {
   // The settle proof below is bounded at 20 s and two trial clicks at 5 s each stand after it,
   // all of them failure budget: a passing run spends none of it.
   test.setTimeout(60_000);

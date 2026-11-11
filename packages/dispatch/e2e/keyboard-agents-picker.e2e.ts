@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   agentRow,
   openAgents,
@@ -11,8 +9,8 @@ import {
 import { createAgentMessage, createMessage, listComments, patchIssue } from "./api";
 import { openFromSidebar } from "./editor";
 import { keyedWrite } from "./keyed-writes";
-import { resetDatabase } from "./seed";
 import { holdPosts, MESSAGE_REFUSED, refusePosts } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The issue picker's keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`) holds only
@@ -27,10 +25,6 @@ import { asUser } from "./users";
 // in-app navigations, whose every measured failure was in WebKit. Every other row of this file
 // is untagged: what the picker and Reply do with a message on its way to the server, and what a
 // pick dispatched from a script does, are the same in every engine, and Chromium asserts them.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** What a row's composer says once Dispatch refuses its message. A server that is down is tried
  *  again under the send's key, so the rows that need a refusal refuse with Dispatch's verdict. */

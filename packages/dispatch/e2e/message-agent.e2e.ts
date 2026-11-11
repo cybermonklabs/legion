@@ -1,9 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, patchIssue } from "./api";
 import { pickReference } from "./ref-picker";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -42,10 +40,6 @@ async function postPayload(page: Page): Promise<Record<string, unknown>> {
     .click();
   return (await response).request().postDataJSON() as Record<string, unknown>;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A write a person makes: the composer offers the live roles and sessions and posts the canonical mention target for the one picked.
 test("the unified composer offers live roles and sessions and posts canonical mention targets @pr", async ({

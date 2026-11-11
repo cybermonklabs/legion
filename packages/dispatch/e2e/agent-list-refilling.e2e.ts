@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { agentRow, type FakeSession, setInterests, setListsState, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -12,7 +10,7 @@ import {
   userHeaders,
 } from "./api";
 import { openRefPicker } from "./ref-picker";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The Envoy listener refuses its two list reads while its copy of a bucket cannot be served: 503,
@@ -170,7 +168,11 @@ function askRecipients(page: Page, askId: string): Locator {
 
 async function openProjectList(page: Page, issueKey: string): Promise<void> {
   await page.goto("/projects/CORE/issues");
-  await expect(page.locator(`[data-issue-row]`).filter({ hasText: issueKey })).toHaveCount(1);
+  await expect(
+    page
+      .getByRole("table", { name: "Project issues table" })
+      .locator(`[data-issue-row="${issueKey}"]`)
+  ).toHaveCount(1);
 }
 
 async function openProjectBoard(page: Page, issueKey: string): Promise<void> {
@@ -220,10 +222,6 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await openProjectBoard(page, fixture.issueKey);
   await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("a list that starts refilling after a complete read claims no agent absent, and recovers", async ({
   browser,
