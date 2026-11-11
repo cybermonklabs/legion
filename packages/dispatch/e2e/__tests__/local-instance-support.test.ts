@@ -107,15 +107,19 @@ describe("Supervisor.stop", () => {
   test("ends a foreground step that a stop interrupts", async () => {
     const pidFile = join(makeDirectory(), "step.pid");
     const made = supervisor();
-    const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; sleep 60`], "/");
+    // `exec` makes the shell become the sleep, so the pid in the file is the one process of this
+    // group and the test says so itself rather than resting on a bash that happens to drop its
+    // own frame for the last command of a `-c` list (5.1 and later do; 3.2 does not).
+    const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
     const leader = await pidFrom(pidFile);
     made.interrupt();
     await expect(step).rejects.toBeInstanceOf(Interrupted);
     // The force-kill delay is far above this row's limit, as in the row above.
     await made.stop(BEYOND_THE_ROW_MS);
-    // `run` removes the step from the supervisor's children only on a clean exit, so after the
-    // interrupt it is `stop` that ends this process: what this catches is a `stop` that returned
-    // having killed nothing.
+    // `run` splices the step out of the supervisor's children on any exit the child makes by
+    // itself, before it throws on a non-zero code; the step stays in the list only when the
+    // interrupt rejects first, as it did here. So it is `stop` that ends this process: what this
+    // catches is a `stop` that returned having killed nothing.
     expect(groupAlive(leader)).toBe(false);
   });
 });

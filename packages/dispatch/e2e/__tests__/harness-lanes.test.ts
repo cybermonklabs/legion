@@ -16,6 +16,7 @@ import {
   withoutHarnessPort,
   workerCount,
 } from "../harness-ports";
+import { SPAWN_TEST_MS } from "./spawn-test-ms";
 
 const runScript = fileURLToPath(new URL("../run.ts", import.meta.url));
 const psqlModule = fileURLToPath(new URL("../psql.ts", import.meta.url));
@@ -29,14 +30,6 @@ const playwright = fileURLToPath(new URL("../../node_modules/.bin/playwright", i
 // Every child this file starts reads this home rather than the caller's, so no cache,
 // configuration or credential of the developer's own can change what a case here proves.
 const home = temporaryDirectory("harness-lanes-home");
-
-/** The per-test limit of every row below that spawns a process. Such a row's cost follows the
- *  machine rather than the work: measured on this pod - 2 CPUs, 8 runs under 6 busy loops
- *  (3 x nproc) - the worst reading was 8.92 s, and 30 s is about three times that worst reading.
- *  It is a limit sized from measurement rather than a hang guard, though a row that hangs is
- *  ended by it. Bun's unwritten 5 s default is under the worst reading, so a busy machine read
- *  as a defect of whatever change was under test. */
-const SPAWN_TEST_MS = 30_000;
 
 async function run(argv: string[], env: Record<string, string>) {
   const child = Bun.spawn(argv, {
@@ -240,16 +233,20 @@ test.skipIf(withoutDatabase)(
   SPAWN_TEST_MS
 );
 
-test("psql names both variables when neither its lane nor the plain name has a database", async () => {
-  const refused = await run(
-    ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
-    { DISPATCH_E2E_LANES: "2", TEST_PARALLEL_INDEX: "1" }
-  );
-  expect(refused.code).not.toBe(0);
-  expect(`${refused.stderr}${refused.stdout}`).toContain(
-    "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
-  );
-});
+test(
+  "psql names both variables when neither its lane nor the plain name has a database",
+  async () => {
+    const refused = await run(
+      ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
+      { DISPATCH_E2E_LANES: "2", TEST_PARALLEL_INDEX: "1" }
+    );
+    expect(refused.code).not.toBe(0);
+    expect(`${refused.stderr}${refused.stdout}`).toContain(
+      "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
+    );
+  },
+  SPAWN_TEST_MS
+);
 
 // The gate `skipWithout` would be, for a program in the checkout rather than one on PATH, and for
 // the `node` that program needs: the Playwright `bun install` writes starts with
@@ -268,12 +265,11 @@ if (withoutPlaywright) {
   );
 }
 
-// This row is the file's one expensive case: it starts `playwright test --list` twice, each of
-// which loads the Playwright config and resolves every spec. Measured in an issue pod with the
-// pod to itself it takes 3.9 s of bun's 5 s default, and with the browser suite running beside
-// it the row has ended at 5003 ms - the default to the millisecond - which reads as a defect of
-// this change rather than as the machine being busy. The timeout is its own, far above what the
-// work costs, so a slow machine makes this row slow and never red.
+// This row starts `playwright test --list` twice, each of which loads the Playwright config and
+// resolves every spec. Measured in an issue pod with the pod to itself it takes 3.9 s of Bun's
+// 5 s default, and with the browser suite running beside it the row has ended at 5003 ms - the
+// default to the millisecond - which reads as a defect of this change rather than as the machine
+// being busy, which is why it carries `SPAWN_TEST_MS` like the spawning rows above.
 test.skipIf(withoutPlaywright)(
   "the Playwright config refuses a --workers that is not the lane count",
   async () => {

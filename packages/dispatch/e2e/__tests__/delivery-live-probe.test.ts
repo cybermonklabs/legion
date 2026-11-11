@@ -455,8 +455,9 @@ test(
         socket.close(1012, "service restart");
       },
     });
-    // A 50 ms spread, pinned by the option, so the wait is the probe's own and this row stays
-    // quick and deterministic. The product's backoff shape is proven by its own unit row
+    // A 50 ms spread, pinned by the option, so the wait is the probe's own draw from [0, 50) ms
+    // and this row stays quick: bounded, not deterministic. The product's backoff shape is
+    // proven by its own unit row
     // ("the first reconnect is spread over [0, 2 s); later ones back off within [d/2, d), capped
     // at 30 s", web/src/api/live-socket.test.ts:612); what this row proves is the resume's
     // content and order.

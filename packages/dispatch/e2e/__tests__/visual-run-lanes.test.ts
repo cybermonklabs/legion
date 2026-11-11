@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
+import { SPAWN_TEST_MS } from "./spawn-test-ms";
+
 // `e2e/visual-run.sh` seeds the review corpus on the host and then runs the two visual projects
 // in the pinned container. The seed runs outside any Playwright worker, so `TEST_PARALLEL_INDEX`
 // is unset and it writes LANE 0 alone (`e2e/harness-ports.ts`); the script forwards every
@@ -28,14 +30,6 @@ async function run(env: Record<string, string>): Promise<{ code: number; stderr:
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   return { code, stderr };
 }
-
-/** The per-test limit of the rows below. Each of them spawns a real process, so what a row costs
- *  follows the machine rather than the work: measured on this pod - 2 CPUs, 8 runs under 6 busy
- *  loops (3 x nproc) - the worst reading was 9.46 s, and 30 s is about three times that worst
- *  reading. It is a limit sized from measurement rather than a hang guard, though a row that
- *  hangs is ended by it. Bun's unwritten 5 s default is under the worst reading, so a busy
- *  machine read as a defect of whatever change was under test. */
-const SPAWN_TEST_MS = 30_000;
 
 describe("the visual run's one-lane rule", () => {
   test(

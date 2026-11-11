@@ -2320,8 +2320,9 @@ Neither row reads a clock, and the two catch different things.
 The 4001 row pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
 answered a rotation on the timer rather than at once cannot subscribe again inside the row: there
 the runner's limit is the discriminator.
-The 1012 row pins 50 ms, which makes the probe's own wait small and deterministic rather than
-catching anything; a reopen that waited the page's two-second default would still pass it, so that
+The 1012 row pins 50 ms, which makes the probe's own wait a draw from [0, 50 ms) - small and
+bounded rather than deterministic - and catches nothing on its own; a reopen that waited the
+page's two-second default would still pass it, so that
 row asserts the resume's content and order alone, and the backoff's own shape is held by the unit
 row in `web/src/api/live-socket.test.ts`.
 
