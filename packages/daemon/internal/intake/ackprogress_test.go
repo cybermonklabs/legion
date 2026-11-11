@@ -170,6 +170,31 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// subscription that counts it exists.
 	progress := watchProgressSignals(t, js)
 	spec := consumerSpec(&lockedBuffer{})
+	// The window is this row's own, in place of consumerSpec's 200 ms, and it is what makes the
+	// delivered count below sound: a row whose subject is the broker's own delivery behaviour
+	// must count deliveries, and such a count needs a window above the measured distribution of
+	// the progress keeper's first report (docs/testing.md, "A test asserts no count of work a
+	// broker may repeat"). Until the keeper has reported once, the window alone stands between
+	// the held fact and a redelivery. consumeMessage takes the keeper's period as a third of the
+	// window (spec.AckWait/3 in consume.go), so at two seconds the period is 667 ms and 1333 ms
+	// of the window are left after the first report is due.
+	//
+	// What that has to cover is measured. The campaign of dispatch://INFRA-1113 measured, at a
+	// 200 ms window: the largest trip of an acknowledgement to the server 516.8 ms, the largest
+	// lateness of the keeper's own report 337 ms, and the largest trip of a progress report
+	// 158.6 ms, so the largest delay any signal must survive is 517 ms. Those delays are
+	// wall-clock and not a fraction of the period, because the mechanism is a goroutine and a
+	// socket that are not scheduled: a starved goroutine is late by the time it waits, whatever
+	// interval it was waiting for. The 1333 ms left is 2.6 times 517 ms, where a second and a
+	// half would leave 1000 ms, which is 1.9 times, so two seconds is the smallest half-second
+	// that leaves more than twice the largest delay measured. At consumerSpec's 200 ms this row
+	// is not sound: measured in this pod at the base commit, under 16 busy loops on 2 CPUs, it
+	// failed 11 of 300 runs, each failure a delivery too many with one event prepared twice,
+	// while the control below passed 300 of 300.
+	//
+	// The hold below is three windows, so six seconds, and the limit on the next line is far
+	// above it.
+	spec.AckWait = 2 * time.Second
 	// The hold must cost the handling nothing but time: this row is the progress signal's, and the
 	// limit that cuts a handler which never ends is R2's.
 	spec.HandlerLimit = time.Minute
@@ -247,9 +272,16 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // The control: the same backlog, the same window and the same hold, on a consumer of the test's
 // own that reports nothing in progress, and JetStream delivers the held message again. These are
 // the two facts the row above denies.
+//
+// Its window is the row above's two seconds, so the pair stays a pair: the same backlog, the same
+// window and the same hold of three windows. The window is sized above: a third of it, 667 ms, is
+// when that row's keeper owes its first report, and the largest delay any signal must survive is
+// 517 ms, which the campaign of dispatch://INFRA-1113 measured. This consumer reports nothing in
+// progress, by design, so here the window only says when the server may deliver the held message
+// again.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
 	js, stream := testJetStream(t)
-	const ackWait = 200 * time.Millisecond
+	const ackWait = 2 * time.Second
 	publishHeldBacklog(t, js)
 
 	consumer := issueConsumer(t, stream, "held-control", ackWait)
