@@ -41,7 +41,7 @@ import (
 // 4000-line document would otherwise satisfy the check while the remedy itself stays silent about
 // it, which is the same miss wearing a pass.
 const (
-	reclaimParagraphStart = "The remedy for a volume near full is manual"
+	reclaimParagraphStart = "The remedy for a volume the trimmer cannot bring down is manual"
 	reclaimParagraphEnd   = "As for the rest:"
 	reclaimDeleteHeading  = "Delete list"
 	reclaimExemptHeading  = "Exempt, each for a reason"

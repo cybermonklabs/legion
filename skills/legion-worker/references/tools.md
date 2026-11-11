@@ -193,6 +193,47 @@ everything the image does not carry, the one documented step is a pinned run thr
 three package runners it does — plus `uv run --with` when what you need is a library rather than
 a command — and a tool no runner reaches is an image change ("When no runner reaches it", below).
 
+## The disk your pod works on, and what the trimmer deletes
+
+Your pod has one volume, mounted at `/legion`, and the six roles of the issue share it: the
+clone, every workspace, the temporary directory, the cache home, the data home, the bun install
+cache, the Go build and module caches, and uv's cache and Pythons are all on it. Nothing else of
+the pod is: a role's own home and `/tmp` are on the node's disk, which is small and whose limit
+evicts the whole pod. Read its free space with `df -h /legion`.
+
+A cache trimmer in the pod's launcher process holds part of it under a mark. At 85 per cent used
+it deletes, oldest first, until the volume is back under 70 per cent, and it deletes only these:
+
+- a `go-build*` directory of `$TMPDIR`, which Go names and owns, and **nothing else of `$TMPDIR`**;
+- a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, which is what `go clean -cache`
+  would remove;
+- an immediate child of the cache home, `/legion/scratch/cache`, except `ms-playwright` and
+  `legion-claude-code`;
+- an immediate child of the bun install cache, `/legion/scratch/bun/install/cache`.
+
+It deletes nothing a role put anywhere else: not your workspace, not the clone, not the feed,
+not a role's state home, not the data home, not the Go module cache, not uv's cache or its
+Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`. It skips anything a
+process of the pod has open, anything touched in the last fifteen minutes, and anything that is
+not the kind of file its row names, and it follows no symbolic link. So it frees caches and it
+never frees your work.
+
+That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
+pod does and counts against the volume for every role. Delete the paths you made, each by its
+exact path, when you are done with them.
+
+One shell rule follows from a directory that can go away under you. A command that enters a
+scratch directory chains with `&&`:
+
+```bash
+cd -- "$TMPDIR/probe" && ./run.sh          # right: a deleted directory stops the command
+cd -- "$TMPDIR/probe"; ./run.sh            # wrong: `cd` fails and `./run.sh` runs where the shell last stood
+```
+
+Your bash tool keeps one shell for the whole session, so the second form runs in whatever
+directory your previous command left, which is often the shared workspace. That is how one
+tester's probe files landed in the workspace of every role of its issue.
+
 ## What the withheld capability is, and what it is not
 
 What the withheld row says, the three artefacts that draw the line between it and a pinned runner
