@@ -267,6 +267,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/keyed-writes.e2e.ts` | idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races |
 | `e2e/labels-escape-focus.e2e.ts` | the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again |
 | `e2e/labels.e2e.ts` | label writes and a server-filtered list; writes labels, then reloads and measures |
+| `e2e/legion-facts.e2e.ts` | the facts consumer recomputes one issue's stored row from an event the row writes, and the server's `issue_facts` change row wakes the open Legion view over `/ws/live`; the card's work time is the number the server stored |
 | `e2e/legion.e2e.ts` | every metric and every column is the server's aggregation over the daemon's recorded observations; the settings rows write a setting and read the daemon's own verdict back; a card moves between columns on a live `/ws/live` frame with no reload |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |
