@@ -317,12 +317,19 @@ function assemble(
  * one via the other, so each is placed under a block of the other (`tree-drafts.ts`'s
  * `citations`) - and so does a `from` edge that points in a circle.
  *
- * The ring is opened at one draft and no more: the first of the drafts the issue cannot reach,
- * in the order the tree draws siblings in - its own order, then its id - comes home to the
- * issue, and whatever that lets the issue reach keeps the place its citation gave it. So the
- * spec, which is the first document of the issue, is drawn under the issue and the plan that
- * cites it stays under the block of the spec that cites the plan, and the same reads always
- * draw the same tree.
+ * The ring is opened at one draft and no more, and that draft is a member of the ring itself:
+ * the first of the ring members the issue cannot reach, in the order the tree draws siblings
+ * in - its own order, then its id - comes home to the issue, and whatever that lets the issue
+ * reach keeps the place its citation gave it. So the spec, which is the first document of the
+ * issue, is drawn under the issue and the plan that cites it stays under the block of the spec
+ * that cites the plan, and the same reads always draw the same tree.
+ *
+ * It is the ring's own member and never the lowest order among the drafts the issue cannot
+ * reach, because a node hanging off a ring is unreachable too and sorts before every member of
+ * it: a block's order is its place in its own document, and a requirement's is
+ * `ROOT_ORDER.requirement` and up, so a plan task serving a requirement of a ring is the
+ * first of them. Re-rooting that task would tear it off the requirement it serves and leave
+ * the ring to be opened anyway.
  */
 function bringHome(
   key: string,
@@ -352,6 +359,29 @@ function bringHome(
   const ordered = [...drafts].sort(
     (one, other) => one.order - other.order || one.id.localeCompare(other.id)
   );
+  /** Whether `id` is a member of a ring: a draft its own placements lead back to. */
+  const inRing = (id: string): boolean => {
+    const seen = new Set<string>();
+    const queue = [...(placements.get(id) ?? [])];
+    for (;;) {
+      const above = queue.pop();
+      if (above === undefined) return false;
+      if (above === id) return true;
+      if (seen.has(above)) continue;
+      seen.add(above);
+      queue.push(...(placements.get(above) ?? []));
+    }
+  };
+  for (;;) {
+    const member = ordered.find((draft) => !reached.has(draft.id) && inRing(draft.id));
+    if (member === undefined) break;
+    placements.set(member.id, [key]);
+    reached.add(member.id);
+    walk(member.id);
+  }
+  // Nothing the reads hold is lost (R1): every draft the issue cannot reach sits under a ring,
+  // since a draft whose placements run out sits under the issue and is reached, so the rings
+  // above answer for them all. A draft left over all the same still comes home.
   for (const draft of ordered) {
     if (reached.has(draft.id)) continue;
     placements.set(draft.id, [key]);

@@ -64,8 +64,11 @@ export function IssueFieldForms({
   return null;
 }
 
-/** The buttons every one of these editors ends on: save, then cancel. */
-function FormActions({
+/** The buttons every editor of an issue's fields ends on: save, then cancel. The panel's own
+ *  editors end on these too (`BlockedByControl.tsx`), so the two draw one pair of buttons and
+ *  cannot drift apart. `saveLabel` is the editor's own word for its save, which is what says
+ *  a save is out ("Saving…"). */
+export function FormActions({
   cancel,
   saveLabel,
   saving,
@@ -90,7 +93,7 @@ function FormActions({
         type="button"
         {...pageChrome}
       >
-        Cancel
+        {CONTROL_LABELS.cancel}
       </button>
     </>
   );

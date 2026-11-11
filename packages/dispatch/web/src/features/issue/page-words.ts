@@ -27,6 +27,7 @@
  * component all read the same list.
  */
 
+import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 import {
   freeze,
   HELP_LINES,
@@ -97,7 +98,12 @@ export const NODE_STATE_WORDS = freeze({
   ask: {
     answered: "Answered",
     open: "Open",
-    resolved: "Resolved",
+    // How an ask was closed rather than answered, in the words the card and the margin draw
+    // beside the tree (`ASK_RESOLUTION_WORDS`, the one table all three read): an ask whose
+    // `state` is `resolved` stands in the state its resolution names, so a declined question
+    // reads "Declined" on its row and "Declined" on its card. `resolved` is both the block
+    // state the schema declares and the kind of a plain resolution, under the one word.
+    ...ASK_RESOLUTION_WORDS,
   },
   check: {
     failed: "Failed",
@@ -667,16 +673,25 @@ export function nodeFactLabel(name: string): string {
 
 /**
  * The `data-glyph` token of each shape the page draws: one per node type, and one per state of
- * the two types that have states. No two types share a token and no two states of one type's
+ * the three types that have states. No two types share a token and no two states of one type's
  * surface share one, so a reader who tells shapes apart tells the nodes apart; a state's token
- * carries its type, which keeps the check's five states distinct from the ask's three as well.
+ * carries its type, which keeps the check's five states distinct from the ask's own as well.
+ *
+ * The four ways an ask is closed carry four tokens drawing the one closed shape
+ * (`NodeGlyph.tsx`): to a reader a declined, a retracted, a withdrawn and a plainly resolved
+ * question are all shut, and the word beside the shape is what tells them apart. The tokens
+ * stay distinct because a shape carries its own accessible name, and a declined ask's shape
+ * may not announce itself as a resolved one.
  */
 export const GLYPH_TOKENS = freeze({
   states: {
     ask: {
       answered: "ask-answered",
+      declined: "ask-declined",
       open: "ask-open",
       resolved: "ask-resolved",
+      retracted: "ask-retracted",
+      withdrawn: "ask-withdrawn",
     },
     check: {
       failed: "check-failed",

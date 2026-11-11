@@ -24,6 +24,7 @@ import type {
   EventType,
   GraphReferences,
   InboxRow,
+  IssueDetails,
   IssueSummary,
   MyRepliesResponse,
   MyReplyRow,
@@ -182,6 +183,27 @@ function referencePanels(matches: (references: GraphReferences) => boolean): Ref
 /** The backlink panel of exactly one reference, as `ReferencedBy` keys it. */
 function referencePanel(reference: string): RefreshTarget {
   return { exact: true, queryKey: ["references", "to", reference] };
+}
+
+/**
+ * Every loaded issue detail that draws who holds `key`: the issue's own, and the detail of an
+ * issue whose children section lists it (`IssueChildren.tsx` draws each child's holder). A key
+ * of more than two segments is one of the reads hanging under a detail's - the coverage, the
+ * results, the collaborators, the references - and none of them says who holds anything.
+ *
+ * A read holding nothing yet is accepted: there are no children to tell by, and a query with no
+ * data is marked stale and fetched by whatever mounts it.
+ */
+function issueHolderDetails(key: string): RefreshTarget {
+  return {
+    queryKey: ["issue"],
+    when: (data, query) => {
+      if (query.queryKey.length !== 2) return false;
+      if (query.queryKey[1] === key) return true;
+      const detail = data as Pick<IssueDetails, "children"> | undefined;
+      return detail === undefined || (detail.children ?? []).some((child) => child.key === key);
+    },
+  };
 }
 
 // The document an ask or comment event touches: a block ask names the document that holds its
@@ -900,12 +922,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // detail, the log, the project lists that render the claim, and the collaborators the
     // branch above named. No rollup, ask count or component attachment moves with it.
     //
-    // Every loaded detail, not this issue's alone: an ancestor's children section draws each
-    // child's holder (`IssueChildren.tsx`), and the claim payload names no ancestors
-    // (`IssueClaimEventPayload`), so there is no narrower target than the one an issue write
-    // with no ancestors already falls back to (`issueWriteTargets`). A parent left open beside
-    // the claimed child kept the old holder until a refocus otherwise.
-    targets.push({ queryKey: ["issue"] });
+    // Every loaded detail that draws this holder, not this issue's alone: an ancestor's children
+    // section draws each child's holder (`IssueChildren.tsx`), and the claim payload names no
+    // ancestors (`IssueClaimEventPayload`). So the prefix is every issue read and the check is
+    // what narrows it - the issue's own detail, and the detail of an issue whose children hold
+    // it - rather than every read hanging under `["issue", key]`: the references, the coverage,
+    // the results and the collaborators of every loaded issue hang there too, and a claim moves
+    // none of them.
+    targets.push(issueHolderDetails(key));
     return targets;
   }
   if (event.type === "issue.deployed") {

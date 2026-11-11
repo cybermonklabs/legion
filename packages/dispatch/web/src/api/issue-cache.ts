@@ -53,3 +53,21 @@ export function mergeIssue(queryClient: QueryClient, next: Issue): void {
     return { ...current, ...next, ...reach };
   });
 }
+
+/**
+ * What every write of one issue's fields does once Dispatch has taken it: the answer merged
+ * over the cached details, or - where the write landed with no answer to give - the issue read
+ * again rather than guessed at, and the issue lists refreshed either way.
+ *
+ * One landing for them all (`useIssueHeaderWrites.ts`'s `updateIssue`, `useIssueBlockedBy.ts`),
+ * so a field edited in the panel and a field edited in the identity block leave the cache in
+ * the same state.
+ */
+export function landIssueWrite(queryClient: QueryClient, key: string, next: Issue | null): void {
+  if (next === null) {
+    void queryClient.invalidateQueries({ queryKey: ["issue", key] });
+  } else {
+    mergeIssue(queryClient, next);
+  }
+  void queryClient.invalidateQueries({ queryKey: ["issues"] });
+}

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { issueStatuses, statusText } from "../project/board-model";
+import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 import {
   HELP_LINES,
   KEY_REPORTS,
@@ -160,7 +161,13 @@ test("a type the model gives no state has no state words, and the ask, the check
     }
     expect(nodeStateWords(type)).toBeUndefined();
   }
-  expect(Object.keys(NODE_STATE_WORDS.ask).sort()).toEqual([...choicesOf("ask", "state")].sort());
+  // The ask's words are the block schema's `state` choices and the ways a resolution closes a
+  // question (`ASK_RESOLUTION_WORDS`): an ask the server writes `resolved` stands in the state
+  // its resolution names, so the row says what the card beside it says (`tree-drafts.ts`'s
+  // `askState`). `resolved` is in both lists under the one word.
+  expect(Object.keys(NODE_STATE_WORDS.ask).sort()).toEqual(
+    [...new Set([...choicesOf("ask", "state"), ...Object.keys(ASK_RESOLUTION_WORDS)])].sort()
+  );
   expect(Object.keys(NODE_STATE_WORDS.check).sort()).toEqual([
     "failed",
     "no-result",

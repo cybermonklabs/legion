@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
+import { landIssueWrite } from "../../api/issue-cache";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -39,13 +39,8 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     request: (keys: readonly string[]) => issuePatchRequest(issueKey, { blocked_by: [...keys] }),
     onSettled: () => guard.release(),
     onSuccess: (next) => {
-      if (next === null) {
-        // Landed with no answer to give: the issue is read again rather than guessed at.
-        void queryClient.invalidateQueries({ queryKey: ["issue", issueKey] });
-      } else {
-        mergeIssue(queryClient, next);
-      }
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      // The one landing every write of an issue's fields takes, the identity block's included.
+      landIssueWrite(queryClient, issueKey, next);
       onSaved();
     },
   });

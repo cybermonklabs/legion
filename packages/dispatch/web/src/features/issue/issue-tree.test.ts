@@ -3,6 +3,8 @@ import { expect, test } from "bun:test";
 import type {
   Artifact,
   ArtifactBlock,
+  Ask,
+  AskResolution,
   BlockAttributeValue,
   Comment,
   Decision,
@@ -14,7 +16,9 @@ import type {
   MessageRead,
   RequirementCoverage,
 } from "../../api/types";
+import { askResolutionBadge } from "../refs/actor";
 import { buildIssueTree, FIRST_LINE_LIMIT, firstLineOf, type TreeNode } from "./issue-tree";
+import { nodeStateWord } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
 
 /**
@@ -540,4 +544,100 @@ test("the conversation's turns are drawn by the time each was made", () => {
   });
 
   expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2", "a-message"]);
+});
+
+// R4: the ring is opened at a member of the ring and never at a node hanging off one. A plan
+// task serving a requirement of the ring cannot be reached from the issue either, and its
+// order - a block's place in its own document - sorts before every requirement's, so the
+// lowest order among the drafts the issue cannot reach is the task. Re-rooting it would draw
+// the task under the issue, torn off the requirement it serves, and leave the ring to be
+// opened all the same.
+test("a ring of requirements is opened at a requirement, and what serves one keeps its place", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first."), requirement("r2", "The second.")]),
+    documents: [
+      {
+        artifactId: spec.id,
+        blocks: [
+          block("r1", "requirement", { from: `dispatch://${KEY}/spec#b-r2` }),
+          block("r2", "requirement", { from: `dispatch://${KEY}/spec#b-r1` }),
+        ],
+      },
+      {
+        artifactId: plan.id,
+        blocks: [block("t1", "plan_task", { serves: `dispatch://${KEY}/spec#b-r1` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+  });
+
+  expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "r1"),
+  ]);
+  expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, blockNodeId(SPEC, "r2")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "r1"),
+  ]);
+});
+
+// R21: an ask the server writes `resolved` stands in the state its resolution names, so the
+// row says what the card and the margin beside it say. A declined question drawn "Resolved"
+// would have the page contradicting itself about the same question.
+test("a declined ask is drawn Declined, as the card beside it is", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const declining: AskResolution = {
+    actor: { id: "alice", kind: "user" },
+    at: "2026-11-06T00:00:00Z",
+    kind: "declined",
+    reason: "The release owner decides this one.",
+  };
+  const declined: Ask = {
+    anchor: null,
+    answer: null,
+    author: { id: "planner", kind: "session" },
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    block_artifact: { id: spec.id, primary: true, slug: SPEC },
+    block_id: "q1",
+    created_at: "2026-11-05T00:00:00Z",
+    edited_at: null,
+    id: "ask-1",
+    issue_key: KEY,
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    question: "Which width does the tree read at?",
+    resolution: declining,
+    state: "resolved",
+    urgency: "med",
+  };
+  const root = buildIssueTree({
+    asks: [declined],
+    documents: [{ artifactId: spec.id, blocks: [block("q1", "ask")] }],
+    issue: issueDetails([spec]),
+  });
+
+  const node = nodeOf(root, blockNodeId(SPEC, "q1"));
+  expect(node?.state).toBe("declined");
+  expect(nodeStateWord(node?.state ?? "open")).toBe(askResolutionBadge(declining));
+});
+
+// R16: where each document of the issue stands is read once (`documentRanks`), and that one
+// reading both decides which citation of a ring is cut and orders the documents' rows. Read
+// twice, a change to one reading would open a ring at a document other than the one drawn
+// first.
+test("the documents are drawn in the order the ring is opened by: the spec, then the rest", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  // The issue carries its spec second, so a reading that ordered the documents by their place
+  // in the list alone would draw the spec after the notes.
+  const root = buildIssueTree({ issue: issueDetails([notes, spec, plan]) });
+
+  expect(root.children.map((child) => child.id)).toEqual([SPEC, "notes-md", "plan-md"]);
 });

@@ -83,7 +83,13 @@ const READS = {
     data: { edges: [], node: { id: "artifact-1", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE/artifact/plan-md"],
   },
-  grandparent: { key: issueQuery("CORE-00").queryKey },
+  // The page's issues as the details read answers them: CORE-1 is CORE-0's child and CORE-00's
+  // grandchild, and CORE-9 stands beside them all. A rule that keeps the details drawing one
+  // issue's holder reads the children (`issueHolderDetails`), so each of them carries its own.
+  grandparent: {
+    data: { children: [{ key: "CORE-0" }], key: "CORE-00" },
+    key: issueQuery("CORE-00").queryKey,
+  },
   handoffs: { key: ["handoffs", "CORE-1"] },
   inbox: { key: inboxQuery().queryKey },
   inboxThreads: { key: inboxThreadsQuery().queryKey },
@@ -120,7 +126,10 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-outro").queryKey,
   },
-  parent: { key: issueQuery("CORE-0").queryKey },
+  parent: {
+    data: { children: [{ key: "CORE-1" }], key: "CORE-0" },
+    key: issueQuery("CORE-0").queryKey,
+  },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
     data: {
@@ -159,7 +168,7 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
-  unrelatedDetail: { key: issueQuery("CORE-9").queryKey },
+  unrelatedDetail: { data: { children: [], key: "CORE-9" }, key: issueQuery("CORE-9").queryKey },
   unrelatedPanel: {
     data: { edges: [], node: { id: "CORE-9", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-9"],
@@ -556,44 +565,52 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  // A claim's holder is drawn on the issue itself and on every ancestor's children section
-  // (`IssueChildren.tsx`), and the payload names no ancestors, so every loaded issue detail
-  // refreshes - `parent` and `grandparent` among them, and `unrelatedDetail` with them, which
-  // is the breadth the fallback already costs an issue write whose event names none. The
-  // rollups, the lists and the Inbox are untouched, which is what the spares hold it to.
-  "a claim refreshes every loaded issue detail, because a parent draws its children's holders": {
+  // A claim's holder is drawn on the issue itself and on every parent's children section
+  // (`IssueChildren.tsx`), and the payload names no ancestors, so the rule reaches every loaded
+  // issue detail and keeps the ones that draw this holder: the issue's own and `parent`, whose
+  // children hold it. `grandparent` draws CORE-0's holder and not CORE-1's, and
+  // `unrelatedDetail` draws neither. The reads hanging under a detail's key - the references,
+  // the coverage, the results, the collaborators of every loaded issue - are no part of it
+  // either, which `referencesTab` holds the rule to; the collaborators are refreshed by their
+  // own rule, for this issue alone. The rollups, the lists and the Inbox are untouched.
+  "a claim refreshes the issue's detail and the details whose children draw its holder": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: [
-      "collaborators",
-      "detail",
+    refreshes: ["collaborators", "detail", "log", "parent", "projectList"],
+    spares: [
       "grandparent",
-      "log",
-      "parent",
-      "projectList",
+      "inbox",
+      "pinned",
+      "projects",
+      "referencePicker",
       "referencesTab",
+      "replies",
+      "summary",
       "unrelatedDetail",
+      "userState",
     ],
-    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
   },
   // A release moves the same holder, and makes nobody a collaborator: the collaborators read
   // is the claim's alone (`changesCollaborators`).
-  "a release refreshes every loaded issue detail, as a claim does": {
+  "a release refreshes the same details a claim does": {
     event: event("issue.released", { key: "CORE-1", reason: "released" }),
-    refreshes: [
-      "detail",
+    refreshes: ["detail", "log", "parent", "projectList"],
+    spares: [
       "grandparent",
-      "log",
-      "parent",
-      "projectList",
+      "inbox",
+      "pinned",
+      "projects",
+      "referencePicker",
       "referencesTab",
+      "replies",
+      "summary",
       "unrelatedDetail",
+      "userState",
     ],
-    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
   },
   "a deploy refreshes the issue's own reads alone": {
     event: event("issue.deployed", { number: 7, repo: "acme/widgets" }),

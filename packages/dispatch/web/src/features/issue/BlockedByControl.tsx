@@ -3,19 +3,17 @@ import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
 import {
-  borderTransparent,
   dangerText,
   inputClasses,
   linkHoverText,
   linkText,
   secondaryButtonBorder,
-  secondaryButtonDisabledText,
   secondaryButtonText,
-  textMutedHoverToSecondary,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
+import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
@@ -137,23 +135,11 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
             ref={input}
             value={draft}
           />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={write.pending}
-            type="submit"
-            {...pageChrome}
-          >
-            {write.pending ? CONTROL_LABELS.saving_field : CONTROL_LABELS.save_blocked_by}
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary} ${secondaryButtonDisabledText}`}
-            disabled={write.pending}
-            onClick={close}
-            type="button"
-            {...pageChrome}
-          >
-            {CONTROL_LABELS.cancel}
-          </button>
+          <FormActions
+            cancel={close}
+            saveLabel={write.pending ? CONTROL_LABELS.saving_field : CONTROL_LABELS.save_blocked_by}
+            saving={write.pending}
+          />
           {/* What the box takes, drawn rather than left to a placeholder a reader on the
               keyboard never hears (R11). */}
           <span className="sr-only" id="issue-blocked-by-help" {...pageChrome}>

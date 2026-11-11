@@ -1,6 +1,7 @@
 import { type RefObject, useRef } from "react";
 
 import { useKeymap } from "../shell/keymap";
+import { type RowAction, rowActionSelector } from "./DecisionActions";
 import type { TreeNode } from "./issue-tree";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -117,13 +118,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     const { elements } = drawn();
     return elements[at(elements)] ?? null;
   };
-  /** One control the focused row draws, by the mark `NodeRow.tsx` puts on it, or null where
-   *  this row draws none or it would refuse a press: a key is offered exactly while the
+  /** One control the focused row draws, by the mark `DecisionActions.tsx` puts on it, or null
+   *  where this row draws none or it would refuse a press: a key is offered exactly while the
    *  control it presses would take a click. */
-  const rowAction = (action: "change" | "keep"): HTMLButtonElement | null => {
-    const control = rowElement()?.querySelector<HTMLButtonElement>(
-      `button[data-row-action="${action}"]`
-    );
+  const rowAction = (action: RowAction): HTMLButtonElement | null => {
+    const control = rowElement()?.querySelector<HTMLButtonElement>(rowActionSelector(action));
     return control == null || control.disabled ? null : control;
   };
   /** Every link the focused row draws, in the order it draws them: a chip's target, and the
@@ -302,13 +301,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (control === null) return;
         tree.onReport("");
         control.click();
-        // A reader who asked to change a decision is there to type, so the key leaves the
-        // caret in the form's field once the row has drawn it, as a pointer leaves it there.
-        // The form is the one thing inside a row that takes the tab order while it is open
-        // (`DecisionActions.tsx`), so Tab from the field reaches Send change and Cancel.
-        requestAnimationFrame(() =>
-          rowElement()?.querySelector<HTMLTextAreaElement>("form textarea")?.focus()
-        );
+        // A reader who asked to change a decision is there to type, and the field the form
+        // opens with takes the caret as it mounts (`DecisionActions.tsx`'s `ChangeComposer`),
+        // so this key leaves it there whatever frame React commits the form on, as a pointer
+        // does. The form is the one thing inside a row that takes the tab order while it is
+        // open, so Tab from the field reaches Send change and Cancel.
       },
       when: () => rowAction("change") !== null,
     },

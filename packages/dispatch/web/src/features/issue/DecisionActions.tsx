@@ -15,6 +15,26 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
+/** One control a row of the tree draws of its own: Keep and Change on a decision. */
+export type RowAction = "change" | "keep";
+
+/** The attribute marking such a control, which is how the row's own key finds it: the tree is
+ *  one tab stop, so no Tab reaches a control inside a row and `useTreeKeymap.ts` presses it
+ *  instead (R9, WCAG 2.1.1). It is written here and read through `rowActionSelector`, so
+ *  neither end spells the other's string. */
+const ROW_ACTION_ATTRIBUTE = "data-row-action";
+
+/** The mark one of those controls carries, spread onto the control itself. */
+export const ROW_ACTION_MARKS: Readonly<Record<RowAction, Readonly<Record<string, RowAction>>>> = {
+  change: { [ROW_ACTION_ATTRIBUTE]: "change" },
+  keep: { [ROW_ACTION_ATTRIBUTE]: "keep" },
+};
+
+/** The selector that finds the control `action` marks inside one row. */
+export function rowActionSelector(action: RowAction): string {
+  return `button[${ROW_ACTION_ATTRIBUTE}="${action}"]`;
+}
+
 /**
  * What a reader does with a decision, on the decision's own node (dispatch://INFRA-1196 R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
@@ -99,11 +119,11 @@ function DecisionControls({
           // `useTreeKeymap.ts`'s `tree-keep`).
           <button
             className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-            data-row-action="keep"
             disabled={keep.isPending}
             onClick={() => keep.mutate(documentId)}
             tabIndex={-1}
             type="button"
+            {...ROW_ACTION_MARKS.keep}
             {...pageChrome}
           >
             {CONTROL_LABELS.keep_decision}
@@ -113,10 +133,10 @@ function DecisionControls({
           <button
             aria-expanded={changing}
             className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-            data-row-action="change"
             onClick={() => setChanging(!changing)}
             tabIndex={-1}
             type="button"
+            {...ROW_ACTION_MARKS.change}
             {...pageChrome}
           >
             {CONTROL_LABELS.change_decision}
@@ -176,9 +196,12 @@ function ChangeComposer({
   });
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
-  // every other form of the app. The key that opened it put the caret in the field
-  // (`useTreeKeymap.ts`'s `tree-change`), and at rest - no form open - the tree is still one
-  // tab stop (R9).
+  // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
+  //
+  // The field takes the caret as it mounts, which is what opens the form, so a reader who asked
+  // to change a decision is left where they are there to type however many frames React takes
+  // over the commit, and whether they asked with the pointer or with the row's own key
+  // (`useTreeKeymap.ts`'s `tree-change`).
   return (
     <form
       aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
@@ -199,6 +222,8 @@ function ChangeComposer({
         {CONTROL_LABELS.your_change}
       </label>
       <textarea
+        // biome-ignore lint/a11y/noAutofocus: the form mounts because a reader asked to type in it
+        autoFocus
         className={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
         id={fieldId}
         onChange={(event) => setBody(event.target.value)}

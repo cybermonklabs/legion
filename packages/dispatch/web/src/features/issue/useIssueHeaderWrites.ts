@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
+import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -50,6 +50,11 @@ export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
  * status, the route, the parent), its labels, its pin and its claim's release, with the drafts
  * those fields hold, and the few facts each row reads back from a write in flight - which status
  * a pick is saving, a parent or a title Dispatch refused.
+ *
+ * The issues this one waits on are the panel's own write (`useIssueBlockedBy.ts`), because the
+ * editor that saves them is drawn beside their value rather than in the identity block; it
+ * takes the same landing as the fields here (`landIssueWrite`), so what a write leaves in the
+ * cache does not depend on which row drew the control.
  *
  * The rows that draw them hold no write of their own, so a field moved from one row to another -
  * or into the panel - changes where a control is drawn and nothing about how it is saved. Each
@@ -113,13 +118,8 @@ export function useIssueHeaderWrites(
       drafts.onIssueSettled(error);
     },
     onSuccess: (next, input) => {
-      if (next === null) {
-        void queryClient.invalidateQueries({ queryKey: ["issue", issue.key] });
-      } else {
-        mergeIssue(queryClient, next);
-      }
+      landIssueWrite(queryClient, issue.key, next);
       drafts.onIssueSuccess(next ?? issue, input);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
   const labels = useKeyedWrite({

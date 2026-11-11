@@ -21,8 +21,11 @@ import { CONTROL_LABELS } from "./page-words";
  *
  * Each action is a plain `button`, in a labelled group rather than a `role="menu"` of
  * `menuitem`s: these are the controls the old header drew as buttons, and a reader - or the
- * check that reads every control the old page offered - finds them under the same role and the
- * same name as before.
+ * check that reads every control the old page offered - finds them under the same role. The
+ * words are not all the old ones: reopening now reads "Reopen into Backlog"
+ * (`CONTROL_LABELS.reopen_into_backlog`), because a control says what it does where a tooltip
+ * used to (R11) and its words are its name (`IssueHeader.tsx`, WCAG 2.5.3). A check that looks
+ * for the old "Reopen issue" reads the new sentence instead.
  */
 export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] }): ReactNode {
   const [open, setOpen] = useState(false);

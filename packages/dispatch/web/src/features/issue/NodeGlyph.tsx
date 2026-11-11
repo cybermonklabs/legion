@@ -2,14 +2,21 @@ import type { ReactNode } from "react";
 
 import { GLYPH_NAMES } from "./page-words";
 
+/** The shape of a question that is closed, whichever way it was closed. */
+const ASK_CLOSED = "M3 3 l10 10 M13 3 l-10 10";
+
 /**
  * The shape the page draws beside a node's type and beside its state (dispatch://INFRA-1196 R21):
  * an inline `<svg>` carrying its `GLYPH_TOKENS` token in `data-glyph` and its own accessible
  * name from `GLYPH_NAMES`, drawn beside the word rather than in place of it, so a type and a
  * state are told apart by a word and a shape and never by colour alone.
  *
- * Every shape is one `path` in a 16 by 16 box, and no two tokens draw the same one: a reader who
- * tells the shapes apart tells the nodes apart with the colours forced off.
+ * Every shape is one `path` in a 16 by 16 box. No two tokens draw the same one, with the one
+ * exception the words make safe: the four ways an ask is closed - declined, retracted,
+ * withdrawn, and plainly resolved - are one closed shape under four tokens, because a reader
+ * sees a shut question in all four and reads which it is in the word beside it. Each token
+ * still carries its own accessible name (`GLYPH_NAMES`), so a declined ask never announces
+ * itself as a resolved one.
  */
 const GLYPH_PATHS: Readonly<Record<string, string>> = {
   /** The types: one outline each. */
@@ -27,10 +34,13 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
   requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
   result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",
-  /** An ask's three states. */
+  /** An ask's two open states, and the one shape of a question that is closed. */
   "ask-answered": "M2 9 l4 4 l8 -10",
   "ask-open": "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 v3 M8 11.5 v0.5",
-  "ask-resolved": "M3 3 l10 10 M13 3 l-10 10",
+  "ask-declined": ASK_CLOSED,
+  "ask-resolved": ASK_CLOSED,
+  "ask-retracted": ASK_CLOSED,
+  "ask-withdrawn": ASK_CLOSED,
   /** A check's five states. */
   "check-failed": "M4 4 l8 8 M12 4 l-8 8",
   "check-no-result": "M2 8 h12",

@@ -137,8 +137,12 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
 /** Every draft the reads hold, by its node id. */
 export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<string, Draft> {
   const drafts = new Map<string, Draft>();
-  const cited = citations(reads, context);
-  addDocuments(drafts, reads, context, cited);
+  // Where each document of the issue stands among its own, read once: it decides both which
+  // citation of a ring is cut (`openRings`) and the order the documents are drawn in, and a
+  // second reading of it could open a ring at a document other than the one drawn first.
+  const ranks = documentRanks(reads);
+  const cited = citations(reads, context, ranks);
+  addDocuments(drafts, reads, context, cited, ranks);
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
   addAsks(drafts, reads, context);
@@ -177,7 +181,11 @@ interface Citation {
  * draw it under. Neither does a citation that would place a document inside itself, which
  * `openRings` takes out.
  */
-function citations(reads: IssueTreeReads, context: TreeContext): Map<string, Citation> {
+function citations(
+  reads: IssueTreeReads,
+  context: TreeContext,
+  ranks: ReadonlyMap<string, number>
+): Map<string, Citation> {
   const found = new Map<string, Citation>();
   const listings = new Map<string, readonly ArtifactBlock[]>(
     (reads.documents ?? []).map((document) => [document.artifactId, document.blocks])
@@ -196,7 +204,7 @@ function citations(reads: IssueTreeReads, context: TreeContext): Map<string, Cit
     if (id === undefined) continue;
     found.set(slug, { document, id: blockNodeId(document, id) });
   }
-  openRings(found, documentRanks(reads));
+  openRings(found, ranks);
   return found;
 }
 
@@ -310,7 +318,8 @@ function addDocuments(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext,
-  cited: ReadonlyMap<string, Citation>
+  cited: ReadonlyMap<string, Citation>,
+  ranks: ReadonlyMap<string, number>
 ): void {
   (reads.issue.artifacts ?? []).forEach((artifact, index) => {
     if (artifact.kind !== "doc" && artifact.kind !== "image") return;
@@ -320,7 +329,9 @@ function addDocuments(
       blank(
         artifact.slug,
         artifact.kind === "doc" ? "document" : "image",
-        ROOT_ORDER.document + (artifact.primary ? 0 : index + 1)
+        // `documentRanks` is the one reading of where a document stands; every document of the
+        // issue is in it, since it is built from this same list.
+        ROOT_ORDER.document + (ranks.get(artifact.slug) ?? index + 1)
       )
     );
     draft.author = artifact.created_by;
@@ -413,19 +424,25 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
     const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.ask));
     draft.author = ask.author;
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
-    draft.state = askState(ask.state);
+    draft.state = askState(ask);
     draft.text = ask.question;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
   }
 }
 
-/** The ask state `token` names, or `undefined` for a token the page declares no word for: a
- *  state nobody named is drawn as no state rather than as the server's own token (R21). The
- *  server types the field as a plain string (`Ask.state`), and the three the page draws are
- *  the `state` choices of the `ask` block (`NODE_STATE_WORDS.ask`). */
-function askState(token: string): AskState | undefined {
+/**
+ * How an ask stands, in one of the words the page declares for an ask (`NODE_STATE_WORDS.ask`):
+ * the kind of its resolution for an ask that was closed rather than answered, so the tree says
+ * "Declined" where the card and the margin beside it say "Declined", and the `state` the server
+ * wrote for every other ask. The server types both as plain strings (`Ask.state`,
+ * `AskResolution.kind`), and a token the page declares no word for is drawn as no state rather
+ * than as the server's own token (R21).
+ */
+function askState(ask: Ask): AskState | undefined {
   const words: Readonly<Record<string, string | undefined>> = NODE_STATE_WORDS.ask;
+  const token =
+    ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
