@@ -2,6 +2,7 @@ package cireconcile
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -255,6 +256,77 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 	// The cursor the next pass takes up: the page this one did not finish.
 	if pass.Cursor == nil || pass.Cursor.Repository != rowRepository {
 		t.Errorf("the row's cursor is %+v, want the repository the pass was cut short in", pass.Cursor)
+	}
+}
+
+// The cursor the row records is the address the pass after it takes the order up at, field for
+// field. That address is a number -- the page's own name, one above the last head of the page
+// before it -- with the first pull request of the page the pass did not finish, whether the page
+// is read from the repository's REST listing, and whether its heads are already counted among
+// the repository's. An operator reading GET /api/v1/ci-reconcile/passes has to see what decides
+// where the next pass cuts its window, and the page's position in the repository decides
+// nothing: a pull request merged below moves it.
+//
+// The pass here reads the first page from a query, is refused the query for the second, falls
+// back to the listing, and is cut short at the second head of that page. The pass after it
+// reads from exactly the number the row names.
+func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	// Forty-five heads are three pages of a query, and three windows of the REST listing.
+	all := heads(45)
+	h.listHeads(all...)
+	for _, pull := range all {
+		h.github.setCheckRuns(gitHubRepository, pull.sha,
+			atHead(gitHubRepository, pull.sha, checkRun(100+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+		)
+	}
+	// GitHub will not answer the query for the second page, so that page and the pages after it
+	// come from the repository's REST listing, which is what the cursor's rest records.
+	h.github.refusePage(gitHubRepository, 1)
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+	h.reconciler.PassTimeout = 3 * time.Second
+	// GitHub is slower than the pass has left at the second head of that page.
+	cutAt := int64(pullsPerQuery) + 2
+	h.github.stall(runsOf(head(cutAt)), time.Minute)
+
+	h.pass()
+
+	cut := recent(t, h.pool)[0]
+	if cut.State != outcomeDeadline {
+		t.Fatalf("the pass recorded %q, want %q: GitHub held one of its heads past its bound: %+v", cut.State, outcomeDeadline, cut)
+	}
+	if cut.Cursor == nil {
+		t.Fatal("a pass its bound cut short recorded no cursor, so the row says nothing about where the next pass starts")
+	}
+	want := PassCursor{Repository: rowRepository, From: int64(pullsPerQuery) + 1, Number: cutAt, Rest: true, Counted: true}
+	if *cut.Cursor != want {
+		t.Fatalf("the row's cursor is %+v, want %+v: the page named by the number above the last head the query answered, the head the bound fell on, the listing that page is read from, and its heads already counted",
+			*cut.Cursor, want)
+	}
+
+	h.github.stall(runsOf(head(cutAt)), 0)
+	h.reconciler.PassTimeout = 0
+	askedBefore := len(h.github.received())
+
+	h.pass()
+
+	var wanted []int64
+	for head := cut.Cursor.Number; head <= int64(len(all)); head++ {
+		wanted = append(wanted, head)
+	}
+	if asked := h.headsAsked(askedBefore); !slices.Equal(asked, wanted) {
+		t.Fatalf("the pass after the bound read heads %v, want every head from %d, the number the row records, to the last: %v",
+			asked, cut.Cursor.Number, wanted)
+	}
+	line := h.passLine()
+	if got := number(t, line, "heads_known"); got != len(all) {
+		t.Errorf("the cycle reports %d heads known, want the %d open heads of the repository: the page the row records as counted was counted a second time: %v",
+			got, len(all), line)
+	}
+	if done := recent(t, h.pool)[0]; done.Cursor == nil || *done.Cursor != (PassCursor{}) {
+		t.Errorf("the pass that read the order out records the cursor %+v, want the zero cursor, which is the start of the order", done.Cursor)
 	}
 }
 

@@ -86,8 +86,10 @@ const updatePass = `
 		heads = $9,
 		heads_known = $10,
 		cursor_repository = $11,
-		cursor_page = $12,
-		cursor_number = $13
+		cursor_from = $12,
+		cursor_number = $13,
+		cursor_rest = $14,
+		cursor_counted = $15
 	where id = $1`
 
 // prunePasses deletes the rows past PassRetention. It runs with the pass that ends rather than on
@@ -154,7 +156,7 @@ func (r *Reconciler) endPass(id int64, c *counts, at *stop, cancelled bool) {
 	cursor := r.resume
 	if _, err := r.Pool.Exec(ctx, updatePass, id, string(passOutcome(c, at, cancelled)),
 		c.queries, c.points, c.restRequests, c.restNotModified, c.restHeads, c.records, c.heads, r.known(),
-		cursor.repository, cursor.page, cursor.number); err != nil {
+		cursor.repository, cursor.from, cursor.number, cursor.rest, cursor.counted); err != nil {
 		r.Logger.Warn("ci reconcile pass recorded no end", "pass", id, "error", err)
 	}
 	if _, err := r.Pool.Exec(ctx, prunePasses, PassRetention.Seconds()); err != nil {
@@ -199,8 +201,8 @@ type PassRecord struct {
 	// Counts is what the pass did, null until it ended.
 	Counts *PassCounts `json:"counts"`
 	// Cursor is where the pass left the order for the pass after it, null until it ended. The
-	// zero cursor -- no repository, page 0, pull request 0 -- is the start of the order, which
-	// is what a pass that reached the end of the order leaves behind.
+	// zero cursor -- no repository, no number, no pull request -- is the start of the order,
+	// which is what a pass that reached the end of the order leaves behind.
 	Cursor *PassCursor `json:"cursor"`
 }
 
@@ -224,13 +226,27 @@ type PassCounts struct {
 	HeadsKnown int `json:"heads_known"`
 }
 
-// PassCursor is where a pass left the order: the mapped repository, the page of its open pull
-// requests, and the first pull request of that page the pass did not finish, zero for the whole
-// page.
+// PassCursor is where a pass left the order, which is the address the pass after it takes the
+// order up at: the mapped repository, the number that names the page of its open pull requests
+// -- one more than the last head of the page before it, and zero for a repository's first page
+// -- and the first pull request of that page the pass did not finish, zero for the whole page.
+// Rest says the page is read from the repository's REST listing rather than from a query, and
+// Counted that the heads of that page are already among the heads the cycle knows the
+// repository has, so the pass taking the cursor up neither queries for a page it holds no
+// cursor for nor counts those heads a second time.
+//
+// The page's position in the repository is recorded nowhere, because it is not what the next
+// pass reads by: a pull request merged below the page moves the position and moves no number,
+// so the number names the same page in any later listing and the position names a page the
+// cursor never stood at (cursor, walk.window). GitHub's own opaque page token is recorded
+// nowhere either -- it is valid only to the process that was handed it, and it says nothing to
+// a person reading the row.
 type PassCursor struct {
 	Repository string `json:"repository"`
-	Page       int    `json:"page"`
+	From       int64  `json:"from"`
 	Number     int64  `json:"number"`
+	Rest       bool   `json:"rest"`
+	Counted    bool   `json:"counted"`
 }
 
 // recentPasses reads the rows of the last PassWindow, newest first, each with whether the process
@@ -240,7 +256,8 @@ const recentPasses = `
 	       coalesce(p.graphql_queries, 0), coalesce(p.graphql_points, 0), coalesce(p.rest_requests, 0),
 	       coalesce(p.rest_not_modified, 0), coalesce(p.heads_over_rest, 0), coalesce(p.records, 0),
 	       coalesce(p.heads, 0), coalesce(p.heads_known, 0),
-	       coalesce(p.cursor_repository, ''), coalesce(p.cursor_page, 0), coalesce(p.cursor_number, 0),
+	       coalesce(p.cursor_repository, ''), coalesce(p.cursor_from, 0), coalesce(p.cursor_number, 0),
+	       coalesce(p.cursor_rest, false), coalesce(p.cursor_counted, false),
 	       coalesce(s.heartbeat_at > now() - make_interval(secs => $1), false)
 	from ci_reconcile_passes p
 	left join server_processes s on s.instance = p.instance
@@ -324,7 +341,7 @@ func scanPass(row pgx.Row) (pass PassRecord, live bool, err error) {
 	if err := row.Scan(&pass.ID, &pass.Instance, &pass.StartedAt, &pass.EndedAt, &outcome,
 		&counts.GraphQLQueries, &counts.GraphQLPoints, &counts.RESTRequests, &counts.RESTNotModified,
 		&counts.HeadsOverREST, &counts.Records, &counts.Heads, &counts.HeadsKnown,
-		&cursor.Repository, &cursor.Page, &cursor.Number, &live); err != nil {
+		&cursor.Repository, &cursor.From, &cursor.Number, &cursor.Rest, &cursor.Counted, &live); err != nil {
 		return PassRecord{}, false, fmt.Errorf("read the CI reconcile passes: %w", err)
 	}
 	if outcome != nil {

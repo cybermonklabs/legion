@@ -22,12 +22,32 @@ import (
 //
 // after is GitHub's own cursor for the page -- the end cursor of the page before it, empty for
 // a repository's first page -- which is the only way to ask GitHub for a page again, and page
-// is that page's position in the repository, counting from zero. rest says the page comes from
-// the repository's REST listing rather than from a query: GitHub gave the pass that fell back
-// to the listing no cursor for the pages after the one it refused, so the pass taking this
-// cursor up reads the repository on from the listing rather than asking a query for a page it
-// holds no cursor for. The cycle after it begins the repository at its first page and queries
-// it again.
+// is that page's position in the repository, counting from zero.
+//
+// Resuming a query on that cursor is safe across the merges a pass takes its time over because
+// GitHub's cursor is a keyset cursor and not an offset into the result. The one captured from
+// the real API in testdata/graphql-page.json decodes from base64 to the ten bytes `cursor:v2:`
+// followed by msgpack: a two-element array (0x92) of the twenty-character string
+// `2026-10-06T21:55:28Z` (0xb4) and the unsigned 64-bit integer 4765085978 (0xcf). The string
+// is a moment eleven seconds after the `updatedAt` of the first check suite of the one head
+// that page answered, so the pair is that pull request's own sort key -- its created-at and an
+// id of it -- under the query's own `orderBy: {field: CREATED_AT, direction: ASC}`
+// (graphql.go), and not a count of anything. The capture holds no id of its own to compare the
+// integer with, so which id it is, is read from the shape and not from the fixture. GitHub
+// answers such a cursor with the nodes ordered after that key, so a pull request merged below
+// the page leaves every page after it exactly where it was, as a number does for the REST
+// listing. The stand-in answers a cursor keyed the same way, so the suite cannot pass an
+// offset off as one (graphql_test.go, queryAfter).
+//
+// Nothing checks that a page begins where from says, for the same reason: under a keyset
+// cursor a page whose heads have all merged legitimately begins above it, and a check would
+// fire on ordinary traffic.
+//
+// rest says the page comes from the repository's REST listing rather than from a query: GitHub
+// gave the pass that fell back to the listing no cursor for the pages after the one it refused,
+// so the pass taking this cursor up reads the repository on from the listing rather than asking
+// a query for a page it holds no cursor for. The cycle after it begins the repository at its
+// first page and queries it again.
 //
 // from is the number that names the page: one more than the last head of the page before it,
 // and zero for a repository's first page (walk.sweep). Every page of a repository carries it,

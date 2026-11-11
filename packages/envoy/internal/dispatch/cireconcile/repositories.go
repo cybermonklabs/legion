@@ -143,6 +143,16 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 // GitHub in the same order, and each distinct name comes back once, since two rows naming one
 // repository are one repository to read.
 //
+// That order is named here as `collate "C"`, which is byte order, rather than left to whatever
+// collation the database holds the mapping under, because the pass seeks into this slice with
+// Go's own comparison of the names (order). Under glibc's en_US, which is what a deployment's
+// database usually collates text by, `owner/legionabc` sorts before `owner/legion-x` and Go
+// puts `owner/legion-x` first: the seek would then be reading a slice ordered by a rule it does
+// not share, and where the cursor's own repository has left the mapping it runs past rows this
+// order put after that repository. Those repositories are read by no pass of the cycle, and the
+// pass that reaches the end of the order records that the cycle covered them. One rule for both
+// is what the seek rests on, and byte order is the rule Go cannot be talked out of.
+//
 // The canonical name is read rather than the row's own because a pass must never ask GitHub
 // about a name a repository was renamed away from: GitHub answers 404 for that name's
 // installation, so RepositoryToken fails for it and the row is skipped with `ci reconcile
@@ -151,7 +161,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 // than written again here (refs.CanonicalRepoSQL), so this read and every other reader of the
 // rule cannot come to different answers.
 func (r *Reconciler) mapped(ctx context.Context) ([]string, error) {
-	rows, err := r.Pool.Query(ctx, `select distinct `+refs.CanonicalRepoSQL("mapping.repo")+` as repository
+	rows, err := r.Pool.Query(ctx, `select distinct `+refs.CanonicalRepoSQL("mapping.repo")+` collate "C" as repository
 		from repo_projects mapping order by repository`)
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)

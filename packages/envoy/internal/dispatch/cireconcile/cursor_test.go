@@ -333,6 +333,51 @@ func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
 	}
 }
 
+// A pull request merged below a page a query has already answered moves no page of the query
+// either. The pass asks GitHub for the page after a cursor GitHub itself gave it, and that
+// cursor is keyed by the last node of the page it came in rather than by how far into the
+// result that page sat (cursor.after), so GitHub answers the heads above that key whatever has
+// merged below. A cursor that was an offset would answer the twenty heads at the old position
+// of the page, which the merges have moved down, and the heads between would be read by no pass
+// of this cycle while the pass that closed the cycle recorded that it had covered them.
+//
+// Nothing is refused and nothing cuts the pass short here: this is one pass reading one
+// repository by query alone, with five pull requests below the second page merged between the
+// query that answered the first page and the query that asks for the second.
+func TestAMergeBelowAQueryCursorMovesNoPageOfTheQuery(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	// Forty-five heads are three pages of a query.
+	all := heads(45)
+	h.listHeads(all...)
+	for _, pull := range all {
+		h.github.setCheckRuns(gitHubRepository, pull.sha,
+			atHead(gitHubRepository, pull.sha, checkRun(100+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+		)
+	}
+	// Five pull requests below the second page are merged as the last head of the first page is
+	// recorded, which is after the query that answered that page and before the query that asks
+	// for the one after it: GitHub answers that second query from forty open pull requests where
+	// the first was answered from forty-five.
+	h.mergeWhenRecorded(head(pullsPerQuery), all[5:])
+
+	h.pass()
+
+	for _, pull := range all {
+		if state := h.recordOf(pull, pull.number); state == nil {
+			t.Errorf("head %d has no record: the query after the merges answered a page cut at the position the one before it ended at, and the heads between were read by nobody",
+				pull.number)
+		}
+	}
+	line := h.passLine()
+	if got := number(t, line, "heads"); got != len(all) {
+		t.Fatalf("the pass read %d heads, want the %d open when it began, each once: %v", got, len(all), line)
+	}
+	if line["cycle_complete"] != true {
+		t.Fatalf("the pass reports cycle_complete = %v, want true: nothing cut it short and it read the order out: %v", line["cycle_complete"], line)
+	}
+}
+
 // mergeWhenRecorded merges the pull requests of the mapped repository that are not in left the
 // moment the pass records a check run of head at: the stand-in answers the repository's open
 // pull requests with left from then on.

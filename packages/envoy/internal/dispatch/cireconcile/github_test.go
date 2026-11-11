@@ -75,10 +75,10 @@ type fakeGitHub struct {
 	inFlight     int
 	mostInFlight int
 	// verbatim is the captured answer the next query about one repository is given byte for
-	// byte, and cursorPages the page each cursor such an answer carried names
-	// (answerQueryWith).
-	verbatim    map[string]string
-	cursorPages map[string]int
+	// byte, and cursorsGiven what each cursor such an answer carried names, since GitHub's own
+	// cursor is opaque text this stand-in cannot write or read (answerQueryWith).
+	verbatim     map[string]string
+	cursorsGiven map[string]queryAfter
 }
 
 // fakeRepository is what GET /repos/{owner}/{repo} answers: the name GitHub itself gives the
@@ -122,7 +122,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		nulled:        map[string]nulledHead{},
 		refusedPages:  map[string]map[int]struct{}{},
 		graphQLStalls: map[string]time.Duration{},
-		cursorPages:   map[string]int{},
+		cursorsGiven:  map[string]queryAfter{},
 	}
 	f.mux.HandleFunc("POST /graphql", f.answerQuery)
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {

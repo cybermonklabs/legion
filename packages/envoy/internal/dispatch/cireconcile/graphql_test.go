@@ -1,6 +1,7 @@
 package cireconcile
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,15 +23,63 @@ import (
 // which is GitHub's own default and the thing this pass must never read by.
 
 // fakeQuery is one GraphQL query the stand-in was asked: the repository it named, the page
-// cursor it carried, the page that cursor names, and when the stand-in began and finished
-// answering it. A test reads these back to say which pages a pass asked for, in what order,
-// and how much of GitHub's own time the pass took.
+// cursor it carried, the ordinal of the page that cursor names, and when the stand-in began and
+// finished answering it. A test reads these back to say which pages a pass asked for, in what
+// order, and how much of GitHub's own time the pass took.
 type fakeQuery struct {
 	repository string
 	after      string
 	page       int
 	started    time.Time
 	ended      time.Time
+}
+
+// queryAfter is what one page cursor of this stand-in names: the last head the page it came in
+// answered, and the ordinal of the page after that one.
+//
+// It carries both because the stand-in has to be two things at once. The window is the head
+// alone: GitHub's cursor is a keyset cursor, the key of the last node of the answer it came in
+// (cursor.after), so the page after it is the heads above that number and a pull request merged
+// below the page moves no page of the query. The ordinal decides no window at all -- it is the
+// label the stand-in's own verbs key a page by, which refusePage and stallQuery name a page
+// with and which the query log reports (harness.pagesAsked) -- so a test may still say "the
+// second page of this repository" about a listing no position is read by.
+type queryAfter struct {
+	head int64
+	page int
+}
+
+// pageCursor is the end cursor the stand-in answers one page with: the last head of that page,
+// which is where the page after it begins, and that page's ordinal beside it.
+func pageCursor(at queryAfter) string {
+	return strconv.FormatInt(at.head, 10) + "@" + strconv.Itoa(at.page)
+}
+
+// readCursor is one of those read back, and false for any other text, which is a cursor this
+// stand-in never gave.
+func readCursor(cursor string) (queryAfter, bool) {
+	head, page, split := strings.Cut(cursor, "@")
+	if !split {
+		return queryAfter{}, false
+	}
+	number, err := strconv.ParseInt(head, 10, 64)
+	if err != nil {
+		return queryAfter{}, false
+	}
+	ordinal, err := strconv.Atoi(page)
+	if err != nil {
+		return queryAfter{}, false
+	}
+	return queryAfter{head: number, page: ordinal}, true
+}
+
+// lastHead is the head one answered page's end cursor keys by: the last head of the page, or,
+// for a page that answered none, the head the cursor it was asked with named.
+func lastHead(page []fakePull, after int64) int64 {
+	if len(page) == 0 {
+		return after
+	}
+	return page[len(page)-1].number
 }
 
 // graphQLLimit is one rate-limited answer the stand-in gives the next query, as one of the
@@ -80,24 +129,23 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	repository := owner + "/" + name
 
 	f.mu.Lock()
-	page := 0
+	var at queryAfter
 	if after != "" {
-		if known, held := f.cursorPages[after]; held {
-			// A cursor out of an answer this stand-in gave verbatim, which is GitHub's own
-			// opaque text rather than a page number (answerQueryWith).
-			page = known
-		} else {
-			number, err := strconv.Atoi(after)
-			if err != nil {
+		known, held := f.cursorsGiven[after]
+		if !held {
+			// A cursor out of an answer this stand-in gave verbatim is GitHub's own opaque
+			// text, held in cursorsGiven; every other cursor is one this stand-in wrote itself.
+			var read bool
+			if known, read = readCursor(after); !read {
 				f.mu.Unlock()
 				f.t.Errorf("the pass asked for the page after %q, which is no cursor this stand-in gave", after)
 				http.Error(w, `{"message":"bad cursor"}`, http.StatusBadRequest)
 				return
 			}
-			page = number
 		}
+		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: page, started: time.Now()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, started: time.Now()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
@@ -113,12 +161,12 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if len(f.graphQLLimits) > 0 {
 		limit, f.graphQLLimits = &f.graphQLLimits[0], f.graphQLLimits[1:]
 	}
-	stall := f.graphQLStalls[queryKey(repository, page)]
+	stall := f.graphQLStalls[queryKey(repository, at.page)]
 	takes := f.queryTakes
 	pulls := append([]fakePull(nil), f.pulls[repository]...)
 	refusedPage := false
 	if pages, held := f.refusedPages[repository]; held {
-		_, refusedPage = pages[page]
+		_, refusedPage = pages[at.page]
 	}
 	f.mu.Unlock()
 
@@ -159,7 +207,12 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slices.SortFunc(pulls, func(a, b fakePull) int { return int(a.number - b.number) })
-	from := min(page*pullsPerQuery, len(pulls))
+	// The page is the heads above the one the cursor names, and never the slice at an offset:
+	// that is what GitHub's keyset cursor answers (cursor.after), and it is why a pull request
+	// merged below a page the pass has read leaves every page after it where it was.
+	from, _ := slices.BinarySearchFunc(pulls, at.head+1, func(pull fakePull, number int64) int {
+		return cmp.Compare(pull.number, number)
+	})
 	to := min(from+pullsPerQuery, len(pulls))
 	all := strings.Contains(request.Query, "checkType: ALL")
 	nodes := make([]any, 0, to-from)
@@ -199,7 +252,9 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		"repository": map[string]any{"pullRequests": map[string]any{
 			"pageInfo": map[string]any{
 				"hasNextPage": to < len(pulls),
-				"endCursor":   strconv.Itoa(page + 1),
+				// The cursor of a page that answered no head at all keeps the head the cursor
+				// it was asked with named: there is nothing above it to key the next page by.
+				"endCursor": pageCursor(queryAfter{head: lastHead(pulls[from:to], at.head), page: at.page + 1}),
 			},
 			"nodes": nodes,
 		}},
@@ -532,9 +587,12 @@ func (f *fakeGitHub) mostQueriesAtOnce() int {
 
 // answerQueryWith makes the next query about one repository answer with body byte for byte: an
 // answer captured from GitHub itself with `gh api graphql`, so the pass's mapping is tested
-// against what GitHub really said rather than against this stand-in's idea of it. The page
-// cursor that answer carries is remembered as naming the page after it, so the pass may read on
-// past it as it would past any page.
+// against what GitHub really said rather than against this stand-in's idea of it.
+//
+// GitHub's own page cursor is opaque text this stand-in cannot read, so what it names is read
+// off the captured answer instead: the last head that answer held, which is the head GitHub's
+// cursor is itself keyed by (cursor.after), and the page after it. The pass may then read on
+// past the captured page as it would past any page.
 func (f *fakeGitHub) answerQueryWith(repository, body string) {
 	f.t.Helper()
 	var answer graphQLAnswer
@@ -548,8 +606,13 @@ func (f *fakeGitHub) answerQueryWith(repository, body string) {
 	}
 	f.verbatim[repository] = body
 	if answer.Data.Repository != nil {
-		if cursor := answer.Data.Repository.PullRequests.PageInfo.EndCursor; cursor != "" {
-			f.cursorPages[cursor] = 1
+		pulls := answer.Data.Repository.PullRequests
+		if cursor := pulls.PageInfo.EndCursor; cursor != "" {
+			at := queryAfter{page: 1}
+			if last := len(pulls.Nodes); last > 0 && pulls.Nodes[last-1] != nil {
+				at.head = pulls.Nodes[last-1].Number
+			}
+			f.cursorsGiven[cursor] = at
 		}
 	}
 }

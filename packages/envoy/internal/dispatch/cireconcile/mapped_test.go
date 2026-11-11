@@ -3,6 +3,7 @@ package cireconcile
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 // unrenamedRow is a mapping that was never renamed and sorts after the renamed pair, so a read
@@ -28,5 +29,121 @@ func TestEveryMappingIsReadWhenAnotherNamesARename(t *testing.T) {
 	want := []string{rowRepository, unrenamedRow}
 	if !reflect.DeepEqual(repositories, want) {
 		t.Fatalf("the pass reads %v, want %v: each mapped repository under the name it has now, once", repositories, want)
+	}
+}
+
+// The three mappings the test below reads, whose names are the measured pair of the defect with
+// one more after both: `owner/legionabc` sorts before `owner/legion-x` under a collation that
+// weighs punctuation last, which is glibc's en_US, while Go, which compares the bytes, puts
+// `owner/legion-x` first. `owner/zed` sorts after both under either rule, so it is the
+// repository a seek that has run too far still finds.
+const (
+	punctuatedRow        = "owner/legion-x"
+	punctuatedRepository = "Owner/Legion-X"
+	punctuatedID         = 5101
+
+	letteredRow        = "owner/legionabc"
+	letteredRepository = "Owner/Legionabc"
+	letteredID         = 5102
+
+	lastMappedRow        = "owner/zed"
+	lastMappedRepository = "Owner/Zed"
+	lastMappedID         = 5103
+)
+
+// collateMappingsAsADeploymentDoes holds the mapping's names under a collation that sorts
+// `owner/legionabc` before `owner/legion-x`, which is what a deployment's database does: its
+// collation is the one the cluster's Postgres was created with, glibc's en_US on the measured
+// one. The database a test runs against is collated C, where a name sorts as its bytes do and
+// so exactly as Go compares it, so no pair of names a test writes can tell the two rules apart
+// there; this is the one place the difference can be put back.
+func (h *harness) collateMappingsAsADeploymentDoes() {
+	h.t.Helper()
+	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
+	// glibc's en_US was measured to follow. Both name columns take it: the canonical name of a
+	// row is a coalesce of the two (refs.CanonicalRepoSQL), and Postgres derives no collation at
+	// all for a coalesce whose arms carry different ones.
+	for _, statement := range []string{
+		`create collation punctuation_last (provider = icu, locale = 'en-US-u-ka-shifted')`,
+		`alter table repo_projects
+			alter column repo type text collate punctuation_last,
+			alter column renamed_to type text collate punctuation_last`,
+	} {
+		if _, err := h.pool.Exec(h.ctx, statement); err != nil {
+			h.t.Fatalf("hold the mapping under a deployment's own collation (%s): %v", statement, err)
+		}
+	}
+}
+
+// Every mapped repository is read once a cycle however the database collates the mapping's
+// names. The order the pass walks is the mapped order, and the pass taking a cursor up seeks
+// into that order with Go's own comparison of the names, so the two are one rule or the seek is
+// reading an order it does not understand.
+//
+// A pass is cut short in `owner/legionabc` and that repository is then unmapped, which is the
+// case where it tells: the seek is for a name no row carries, and under the database's own rule
+// it runs past `owner/legion-x`, which that rule puts after the cursor and Go puts before it.
+// No pass of the cycle then reads `owner/legion-x` -- the pass before the cursor had not
+// reached it, the pass after the cursor seeks past it -- and the pass that reaches the end of
+// the order records that the cycle covered it.
+func TestEveryMappedRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.collateMappingsAsADeploymentDoes()
+	mapped := []struct {
+		row, repository string
+		id              int64
+		heads           []fakePull
+	}{
+		{punctuatedRow, punctuatedRepository, punctuatedID, []fakePull{head(1)}},
+		// The repository the pass is cut short in has a second head to be cut short at.
+		{letteredRow, letteredRepository, letteredID, []fakePull{head(1), head(2)}},
+		{lastMappedRow, lastMappedRepository, lastMappedID, []fakePull{head(1)}},
+	}
+	for _, repository := range mapped {
+		h.mapRepository(repository.row)
+		h.github.setRepository(repository.row, repository.repository, repository.id)
+		h.github.setPullRequests(repository.repository, repository.heads...)
+		for _, pull := range repository.heads {
+			h.github.setCheckRuns(repository.repository, pull.sha,
+				atHead(repository.repository, pull.sha, checkRun(repository.id+pull.number, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
+			)
+		}
+	}
+	// GitHub answers the second head of `owner/legionabc` no checks to the query, so the pass
+	// reads that head over REST, and is slower with it than the pass has left: the pass ends
+	// inside that repository and leaves the cursor there.
+	cutAt := head(2)
+	h.github.refuseChecks(letteredRepository, cutAt.sha)
+	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", time.Minute)
+	h.reconciler.PassTimeout = 3 * time.Second
+
+	h.pass()
+
+	first := h.passLine()
+	if first["deadline_reached"] != true {
+		t.Fatalf("the first pass reports deadline_reached = %v, want true: GitHub held a head of %s past its bound: %v",
+			first["deadline_reached"], letteredRow, first)
+	}
+
+	// The repository the cursor names leaves the mapping, as an operator unmapping it does, so
+	// the pass after it seeks for a name the order no longer holds.
+	if _, err := h.pool.Exec(h.ctx, `delete from repo_projects where repo = $1`, letteredRow); err != nil {
+		t.Fatalf("unmap %s: %v", letteredRow, err)
+	}
+	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", 0)
+	h.reconciler.PassTimeout = 0
+
+	h.pass()
+
+	line := h.passLine()
+	if line["cycle_complete"] != true {
+		t.Fatalf("the second pass reports cycle_complete = %v, want true: it read the order out to its last repository: %v", line["cycle_complete"], line)
+	}
+	if state := h.stateAt(punctuatedRepository, 1, head(1).sha); state == nil {
+		t.Errorf("the head of %s has no record: no pass of the cycle read that repository, and the pass that closed the cycle recorded that it had covered it. The mapped order and the seek into it put it on different sides of the cursor",
+			punctuatedRow)
+	}
+	if state := h.stateAt(lastMappedRepository, 1, head(1).sha); state == nil {
+		t.Errorf("the head of %s has no record: the pass after the cursor read none of the repositories the cursor's own sorts before", lastMappedRow)
 	}
 }

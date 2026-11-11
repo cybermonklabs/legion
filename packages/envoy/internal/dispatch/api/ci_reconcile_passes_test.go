@@ -45,9 +45,9 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 			instance, started_at, ended_at, outcome,
 			graphql_queries, graphql_points, rest_requests, rest_not_modified,
 			heads_over_rest, records, heads, heads_known,
-			cursor_repository, cursor_page, cursor_number)
+			cursor_repository, cursor_from, cursor_number, cursor_rest, cursor_counted)
 		values ($1, now() - make_interval(secs => $2), now(), $3,
-			7, 42, 3, 2, 1, 5, 20, 45, 'acme/widgets', 1, 21)
+			7, 42, 3, 2, 1, 5, 20, 45, 'acme/widgets', 21, 23, true, true)
 		returning id
 	`, instance, startedAgo.Seconds(), outcome).Scan(&id); err != nil {
 		t.Fatalf("seed an ended CI reconcile pass: %v", err)
@@ -89,8 +89,10 @@ type ciPassView struct {
 	} `json:"counts"`
 	Cursor *struct {
 		Repository string `json:"repository"`
-		Page       int    `json:"page"`
+		From       int64  `json:"from"`
 		Number     int64  `json:"number"`
+		Rest       bool   `json:"rest"`
+		Counted    bool   `json:"counted"`
 	} `json:"cursor"`
 }
 
@@ -136,8 +138,9 @@ func TestCIReconcilePassesAnswersTheLastDayNewestFirst(t *testing.T) {
 		got.Heads != want.heads || got.HeadsKnown != want.known {
 		t.Errorf("the counts read %+v, want %+v", got, want)
 	}
-	if first.Cursor.Repository != "acme/widgets" || first.Cursor.Page != 1 || first.Cursor.Number != 21 {
-		t.Errorf("the cursor reads %+v, want acme/widgets page 1 at #21", *first.Cursor)
+	if first.Cursor.Repository != "acme/widgets" || first.Cursor.From != 21 || first.Cursor.Number != 23 ||
+		!first.Cursor.Rest || !first.Cursor.Counted {
+		t.Errorf("the cursor reads %+v, want acme/widgets at the page named 21, #23 of it unread, read from the listing and already counted", *first.Cursor)
 	}
 }
 
