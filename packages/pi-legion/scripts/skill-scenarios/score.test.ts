@@ -3836,15 +3836,18 @@ reviewRun("reviewer-text-findings-text-only-head-10", {
   "published.jsonl": bus(),
 });
 // The approval the rule asks for, and the wake the implementer needs sent to the architect's
-// topic instead: the text names the implementer and the head, and the implementer, which reads
-// its own topic, learns nothing.
+// topic instead. Catches: a reader of the wake that takes any message of the run for it. The
+// message is the one `toldImplementer` writes, word for word — the head and both findings' paths
+// — so the topic is the one thing wrong with this round, and the implementer, which reads its
+// own topic alone, learns nothing. Until this round the message named neither path, so the run
+// failed on the names and the topic rule it was written for was pinned by nothing.
 reviewRun("reviewer-text-findings-text-only-head-11", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
   "published.jsonl": bus(
     sentTo(
       "architect",
-      `Approved ${head}: the two text threads are the implementer's to close above it.`
+      `Approved ${head}: docs/cli.md and .github/workflows/greet.yml are yours to close above it.`
     )
   ),
 });
@@ -4288,6 +4291,25 @@ reviewRun(
   },
   [...header, ...turn]
 );
+// head-10: the change request the case asks for, sent with the short flag `-r`. Catches: a
+// reader of `--request-changes` alone, which would score a round that caught the defect as one
+// that submitted nothing — the negative control passing for the wrong reason, which is the
+// control measuring nothing.
+reviewRun(
+  "reviewer-text-findings-defect-head-10",
+  {
+    "case.txt": "defect\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: ["pr", "review", "1001", "-r", "--body", "The blank-name guard is gone."],
+        exit: 0,
+      },
+    ]),
+  },
+  [...header, ...turn]
+);
 // head-73: the approval, and after it the read of the reviews already on the pull request,
 // written with the query's parameters as fields — `--method GET -f per_page=100`, which gh
 // sends as a GET. A read submits nothing, and a reader that took those fields for a review's
@@ -4384,6 +4406,350 @@ reviewRun(
     },
   ]
 );
+// head-77, head-78 and head-79: the wake with one of its three names left out and the other two
+// in it — the head (head-77), the document (head-78), the workflow (head-79). Catches: a reader
+// of the wake that asks for two of the three names. Step 1 has the reviewer name the approved
+// head and each open thread, and the implementer acts on the one message it is handed, so a
+// message short of any one name leaves it without that fact; head-49, which names the head
+// alone, is short of two at once and pins neither.
+reviewRun("reviewer-text-findings-text-only-head-77", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([submission(approval())]),
+  "published.jsonl": bus(
+    sentTo(
+      "implementer",
+      "Approved the head I read: docs/cli.md and .github/workflows/greet.yml are yours to close above it."
+    )
+  ),
+});
+reviewRun("reviewer-text-findings-text-only-head-78", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([submission(approval())]),
+  "published.jsonl": bus(
+    sentTo(
+      "implementer",
+      `Approved ${head}: .github/workflows/greet.yml and the other thread are yours to close above it.`
+    )
+  ),
+});
+reviewRun("reviewer-text-findings-text-only-head-79", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([submission(approval())]),
+  "published.jsonl": bus(
+    sentTo(
+      "implementer",
+      `Approved ${head}: docs/cli.md and the other thread are yours to close above it.`
+    )
+  ),
+});
+// head-80: a native `read_record` after the approval whose answer carries no record this can
+// read — the tool answered, and what it answered is not a record. Catches: a reader that takes
+// the native route's answer for a record whenever the call named the op, which would make this
+// run a round that read no record and fail it on the step. What the reviewer was shown is
+// unknown, so the run is a rig error, as head-40's cell is on the route that prints its answer.
+reviewRun(
+  "reviewer-text-findings-text-only-head-80",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [
+    ...header,
+    ...turn,
+    ...stamped(
+      "call-read-recordless",
+      "legion",
+      { op: "read_record", issue: "LWEVAL-1" },
+      "2026-09-30T17:40:30.000Z",
+      {
+        text: "the record of LWEVAL-1, in accepting",
+        details: { key: "LWEVAL-1", phase: "accepting", status: "needs_review" },
+      }
+    ),
+  ]
+);
+// head-81: a cell that built its arguments elsewhere, so its code names no op, and printed the
+// record it got. Catches: a reader of the cell route that asks for the op in the code. A cell is
+// read by its answer where its code says nothing, since the arguments can be built anywhere, and
+// the record is parsed out of what it printed: head-45's cell names the word and prints no
+// record, and this one prints the record and names no word.
+reviewRun(
+  "reviewer-text-findings-text-only-head-81",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [
+    ...header,
+    ...turn,
+    ...stamped(
+      "call-read-built",
+      "eval",
+      { language: "py", code: "print(tool.legion(args))" },
+      "2026-09-30T17:40:30.000Z",
+      {
+        text: `the cell printed ${JSON.stringify({
+          record: { key: "LWEVAL-1", phase: "accepting", status: "needs_review" },
+        })}`,
+        details: { cells: [{ language: "py" }], language: "py" },
+      }
+    ),
+  ]
+);
+// head-82: the same read, printed after the cell's own words and a brace run that is no JSON —
+// the Python mapping the cell echoed. Catches: a reader that parses the first `{` of the output
+// and stops. The record is parsed out of the text and the words around it are read not at all,
+// so a cell that prints anything before its answer is read as head-39's is.
+reviewRun(
+  "reviewer-text-findings-text-only-head-82",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [
+    ...header,
+    ...turn,
+    ...stamped(
+      "call-read-echoed",
+      "eval",
+      {
+        language: "py",
+        code: 'args = {"op": "read_record", "issue": "LWEVAL-1"}\nprint(args, tool.legion(args))',
+      },
+      "2026-09-30T17:40:30.000Z",
+      {
+        text: `the cell printed {'op': 'read_record', 'issue': 'LWEVAL-1'} ${JSON.stringify({
+          record: { key: "LWEVAL-1", phase: "accepting", status: "needs_review" },
+        })}`,
+        details: { cells: [{ language: "py" }], language: "py" },
+      }
+    ),
+  ]
+);
+// head-83: the wake, and after it the read that holds no record. Catches: a rig error made of
+// any unreadable read after the approval, wherever the wake fell. The unknown is the answer the
+// wake followed, so a read that came after the message it would have ordered could have decided
+// nothing: this round sent its wake before it read anything, which is head-37's decided failure
+// with one read it could not read added. head-75 is the other order — the unreadable read, then
+// the wake — and is the rig error.
+reviewRun(
+  "reviewer-text-findings-text-only-head-83",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "published.jsonl": bus(toldImplementer(head, "2026-09-30T17:40:00.000Z")),
+  },
+  [...header, ...turn, ...readRecordVia("eval-unreadable", "2026-09-30T17:40:30.000Z")]
+);
+// head-84: the two-step route with the verdict's own body carrying the head and both inline
+// comments, over a create that named another head and one comment. Catches: a fold that takes
+// the create's head and comments whatever the submit call carries. The create is the pending
+// review and the submit call is the round's act, so what that call says stands and the create
+// fills in only what it leaves out, which is what head-67 reads the other way round.
+reviewRun("reviewer-text-findings-text-only-head-84", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      ...pendingReview,
+      files: {
+        "pending.json": JSON.stringify({
+          commit_id: "7".repeat(40),
+          body: "A first reading, at the head I had.",
+          comments: findings.slice(0, 1),
+        }),
+      },
+    },
+    {
+      at: "2026-09-30T17:29:30.000Z",
+      as: "gh",
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        "repos/example/widgets/pulls/1001/reviews/5002/events",
+        "--input",
+        "submit.json",
+      ],
+      exit: 0,
+      files: { "submit.json": JSON.stringify(approval()) },
+    },
+  ]),
+});
+// head-85, head-86 and head-87: `gh pr review` with the short flags the command takes and with
+// no flag at all. Catches: a reader of the long flags alone, which would score `-a` and `-c` as
+// rounds that submitted nothing. head-85 approves with `-a`, which is head-6's row by another
+// spelling; head-86 comments with `-c`, which is no verdict the merge gate reads; head-87 names
+// no event, which is the command GitHub answers with a pending review and which submits no
+// verdict — a submission carrying none, not a call that submitted nothing.
+for (const [name, flag, body] of [
+  ["head-85", "-a", "Looks good."],
+  ["head-86", "-c", "One more reading, for the record."],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: ["pr", "review", "1001", flag, "--body", body],
+        exit: 0,
+      },
+    ]),
+  });
+reviewRun("reviewer-text-findings-text-only-head-87", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      at: "2026-09-30T17:29:30.000Z",
+      as: "gh",
+      argv: ["pr", "review", "1001", "--body", "The open threads are yours to close."],
+      exit: 0,
+    },
+  ]),
+});
+// head-88: the submission with the leading slash `gh api` takes either way, which is how the
+// route is written wherever it is copied from GitHub's own documentation. Catches: a route read
+// without it, which would score this round as one that submitted nothing.
+reviewRun("reviewer-text-findings-text-only-head-88", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      ...submission(approval()),
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        "/repos/example/widgets/pulls/1001/reviews",
+        "--input",
+        "body.json",
+      ],
+    },
+  ]),
+});
+// head-89 and head-90: the pending review of head-68, and a submit call the round's own pull
+// request never got — head-89 submits it on another repository's, which the stand-in answers as
+// GitHub would answer the right one, and head-90 names a route that is not the submit route,
+// here with the trailing slash a copied URL carries. Catches: a submit route read without its
+// repository or without its end, either of which would fold the create into a call this pull
+// request has no verdict from. Each round is left with its pending review, which is no verdict.
+for (const [name, route] of [
+  ["head-89", "repos/sjawhar/legion-smoke/pulls/1001/reviews/5002/events"],
+  ["head-90", "repos/example/widgets/pulls/1001/reviews/5002/events/"],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([
+      pendingReview,
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: ["api", "--method", "POST", route, "-f", "event=APPROVE"],
+        exit: 0,
+      },
+    ]),
+  });
+// head-91 and head-92: the review written as fields through the other three flags gh takes one
+// by — `--raw-field` and `-F` in head-91, `--field` beside `-f` in head-92. Catches: a reader of
+// one spelling, which would lose the verdict or the head of a round that wrote it with another.
+// Each round fails as head-65 does, for the two findings a field cannot carry.
+for (const [name, eventFlag, headFlag] of [
+  ["head-91", "--raw-field", "-F"],
+  ["head-92", "--field", "-f"],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: [
+          "api",
+          "--method",
+          "POST",
+          "repos/example/widgets/pulls/1001/reviews",
+          eventFlag,
+          "event=APPROVE",
+          headFlag,
+          `commit_id=${head}`,
+        ],
+        exit: 0,
+      },
+    ]),
+  });
+// head-93: a submission whose body file holds no JSON, which is what a round that wrote its
+// review as prose and piped the file in leaves. Catches: a reader that parses the body and lets
+// the throw out, which would make a rig error of a round whose verdict is known: the call went
+// out and the stand-in took it, so the round submitted a review carrying nothing this can read,
+// and the row says what the submission holds.
+reviewRun("reviewer-text-findings-text-only-head-93", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      ...submission(approval()),
+      files: { "body.json": "Approved. The two threads are the work the merge waits for.\n" },
+    },
+  ]),
+});
+// head-94 and head-95: the head named by its first seven characters, which is the fewest that
+// names one commit, and by its first twelve, which is how a message names one everywhere else in
+// this loop. Catches: a reader that asks for more than seven, and one that asks for the whole
+// forty — head-70's six characters fail under every reading, so the boundary and the prefix are
+// each a run of their own.
+for (const [name, length] of [
+  ["head-94", 7],
+  ["head-95", 12],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval(findings, head.slice(0, length)))]),
+  });
+// head-96: the wake sent in the millisecond the read was answered in. Catches: an ordering read
+// as `>=`, where a message written in the answer's own millisecond follows it. The step is the
+// record read and then the message, as head-62 is the submission and then the read, and both
+// times are the rig's own to the millisecond.
+reviewRun(
+  "reviewer-text-findings-text-only-head-96",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "published.jsonl": bus(toldImplementer(head, "2026-09-30T17:40:30.000Z")),
+  },
+  [...header, ...turn, ...readRecord("2026-09-30T17:40:30.000Z")]
+);
+// head-97: a wake that names both findings and writes the head's first twelve characters into a
+// word of its own. Catches: a commit read out of any run of hexadecimal characters, wherever it
+// falls. `namesCommit` asks for a word of seven digits or more, so a run glued to the word before
+// it is no name of the head: the implementer reading this message has the two paths and no head
+// to land them above.
+reviewRun("reviewer-text-findings-text-only-head-97", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([submission(approval())]),
+  "published.jsonl": bus(
+    sentTo(
+      "implementer",
+      `Approved commit${head.slice(0, 12)}: docs/cli.md and .github/workflows/greet.yml are yours to close above it.`
+    )
+  ),
+});
+// head-98 and head-99: the round that passes as head-1 does, with the reference read (head-98)
+// and with two other skills read and the reference not (head-99). Catches: a `ref` that answers
+// the same for every run — every other run of this scenario reads nothing, so `ref=false` is
+// pinned by all of them and `ref=true` by none, and a reader that counted any skill read would
+// credit head-99 with a reference it never opened. `ref` is counted beside the pass and not in
+// it, so both rounds pass.
+reviewRun(
+  "reviewer-text-findings-text-only-head-98",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [
+    ...header,
+    ...turn,
+    ...readRecord(),
+    ...readOf("call-reference", "skill://legion-worker/references/merge-gate.md"),
+  ]
+);
+reviewRun(
+  "reviewer-text-findings-text-only-head-99",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [
+    ...header,
+    ...turn,
+    ...readRecord(),
+    ...readOf("call-skill", "skill://legion-worker"),
+    ...readOf("call-threads", "skill://legion-worker/references/review-threads.md"),
+  ]
+);
+
 // The rig's two records of the case disagree, and a directory that names no case at all.
 reviewRun("reviewer-text-findings-defect-head-3", {
   "case.txt": "text-only\n",
@@ -4659,37 +5025,56 @@ const pushed = (sha: string) =>
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
  * with the reviewer's own transcript in <run>/sessions/reviewer, where rig.sh's worker_boot puts
  * the second agent's. Each half's transcript carries the wake its role owns in that world, which
- * a run that sent none gives as `[...header, ...turn]`. */
+ * a run that sent none gives as `[...header, ...turn]`.
+ *
+ * Whether there is a second half at all is the rig's own rule and not a choice of each fixture:
+ * rig.sh's run_threads_closed boots the reviewer on the messages the implementer published to
+ * its topic, and boots none in code-defect where that wake holds none, since sending the
+ * reviewer nothing is the act that case measures (its `reviewer_wake`). So a run whose record
+ * holds no message on the reviewer's topic gets a reviewer half only where the rig would have
+ * booted one, which in text-fixes is always — the implementer owed a wake there, and the empty
+ * prompt it leaves is the `toldReviewer` failure it already was. In all 20 code-defect runs
+ * recorded on 2026-11-10 `sessions/reviewer` existed exactly when `reviewer-wake.json` held a
+ * message, and before this each code-defect fixture that published nothing to that topic still
+ * got a reviewer half, so the terms over the reviewer's acts were read against an agent the rig
+ * would never have run. `reviewer: null` says so for a run whose record this cannot read, and a
+ * transcript with no assistant message in it (head-18's `[...header]`, head-16's
+ * `[...secondHeader]`) is the other shape: a half that started and got no model turn, which is
+ * a rig error in every case. */
 function fixRun(
   name: string,
   files: Record<string, string | null>,
   transcripts: { implementer?: object[]; reviewer?: object[] | null } = {}
 ) {
   fix.remoteFor(name);
-  run(
-    name,
-    {
-      "out.txt": "exit=0\n",
-      "world.json": worldOf(fix.approved),
-      "threads.json": fixThreadsFile,
-      "case.txt": "text-fixes\n",
-      "pushes.log": "",
-      "daemon.log": calls([refusedCompletion]),
-      "handoffs.json": handoffs(reviewRecord),
-      // What Envoy accepted on this run's topics, with the boot line of each half: the
-      // implementer's wake of the reviewer, then the reviewer's wake of the architect. A run
-      // that sent one of them elsewhere, or sent none, names its own record here.
-      "published.jsonl": bus(toldReviewerOfPush(fix.fixed), toldArchitectOfHead(fix.fixed)),
-      ...files,
-    },
-    transcripts.implementer ?? [...header, ...turn]
-  );
-  // `reviewer: null` is the run with no second half: no sessions/reviewer at all, which is what
-  // a run the rig booted no reviewer for leaves (rig.sh's worker_boot makes that directory). The
-  // score reads it as the act of the case that asks for it and as a rig error elsewhere
-  // (BOOTS_OPTIONAL); a directory with a transcript that holds no assistant message, which is a
-  // half that started and measured nothing, is `reviewer: [...header]`.
+  const world: Record<string, string | null> = {
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(fix.approved),
+    "threads.json": fixThreadsFile,
+    "case.txt": "text-fixes\n",
+    "pushes.log": "",
+    "daemon.log": calls([refusedCompletion]),
+    "handoffs.json": handoffs(reviewRecord),
+    // What Envoy accepted on this run's topics, with the boot line of each half: the
+    // implementer's wake of the reviewer, then the reviewer's wake of the architect. A run
+    // that sent one of them elsewhere, or sent none, names its own record here.
+    "published.jsonl": bus(toldReviewerOfPush(fix.fixed), toldArchitectOfHead(fix.fixed)),
+    ...files,
+  };
+  run(name, world, transcripts.implementer ?? [...header, ...turn]);
+  // The wake the rig would have handed the reviewer: the messages of this run's record on the
+  // reviewer's topic, which is what `reviewer_wake` prints for it, read by the topic alone as
+  // the score reads them.
+  const woken = (world["published.jsonl"] ?? "")
+    .split("\n")
+    .filter((line) => line !== "")
+    .some((line) => {
+      const sent: unknown = JSON.parse(line);
+      if (typeof sent !== "object" || sent === null || !("topic" in sent)) return false;
+      return typeof sent.topic === "string" && sent.topic.endsWith("-reviewer");
+    });
   if (transcripts.reviewer === null) return;
+  if (transcripts.reviewer === undefined && world["case.txt"] === "code-defect\n" && !woken) return;
   stagings.push(() => {
     const dir = path.join(runs, name, "sessions", "reviewer");
     mkdirSync(dir, { recursive: true });
@@ -5441,6 +5826,72 @@ fixRun("threads-closed-text-fixes-head-63", {
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([completed]),
 });
+// Catches: a reader of "one thread per call" that counts the ids a call names and lets a call
+// naming none through. head-64's reviewer resolved the first thread with the id in a file
+// (`-F id=@thread-id.txt`, which gh reads the value of from that file), so the call shows no
+// one thread of its own: what it closed cannot be read from it, which is the state the rule's
+// one thread per call exists to leave behind. head-3's bulk call names two and breaks the other
+// half of the rule at the same time.
+fixRun("threads-closed-text-fixes-head-64", {
+  "calls.jsonl": calls([
+    ...closedBoth,
+    {
+      at: "2026-09-30T17:37:30.000Z",
+      as: "gh",
+      by: "reviewer",
+      argv: [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+        "-F",
+        "id=@thread-id.txt",
+      ],
+      exit: 0,
+    },
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-65, head-66 and head-67: the run that passes as head-1 does, each missing one of the
+// three records a worker run leaves. Catches: the missing-record rule read as the other
+// scenario's alone — every run of this one holds all three, so a rule that skipped
+// threads-closed would be pinned by nothing here. Each record is written by the thing that
+// keeps it, so an absent one is a record nothing wrote, and it reads as no call, no push and no
+// move, which is what the code-defect pass looks like.
+for (const [name, file] of [
+  ["head-65", "calls.jsonl"],
+  ["head-66", "pushes.log"],
+  ["head-67", "daemon.log"],
+] as const)
+  fixRun(`threads-closed-text-fixes-${name}`, {
+    "calls.jsonl": calls(closedBoth),
+    "pushes.log": pushed(fix.fixed),
+    [file]: null,
+  });
+// head-68: the three records there and holding no line, which is the other reading — the run
+// made no call, pushed nothing and moved nothing — so it scores, its row names each empty
+// record, and it fails on every act of the loop.
+fixRun("threads-closed-text-fixes-head-68", {
+  "calls.jsonl": "",
+  "pushes.log": "",
+  "daemon.log": "",
+});
+// head-69 and head-70: the record of what the run's agents sent, there and holding no line
+// (head-69) and absent altogether (head-70). Catches: a reader that takes either for a run that
+// published nothing. The recorder writes its opening line as soon as it has subscribed, so a
+// file without one is a recorder that never did: what reached the topics is unknown, and both
+// wakes of this loop would otherwise read as messages never sent. head-28 is the third shape, a
+// record with messages in it and no opening line.
+fixRun("threads-closed-text-fixes-head-69", {
+  "calls.jsonl": calls(closedBoth),
+  "pushes.log": pushed(fix.fixed),
+  "published.jsonl": "",
+});
+fixRun("threads-closed-text-fixes-head-70", {
+  "calls.jsonl": calls(closedBoth),
+  "pushes.log": pushed(fix.fixed),
+  "published.jsonl": null,
+});
 // Another label, for the counts.
 fixRun("threads-closed-text-fixes-base-1", {
   "calls.jsonl": calls(closedBoth),
@@ -5497,15 +5948,27 @@ fixRun("threads-closed-code-defect-head-3", {
     sentTo("architect", "Thread PRRT_kwDOfix101 is false because the code is wrong.")
   ),
 });
+/** The implementer's own message to the reviewer in code-defect, which is the only thing that
+ * gives that case a second half: rig.sh boots the reviewer on the messages the implementer
+ * published to its topic and boots none where it published none (reviewer_wake). The act the
+ * case measures is sending the architect the finding, so a run whose reviewer did anything at
+ * all holds this message too, and a run that holds it has not thereby told the architect
+ * anything — the reviewer can do nothing with a thread no text fix closes. */
+const askedReviewer = sentTo(
+  "reviewer",
+  "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: nothing I can write closes it. Will you read it?",
+  "2026-09-30T17:32:00.000Z"
+);
 // The reviewer told nobody on Envoy and submitted the `REQUEST_CHANGES` instead. It is submitted
 // in `accepting`, where the daemon records no review, so it moves nothing and the finding sits
-// where no role reads it.
+// where no role reads it. The implementer's message to the reviewer is what the rig booted that
+// half on, and it reaches no architect.
 fixRun("threads-closed-code-defect-head-5", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
   "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z"), changesRequested(fix.approved)]),
   "daemon.log": calls([]),
-  "published.jsonl": bus(),
+  "published.jsonl": bus(askedReviewer),
 });
 // The same `REQUEST_CHANGES`, and the message to the architect beside it: the submission is the
 // finding's record on GitHub and the message is what reaches the role that can act on it.
@@ -5515,6 +5978,7 @@ fixRun("threads-closed-code-defect-head-7", {
   "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z"), changesRequested(fix.approved)]),
   "daemon.log": calls([]),
   "published.jsonl": bus(
+    askedReviewer,
     sentTo(
       "architect",
       "Thread PRRT_kwDOfix101 is false because the code is wrong: a blank name must exit 2.",
@@ -5531,6 +5995,7 @@ fixRun("threads-closed-code-defect-head-6", {
   "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z"), secondApproval(fix.approved)]),
   "daemon.log": calls([]),
   "published.jsonl": bus(
+    askedReviewer,
     sentTo("architect", "Thread PRRT_kwDOfix101 is false because the code is wrong.")
   ),
 });
@@ -5585,6 +6050,16 @@ const defectTold = bus(
     "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
   )
 );
+/** The same record with the implementer's message to the reviewer in it, which is what the rig
+ * booted a reviewer on: the two runs below whose reviewer acted hold it, and head-12, whose
+ * acts are all the implementer's, has one half and no such message. */
+const defectWokeReviewer = bus(
+  askedReviewer,
+  sentTo(
+    "architect",
+    "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
+  )
+);
 fixRun("threads-closed-code-defect-head-11", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
@@ -5593,7 +6068,7 @@ fixRun("threads-closed-code-defect-head-11", {
     threadReply("PRRT_kwDOfix101", "2026-09-30T17:31:00.000Z"),
     threadResolve(["PRRT_kwDOfix101"], "2026-09-30T17:37:00.000Z"),
   ]),
-  "published.jsonl": defectTold,
+  "published.jsonl": defectWokeReviewer,
 });
 fixRun("threads-closed-code-defect-head-12", {
   "case.txt": "code-defect\n",
@@ -5612,7 +6087,7 @@ fixRun("threads-closed-code-defect-head-13", {
     threadsList("2026-09-30T17:30:00.000Z"),
     threadResolve(["PRRT_kwDOrig0001", "PRRT_kwDOrig0002"], "2026-09-30T17:37:00.000Z"),
   ]),
-  "published.jsonl": defectTold,
+  "published.jsonl": defectWokeReviewer,
 });
 // Catches: a scorer that reads the verdict off the reviewer's calls alone, so the approval the
 // design forbids while a finding is not text passes when the implementer submitted it. head-14
@@ -5641,6 +6116,43 @@ fixRun("threads-closed-code-defect-head-15", {
     )
   ),
 });
+// Catches: a reader that lets a code-defect run off the half rule altogether, rather than off
+// the half the rig never booted. head-16's implementer woke the reviewer, so the rig booted one,
+// and that half got no model turn: it measured nothing of the loop, as head-18 measures nothing
+// of the text-fixes one, and the run is the rig error that says so. The case excuses the absent
+// directory and nothing else.
+fixRun(
+  "threads-closed-code-defect-head-16",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z", "implementer")]),
+    "published.jsonl": defectWokeReviewer,
+  },
+  { reviewer: [...secondHeader] }
+);
+// Catches: a `ref` that asks the half the run never booted to have read the reference, which
+// reads as a run that read it in neither half. head-17 is head-10 with the implementer's read of
+// review-threads.md in it: the one half that ran read where its own half of the loop is defined,
+// and there is no second half to ask. Reverting this to the two-half reading moved the recorded
+// code-defect label from four runs with the reference to none, since every code-defect run that
+// did the act the case measures has one half.
+fixRun(
+  "threads-closed-code-defect-head-17",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z", "implementer")]),
+    "published.jsonl": defectTold,
+  },
+  {
+    implementer: [
+      ...header,
+      ...turn,
+      ...readOf("call-reference", "skill://legion-worker/references/review-threads.md"),
+    ],
+  }
+);
 // The rig's two records of the case disagree, and a directory that names no case at all.
 fixRun("threads-closed-code-defect-head-4", {
   "calls.jsonl": calls(closedBoth),
@@ -6481,6 +6993,162 @@ test("reviewer-text-findings: an out.txt with no exit= line is a rig error", () 
   );
   expect(out).not.toContain("reviewer-text-findings-text-only-head-72\tpass=");
 });
+// Catches: a reader of the wake that asks for two of the three names step 1 gives it, and one
+// that reads the role off the message's words rather than off the topic it reached. head-77
+// leaves out the head, head-78 the document and head-79 the workflow, each naming the other
+// two, so dropping any one name from the rule passes a round the implementer could not act on;
+// head-11 carries every name and reached the architect's topic, so the topic is the one thing
+// wrong with it.
+test("reviewer-text-findings, text-only: a wake short of any one of its three names fails, and so does the whole wake on another topic", () => {
+  for (const name of ["head-77", "head-78", "head-79", "head-11"])
+    expect(out).toMatch(
+      new RegExp(`reviewer-text-findings-text-only-${name}\\tpass=false\\t.*toldImplementer=false `)
+    );
+});
+
+// Catches: a native `read_record` whose answer holds no record read as a record. The tool
+// answered and what it answered is none, so what the reviewer was shown is unknown on this
+// route as it is on the cell's (head-40).
+test("reviewer-text-findings, text-only: a native read whose answer holds no record is a rig error", () => {
+  expect(out).toContain(
+    "reviewer-text-findings-text-only-head-80\trig error: a read_record after the approval was answered with no record this can read"
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-80\tpass=");
+});
+
+// Catches: a cell read for the op in its code alone, which leaves a cell that built its
+// arguments elsewhere reading as no read at all (head-81); and an answer parsed from its first
+// brace run alone, which leaves a cell that printed anything before its record reading as a
+// read of none (head-82).
+test("reviewer-text-findings, text-only: a cell that names no op and one that prints braces first are both reads", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-81\tpass=true\t.*toldImplementer=true /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-82\tpass=true\t.*toldImplementer=true /
+  );
+});
+
+// Catches: a rig error made of an unreadable read whatever the round did after it. head-83 woke
+// the implementer and read the record after that message, so no answer to that read could have
+// ordered it: the round is the decided failure head-37 is, and a reader that asked only whether
+// an unreadable read followed the approval would take it out of both counts.
+test("reviewer-text-findings, text-only: an unreadable read after the wake decides nothing", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-83\tpass=false\t.*toldImplementer=false /
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-83\trig error");
+});
+
+// Catches: a fold of the two-step route that reads the create's head and inline comments over
+// the submit call's own. head-84's create named another head and one finding, and the call that
+// submitted it named the head it approved and both: what the verdict's own body says stands,
+// and the create fills in only what it leaves out (head-67).
+test("reviewer-text-findings: the submit call's own head and comments stand over the create's", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-84\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+  );
+});
+
+// Catches: a reader of `gh pr review`'s long flags alone, and one that reads a call naming no
+// event as no submission. head-85 approves with `-a` and head-86 comments with `-c`, which the
+// command takes as `--approve` and `--comment` do; head-87 names no event at all, which GitHub
+// answers with a pending review, so the round submitted a review carrying no verdict rather
+// than nothing at all. defect head-10 is `-r`, the flag the negative control turns on.
+test("reviewer-text-findings: gh pr review's short flags carry the event, and a call with none submits no verdict", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-85\tpass=false\t.*event=APPROVE head=false doc=false workflow=false /
+  );
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-86\tpass=false\t.*event=COMMENT /);
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-87\tpass=false\t.*event=none .*submissions=1 /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-defect-head-10\tpass=true\t.*event=REQUEST_CHANGES head=false /
+  );
+});
+
+// Catches: the reviews route read without the leading slash `gh api` takes either way (head-88),
+// and the submit route read without its repository (head-89) or without its end (head-90). Each
+// of the last two leaves the round its pending review, which is no verdict: a submit call on
+// another repository's pull request submits nothing of this one, and a route that is not the
+// submit route is no submission to fold the create into.
+test("reviewer-text-findings: the reviews route takes a leading slash, and the submit route is this repository's own", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-88\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+  );
+  for (const name of ["head-89", "head-90"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-text-only-${name}\\tpass=false\\t.*event=none head=true doc=true workflow=true .*submissions=1 `
+      )
+    );
+});
+
+// Catches: a reader of `-f` alone among the four flags gh writes a field with. head-91 writes
+// the verdict with `--raw-field` and the head with `-F`, head-92 the verdict with `--field` and
+// the head with `-f`, and a reader short of any one of them loses the verdict or the head of a
+// round that wrote it that way. Both fail as head-65 does, for the findings a field cannot
+// carry.
+test("reviewer-text-findings: a review written with --raw-field, -F or --field is read as one with -f", () => {
+  for (const name of ["head-91", "head-92"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-text-only-${name}\\tpass=false\\t.*event=APPROVE head=true doc=false workflow=false .*submissions=1 `
+      )
+    );
+});
+
+// Catches: a body parsed with the throw let out, which would make a rig error of a round whose
+// verdict is known. head-93's call went out and the stand-in took it, so the round submitted a
+// review this can read nothing in, and the row says so.
+test("reviewer-text-findings: a submission whose body is no JSON is a submission carrying nothing", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-93\tpass=false\t.*event=none head=false doc=false workflow=false .*submissions=1 /
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-93\trig error");
+});
+
+// Catches: a head read as the whole forty characters, and one read with more than seven asked
+// of a prefix. head-94 names the head in seven, the fewest that names one commit, and head-95
+// in twelve, which is how a message names one everywhere else in this loop; head-70's six fail
+// under either reading.
+test("reviewer-text-findings: a head named by seven characters, and by twelve, is the head", () => {
+  for (const name of ["head-94", "head-95"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true `
+      )
+    );
+});
+
+// Catches: the wake ordered against the read's answer as `>=`. head-96's message was accepted in
+// the millisecond the read was answered in, which is no message sent after it: the step is the
+// record read and then the message, and both times are the rig's own to the millisecond.
+test("reviewer-text-findings, text-only: a wake in the read's own millisecond is no wake after it", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-96\tpass=false\t.*toldImplementer=false /
+  );
+});
+
+// Catches: a commit read out of any run of hexadecimal characters. head-97's wake writes the
+// head's first twelve characters into a word of its own, which names no commit — a reader of
+// the message has both findings' paths and no head to land them above.
+test("reviewer-text-findings, text-only: a head glued into a longer word names no head", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-97\tpass=false\t.*toldImplementer=false /
+  );
+});
+
+// Catches: a `ref` that answers the same whatever the run read. Every other run of this
+// scenario reads nothing, so `ref=false` is pinned by all of them and `ref=true` by none:
+// head-98 read the reference the rule is defined in and head-99 read two other skills and not
+// it. Both rounds pass, since `ref` is counted beside the pass and not in it.
+test("reviewer-text-findings, text-only: the reference read is the merge gate's own, and another skill is not it", () => {
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-98\tpass=true\tref=true\t/);
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-99\tpass=true\tref=false\t/);
+});
+
 // Catches: a scorer blind to "to that topic alone" (review-threads.md step 2).
 test("threads-closed, text-fixes: a wake copied to the architect fails", () => {
   expect(out).toMatch(
@@ -6776,6 +7444,74 @@ test("threads-closed, text-fixes: a published message with no time is a rig erro
 test("threads-closed, text-fixes: the completions counted are the ones the stand-in refused", () => {
   expect(out).toMatch(/threads-closed-text-fixes-head-63\tpass=true\t.*refusedCompletions=0/);
   expect(out).toMatch(/threads-closed-text-fixes-head-1\tpass=true\t.*refusedCompletions=1/);
+});
+
+// Catches: "one thread per call" read as a cap on the ids a call names, which lets a call
+// naming none through. head-64's resolution passed its thread's id in a file, so the call shows
+// no one thread of its own and what it closed cannot be read from it.
+test("threads-closed, text-fixes: a resolve call naming no thread is a bulk call", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-64\tpass=false\t.*resolved=2 resolveCalls=3 bulk=true /
+  );
+});
+
+// Catches: the missing-record rule read as the other recorded scenario's alone. Every run of
+// this one holds all three records, so nothing here would have failed had threads-closed been
+// dropped from it: head-65, head-66 and head-67 are the pass of head-1 with one record nothing
+// wrote, and head-68 holds all three there and empty, which is the other reading and scores.
+test("threads-closed, text-fixes: a missing stand-in record is a rig error, and three empty ones are a reading", () => {
+  for (const [name, file, reads] of [
+    ["head-65", "calls.jsonl", "its gh and bun calls"],
+    ["head-66", "pushes.log", "the pushes its remote took"],
+    ["head-67", "daemon.log", "its daemon stand-in's answers"],
+  ] as const) {
+    expect(out).toContain(
+      `threads-closed-text-fixes-${name}\trig error: <run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`
+    );
+    expect(out).not.toContain(`threads-closed-text-fixes-${name}\tpass=`);
+  }
+  expect(out).toMatch(/threads-closed-text-fixes-head-68\tpass=false\t/);
+  expect(out).not.toContain("threads-closed-text-fixes-head-68\trig error");
+  expect(rowOf("threads-closed-text-fixes-head-68")).toContain(
+    "  empty records: calls.jsonl, pushes.log, daemon.log — there, and holding no line"
+  );
+});
+
+// Catches: a record of the run's messages that is there and empty, or absent, read as a run
+// whose agents published nothing. The recorder writes its opening line as soon as it has
+// subscribed, so a file without one is a recorder that never did and what reached the topics is
+// unknown: head-69 holds no line and head-70 is not there at all, and head-28 is the third
+// shape.
+test("threads-closed, text-fixes: a record absent and one holding no line are each a rig error", () => {
+  for (const name of ["head-69", "head-70"]) {
+    expect(out).toContain(
+      `threads-closed-text-fixes-${name}\trig error: <run>/published.jsonl has no \`recording\` line: the publish recorder never subscribed to the bus`
+    );
+    expect(out).not.toContain(`threads-closed-text-fixes-${name}\tpass=`);
+  }
+});
+
+// Catches: the optional half read as "code-defect asks nothing of the reviewer", where it
+// excuses the half the rig never booted and nothing else. head-16's implementer woke the
+// reviewer, so the rig booted one, and that half got no model turn: it measured nothing, as
+// head-18 measures nothing of the text-fixes loop. head-1, whose implementer woke nobody, has
+// no such directory and is the case's own pass.
+test("threads-closed, code-defect: a reviewer half that started and got no turn is a rig error", () => {
+  expect(out).toContain(
+    "threads-closed-code-defect-head-16\trig error: the reviewer half never started: sessions/reviewer holds no transcript, or one with no assistant message"
+  );
+  expect(out).not.toContain("threads-closed-code-defect-head-16\tpass=");
+  expect(out).toMatch(/threads-closed-code-defect-head-1\tpass=true\t/);
+  expect(out).not.toContain("threads-closed-code-defect-head-1\trig error");
+});
+
+// Catches: a `ref` that asks a half the run never booted to have read the reference, which
+// scores every one-half run as having read it in neither half — and a one-half run is what the
+// code-defect act leaves. head-17 is head-10 with the implementer's own read of
+// review-threads.md in it.
+test("threads-closed, code-defect: a one-half run reads the reference in the half it ran", () => {
+  expect(out).toMatch(/threads-closed-code-defect-head-17\tpass=true\tref=true\t/);
+  expect(out).toMatch(/threads-closed-code-defect-head-10\tpass=true\tref=false\t/);
 });
 
 // The tester writes its handoff body whole, and its prompt names no time (Dispatch records when the

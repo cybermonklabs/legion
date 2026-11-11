@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { Socket } from "bun";
 import { connect } from "nats";
 
 // The recorder reads the bus, so a host with no NATS server runs none of this.
@@ -172,10 +173,12 @@ test.skipIf(skip)(
 
 // Catches: a recorder that keeps another run's messages, which would score a wake this run never
 // sent — each run of a batch has a Legion project of its own for that reason (rig.sh's
-// run_project) — and one that drops the body of a message longer than one line, which the
-// listener carries as the envelope's payload while its summary holds the first line alone.
+// run_project) — and one that keeps a message of this run's project that reached no role topic
+// at all, which is a message no role of the loop reads and no step of it was taken by. And one
+// that drops the body of a message longer than one line, which the listener carries as the
+// envelope's payload while its summary holds the first line alone.
 test.skipIf(skip)(
-  "another run's topic is not recorded, and a message of more than one line is recorded whole",
+  "another run's topic and another lane of this one are not recorded, and a message of more than one line is recorded whole",
   async () => {
     const run = await recording("filter", "legion-mine-lweval-1-");
     try {
@@ -183,6 +186,16 @@ test.skipIf(skip)(
         "notifications.agent.01a0f2cc",
         JSON.stringify(
           envelope("notifications.role.legion-other-lweval-1-reviewer", "another run's wake")
+        )
+      );
+      // This run's own project and role, on a lane that is not the role lane. `notifications.`
+      // and a four-letter word is as long as `notifications.role.`, so a recorder that read the
+      // project out of the nineteenth character on and never asked which lane it was would take
+      // this for a wake of the reviewer.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.chat.legion-mine-lweval-1-reviewer", "a word in another lane")
         )
       );
       run.client.publish(
@@ -270,6 +283,38 @@ test.skipIf(skip)(
   120_000
 );
 
+// Catches: a recorder that writes one line per text rather than one per message. Two messages
+// of a run can carry one text — a wake sent again because the first went unanswered, the same
+// sentence to two roles — and Envoy mints an id for each, while a forward repeated for a
+// receipt and a kept copy drained later carry the id of the one message they are copies of. So
+// the id is what tells a copy from a second message, and a record keyed on the text would hide
+// a message an agent sent.
+test.skipIf(skip)(
+  "two messages carrying one text are two lines",
+  async () => {
+    const run = await recording("twice", "legion-twice-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-twice-lweval-1-reviewer";
+      const said = "the fixes are pushed: head abc1234";
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(envelope(topic, said)));
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(envelope(topic, said)));
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.role.legion-twice-lweval-1-architect", "the loop is closed")
+        )
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the loop is closed");
+      expect(lines).toHaveLength(3);
+      expect(lines.filter((line) => line.message === said)).toHaveLength(2);
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
 // Catches: a recorder that ends quietly when the bus goes away, which is the one end that must
 // leave the record unfinished. It makes no reconnect, because core NATS loses whatever was
 // published while a connection is down: what the run sent in the gap is unknown, so the record
@@ -288,14 +333,101 @@ test.skipIf(skip)(
       );
       await run.client.flush();
       await run.recorded("the fixes are pushed");
+      const went = Bun.nanoseconds();
       const lost = await run.serverLost();
       expect(lost.status).toBe(1);
       expect(lost.lines.some((line) => "closed" in line)).toBe(false);
       expect(lost.lines[0]).toMatchObject({ recording: "legion-lost-lweval-1-" });
       expect(lost.said).toContain("the subscription ended before the run did");
+      // And it ends when the bus goes rather than sitting out a reconnect: `reconnect: false`
+      // is what makes the end immediate, and a client that reconnected would wait out its
+      // attempts first — ten of them, two seconds apart, in nats.js — with the rig believing
+      // all that while that it was recording and the run's messages going nowhere. Ten seconds
+      // is far past the end this makes and far short of that wait, so the bound can hide the
+      // fault on a loaded host and never invent one.
+      expect((Bun.nanoseconds() - went) / 1e9).toBeLessThan(10);
     } finally {
       await run.stop();
     }
   },
   120_000
 );
+
+// Catches: a recorder that says it is recording before the server has taken its subscription.
+// The rig boots its first agent on that line (rig.sh's start_recorder waits for it), so a line
+// written while the subscription was still on its way leaves whatever that agent published
+// first reaching no record, and the score reads a wake that was sent as one that never was.
+// `await nats.flush()` is what makes the line true: it is answered when the server has answered.
+//
+// This one check speaks the protocol by hand, where every check above runs against a real
+// nats-server, because what it measures is not what a subscriber sees but when the recorder
+// says it is subscribed, and a real server answers the flush far too fast for any reader to
+// see the difference. nats.js opens with the server's INFO, then the client's CONNECT and a
+// PING of its own, which this answers; the flush is the PING after the SUB, and this holds its
+// answer until the record has been looked at. A host with no nats-server runs this one too.
+test("the record opens only once the server has taken the subscription", async () => {
+  const dir = path.join(work, "flush");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "published.jsonl");
+  await Bun.write(file, "");
+  let held: Socket<undefined> | undefined;
+  let subscribed = false;
+  let answering = false;
+  const bus = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        socket.write(
+          `INFO ${JSON.stringify({
+            server_id: "held",
+            server_name: "held",
+            version: "2.10.0",
+            proto: 1,
+            host: "127.0.0.1",
+            port: 0,
+            headers: true,
+            max_payload: 1048576,
+          })}\r\n`
+        );
+      },
+      data(socket, data) {
+        for (const line of new TextDecoder().decode(data).split("\r\n")) {
+          if (line.startsWith("SUB ")) subscribed = true;
+          if (line !== "PING") continue;
+          // The client's own PING, which `connect` waits for, is answered; the one the flush
+          // sends after the subscription is held until the check has looked at the record. A
+          // recorder that made no flush sends no second PING at all, which is why what this
+          // waits for below is the subscription and not the PING.
+          if (!subscribed || answering) socket.write("PONG\r\n");
+          else held = socket;
+        }
+      },
+    },
+  });
+  const recorder = Bun.spawn(
+    ["bun", path.join(import.meta.dir, "record-publishes.ts"), file, "legion-held-lweval-1-"],
+    {
+      env: { ...process.env, SKILL_SCENARIOS_NATS_URL: `nats://127.0.0.1:${bus.port}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+  try {
+    // The subscription is at this bus and nothing has answered it, which is the moment the
+    // record must still be empty. Nothing shows a line unwritten in no time at all, so this
+    // waits a little: the wait can hide the fault on a slow host and never invent one.
+    while (!subscribed) await Bun.sleep(20);
+    await Bun.sleep(250);
+    expect(await Bun.file(file).text()).toBe("");
+    answering = true;
+    held?.write("PONG\r\n");
+    while ((await Bun.file(file).text()) === "") await Bun.sleep(20);
+    expect(JSON.parse((await Bun.file(file).text()).split("\n")[0] ?? "")).toMatchObject({
+      recording: "legion-held-lweval-1-",
+    });
+  } finally {
+    recorder.kill();
+    bus.stop(true);
+  }
+}, 120_000);
