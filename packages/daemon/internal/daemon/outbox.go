@@ -600,8 +600,9 @@ func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 		// is one it will not know on the retry either, and nothing an operator does here would
 		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
 		// every coded 4xx permanent, which would end every publication against a Dispatch older
-		// than the route. A 5xx, a transport failure and the codeless 404 of a server that has
-		// no such route all end on their own, and the set is sent again when they do.
+		// than the route: that server's router answers the unknown path 404 under the code
+		// NOT_FOUND, a coded refusal that is not this one. It, a 5xx and a transport failure all
+		// end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
 		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
 	case record.OutboxKindReadyMerge:
@@ -797,9 +798,10 @@ func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStep
 // sent whole, empty included: it replaces what Dispatch holds, so an issue whose gates record
 // nothing clears the set rather than leaving the last one standing.
 //
-// A Dispatch that has not got the route yet answers a codeless 404, and nothing here treats that
-// as final (permanentRefusal): the lane's backoff holds the row until the server has the route,
-// which is what lets the daemon and Dispatch deploy in either order.
+// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
+// and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
+// alone): the lane's backoff holds the row until the server has the route, which is what lets the
+// daemon and Dispatch deploy in either order.
 func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGatesPublish) error {
 	if r.dispatch == nil {
 		return errors.New("design gates executor has no Dispatch client")

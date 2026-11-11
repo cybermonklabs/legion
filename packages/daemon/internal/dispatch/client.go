@@ -168,8 +168,8 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers the codeless 404 of its router, which the caller retries until
-// the server release that has it.
+// older than the route answers its router's 404 under the code NOT_FOUND, which the caller
+// retries until the server release that has it.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}

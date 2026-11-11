@@ -326,8 +326,12 @@ const (
 // IssueNotFound is Dispatch's own spelling of the 404 its issue routes answer for an issue it
 // does not know. It is the one refusal a design-gates publish ends on, which is why the daemon
 // names the code rather than the status: a Dispatch whose release has no design-gates route at
-// all answers its router's codeless 404, and that publication has to wait for the upgrade. No
-// mechanism shares a value between this module and Dispatch's, so the spellings change together.
+// all answers its router's own 404 under the code NOT_FOUND (measured against a built server and
+// against this deployment's own Dispatch; the router writes it in
+// packages/envoy/internal/dispatch/routes/router.go), which is not this code, so that publication
+// is retried and waits for the upgrade. Narrowing the test to the status alone would end every
+// one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
+// change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
