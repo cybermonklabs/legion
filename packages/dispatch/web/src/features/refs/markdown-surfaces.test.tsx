@@ -136,13 +136,15 @@ function Transcript({ messages }: { messages: KeyedMessage[] }): ReactNode {
         commands={undefined}
         contentIds={messages.map((message) => turnKey(message.metadata?.custom ?? {}, message.id))}
         empty="Nothing yet."
+        front
         held={false}
+        initialPlace={null}
+        onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
-        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );

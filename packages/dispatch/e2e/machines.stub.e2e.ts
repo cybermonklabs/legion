@@ -17,7 +17,7 @@
 import { expect, type Page } from "@playwright/test";
 
 import type { TmuxPlace } from "../web/src/api/types";
-import { setLiveSessions } from "./agents";
+import { agentFilter, setLiveSessions } from "./agents";
 import {
   assertPaneProportions,
   DAEMON_SOCKET,
@@ -285,8 +285,9 @@ test.describe("@machines-honesty", () => {
     await toAgents.click();
     await expect(page).toHaveURL(/\/agents\?machine=cluster-pool$/);
     // The Agents page opens on this machine's filter, so the session on another machine is
-    // left out of the list. A row the filter excludes stays mounted and hidden.
-    await expect(page.getByRole("combobox", { name: "Machine" })).toHaveValue(host);
+    // left out of the list; the windowed list draws a row it excludes only while the reader
+    // has it open, so that one is not on the page at all.
+    await expect(agentFilter(page, "machine")).toContainText("1");
     await expect(page.locator(`[data-agent-row="${scene.elsewhere}"]`)).toBeHidden();
     await expect(page.locator(`[data-agent-row="${scene.kubeOne}"]`)).toBeAttached();
   });

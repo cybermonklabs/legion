@@ -49,7 +49,10 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
  * skip - a wall-clock row that passes out of sight reads as coverage this suite then does not
  * have.
  *
- * This reaches only the rows that call `measureDraw`. The other rows of the `-alone` projects
+ * This reaches only the rows that call `measureDraw`. The rows of
+ * `agent-workspace-timing.e2e.ts` read a wall clock of their own and never call it, so what
+ * holds them to one worker is the command that runs them, which names `--workers=1`
+ * (`e2e/playwright.config.ts`, above `aloneProjects`). The other rows of the `-alone` projects
  * read no clock, never call it, and run at any worker count with every assertion they have.
  *
  * The count is the one the run asked for, which is what the reader controls, and not the number

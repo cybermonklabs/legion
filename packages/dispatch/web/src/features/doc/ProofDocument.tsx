@@ -1177,6 +1177,7 @@ export function ProofDocument({
             <AskBlockCard
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
               host={host}
+              inBody={false}
               key={host.key}
               onAnswered={blockAnswered}
               owner={owner.kind === "document" ? owner : undefined}

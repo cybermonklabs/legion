@@ -39,8 +39,8 @@ const ambientProcessCount: Record<string, string> =
 // The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
-// `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing: 50 rows, which is what this
-// head's wall-clock listing holds.
+// `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing:
+// 54 rows, which is what this head's wall-clock listing holds.
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
@@ -136,9 +136,9 @@ test(
     // project of the resolved configuration whatever the command selected - this head's
     // wall-clock listing names three projects and reports all fifteen - so an assertion over
     // the project list could not fail, and would pass with the wall-clock listing missing
-    // altogether. Measured at this head, the two listings hold 1,349 rows and every project
+    // altogether. Measured at this head, the two listings hold 1,427 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the wall-clock
-    // three hold 19, 14 and 17.
+    // three hold 23, 14 and 17.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)
@@ -194,7 +194,7 @@ test(
 // The four fields that give a wall-clock row its quiet machine and keep it out of a bare run,
 // and the list that is how every accounting of this suite finds those rows at all. Nothing else
 // in the suite reads them: `workers: 1` and `retries: 0` are what make a reading the page's own
-// work rather than the other workers', `default: false` is what keeps 50 rows out of a run that
+// work rather than the other workers', `default: false` is what keeps 54 rows out of a run that
 // names no project, and a `dependencies` is what pulled the whole suite in behind a file filter
 // until dispatch://INFRA-1280 (e2e/playwright.config.ts, above `aloneProjects`).
 //
