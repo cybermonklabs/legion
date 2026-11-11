@@ -1296,10 +1296,11 @@ func TestHandoffCompleteRefusesAREADYPacketDispatchWouldRefuseAndAppliesTheShort
 // is READY_PACKET_TOO_LONG. A packet holding a decision block is READY_PACKET_DECISION_BLOCK
 // however short it is, since a question in a message is one nobody can answer; that refusal names
 // the block and where the question belongs, and asks neither for a shorter packet nor for less of
-// what the packet quotes (INFRA-1201). The block is read from the packet itself, which is why its
-// post reads clean here: the marker is an HTML comment, which the document parser refuses, so a
-// post parses to no tree at all. Each refusal records nothing — no fact and no outbox row — so
-// the issue stays in merging and the corrected packet is applied.
+// what the packet quotes (INFRA-1201). Its post is refused too, and for the same block: the
+// marker the outbox appends is an HTML comment, which the document parser refuses, and the
+// server reads a refused body for the card its reader would draw all the same
+// (pmdoc.FindDecisionCard). Each refusal records nothing — no fact and no outbox row — so the
+// issue stays in merging and the corrected packet is applied.
 func TestHandoffCompleteRefusesAREADYPacketForWhatItsPostHolds(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
@@ -1319,7 +1320,7 @@ func TestHandoffCompleteRefusesAREADYPacketForWhatItsPostHolds(t *testing.T) {
 			summary: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "READY_PACKET_TOO_LONG", takenAlone: true,
 			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
 		{name: "a packet holding a decision block",
-			summary: "Verification stands at the head.\n\n" + theDecisionBlock + "\n", code: "READY_PACKET_DECISION_BLOCK", postTaken: true,
+			summary: "Verification stands at the head.\n\n" + theDecisionBlock + "\n", code: "READY_PACKET_DECISION_BLOCK",
 			want: []string{"the READY packet holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",
 				"ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`"},
 			absent: []string{"shorten", "quot"}},

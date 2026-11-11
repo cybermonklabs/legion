@@ -1203,10 +1203,11 @@ const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
 // naming the bound. A reason holding a decision block is CLOSE_REASON_DECISION_BLOCK however
 // short it is, since a question in a message is one nobody can answer; that refusal names the
 // block and where the question belongs, and asks neither for a shorter reason nor for less of
-// what the reason quotes (INFRA-1201). The block is read from the reason's own message, which is
-// why its post reads clean here: the marker is an HTML comment, which the document parser
-// refuses, so a post parses to no tree at all. Each refusal records nothing: no fact and no
-// outbox row, so the architect's corrected close is applied.
+// what the reason quotes (INFRA-1201). Its post is refused too, and for the same block: the
+// marker the outbox appends is an HTML comment, which the document parser refuses, and the
+// server reads a refused body for the card its reader would draw all the same
+// (pmdoc.FindDecisionCard). Each refusal records nothing: no fact and no outbox row, so the
+// architect's corrected close is applied.
 func TestAnArchitectsCloseIsRefusedForWhatItsPostHolds(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
@@ -1223,7 +1224,7 @@ func TestAnArchitectsCloseIsRefusedForWhatItsPostHolds(t *testing.T) {
 			reason: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
 			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
 		{name: "a reason holding a decision block",
-			reason: "The transport is still open.\n\n" + theDecisionBlock + "\n", code: "CLOSE_REASON_DECISION_BLOCK", postTaken: true,
+			reason: "The transport is still open.\n\n" + theDecisionBlock + "\n", code: "CLOSE_REASON_DECISION_BLOCK",
 			want: []string{"the reason holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",
 				"ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`"},
 			absent: []string{"shorten", "quot"}},

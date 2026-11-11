@@ -296,7 +296,7 @@ var decisionRefusalRows = []struct {
 		blockType: "ask",
 	},
 	{
-		reason:  "unsupportedDirective: malformedDirectiveReason (an ask whose content also breaks paragraph+ bullet_list?)",
+		reason:  "unsupportedDirective: malformedDirectiveReason (a ::::ask with no attributes, which opens no typed directive)",
 		trigger: "the four-colon ask of packages/dispatch/e2e/unknown-directive.stub.e2e.ts:50, holding a :::note after its list",
 		body:    "Lead **bold**\n\n::::ask\nWhich option?\n\n- first\n\n:::note\nA note line\n:::\n::::\n",
 		cards:   0,

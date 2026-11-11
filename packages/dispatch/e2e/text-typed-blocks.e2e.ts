@@ -375,10 +375,9 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
 // The line belongs to a body alone: a decision block a document holds is answered where it
 // stands, so no document surface draws it. The three document surfaces this tree has are the
 // live editor, a saved version read at `?v=1` and a closed issue's read-only document, and all
-// three are read below. There is no document-preview surface in this tree (no
-// `PreviewDecisionCard`), so the card a document surface draws outside an editor is held by a
-// unit row instead: `web/src/features/refs/MarkdownBody.test.tsx`, the row naming
-// `DocumentAskBlockCard`.
+// three are read below. A surface added later says which it is: `AskBlockCard`'s `inBody`
+// carries no default, so a card drawn for a document is written with `inBody={false}` and can
+// never take the line by forgetting to.
 test("a document's own decision block draws no line about opening an ask, live, saved or closed", async ({
   browser,
 }) => {

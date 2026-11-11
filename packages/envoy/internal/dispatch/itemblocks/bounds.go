@@ -98,6 +98,10 @@ func Check(field, body string) error {
 		}
 	}
 	if doc == nil {
+		// A body of only whitespace has no blocks and no tree, and holds nothing to draw.
+		if len(blocks) == 0 {
+			return nil
+		}
 		// The parse refused the body, which says nothing about the card: the browser reader draws
 		// one for the `ask` its parser reads whether or not the server could store what stands
 		// beside it, so a refused body is read for that card rather than taken as holding none.
@@ -107,9 +111,7 @@ func Check(field, body string) error {
 		return nil
 	}
 	for index, child := range doc.Children {
-		holdsAsk := false
-		pmdoc.WalkAskBlocks(child, func(string) { holdsAsk = true })
-		if holdsAsk {
+		if pmdoc.HoldsAskBlock(child) {
 			return &DecisionBlock{Field: field, Position: index + 1, Type: child.Type}
 		}
 	}

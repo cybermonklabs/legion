@@ -284,13 +284,16 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// the issue would already be in awaiting_merge, where no worker holds a phase and this
 	// merger's completion is over: nobody could send the shorter packet. Refused here, the issue
 	// stays in merging and the merger completes again with it. The text measured is the post the
-	// outbox makes, not the packet alone (outboxBodyRefusal, over record.LongestPost).
+	// outbox makes, not the packet alone (record.LongestPost). That one read answers the decision
+	// block too: the post's marker is an HTML comment, which the document parser refuses, and the
+	// server reads a refused body for the card its reader would draw all the same
+	// (pmdoc.FindDecisionCard).
 	var answer readyAnswer
 	if req.Ready {
 		if answer, ok = s.readyNote(w, r, grant, issue, req.Commit); !ok {
 			return
 		}
-		if over := outboxBodyRefusal(record.ReadyPacket(req.Summary, answer.mergeNote)); over != nil {
+		if over := dispatchbody.Check(record.LongestPost(record.ReadyPacket(req.Summary, answer.mergeNote))); over != nil {
 			// What the packet is refused for decides what the merger does about it. A decision
 			// block is refused however short the packet is, since a question in a message is one
 			// nobody can answer, so the refusal names the block as the cause and where the

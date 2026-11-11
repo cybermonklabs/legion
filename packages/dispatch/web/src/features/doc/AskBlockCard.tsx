@@ -219,24 +219,6 @@ export function TextAskBlockCard({ host }: { host: AskBlockHost }): ReactNode {
   );
 }
 
-/** The read-only record of a detached decision block, with no line about opening an ask: a
- *  document surface draws this one, where an ask is opened on the document itself. It exists for
- *  a surface that draws a document before its editor is built - a preview, which renders the
- *  document's Markdown and so needs a card for each `ask` block it draws. */
-export function DocumentAskBlockCard({ host }: { host: AskBlockHost }): ReactNode {
-  return (
-    <AskBlockCard
-      ask={undefined}
-      detached
-      host={host}
-      inBody={false}
-      owner={undefined}
-      readOnly
-      rowResolution={false}
-    />
-  );
-}
-
 /** Where a copied block's source stands, by the state settlement wrote into the block. */
 const COPY_STATE_LABELS: Record<string, string> = {
   answered: "answered there",

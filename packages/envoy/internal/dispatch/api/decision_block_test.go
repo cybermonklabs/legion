@@ -286,10 +286,13 @@ func assertDecisionBlockRefused(t *testing.T, request string, response *httptest
 // for byte.
 func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 	f := newDecisionFixture(t)
+	// Every write below is refused, so the store never moves: one snapshot before the first of
+	// them is what each route's own read is held to, and a route that stored something fails
+	// against it as it would against a snapshot of its own.
+	before := f.stored(t)
 	drove, routes := 0, map[string]struct{}{}
 	for _, write := range decisionWrites() {
 		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
-			before := f.stored(t)
 			for _, placement := range decisionPlacements {
 				t.Run(placement.name, func(t *testing.T) {
 					assertDecisionBlockRefused(t, write.route+" as "+write.actor,
@@ -401,9 +404,9 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 	// One of the bodies stands for the class on every route - the link reference definition, the
 	// line a writer leaves behind most often - and the comment route below answers every class.
 	onEveryRoute := decisionRefusedParse[0]
+	before := f.stored(t)
 	for _, write := range decisionWrites() {
 		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
-			before := f.stored(t)
 			assertDecisionBlockRefused(t, write.route+" as "+write.actor,
 				write.send(t, f, onEveryRoute.body), decisionAtTheTop)
 			if after := f.stored(t); after != before {

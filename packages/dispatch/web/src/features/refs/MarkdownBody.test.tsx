@@ -14,7 +14,7 @@ import type {
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
 } from "../../api/types";
-import { DocumentAskBlockCard, TextAskBlockCard } from "../doc/AskBlockCard";
+import { TextAskBlockCard } from "../doc/AskBlockCard";
 import { MarkdownBody } from "./MarkdownBody";
 import { TextAskCard } from "./markdown-cards";
 import { setParseDeadline, warmMarkdownRenderer } from "./markdown-engine";
@@ -533,16 +533,6 @@ function withAskCard(children: ReactNode): ReactNode {
   );
 }
 
-/** The same body as a document surface draws it: the card that keeps the detached record and
- *  says nothing about opening an ask, because a document's own ask is opened there. */
-function withDocumentAskCard(children: ReactNode): ReactNode {
-  return (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <TextAskCard.Provider value={DocumentAskBlockCard}>{children}</TextAskCard.Provider>
-    </MemoryRouter>
-  );
-}
-
 /** The one line the card draws under a decision block a reader meets in a body. */
 const textOnlyLine =
   "This question is text: it must be opened as an ask before anyone can answer it.";
@@ -708,25 +698,6 @@ test("a malformed ask block in a body says the question is text, where it drew n
     });
     expect(footer.querySelector("[data-dispatch-ask-record]")).toBeNull();
     expect(view.container.textContent).not.toContain("re-activates");
-    expect(answerControls(shell)).toHaveLength(0);
-  } finally {
-    view.unmount();
-  }
-});
-
-test("the card a document surface draws keeps the record and says nothing about opening an ask", async () => {
-  const view = render(
-    withDocumentAskCard(<MarkdownBody markdown={`:::ask{urgency="high"}\n${askBody}`} />)
-  );
-
-  try {
-    const shell = await findAskShell(view.container);
-    expect(await within(shell).findByText("Decision")).toBeDefined();
-    const [first, second] = await findRecordRows(shell);
-    expect(within(first as HTMLElement).getByText("first")).toBeDefined();
-    expect(within(second as HTMLElement).getByText("second")).toBeDefined();
-    expect(shell.querySelector("[data-dispatch-ask-text-only]")).toBeNull();
-    expect(view.container.textContent).not.toContain("opened as an ask");
     expect(answerControls(shell)).toHaveLength(0);
   } finally {
     view.unmount();
