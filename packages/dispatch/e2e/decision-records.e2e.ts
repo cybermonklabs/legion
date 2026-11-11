@@ -7,6 +7,7 @@ import {
   listComments,
 } from "./api";
 import { blockId } from "./editor";
+import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, test } from "./test";
 
 // The decision records end to end, against the real server: an agent writes `decisions.md` with
@@ -202,14 +203,7 @@ test("a decision whose answer carries no reading is drawn block by block @pr", a
     name: "decisions.md",
   });
 
-  await page.route(/\/api\/v1\//, async (route) => {
-    const response = await route.fetch();
-    const body = (await response.text()).replaceAll(/"[a-z_]+_tree":/g, '"dropped_tree":');
-    const headers = { ...response.headers() };
-    delete headers["content-encoding"];
-    delete headers["content-length"];
-    await route.fulfill({ body, headers, status: response.status() });
-  });
+  await serveWithoutDisplayTrees(page);
 
   await page.goto(`/issues/${issue.key}/decisions`);
   const card = page

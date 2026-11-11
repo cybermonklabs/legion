@@ -46,6 +46,13 @@ interface DecisionBlock {
    *  matches a quote against; where it carried none it is the block's own markdown, since
    *  there is no reading to flatten. */
   readonly text: string;
+  /** The markdown this block's references are read from (`MarkdownBody`'s `referenceText`): the
+   *  whole decision where the answer carried a reading, since a block of that reading holds a
+   *  link's target and a key's backticks nowhere but in the field's own markdown; this block's
+   *  markdown alone where it carried none, since the browser parsed that markdown to draw this
+   *  block and a reference another block cites is none of this one's - the whole decision would
+   *  link an escaped `\#q2` here because some other block cites `#q2`. */
+  readonly references: string;
   readonly tree: DisplayTree | undefined;
   readonly unsure: boolean;
 }
@@ -109,8 +116,11 @@ function markdownBlocks(text: string): DecisionBlock[] {
     .map((markdown) => ({
       // The block's own markdown is its text here, the Change quote included: with no reading
       // there is nothing to flatten, and parsing the markdown in the browser to build a quote
-      // is the reading a stored text's tree exists to spare every view.
+      // is the reading a stored text's tree exists to spare every view. It is what the
+      // references are read from as well, because it is what the browser parsed to draw this
+      // block: a reference some other block of the decision cites is no reference of this one.
       text: markdown,
+      references: markdown,
       tree: undefined,
       unsure: markdown.startsWith(UNSURE_PREFIX),
     }));
@@ -135,6 +145,7 @@ function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
       // references are read from (`MarkdownBody`'s `referenceText`), since a link's target and
       // the backticks that end a key are in the markdown alone.
       text: wordsOf(node),
+      references: decision.text,
       tree: { ...tree, content: [node] },
       unsure: isUnsureBlock(node),
     }));
@@ -323,7 +334,7 @@ function DecisionCard({
           >
             <MarkdownBody
               markdown={block.text}
-              referenceText={decision.text}
+              referenceText={block.references}
               source={source}
               tree={block.tree}
             />
@@ -333,7 +344,7 @@ function DecisionCard({
             // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
             key={index}
             markdown={block.text}
-            referenceText={decision.text}
+            referenceText={block.references}
             source={source}
             tree={block.tree}
           />

@@ -29,6 +29,7 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 import { countParses, readParseCounts, rewrittenParseCallSites } from "./parse-counting";
 import { resetDatabase } from "./seed";
+import { serveWithoutDisplayTrees } from "./strip-trees";
 import { asUser } from "./users";
 
 const session = {
@@ -372,14 +373,7 @@ test("the counter sees the parse a text served with no reading costs", async ({
   await countParses(alice);
   // Every tree out of the answer, as a server that sends none would: the page then has the
   // markdown alone, which it parses itself.
-  await alice.route(/\/api\/v1\//, async (route) => {
-    const response = await route.fetch();
-    const body = (await response.text()).replaceAll(/"[a-z_]+_tree":/g, '"dropped_tree":');
-    const headers = { ...response.headers() };
-    delete headers["content-encoding"];
-    delete headers["content-length"];
-    await route.fulfill({ body, headers, status: response.status() });
-  });
+  await serveWithoutDisplayTrees(alice);
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${seeded.issueKey}`);
