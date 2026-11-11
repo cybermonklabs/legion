@@ -579,8 +579,8 @@ export function IssueTablePager<Row>({
       </span>
       <span className="ml-auto min-w-0">
         {pageSize >= ALL_ROWS
-          ? `All ${rowsOnPages} ${rowsOnPages === 1 ? "row" : "rows"}`
-          : `Rows ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
+          ? `All ${rowsOnPages.toLocaleString()} ${rowsOnPages === 1 ? "row" : "rows"}`
+          : `Rows ${(rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1).toLocaleString()}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages).toLocaleString()} of ${rowsOnPages.toLocaleString()}`}
       </span>
       <Action disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
         ‹ Previous

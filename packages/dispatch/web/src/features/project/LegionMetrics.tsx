@@ -102,21 +102,27 @@ function closedByDay(report: LegionMetricsResponse): Map<string, LegionWorkTimeI
   return byDay;
 }
 
-/** A value axis in hours: round numbers, each with its unit. */
-const hourTicks = (value: number): string => `${value.toLocaleString("en-US")} h`;
-
-/** Work time's graph: each UTC day's median and p90 work time of the issues that closed that day.
- *  The p90 runs about six times the median, so each is drawn on its own value axis. */
+/** Work time's one shared-hour-axis graph, with median and p90 lines. */
 export function workTimeTrendSeries(report: LegionMetricsResponse): ChartSeries[] {
   const byDay = closedByDay(report);
-  const of = (q: number) => (day: string) =>
-    quantile(
-      (byDay.get(day) ?? []).map((issue) => issue.hours),
-      q
-    );
   return [
-    perDay(report, "Median work time", "hours, median", formatHours, of(0.5), hourTicks, "hours"),
-    perDay(report, "p90 work time", "hours, p90", formatHours, of(0.9), hourTicks, "hours"),
+    {
+      kind: "spread",
+      label: "Work time",
+      noun: "issues",
+      format: (minutes) => formatHours(minutes / 60),
+      unit: "hours",
+      days: daysOf(report).map(({ day, partial }) => {
+        const hours = (byDay.get(day) ?? []).map((issue) => issue.hours);
+        return {
+          day,
+          n: hours.length,
+          median_minutes: quantile(hours, 0.5) === null ? null : (quantile(hours, 0.5) ?? 0) * 60,
+          p90_minutes: quantile(hours, 0.9) === null ? null : (quantile(hours, 0.9) ?? 0) * 60,
+          partial,
+        };
+      }),
+    },
   ];
 }
 

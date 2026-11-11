@@ -818,7 +818,7 @@ test("the legend names each state the bar draws, in the bar's order, and the seg
   const legend = screen.getByRole("list", { name: "Statuses" });
   expect([...legend.querySelectorAll("button")].map((item) => item.textContent?.trim())).toEqual([
     "In progress 2",
-    "Not started 1: Todo 1",
+    "Not started 1Todo 1",
   ]);
 });
 

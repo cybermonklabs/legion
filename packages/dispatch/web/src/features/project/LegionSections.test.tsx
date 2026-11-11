@@ -347,12 +347,19 @@ test("the work-time chart tables UTC days and opens that day's Finished view", a
   await renderSections(() => report());
 
   const section = document.querySelector('[data-legion-section="work_time"]') as HTMLElement;
-  // The median and the p90 each have their own plot, title and value axis, and no legend
-  // repeats a plot's one line.
   expect(
     [...section.querySelectorAll("[data-chart-plot-title]")].map((one) => one.textContent)
-  ).toEqual(["Median work timehours", "p90 work timehours"]);
-  expect(section.querySelector("[data-chart-legend]")).toBeNull();
+  ).toEqual(["Work timehours"]);
+  expect(
+    [...section.querySelectorAll("[data-chart-legend]")]
+      .map((legend) => legend.textContent)
+      .join(" ")
+  ).toContain("median");
+  expect(
+    [...section.querySelectorAll("[data-chart-legend]")]
+      .map((legend) => legend.textContent)
+      .join(" ")
+  ).toContain("p90");
   const table = await openTable("Work time");
   expect(table.textContent).toContain("2026-11-02");
   fireEvent.click(screen.getByRole("button", { name: "Show the issues of 2026-11-02" }));
