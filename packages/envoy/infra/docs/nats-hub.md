@@ -947,15 +947,15 @@ for the durable from the moment the new pod's container starts, and the old pod 
 only once the new pod is Ready, so the window where both exist is the new pod's time to its first
 `/healthz` answer plus the old pod's 33 seconds: it keeps answering for 5 seconds, the time its
 removal from the Service's endpoints takes to reach every node's proxy, and then stops in 28
-seconds, inside its grace period of 40. The 7 seconds spare cover the kubelet's own latency
-between the preStop hook's return and SIGTERM, the container's teardown and a late tick on a
-loaded node. They do not cover a listener that runs over its own deadlines. What has to hold
-that whole window is the new pod's own 135-second bind deadline, counted from its own start, not
-the old pod's grace. A hung old pod holds its durable for all 40 seconds, which leaves the new
-pod 95 seconds to its first `/healthz` answer. A new pod that never becomes Ready leaves the old
-one serving: nothing stops it, and the new one restarts on its bind deadline. The Tailscale
-Service's port 9020 refuses connections while no listener pod is ready, and its port 4222 serves
-through it.
+seconds, inside its grace period of 40. That is a margin of 7 seconds (`listenerGraceMargin`),
+which covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
+container's teardown and a late tick on a loaded node. It does not cover a listener that runs
+over its own deadlines. What has to hold that whole window is the new pod's own 135-second bind
+deadline, counted from its own start, not the old pod's grace. A hung old pod holds its durable
+for all 40 seconds, which leaves the new pod 95 seconds to its first `/healthz` answer. A new
+pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one
+restarts on its bind deadline. The Tailscale Service's port 9020 refuses connections while no
+listener pod is ready, and its port 4222 serves through it.
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
 listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a

@@ -1588,12 +1588,15 @@ type listenerParts struct {
 
 // The listener's stop budget: the deadlines shutdownListener spends after SIGTERM, one after
 // another. A runtime's termination grace period, less the pre-stop wait it spends before SIGTERM,
-// has to cover stopBudget, which TestListenerPodGracesCoverTheStopBudget holds the rendered pods
-// to.
+// has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
+// TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
 const (
-	// stopHTTPGrace bounds the first part of the stop: the relays' stop, the HTTP server's
-	// shutdown, the consumer deletes still in flight and the session-consumer drain all run
-	// under it.
+	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
+	// opens, in this order - the relays' stop, the HTTP server's shutdown, the consumer deletes
+	// still in flight, the session-consumer drain, the wait for a self-health rebuild still
+	// running (loops.monitorDone) and the wait for each KV bucket pass still running
+	// (loops.kvLoopsDone). The last two are the ones that most plausibly spend it on a loaded
+	// node, so whoever sizes this number reads them too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
@@ -1606,6 +1609,15 @@ const (
 	// stopBudget is the whole stop, the three deadlines added, and is inside every runtime's
 	// 30 s after the pre-stop wait.
 	stopBudget = stopHTTPGrace + stopLaneGrace + stopClientDrain
+	// listenerGraceMargin is what a pod of this listener grants above its pre-stop wait and
+	// stopBudget: it covers the kubelet's own latency between the pre-stop hook's return and
+	// SIGTERM, the container's teardown and a late tick on a loaded node, and never a listener
+	// that runs over its own deadlines, which it cannot. It is the one place this number is
+	// decided: every sentence that states the margin cites this constant, the two listener pod
+	// components render their grace as their pre-stop wait plus the budget plus it, and
+	// TestListenerPodGracesCoverTheStopBudget holds each rendered pod's grace less its pre-stop
+	// wait less stopBudget equal to it, so a pod that grants more or less reds.
+	listenerGraceMargin = 7 * time.Second
 )
 
 // shutdownListener is the ordered shutdown every end of a start that serves /v1 comes to, a

@@ -60,19 +60,22 @@ type listenerPod struct {
 // terminationGracePeriodSeconds - it sends SIGTERM only once the hook returns - so the seconds
 // left for the shutdown are the grace period less the hook's sleep, and they must cover
 // stopBudget.
+// The subtests stay serial: read is written inside them and compared after the loop, so a
+// t.Parallel() added to one would make the count fail rather than pass wrongly, and the count is
+// of pods actually read.
 func TestListenerPodGracesCoverTheStopBudget(t *testing.T) {
 	read := 0
 	for _, golden := range listenerPodGoldens {
 		t.Run(golden.container, func(t *testing.T) {
 			grace, wait := readListenerPodGrace(t, golden.read, golden.path, golden.container)
-			left := grace - wait
-			if time.Duration(left)*time.Second < stopBudget {
-				t.Fatalf("%s asks for %d seconds of termination grace and spends %d of them on %s's pre-stop sleep, leaving its shutdown %d seconds where shutdownListener spends %s of them (stopBudget in packages/envoy/cmd/listener/main.go): the pod asks for less than the shutdown needs, so the kubelet kills %s mid-drain and every delivery and role forward it still holds is lost. Whoever moves one of the two moves the other.",
-					golden.path, grace, wait, golden.container, left, stopBudget, golden.container)
+			left := time.Duration(grace-wait) * time.Second
+			if margin := left - stopBudget; margin != listenerGraceMargin {
+				t.Fatalf("%s asks for %d seconds of termination grace and spends %d of them on %s's pre-stop sleep, leaving its shutdown %s where shutdownListener spends %s (stopBudget in packages/envoy/cmd/listener/main.go), a margin of %s where listenerGraceMargin is %s: the pod grants the stop something other than the margin this listener's own number names, and every sentence that states the margin cites listenerGraceMargin, so one of the two is now wrong. Whoever moves one moves the other.",
+					golden.path, grace, wait, golden.container, left, stopBudget, margin, listenerGraceMargin)
 			}
 			read++
-			t.Logf("%s grants %s %d seconds of termination grace, spends %d on its pre-stop sleep and leaves its shutdown %d, where the stop budget is %s",
-				golden.path, golden.container, grace, wait, left, stopBudget)
+			t.Logf("%s grants %s %d seconds of termination grace, spends %d on its pre-stop sleep and leaves its shutdown %s, which is the %s budget and the %s margin listenerGraceMargin names",
+				golden.path, golden.container, grace, wait, left, stopBudget, listenerGraceMargin)
 		})
 	}
 

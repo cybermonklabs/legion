@@ -604,11 +604,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// 5 s, so the probe allows 6; startup and liveness only ask that the listener answers
 	// (answersProbe). The pre-stop wait keeps a stopping pod answering /v1 while its removal from
 	// the Service propagates, and the 40 s grace period covers those 5 s and the listener's own
-	// stop of 28 s, with a margin of 7 s. That 28 s is three hard deadlines the listener sets
-	// itself in packages/envoy/cmd/listener/main.go: the HTTP stop's 10 s context, which
-	// parts.server.Shutdown runs under, parts.lane.drain(logger, 3*time.Second), 5 s with its
-	// receipt window, and parts.client.Drain(13 * time.Second). They cannot overrun, so the
-	// margin covers the kubelet's own latency between the pre-stop hook's return and SIGTERM, the
+	// stop of 28 s, with the margin listenerGraceMargin names. That 28 s is three hard deadlines
+	// the listener sets itself and holds as constants, stopHTTPGrace, stopLaneGrace and
+	// stopClientDrain, summed as stopBudget (packages/envoy/cmd/listener/main.go), whose own test
+	// holds this pod's golden to that sum and that margin. They cannot overrun, so the margin
+	// covers the kubelet's own latency between the pre-stop hook's return and SIGTERM, the
 	// container's teardown and a late tick on a loaded node, and not a listener that runs over.
 	// This pod and the clustered hub's listener pod run the same binary at the same budget, and
 	// what holds the two graces equal is

@@ -367,12 +367,12 @@ Three probes read the pod's own loopback, two routes between them:
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
 the listener's own stop of 28 seconds are 33 seconds together, inside the pod's grace period of
-40 seconds, which leaves a margin of 7 seconds. The margin covers the kubelet's own latency
-between the preStop hook's return and SIGTERM, the container's teardown and a late tick on a
-loaded node. It does not cover a listener that runs over its own deadlines. A hung pod holds its
-durable for the whole grace, so the replacement pod's time to its first `/healthz` answer plus
-that grace has to stay under the 135-second bind deadline. At 40 seconds the start allowance is
-95 seconds.
+40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
+kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
+and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
+A hung pod holds its durable for the whole grace, so the replacement pod's time to its first
+`/healthz` answer plus that grace has to stay under the 135-second bind deadline. At 40 seconds
+the start allowance is 95 seconds.
 
 One pod has one cost: while that pod is unready or restarting, the Tailscale Service's port
 9020 refuses connections. Port 4222 stays up through it, which is what the split is for.
@@ -1315,11 +1315,11 @@ the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace` in
 number moves both, since a wait the grace period does not cover is paid for out of the server's
 drain, which spends its document service's reserve and kills a slow write mid-commit. The
 listener asks for 40 seconds: the five of the wait added to its own stop of 28 seconds, with a
-margin of 7 seconds for the kubelet's own latency between the pre-stop hook's return and SIGTERM,
-the container's teardown and a late tick on a loaded node. Whether five seconds is enough to lose
-no request across a real release is unmeasured; the consuming stack's release measures it, with a
-poll every 250 milliseconds. The front door drains its node instead
-([The front door](#the-front-door)).
+margin of 7 seconds (`listenerGraceMargin`) for the kubelet's own latency between the pre-stop
+hook's return and SIGTERM, the container's teardown and a late tick on a loaded node. Whether
+five seconds is enough to lose no request across a real release is unmeasured; the consuming
+stack's release measures it, with a poll every 250 milliseconds. The front door drains its node
+instead ([The front door](#the-front-door)).
 
 Above one replica the app runs that many `envoy-dispatch` processes against one Postgres and one
 NATS, and a rolling update runs the previous build beside the new one: "Running more than one
