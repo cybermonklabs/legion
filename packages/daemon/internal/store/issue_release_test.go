@@ -372,7 +372,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 			if !releaseMarked(t, st) {
 				t.Fatal("the cancel was decided and the mark was already gone; a cancel that fails would be unreadable")
 			}
-			if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+			if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
 				t.Fatalf("carry the cancel out: %v", err)
 			}
 			if releaseMarked(t, st) {
@@ -404,7 +404,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 	if decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundaryA); err != nil || decision.Act != ReleaseCancel {
 		t.Fatalf("the first release's boundary = %s, %v; want it cancelled", decision.Act, err)
 	}
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
 		t.Fatalf("carry the first release's cancel out: %v", err)
 	}
 	// The notice is delivered and the pod goes quiet again, so a second release is marked. Its
@@ -525,7 +525,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -537,7 +537,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 		t.Fatalf("starts queued by the refused cancel = %v, want none", queued)
 	}
 
-	resumed, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
 	if err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -589,7 +589,7 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", held, err)
 	}
 
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
@@ -670,7 +670,7 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 	releasedClaim(t, st, claim.RoleArchitect)
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
 
-	resumed, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
 	if err != nil {
 		t.Fatalf("cancel the release: %v", err)
 	}
@@ -852,7 +852,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("the teardown = %s for %s, %v; want %s for %s", teardown.Act, teardown.Cause, err,
 			ReleaseCancel, ReleaseCauseUnauthorized)
 	}
-	resumed, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
 	if err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}

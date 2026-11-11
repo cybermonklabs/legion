@@ -16,10 +16,11 @@ import (
 // 20261110225246, which added the hook prompt's — so each of the three names that kind, since a
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
-// which leaves the table as main has it. The three versions of main's above the claim-death
+// which leaves the table as main has it. The four versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
-// (20261109191929) and the backward-move counts with the hook prompt (20261110225246), are
-// main's own and are applied as main's run applied them.
+// (20261109191929), the backward-move counts with the hook prompt (20261110225246) and the kind
+// of the rule that wrote a release mark (20261111001612), are main's own and are applied as
+// main's run applied them.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -31,10 +32,9 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413,
 }
 
-// mainsNewestMigration is the newest version main carries, the write mark a claim's retirement
-// takes, which tells a start row written before a retirement from one written after it. Every
-// embedded version above it is this branch's own.
-const mainsNewestMigration = 20261110225246
+// mainsNewestMigration is the newest version main carries, the kind of the rule that wrote an
+// issue's release mark. Every embedded version above it is this branch's own.
+const mainsNewestMigration = 20261111001612
 
 // mainsKindCheck is the constraint main's own 20261110225246 wrote, which is what a database main
 // migrated carries. The embedded copy of that migration is the merged one — it names the kinds the

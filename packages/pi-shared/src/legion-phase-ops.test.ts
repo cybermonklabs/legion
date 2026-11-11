@@ -724,8 +724,8 @@ const RELEASE_RECORDS = {
 };
 
 /** A runtime whose daemon answers `records` on the release-records route and nothing else,
- * recording what was posted, with the clock the open release is measured against. */
-function recordsRuntime(records: unknown) {
+ * recording what was posted, with `asOf` as the clock an open release is measured against. */
+function recordsRuntime(records: unknown, asOf = "2026-11-01T18:00:00Z") {
   const posted: { readonly path: string; readonly body: unknown }[] = [];
   const stub = (async (input, init) => {
     posted.push({
@@ -743,7 +743,7 @@ function recordsRuntime(records: unknown) {
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
     },
-    now: () => new Date("2026-11-01T18:00:00Z"),
+    now: () => new Date(asOf),
   };
   return { ops, posted };
 }
@@ -759,6 +759,7 @@ test("read_release_records posts the claim's own token and secret, and counts th
     ...RELEASE_RECORDS,
     counts: {
       releases: 3,
+      releasesSuspendingNoRole: 0,
       resumes: 3,
       resumesByKind: { task: 1, message: 2 },
       holds: 2,
@@ -799,7 +800,14 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
     releases: [],
     resumes: [],
     holds: [],
-    counts: { releases: 0, resumes: 0, resumesByKind: {}, holds: 0, holdsByReason: {} },
+    counts: {
+      releases: 0,
+      releasesSuspendingNoRole: 0,
+      resumes: 0,
+      resumesByKind: {},
+      holds: 0,
+      holdsByReason: {},
+    },
     podHoursReleased: 0,
     wokenWithinTenMinutes: { releases: 0, share: 0 },
     wakeToFirstTurnSeconds: {
@@ -810,6 +818,111 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
       max: null,
     },
   });
+});
+
+/** A window with one release of each kind: one that suspended a role and was woken five minutes
+ * later, and one that suspended no role, which no resume row can ever name. */
+const ONE_RELEASE_OF_EACH_KIND = {
+  releases: [
+    {
+      id: 1,
+      issue: "LEGION-208",
+      generation: 2,
+      roles: ["implementer"],
+      at: "2026-11-01T12:00:00Z",
+      bundleBytes: 1024,
+    },
+    {
+      id: 2,
+      issue: "LEGION-209",
+      generation: 1,
+      roles: [],
+      at: "2026-11-01T13:00:00Z",
+      bundleBytes: 0,
+    },
+  ],
+  resumes: [
+    {
+      id: 1,
+      release: 1,
+      issue: "LEGION-208",
+      role: "implementer",
+      kind: "task",
+      at: "2026-11-01T12:05:00Z",
+      podReadyAt: "2026-11-01T12:06:00Z",
+      firstTurnAt: "2026-11-01T12:07:00Z",
+      stuck: false,
+    },
+  ],
+  holds: [],
+};
+
+test("a release that suspended no role is counted as a release and measured in nothing else", async () => {
+  const { ops } = recordsRuntime(ONE_RELEASE_OF_EACH_KIND);
+
+  await expect(
+    executePhaseOp(ops, { op: "read_release_records", since: "2026-11-01T00:00:00Z" })
+  ).resolves.toEqual({
+    since: "2026-11-01T00:00:00Z",
+    asOf: "2026-11-01T18:00:00.000Z",
+    ...ONE_RELEASE_OF_EACH_KIND,
+    counts: {
+      releases: 2,
+      releasesSuspendingNoRole: 1,
+      resumes: 1,
+      resumesByKind: { task: 1 },
+      holds: 0,
+      holdsByReason: {},
+    },
+    // The five minutes of the woken release alone, though the other has stood open five hours
+    // at `now`: a release no wake can reach is charged nothing.
+    podHoursReleased: 0.08,
+    // One of one, not one of two: the release that suspended no role is in neither half.
+    wokenWithinTenMinutes: { releases: 1, share: 1 },
+    // The timings read the resume rows, which name the woken release alone.
+    wakeToFirstTurnSeconds: {
+      measured: 1,
+      withoutFirstTurn: 0,
+      median: 120,
+      p90: 120,
+      max: 120,
+    },
+  });
+});
+
+test("the pod hours of a release that suspended no role do not grow with the clock", async () => {
+  const records = {
+    releases: [
+      {
+        id: 1,
+        issue: "LEGION-208",
+        generation: 2,
+        roles: [],
+        at: "2026-11-01T12:00:00Z",
+        bundleBytes: 0,
+      },
+    ],
+    resumes: [],
+    holds: [],
+  };
+  const summary = async (asOf: string) =>
+    (await executePhaseOp(recordsRuntime(records, asOf).ops, {
+      op: "read_release_records",
+      since: "2026-11-01T00:00:00Z",
+    })) as {
+      readonly podHoursReleased: number;
+      readonly counts: Record<string, number>;
+      readonly wokenWithinTenMinutes: { readonly releases: number; readonly share: number };
+    };
+
+  // Six hours after the release, then a day after it. An unresumed release that suspended a role
+  // is charged to the moment of the read, so charging this one would report more hours at every
+  // later read, for ever, though an operator's retry may have rebuilt the pod a minute later.
+  const atSixHours = await summary("2026-11-01T18:00:00Z");
+  const atADay = await summary("2026-11-02T12:00:00Z");
+  expect([atSixHours.podHoursReleased, atADay.podHoursReleased]).toEqual([0, 0]);
+  expect(atSixHours.counts).toMatchObject({ releases: 1, releasesSuspendingNoRole: 1 });
+  expect(atSixHours.wokenWithinTenMinutes).toEqual({ releases: 0, share: 0 });
 });
 
 test("ready_for_update answers for the round its task named, with the branch head, and leaves the head out when the branch is not on the remote", async () => {

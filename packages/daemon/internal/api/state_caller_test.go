@@ -161,7 +161,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added, which is this daemon's own contract, so a pod at 63 is served
+		// stallRecordContract added, which is this daemon's own contract, so a pod at 69 is served
 		// the record and a pod still running an older plugin is not.
 		stall bool
 	}{

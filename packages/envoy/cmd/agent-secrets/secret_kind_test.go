@@ -701,6 +701,48 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 	})
 }
 
+// TestSecretRetagWritesAndRemovesTheShape: retag --shape writes each of the two words the broker
+// reads, keeping the secret's other tags, and --shape none removes the tag as every other none
+// removes its own. A word that is neither is a usage error naming --shape and the reason the
+// broker would refuse the secret for, refused before the store is called at all, so no secret is
+// left carrying a shape tag the broker will not serve it under.
+func TestSecretRetagWritesAndRemovesTheShape(t *testing.T) {
+	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	writes := &countingTagWrites{Local: local}
+	startSecretBroker(t, servedBy(local))
+	useAWS(t, writes, testAccount, adaSignIn)
+
+	for _, shape := range []string{policy.ShapeToken, policy.ShapeDocument} {
+		if _, stderr, code := runSecret("retag", "API_KEY", "--shape", shape); code != 0 {
+			t.Fatalf("retag --shape %s: exit %d, stderr %q", shape, code, stderr)
+		}
+		tags := secrets.TagMap(describe(t, local, "API_KEY").Tags)
+		if tags[policy.TagShape] != shape || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent {
+			t.Fatalf("tags after --shape %s = %v, want the shape beside the kept owner and tier", shape, tags)
+		}
+	}
+
+	if _, stderr, code := runSecret("retag", "API_KEY", "--shape", "none"); code != 0 {
+		t.Fatalf("retag --shape none: exit %d, stderr %q", code, stderr)
+	}
+	tags := secrets.TagMap(describe(t, local, "API_KEY").Tags)
+	if _, ok := tags[policy.TagShape]; ok {
+		t.Fatalf("tags after --shape none = %v, want no shape", tags)
+	}
+	if tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent {
+		t.Fatalf("tags after --shape none = %v, want owner and tier unchanged", tags)
+	}
+
+	calls := [3]int{writes.describes, writes.tags, writes.untags}
+	_, stderr, code := runSecret("retag", "API_KEY", "--shape", "bogus")
+	if code != exitUsageError || !strings.Contains(stderr, "--shape") || !strings.Contains(stderr, policy.ReasonShapeMalformed) {
+		t.Fatalf("retag --shape bogus: exit %d stderr %q; want %d naming --shape and %s", code, stderr, exitUsageError, policy.ReasonShapeMalformed)
+	}
+	if got := [3]int{writes.describes, writes.tags, writes.untags}; got != calls {
+		t.Fatalf("a refused --shape made store calls: describes, tags, untags went from %v to %v", calls, got)
+	}
+}
+
 // TestTagRefusalRefusesAReasonNoArmNames pins the client's answer on both ways into tagRefusal's
 // one fallback: a usage error quoting the reason that refused the secret, never nil. Every other
 // arm turns one of policy.TagRules' reasons, or one of policy.RequesterRule's faults, into the
