@@ -722,6 +722,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/asks/{id}/asked-of": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Hand an open ask to another person {asked_of}, the email of somebody who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise): the ask waits on them from now on, wherever its issue goes, and the Inbox lists it under them. It needs the person scope, since handing a question on is one person asking another. An ask that is not open is 409 ASK_NOT_OPEN and one whose issue is closed 409 ISSUE_CLOSED. Naming the assignee of the ask's own issue empties the field instead, so the ask follows its issue again; either way the row records who handed it on and when (asked_of_by, asked_of_at), and one ask.asked_of event names the person it waited on before and the one it waits on now. Answers the ask. */
+    put: operations["putApiV1AsksByIdAskedOf"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/asks/{id}/followers": {
     parameters: {
       query?: never;
@@ -1328,7 +1345,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter (unassigned includes document asks; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -2071,7 +2088,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask the Inbox already lists on an open issue assigned to them; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
+    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
     get: operations["getApiV1MeReplies"];
     put?: never;
     post?: never;
@@ -3202,6 +3219,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -3221,6 +3242,7 @@ export interface components {
       state: string;
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     AskAnchorArtifact: {
       name: string;
@@ -3255,6 +3277,9 @@ export interface components {
       name: string;
       requested_version: number;
       version: number;
+    };
+    AskAskedOfInput: {
+      asked_of: string;
     };
     AskBlockArtifact: {
       id: string;
@@ -4409,6 +4434,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4434,6 +4463,7 @@ export interface components {
       thread: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     Issue: {
       assignee: null | string;
@@ -4475,6 +4505,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4496,6 +4530,7 @@ export interface components {
       thread?: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     IssueCheckResults: {
       checks: components["schemas"]["CheckBlock"][] | null;
@@ -4634,6 +4669,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4654,6 +4693,7 @@ export interface components {
       state: string;
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     IssueProgress: {
       children: components["schemas"]["ProgressCount"] | null;
@@ -4924,6 +4964,7 @@ export interface components {
       ref: string;
       urgency: string;
       waiting_on: string;
+      waiting_on_person: string;
     };
     OpenAskDocument: {
       name: string;
@@ -7273,6 +7314,44 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["AnswerAskInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Ask"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1AsksByIdAskedOf: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AskAskedOfInput"];
       };
     };
     responses: {
@@ -12672,6 +12751,7 @@ export type AskAnswer = components["schemas"]["AskAnswer"];
 export type AskApproval = components["schemas"]["AskApproval"];
 export type AskApprovalApproved = components["schemas"]["AskApprovalApproved"];
 export type AskApprovalDocument = components["schemas"]["AskApprovalDocument"];
+export type AskAskedOfInput = components["schemas"]["AskAskedOfInput"];
 export type AskBlockArtifact = components["schemas"]["AskBlockArtifact"];
 export type AskEdit = components["schemas"]["AskEdit"];
 export type AskEditPrevious = components["schemas"]["AskEditPrevious"];
