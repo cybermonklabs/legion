@@ -42,8 +42,9 @@ const PullRequestFilesLimit = 3000
 // The cut is decided here rather than by each caller, so the limit and the read cannot drift
 // apart: both callers judge a path a change touches — READY's by_hand merge policy
 // (packages/daemon/internal/api/ready.go, mergeReadyPolicy) and the daemon's merge holds
-// (packages/daemon/internal/daemon/auto_merge.go) — and a caller comparing the file count with a
-// limit of its own would judge a truncated list as a complete one the day either changed.
+// (packages/daemon/internal/daemon/merge_marks.go, readyMergeMarks.holding) — and a caller
+// comparing the file count with a limit of its own would judge a truncated list as a complete one
+// the day either changed.
 func PullRequestPaths(ctx context.Context, c Client, number int) ([]string, bool, error) {
 	files, err := GetPages[ChangedFile](ctx, c, fmt.Sprintf("/pulls/%d/files", number))
 	if err != nil {

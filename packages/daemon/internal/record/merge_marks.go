@@ -14,10 +14,11 @@ import "time"
 // mark that is still in the table has not been spent, and one that is gone was spent or taken off.
 //
 // Reason is what the controller said the jump is for, and Session the controller session that set
-// it. Both are copied into the record of the jump (MergeJumpRecord) when the merge is submitted,
-// so the account of a pull request that went ahead of the queue names the decision and its author
-// after the mark itself is gone. SetAt is when the mark was set, by the daemon's clock, kept in
-// UTC as every time this package reads is.
+// it. Reason is copied into the record of the jump (MergeJumpRecord) when the merge is submitted,
+// so the account of a pull request that went ahead of the queue names the decision after the mark
+// itself is gone; Session is named in the message the daemon posts on the issue then and in its
+// log line, and the record keeps no column for it. SetAt is when the mark was set, by the
+// daemon's clock, kept in UTC as every time this package reads is.
 type MergeJump struct {
 	Issue   string
 	Reason  string

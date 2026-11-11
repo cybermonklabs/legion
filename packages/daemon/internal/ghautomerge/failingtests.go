@@ -263,7 +263,7 @@ func quoteName(name string) string {
 //
 // It is exported because the daemon cuts the controller's merge marks by this same rule:
 // GitHub's answer to a jump it refused, a hold's reason, each of a hold's path patterns and the
-// session that set it (internal/daemon's auto_merge.go). Those words come from a controller
+// session that set it (internal/daemon's merge_marks.go). Those words come from a controller
 // rather than from GitHub, and nothing between the controller's route and the Dispatch block
 // they are rendered into bounds them either, so they are cut by this bound rather than one of
 // their own. A rune outside the BMP is two UTF-16 units, so one cut string costs at most
