@@ -225,8 +225,9 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("an issue Dispatch does not know is refused ISSUE_NOT_FOUND", func(t *testing.T) {
-		// The daemon tells this answer from the codeless `404 page not found` a Dispatch serving
-		// no such route gives, so the code is the whole of what it reads here.
+		// The daemon ends a publication on this code alone, and a Dispatch serving no such route
+		// answers the router's own 404 under the code NOT_FOUND, which it retries; so the code,
+		// and not the status, is the whole of what it reads here.
 		response := publishDesignGatesResponse(t, handler, "DGATE-9999", map[string]any{
 			"gates": []issueDesignGate{}, "actor": sessionActor(),
 		})

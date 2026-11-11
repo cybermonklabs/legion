@@ -122,7 +122,11 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// foreign key takes anyway, so the refusal and the write decide on the same row. The code is
 	// written here rather than taken from loadIssue, which answers the package's plain
 	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
-	// does not serve this route at all, whose answer is the codeless `404 page not found`.
+	// does not serve this route at all, and that one answers the router's own
+	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would
+	// give here too. The daemon ends a publication on this code alone, so the two must differ:
+	// with loadIssue's code every publication against a Dispatch older than the route would be
+	// dropped as a refusal no retry repairs.
 	var issue string
 	if err := tx.QueryRow(r.Context(), `
 		select key from issues where key = $1 for key share

@@ -445,11 +445,14 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // waiting on its approval is never. A boot that cannot write the rows fails the boot, as the
 // project's gated-steps publication does.
 //
-// A done issue is left out, by the read itself (record.GatedIssues): a gate is live for
-// Dispatch's advice only while the issue holding it is not done there (the spec's R5). A closed
-// tree refuses no READY, and its close deletes no gate row, so publishing its set would have
-// Dispatch print a clause for a gate that holds nothing back. The status read is dispatch_status,
-// what Dispatch last showed, rather than status, which is what the daemon means by the issue.
+// A done issue is left out, by the read itself (record.GatedIssues), and that is a publish-cost
+// filter and not the liveness rule: Dispatch decides liveness at the read, where a gate counts
+// only while its issue is in the workflow there, which leaves out `triage`, `icebox` and
+// `backlog` as well (api.supersededApprovalGates, model.IssueStatusesOutOfWorkflow). A closed
+// issue is the one of those four that never comes back, so its set is the one nobody need
+// publish; a parked issue's is published, and its tree answers for it the moment a person brings
+// it back. The status read is dispatch_status, what Dispatch last showed, rather than status,
+// which is what the daemon means by the issue.
 //
 // It queues at every boot, as the project's list does, because the daemon keeps no record of what
 // it last published, so each boot does cost Dispatch one write for every live gated issue: the
