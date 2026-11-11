@@ -546,9 +546,10 @@ func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
 		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
 			t.Errorf("%q is in %q, want %q alone", pin.clause, carrying, want)
 		}
-		// The walk above refuses the clause in every part but one, this tree's three dispatching
-		// parts among them. What it cannot say is that those three are still there to be read, so
-		// each is named and held to having been walked.
+		// The walk above refuses the clause in every part but one, the dispatching parts of this
+		// tree among them: two under roles/ and one under go/, three across the two. What it
+		// cannot say is that those parts are still there to be read, so each is named and held to
+		// having been walked.
 		for _, name := range pin.unwritten {
 			if !slices.Contains(read, name) {
 				t.Errorf("%s/%s, which dispatches a task subagent, is not a part of this tree any more; the walk read %q", pin.dir, name, read)
@@ -560,10 +561,12 @@ func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
 // The headless fragment sends four runs to CI on the pull request, and
 // skill://legion-worker/references/tools.md, which that same paragraph sends a role to for what it
 // may run in the pod, sends the same four. A role reads both, so the two must agree: a run the
-// fragment calls CI's work and the skill does not leaves the role with two answers. Each run is
-// pinned by the longest substring both files hold rather than by its bare name, which a file could
-// carry while saying the opposite of the other and pass; the browser suite and `lake build` sit in
-// one clause both files carry whole, so one row pins them both. The skill is read from the
+// fragment calls CI's work and the skill does not leaves the role with two answers. Three rows
+// pin the four runs. Each row is a substring both files hold, which for the module run is the
+// bare `go test ./...` and for the other two the clause around the run's name, since a bare name
+// is text a file could carry while saying the opposite of the other and pass; the browser suite
+// and `lake build` sit in one clause both files carry whole, so one row pins them both.
+// The skill is read from the
 // repository by relative path, as TestEveryTaskAgentARolePromptDispatchesIsShipped reads the
 // plugin's agents/, and a skill file this package cannot read is a fatal rather than a quiet pass.
 // The match runs over a body whose whitespace is collapsed to one space, since the skill hard-wraps

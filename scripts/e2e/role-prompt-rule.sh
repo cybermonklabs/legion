@@ -7,16 +7,19 @@
 # stand-in of the driver's own. The two panes are the two roles of one tree: its root architect,
 # and the planner of the same issue, which stands in planning.
 #
-# Once both panes have registered and reported ready, the driver reads each process's own command
-# line from /proc/<pid>/cmdline, at the pid that claim's locator carries, and takes the word after
-# `--append-system-prompt`. It holds the phase worker's eight sentences of the rule and the root
-# architect's six in that word, and names the role, the pid and the sentence for any it cannot
-# find. The command line is the only place it reads: the composer, the role prompt files below the
-# state directory and the recorded launch specification all hold that text before a process took
-# it, and the unit tests already read it there
-# (packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
-# `-tags e2e`, and packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
-# starts a pane with no tmux). Each check prints `== <name>`, what it observed and `ok <name>`; the
+# Once both panes have registered and reported ready, the driver reads each pane's own Oh My Pi
+# command line from /proc/<pid>/cmdline and takes the word after `--append-system-prompt`. The pid
+# the claim's locator carries is the `legion worker-shim`'s, which starts Oh My Pi as a child, so
+# the driver walks /proc for that shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It
+# holds the phase worker's eight sentences of the rule and the root architect's six in that word,
+# and names the role, the pid and the sentence for any it cannot find. That command line is the
+# only place it reads: the composer, the role prompt files below the state directory and the
+# recorded launch specification all hold that text before a process took it, and the unit tests
+# already read it there (packages/daemon/internal/prompts/prompts_test.go and
+# packages/daemon/internal/prompts/roles_test.go). The driver is
+# packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
+# `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
+# starts a pane with no tmux. Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
 # The whole run took 64 s and 104 s on two runs measured in a Legion worker pod (omp/18.16.0)

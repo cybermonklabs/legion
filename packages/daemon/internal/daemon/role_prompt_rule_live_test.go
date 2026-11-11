@@ -12,10 +12,14 @@
 // (packages/daemon/internal/prompts/prompts_test.go and
 // packages/daemon/internal/prompts/roles_test.go). Neither of them starts anything, so neither
 // says that a role process was ever launched with that text. This driver reads the text from the
-// one place that says it: the launched process's own command line, /proc/<pid>/cmdline, whose pid
-// is the one the claim's locator carries (parseLocalIncarnation, over the incarnation
-// localruntime_live_test.go's launch mints). The argv is NUL-separated, and the word after
-// `--append-system-prompt` is the whole prompt that process runs under.
+// one place that says it: the Oh My Pi process's own command line, /proc/<pid>/cmdline. The pid
+// the claim's locator carries is the `legion worker-shim`'s (parseLocalIncarnation, over the
+// incarnation localruntime_live_test.go's launch mints), and the shim starts Oh My Pi as a child
+// rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
+// for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
+// shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this
+// proof claims. The argv is NUL-separated, and the word after `--append-system-prompt` is the
+// whole prompt the agent runs under.
 //
 // It reads the prompt from nowhere else on purpose. The composer, the role prompt files below the
 // state directory and the SpawnSpec the runtime recorded each hold the text before a process ever
@@ -146,9 +150,11 @@ type ruleRole struct {
 	provider string
 }
 
-// launchedPrompt is one process's own system prompt, and the pid it was read from.
+// launchedPrompt is one agent process's own system prompt, with the pid it was read from and the
+// pid of the shim that started it.
 type launchedPrompt struct {
 	pid    int
+	shim   int
 	prompt string
 }
 
@@ -307,15 +313,15 @@ func (r *rolePromptRuleLive) seed() {
 // ---- the steps -----------------------------------------------------------------------------------
 
 // bothPanesAreReady waits for each claim's real pane to start Oh My Pi, register and report ready,
-// and then reads that process's own command line, which is what steps 2 and 3 hold the rule in.
+// and then reads that Oh My Pi's own command line, which is what steps 2 and 3 hold the rule in.
 func (r *rolePromptRuleLive) bothPanesAreReady() {
 	for _, seeded := range r.seededRoles() {
 		token := r.token(seeded.role)
 		r.awaitReady(token)
 		read := r.launchedPromptOf(token)
 		r.launched[token] = read
-		r.note("%s runs as pid %d, whose own /proc/%d/cmdline carries one %s word of %d bytes",
-			token, read.pid, read.pid, promptWord, len(read.prompt))
+		r.note("%s runs Oh My Pi as pid %d, the child of its shim %d, whose own /proc/%d/cmdline carries one %s word of %d bytes",
+			token, read.pid, read.shim, read.pid, promptWord, len(read.prompt))
 	}
 }
 
@@ -351,23 +357,31 @@ func (r *rolePromptRuleLive) carriesTheRule(what string, token claim.Token, sent
 	for i, sentence := range sentences {
 		at := strings.Index(read.prompt, sentence)
 		if at < 0 {
-			t.Fatalf("the %s %s (pid %d) was launched with a prompt of %d bytes that does not carry sentence %d of %d of the pod memory rule: %q",
+			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt of %d bytes that does not carry sentence %d of %d of the pod memory rule: %q",
 				what, token, read.pid, len(read.prompt), i+1, len(sentences), sentence)
 		}
-		r.note("sentence %d of %d is at byte %d of the %s %s's own argv: %q",
+		r.note("sentence %d of %d is at byte %d of the %s %s's own Oh My Pi argv: %q",
 			i+1, len(sentences), at, what, token, sentence)
 	}
-	r.note("all %d sentences of the pod memory rule are in the command line pid %d was launched with",
+	r.note("all %d sentences of the pod memory rule are in the command line Oh My Pi pid %d was launched with",
 		len(sentences), read.pid)
 }
 
 // ---- what a step reads --------------------------------------------------------------------------
 
-// launchedPromptOf is the `--append-system-prompt` word the claim's own process was launched with.
-// It is read from that process's /proc/<pid>/cmdline, the kernel's own copy of its argv, one word
-// per NUL-separated field; the pid is the claim's own, off the incarnation its locator carries
-// (parseLocalIncarnation). A command line it cannot read, and one with no such word, each end the
-// proof naming what it found.
+// launchedPromptOf is the `--append-system-prompt` word the claim's own Oh My Pi was launched
+// with, read from that process's /proc/<pid>/cmdline, the kernel's own copy of its argv, one word
+// per NUL-separated field.
+//
+// The pid the claim's locator carries is the shim's, not the agent's: localruntime_live_test.go
+// launches `legion worker-shim … -- omp --mode rpc --append-system-prompt <prompt>` and records
+// that process's pid, and the shim starts Oh My Pi as a child (internal/shim/shim.go's
+// exec.Command) rather than exec'ing into it. So this walks /proc for the shim's own child whose
+// argv[0] is the Oh My Pi this run launches, and reads that child. A shim that dropped or
+// rewrote the prompt fails here, where a read of the shim's own argv would pass it.
+//
+// A shim with no such child, a command line it cannot read, and an argv with no prompt word each
+// end the proof naming what it found.
 func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt {
 	t := r.t
 	t.Helper()
@@ -375,14 +389,15 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 	if held.Locator == nil {
 		t.Fatalf("%s is %s and the daemon's claim listing gives it no locator, so it names no process to read", token, held.State)
 	}
-	pid, _, err := parseLocalIncarnation(held.Locator.Incarnation)
+	shim, _, err := parseLocalIncarnation(held.Locator.Incarnation)
 	if err != nil {
 		t.Fatalf("the locator of %s names no pid: %v", token, err)
 	}
+	pid := r.ompChildOf(token, shim)
 	path := "/proc/" + strconv.Itoa(pid) + "/cmdline"
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s, the command line %s was launched with: %v; that pane's own output is under %s",
+		t.Fatalf("read %s, the command line %s's Oh My Pi was launched with: %v; that pane's own output is under %s",
 			path, token, err, r.rt.paneLogs)
 	}
 	argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
@@ -394,13 +409,70 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 			continue
 		}
 		if i+1 == len(argv) {
-			t.Fatalf("%s (pid %d) was launched with %s as the last word of its argv, so it carries no prompt: %s",
-				token, pid, promptWord, argvSummary(argv))
+			t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with %s as the last word of its argv, so it carries no prompt: %s",
+				token, pid, shim, promptWord, argvSummary(argv))
 		}
-		return launchedPrompt{pid: pid, prompt: argv[i+1]}
+		return launchedPrompt{pid: pid, shim: shim, prompt: argv[i+1]}
 	}
-	t.Fatalf("%s (pid %d) was launched with no %s word at all; its argv is %s", token, pid, promptWord, argvSummary(argv))
+	t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with no %s word at all; its argv is %s",
+		token, pid, shim, promptWord, argvSummary(argv))
 	return launchedPrompt{}
+}
+
+// ompChildOf is the pid of the Oh My Pi the shim at pid shim started: the live process whose
+// PPid is that shim and whose argv[0] is the binary LEGION_OMP_PATH names. /proc is walked
+// rather than /proc/<pid>/task/<tid>/children read, because that file needs a kernel built with
+// CONFIG_PROC_CHILDREN and a pod's sandbox need not provide it. A process that ends between the
+// two reads is passed over, as a walk of /proc must do.
+func (r *rolePromptRuleLive) ompChildOf(token claim.Token, shim int) int {
+	t := r.t
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatalf("read /proc to find the Oh My Pi %s's shim (pid %d) started: %v", token, shim, err)
+	}
+	var ofTheShim []string
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == shim {
+			continue
+		}
+		status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
+		if err != nil || parentOf(string(status)) != shim {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+		if len(argv) == 0 {
+			continue
+		}
+		if argv[0] == r.omp {
+			return pid
+		}
+		ofTheShim = append(ofTheShim, fmt.Sprintf("%d %s", pid, argv[0]))
+	}
+	t.Fatalf("the shim of %s (pid %d) has no live child whose argv[0] is %s, the Oh My Pi this run launches; its children are %v, and that pane's own output is under %s",
+		token, shim, r.omp, ofTheShim, r.rt.paneLogs)
+	return 0
+}
+
+// parentOf is the PPid a /proc/<pid>/status holds, or 0 when it holds none.
+func parentOf(status string) int {
+	for _, line := range strings.Split(status, "\n") {
+		rest, found := strings.CutPrefix(line, "PPid:")
+		if !found {
+			continue
+		}
+		parent, err := strconv.Atoi(strings.TrimSpace(rest))
+		if err != nil {
+			return 0
+		}
+		return parent
+	}
+	return 0
 }
 
 // argvSummary is an argv as a failure names it: every word, each quoted, with a word longer than

@@ -9,16 +9,17 @@
 // provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
 // claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh, and
 // role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh. What belongs to
-// one proof stays in that proof's own file: its issues and their seed, its steps, its stand-ins'
-// handlers, and the Oh My Pi profile and operator overlay its panes run under.
+// one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh My
+// Pi profile and operator overlay its panes run under.
 //
-// A stand-in's handler is its own proof's, because the three differ in what decides an answer:
-// the retry proof's three answer by the provider name each is given in the run's models.yml, the
-// compaction proof's four answer by what the step before them set, a turn's request apart from a
-// compaction's summary request, and the prompt-rule proof's two answer every turn alike. What
-// they hold in common is here: the HTTP server, the bodies they were sent, and the three answers
-// they write — the overloaded status, a refused request, and the Messages stream of a turn that
-// ends.
+// A stand-in's handler belongs to the proof that decides an answer with it. Two have one: the
+// retry proof's three stand-ins answer by the provider name each is given in the run's
+// models.yml, and the compaction proof's four answer by what the step before them set, a turn's
+// request apart from a compaction's summary request. The prompt-rule proof decides nothing by an
+// answer and writes no handler of its own: its two stand-ins are the compaction proof's
+// paneStandin at its default, which answers every turn alike. What every proof holds in common
+// is here: the HTTP server, the bodies they were sent, and the three answers they write — the
+// overloaded status, a refused request, and the Messages stream of a turn that ends.
 package daemon
 
 import (

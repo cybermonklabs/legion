@@ -1459,9 +1459,10 @@ const (
 )
 
 // paneStandin is one pane's provider endpoint: it answers a turn's request and a compaction's
-// summary request apart, over the stand-in both proofs share (live_agent_proof_test.go), which
-// records each request. A step sets each behaviour before it drives the claim, and the two
-// counts of its own are what a step reads back.
+// summary request apart, over the stand-in every such proof shares (live_agent_proof_test.go),
+// which records each request. A step sets each behaviour before it drives the claim, and the two
+// counts of its own are what a step reads back. role_prompt_rule_live_test.go takes this
+// stand-in as it is, at its default, where every turn is answered and no step sets anything.
 type paneStandin struct {
 	*modelStandin
 
