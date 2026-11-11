@@ -166,7 +166,11 @@
               "startedAt": "2026-09-22T09:17:12Z"
             }
           },
-          "rounds": 2
+          "rounds": 2,
+          "backwardMoves": {
+            "reviewing-implementing": 1,
+            "testing-implementing": 1
+          }
         },
         "planner": {
           "claim": {
@@ -741,6 +745,21 @@
       {
         "from": "acme/widgets-legacy",
         "to": "acme/widgets"
+      }
+    ],
+    "hooks": [
+      {
+        "name": "work-back",
+        "on": "work_back",
+        "moves": [
+          "any"
+        ],
+        "every": 5,
+        "roles": [
+          "implementer",
+          "tester",
+          "reviewer"
+        ]
       }
     ]
   },

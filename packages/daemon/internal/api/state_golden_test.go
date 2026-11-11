@@ -323,6 +323,11 @@ func populatedState(t *testing.T) State {
 						},
 						HandoffCommit: "",
 						Rounds:        2,
+						// Both of this issue's rounds came from a move back, and the two were of
+						// different kinds, so the counts name two pairs and add up to the rounds.
+						// LEGION-207's implementer below carries none: an issue whose rounds were
+						// run before the counting landed reads no such key at all.
+						BackwardMoves: map[string]int{"reviewing-implementing": 1, "testing-implementing": 1},
 					},
 				},
 				PullRequest: &PullRequestView{
